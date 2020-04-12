@@ -1,0 +1,107 @@
+	.z80
+
+	include	qio.inc
+	include	dcb.inc
+	include	sysfn.inc
+	include	errors.inc
+
+cr	equ	0Dh
+lf	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; Program to test terminal I/O in binary mode.
+
+	cseg
+
+test::	ld	sp,stack
+
+	ld	hl,sfgmcb
+	ld	de,sfgmcl
+	ld	bc,sf.gmc
+	call	io		; read terminal settings
+
+	ld	bc,io.att
+	call	io
+
+	ld	hl,sfbmcb
+	ld	de,sfbmcl
+	ld	bc,sf.smc
+	call	io		; set binary mode
+
+	ld	hl,prompt
+	ld	de,plen
+	call	iow
+
+loop:	ld	hl,char
+	ld	de,1
+	call	ior		; get char
+
+	ld	a,(char)
+	cp	1Ah		; ^Z?
+	jr	z,exit
+
+	cp	20h
+	jr	c,loop		; loop if not printable
+
+	ld	hl,char
+	ld	de,1
+	call	iow		; echo it
+
+	jr	loop
+
+exit:	ld	hl,sfgmcb
+	ld	de,sfgmcl
+	ld	bc,sf.smc
+	call	io		; restore original settings
+
+	ld	bc,io.det
+	call	io		; detach
+
+	ld	hl,ex.suc
+	sc	.exit
+
+ior:	ld	c,io.rvb
+	ld	b,tf.rne
+	ld	(hl),'?'
+	jr	io
+
+iow:	ld	bc,io.wvb
+	jr	io
+
+io:	push	hl
+	push	de
+	ld	(code),bc
+	ld	(len),de
+	ld	(adr),hl
+	ld	hl,qiodir
+	sc	.qio
+	ld	e,1
+	sc	.wtse
+	pop	de
+	pop	hl
+	ret
+
+prompt:	db	cr,lf,'*'
+plen	equ	$-prompt
+
+	dseg
+
+sfgmcb:	defb	tc.bin,0
+sfgmcl	equ	$-sfgmcb
+
+sfbmcb:	defb	tc.bin,1
+sfbmcl	equ	$-sfbmcb
+
+qiodir:	qio$	io.wlb,5,1,,iostat,,<,,,,,>
+code	equ	qiodir+q.func
+adr	equ	qiodir+q.buf
+len	equ	qiodir+q.len
+
+iostat:	ds	4
+char::	ds	1
+
+	ds	256
+stack	equ	$
+
+	end	test

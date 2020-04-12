@@ -1,0 +1,166 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	PUTCH,PERROR,PUTSTR,SLEEP,TTFLSH,HLHEX,HLDEC,CRLF
+
+;-----------------------------------------------------------------------
+
+; Extend task limits test
+
+	cseg
+
+TEST::	ld	sp,stack
+
+	ld	hl,tcksec
+	ld	c,I.TCKS
+	SC	.GIN
+
+	call	CRLF
+	ld	hl,msg4		; 'current task size = '
+	call	PUTSTR
+	call	tsksiz
+	call	HLHEX
+	call	CRLF
+	call	TTFLSH
+
+extend:	call	delay
+	ld	hl,msg1		; 'extending task by '
+	call	PUTSTR
+	push	hl
+	ld	hl,400h
+	call	signed
+	ex	(sp),hl
+	inc	hl
+	call	PUTSTR
+	pop	hl
+	SC	.EXTSK
+	ld	hl,msg2		; 'success'
+	jr	nc,e1
+	ld	hl,msg3		; 'failed'
+e1:	push	af
+	call	PUTSTR
+	call	CRLF
+	ld	hl,msg4		; 'current task size = '
+	call	PUTSTR
+	call	tsksiz
+	call	HLHEX
+	call	CRLF
+	call	TTFLSH
+	pop	af
+	jr	nc,extend
+
+shrink:	call	delay
+	ld	hl,msg1		; 'extending task by '
+	call	PUTSTR
+	push	hl
+	ld	hl,-400h
+	call	signed
+	ex	(sp),hl
+	inc	hl
+	call	PUTSTR
+	pop	hl
+	SC	.EXTSK
+	ld	hl,msg2		; 'success'
+	jr	nc,s1
+	ld	hl,msg3		; 'failed'
+s1:	push	af
+	call	PUTSTR
+	call	CRLF
+	ld	hl,msg4		; 'current task size = '
+	call	PUTSTR
+	call	tsksiz
+	call	HLHEX
+	call	CRLF
+	call	TTFLSH
+	pop	af
+	jr	nc,shrink
+
+	call	delay
+	ld	hl,msg1		; 'extending task by '
+	call	PUTSTR
+	push	hl
+	ld	hl,0
+	call	signed
+	ex	(sp),hl
+	inc	hl
+	call	PUTSTR
+	pop	hl
+	SC	.EXTSK
+	ld	hl,msg2		; 'success'
+	jr	nc,r1
+	ld	hl,msg3		; 'failed'
+r1:	call	PUTSTR
+	call	CRLF
+	ld	hl,msg4		; 'current task size = '
+	call	PUTSTR
+	call	tsksiz
+	call	HLHEX
+	call	CRLF
+
+exit:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+fatal:	push	af
+	call	CRLF
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	jr	exit
+
+msg1:	db	'Extending task by ',0,': ',0
+msg2:	db	'Success',0
+msg3:	db	'Failed',0
+msg4:	db	'Current task end = ',0
+
+delay:	ld	hl,(tcksec)
+	srl	h
+	rr	l		; 0.5 seconds
+	ld	d,1		; units = ticks
+	jp	SLEEP
+
+tsksiz:	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	ld	hl,terr
+	jp	c,fatal
+	ld	hl,(gtkbuf+GT.END)
+	ret
+
+terr:	db	'Failed to get task information: ',0
+
+signed:	push	hl
+	ld	a,h
+	or	a
+	jp	p,pos
+	ld	c,'-'
+	call	PUTCH
+	ld	a,h
+	cpl
+	ld	h,a
+	ld	a,l
+	cpl
+	ld	l,a
+	inc	hl
+pos:	xor	a		; no filler
+	call	HLDEC
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ
+tcksec:	ds	2
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	TEST

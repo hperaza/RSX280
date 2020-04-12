@@ -1,0 +1,538 @@
+	TITLE	COOKIE
+
+	.Z180
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	CRLF,BCD2BIN,PUTSTR,EXIT
+
+	CSEG
+
+BEGIN:	ld	sp,stack
+
+	ld	hl,gtimbf
+	SC	.GDAT
+
+	ld	a,(gtimbf+4)	; hours
+	call	BCD2BIN
+	ld	l,a
+	ld	h,24
+	mlt	hl
+	ld	a,(gtimbf+5)	; minutes
+	call	BCD2BIN
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	ld	h,60
+	mlt	hl
+	ld	a,(gtimbf+6)	; seconds
+	ld	e,a
+	ld	d,0
+	add	hl,de
+
+	ld	a,h
+	and	7Fh
+	ld	h,a
+
+ if 0
+	ld	h,60
+	mlt	hl
+	ld	a,(ticks)
+	ld	e,a
+	ld	d,0
+	adc	hl,de
+ endif
+	ex	de,hl
+	ld	bc,NNN
+	call	DIV16
+	add	hl,hl
+	ld	de,TAB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CRLF
+	call	TXTOUT
+	ld	hl,EX.SUC
+	jp	EXIT
+
+; Output text, wrapping at word boundary if screen width is exceded
+
+TXTOUT:	ld	de,txtbuf
+	ld	b,78
+txt1:	call	addw		; add word
+	jr	z,txt2		; branch if end of text
+	jr	nc,txt1		; else loop while there is some space left
+txt2:	ld	a,b
+	cp	78
+	ret	z
+	push	hl
+	ex	de,hl
+	ld	(hl),CR		; append newline
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),0
+	ld	hl,txtbuf
+	call	PUTSTR		; output buffer
+	pop	hl
+	call	skipsp		; skip spaces
+	jr	nz,TXTOUT	; restart to output next segment
+	ret
+
+addw:	push	hl
+	push	de
+addw1:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	nz,addw2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw1
+	pop	de
+	pop	hl
+	scf
+	ret
+addw2:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	z,addw3
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw2
+	pop	de
+	pop	hl
+	scf
+	ret
+addw3:	inc	sp
+	inc	sp
+	inc	sp
+	inc	sp
+	or	a
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; DE = DE / BC, remainder in HL
+
+DIV16:	ld	hl,0
+	ld	a,16
+d0:	push	af
+	add	hl,hl
+	ex	de,hl
+	sub	a
+	add	hl,hl
+	ex	de,hl
+	adc	a,l
+	sub	c
+	ld	l,a
+	ld	a,h
+	sbc	a,b
+	ld	h,a
+	inc	de
+	jr	nc,d1
+	add	hl,bc
+	dec	de
+d1:	pop	af
+	dec	a
+	jr	nz,d0
+	ret
+
+TTE	MACRO	B,STRING
+S&B:	db	'&STRING'
+	db	0
+	ENDM
+
+TT	MACRO	B,STRING
+	TTE	%B,<STRING>
+$$	defl	$$+1
+	ENDM
+
+$$	defl	0
+
+TT $$,<One family builds a wall, two families enjoy it.>
+TT $$,<Your depth of comprehension may tend to make you lax in worldly ways.>
+TT $$,<When you go out to buy, don''t show your silver.>
+TT $$,<Misster, do you vant to buy a duck.>
+TT $$,<Your business will assume vast proportions.>
+TT $$,<If you continually give you will continually have.>
+TT $$,<Your nature demands love and your happiness depends on it.>
+TT $$,<A present, over which you will shed tears of joy, will soon be given you.>
+TT $$,<You need not worry about your future.>
+TT $$,<A vivid and creative mind characterizes you.>
+TT $$,<You are always busy.>
+TT $$,<Good health will be yours for a long time.>
+TT $$,<You are magnetic in your bearing.>
+TT $$,<You seek to shield those you love and you like the role of the provider.>
+TT $$,<Your talents will be recognized and suitably rewarded.>
+TT $$,<You will engage in a profitable business activity.>
+TT $$,<Your society will be sought by people of taste and refinement.>
+TT $$,<Your heart is pure, and your mind clear, and your soul devout.>
+TT $$,<By following the good, you learn to be good.>
+TT $$,<To save a single life is better than to build a seven story pagoda.>
+TT $$,<Better to use medicines at the outset than at the last moment.>
+TT $$,<Your love life will be happy and harmonious.>
+TT $$,<To give happiness is to deserve happiness.>
+TT $$,<Life is to you a dashing and bold adventure.>
+TT $$,<You will be called upon to help a friend in trouble.>
+TT $$,<If you wish, You will have an opportunity.>
+TT $$,<A lost ounce of gold may be found, a lost moment of time never.>
+TT $$,<The only rose without thorns is friendship.>
+TT $$,<To do is to be - Nietzsche. To be is to do - Sartre. Do be do be do - Sinatra>
+TT $$,<If you wish to succeed, consult three old people.>
+TT $$,<You love your home and want it to be beautiful.>
+TT $$,<You will never know hunger.>
+TT $$,<You have many friends and very few enemies.>
+TT $$,<Be self-reliant and your success is assured.>
+TT $$,<Draw your salary before spending it.>
+TT $$,<You are capable of planning your future.>
+TT $$,<You have a strong appeal for members of the opposite sex.>
+TT $$,<The light of a hundred stars does not equal the light of the moon.>
+TT $$,<Marriage is the only adventure open to the cowardly. -- VOLTAIRE>
+TT $$,<The wise shepherd never trusts his flock to a smiling wolf.>
+TT $$,<The universe is laughing behind your back.>
+TT $$,<The time is right to make new friends.>
+TT $$,<The rich get rich, and the poor get poorer. The haves get more, the have-nots die.>
+TT $$,<Many changes of mind and mood; do not hesitate too long.>
+TT $$,<Man and wife make one fool.>
+TT $$,<Love the sea? I Dote upon it - from the beach.>
+TT $$,<Love is in the offing.  Be affectionate to one who adores you.>
+TT $$,<Lonely men seek companionship. Lonely women sit at home and wait. They never meet.>
+TT $$,<What is the difference between a Vitamin and a Hormone? You can''t make a Vitamin.>
+TT $$,<eHpl !!!! Imat arppdei sndi eht eDP-P11>
+TT $$,<EHPL !!!! IMAT ARPPDEI SNDI EHT EDP-P11>
+TT $$,<11-PDP eht edisni deppart ma I !!!!pleH>
+TT $$,<He walks as if balancing the family tree on his nose.>
+TT $$,<He who is good for making excuses is seldom good for anything else.>
+TT $$,<He who falls in love with himself will have no rivals.>
+TT $$,<He is truly wise who gains wisdom from another''s mishap.>
+TT $$,<Happiness is just an illusion filled with sadness and confusion.>
+TT $$,<God gives us relatives; thank God we can chose our friends.>
+TT $$,<Generosity and perfection are your everlasting goals.>
+TT $$,<For people who like that kind of book, that is the kind of book they will like.>
+TT $$,<Far duller than a serpent''s tooth it is to spend a quiet youth.>
+TT $$,<Executive ability is prominent in your make-up.>
+TT $$,<Everything bows to success, even grammar.>
+TT $$,<Everyone complains of his memory, no one of his judgment.>
+TT $$,<Even the boldest zebra fear the hungry lion.>
+TT $$,<Don''t get yourself involved with persons or situations that can''t bear inspection.>
+TT $$,<Don''t be overly suspicious where it''s not warranted.>
+TT $$,<Courage is your greatest present need.>
+TT $$,<Conversation enriches the understanding, but solitude is the school of genius.>
+TT $$,<By failing to prepare, you are preparing to fail.>
+TT $$,<Behind every argument is someone''s ignorance.>
+TT $$,<Youth had been a habit of hers so long that she could not part with it.>
+TT $$,<Your temporary financial embarrassment will be relieved in a surprising manner.>
+TT $$,<Your reasoning powers are good, and you are a fairly good planner.>
+TT $$,<Your present plans will be successful.>
+TT $$,<Your own qualities will help prevent your advancement in the world.>
+TT $$,<Your mode of life will be changed for the better because of new developments.>
+TT $$,<Your mode of life will be changed for the better because of good news soon.>
+TT $$,<Your mind understands what you have been taught; your heart, what is true.>
+TT $$,<Your lover will never wish to leave you.>
+TT $$,<Your happiness is intertwined with your outlook on life.>
+TT $$,<Your domestic life may be harmonious.>
+TT $$,<Your aims are high, and you are capable of much.>
+TT $$,<You will win success in whatever calling you adopt.>
+TT $$,<You will step on the soil of many countries.>
+TT $$,<You will soon meet a person who will play an important role in your life.>
+TT $$,<You will receive a legacy which will place you above want.>
+TT $$,<You will overcome the attacks of jealous associates.>
+TT $$,<You will meet an important person who will help you advance professionally.>
+TT $$,<You will inherit some money or a small piece of land.>
+TT $$,<You will hear good news from one you thought unfriendly to you.>
+TT $$,<You will have long and healthy life.>
+TT $$,<You will have good luck and overcome many hardships.>
+TT $$,<You will gain money by a speculation or lottery.>
+TT $$,<You will be surrounded by luxury.>
+TT $$,<You will be surprised by a loud noise.>
+TT $$,<You will be successful in love.>
+TT $$,<You will be singled out for promotion in your work.>
+TT $$,<You will be recognized and honored as a community leader.>
+TT $$,<You will be married within a year.>
+TT $$,<You will be honored for contributing your time and skill to a worthy cause.>
+TT $$,<You will be given a post of trust and responsibility.>
+TT $$,<You will be awarded some great honor.>
+TT $$,<You will be awarded a medal for disregarding safety in saving someone.>
+TT $$,<You will be aided greatly by a person whom you thought to be unimportant.>
+TT $$,<You will attract cultured and artistic people to your home.>
+TT $$,<You will always have good luck in your personal affairs.>
+TT $$,<You shall be rewarded for a dastardly deed.>
+TT $$,<You recoil from the crude; you tend naturally toward the exquisite.>
+TT $$,<You plan things that you do not even use because of your extreme caution.>
+TT $$,<You never hesitate to tackle the most difficult problems.>
+TT $$,<You love your home and want it to be beautiful.>
+TT $$,<You love peace.>
+TT $$,<You like to form new friendships and make new acquaintances.>
+TT $$,<You have the power to influence all with whom you come in contact.>
+TT $$,<You have literary talent that you should take pains to develop.>
+TT $$,<You have had a long-term stimulation relative to business.>
+TT $$,<You have been selected for a secret mission.>
+TT $$,<You have an unusual understanding of the problems of human relationship.>
+TT $$,<You have an unusual equipment for success.  Be sure to use it properly.>
+TT $$,<You have an ambitious nature and may make a name for yourself.>
+TT $$,<You have an ability to sense and know higher truth.>
+TT $$,<You have a will that can be influenced by all with whom you come in contact.>
+TT $$,<You have a truly strong individuality.>
+TT $$,<You have a strong desire for a home and your family interests come first.>
+TT $$,<You have a strong appeal for members of the opposite sex.>
+TT $$,<You have a reputation for being thoroughly reliable and trustworthy.>
+TT $$,<You have a deep appreciation of the arts and music.>
+TT $$,<You enjoy the company of other people.>
+TT $$,<You display the wonderful traits of charm and courtesy.>
+TT $$,<You cannot kill time without injuring eternity.>
+TT $$,<You can do very well in speculation where land or anything to do with earth is concerned.>
+TT $$,<You are tricky, but never to the point of dishonesty.>
+TT $$,<You are standing on my toes.>
+TT $$,<You are secretive in your dealings but never to the extent of trickery.>
+TT $$,<You are scrupulously honest, frank, and straightforward.>
+TT $$,<You are heading for a land of sunshine.>
+TT $$,<You are going to have a new love affair.>
+TT $$,<You are farsighted, a good planner, an ardent lover, and a faithful friend.>
+TT $$,<You are dishonest, but never to the point of hurting a friend.>
+TT $$,<You are a bundle of energy always on the go.>
+TT $$,<Worth seeing?  Yes, but not worth going to see.>
+TT $$,<Words must be weighed, not counted.>
+TT $$,<Words are the voice of the heart.>
+TT $$,<With clothes the new are best, with friends the old are best.>
+TT $$,<Why did the Lord give us so much quickness of movement unless it was to avoid responsibility?>
+TT $$,<Whenever I feel like exercise, I lie down until the feeling passes.>
+TT $$,<When you become used to never being alone, you may consider yourself Americanized.>
+TT $$,<When the wind is great, bow before it; when the wind is heavy, yield to it.>
+TT $$,<When God endowed human beings with brains, He did not intend to guarantee them.>
+TT $$,<What this country needs is a dime that will buy a good five-cent bagel.>
+TT $$,<What passes for woman''s intuition is often nothing more than man''s transparency.>
+TT $$,<What orators lack in depth they make up in length.>
+TT $$,<What no spouse of a writer can ever understand is that a writer is working when he''s staring out the window.>
+TT $$,<What makes us so bitter against people who outwit us is that they think themselves cleverer than we are.>
+TT $$,<We read to say that we have read.>
+TT $$,<We promise according to our hopes, and perform according to our fears.>
+TT $$,<We prefer to speak evil of ourselves than not speak of ourselves at all.>
+TT $$,<Watch out for the old mortar in the rocks in the fourteenth hole trick.>
+TT $$,<Try to value useful qualities in one who loves you.>
+TT $$,<Try to divide your time evenly to keep others happy.>
+TT $$,<True happiness will be found only in true love.>
+TT $$,<Massachusetts has the best politicians money can buy.>
+TT $$,<To refuse praise is to seek praise twice.>
+TT $$,<To laugh at men of sense is the privilege of fools.>
+TT $$,<To keep your friends treat them kindly; to kill them, treat them often.>
+TT $$,<To criticize the incompetent is easy; it is more difficult to criticize the competent.>
+TT $$,<This file will self-destruct in five minutes.>
+TT $$,<Think twice before speaking. But don''t say "think think click click".>
+TT $$,<There''s so much to say but your eyes keep interrupting me.>
+TT $$,<There''s one fool at least in every married couple.>
+TT $$,<There will be big changes for you but you will be happy.>
+TT $$,<There is no fear in love; but perfect love casteth out fear.>
+TT $$,<There is always someone worse off than yourself.>
+TT $$,<There are three things I have always loved and never understood - art, music, and women.>
+TT $$,<There are more ways of killing a cat than choking her with cream.>
+TT $$,<There are more old drunkards than old doctors.>
+TT $$,<There are many people today who literally do not have a close personal friend.>
+TT $$,<There are few people more often in the wrong than those who cannot endure to be thought so.>
+TT $$,<The world is an 8000 mile in diameter spherical pile of dirt.>
+TT $$,<The star of riches is shining upon you.>
+TT $$,<The plural of spouse is spice.>
+TT $$,<The person you rejected yesterday could make you happy, if you say yes.>
+TT $$,<The minute a man is convinced that he is interesting, he isn''t.>
+TT $$,<The luck that is ordained for you will be coveted by others.>
+TT $$,<The heart is wiser than the intellect.>
+TT $$,<The hardest thing is to disguise your feelings when you put a lot of relatives on the train for home.>
+TT $$,<The gent who wakes up and finds himself a success hasn''t been asleep.>
+TT $$,<The first thing I do in the morning is brush my teeth and sharpen my tongue.>
+TT $$,<The days just prior to marriage are like a snappy introduction to a tedious book.>
+TT $$,<The best way to keep your friends is not to give them away.>
+TT $$,<The best prophet of the future is the past.>
+TT $$,<The attacker must vanquish; the defender need only survive.>
+TT $$,<The weed of crime bears bitter fruit.>
+TT $$,<That must be wonderful!!!!  I don''t understand it at all.>
+TT $$,<Take care of the luxuries and the necessities will take care of themselves.>
+TT $$,<Swap read error.  You lose your mind.>
+TT $$,<Stop searching forever. Happiness is unattainable.>
+TT $$,<Stop searching forever. Happiness is just next to you.>
+TT $$,<Standing on head makes smile of frown, but rest of face also upside down.>
+TT $$,<Someone whom you reject today, will reject you tomorrow.>
+TT $$,<Someone is unenthusiastic about your work.>
+TT $$,<Someone is speaking well of you.>
+TT $$,<Some rise by sin and some by virtue fall.>
+TT $$,<Some men are discovered; others are found out.>
+TT $$,<Sin has many tools, but a lie is the handle which fits them all.>
+TT $$,<Show your affection, which will probably meet with pleasant response.>
+TT $$,<She''s learned to say things with her eyes that others waste time putting into words.>
+TT $$,<Satire does not look pretty upon a tombstone.>
+TT $$,<Reputation:  what others are not thinking about you.>
+TT $$,<Recent investments will yield a slight profit.>
+TT $$,<Raising pet electric eels is gaining a lot of current popularity.>
+TT $$,<Put your brain in gear before starting your mouth.>
+TT $$,<Put your trust in those who are worthy.>
+TT $$,<Put not your trust in money, but put your money in trust.>
+TT $$,<Publishing a volume of verse is like dropping a rose petal down the Grand Canyon and waiting for the echo.>
+TT $$,<Promptness is its own reward, if one lives by the clock instead of the sword.>
+TT $$,<Preserve the old, but know the new.>
+TT $$,<People will buy anything that''s one to a customer.>
+TT $$,<People who take cat naps don''t usually sleep in a cat''s cradle.>
+TT $$,<People who have no faults are terrible; there is no way of taking advantage of them.>
+TT $$,<Ours is a world where people don''t know what they want and are willing to go through hell to get it.>
+TT $$,<Only someone with nothing to be sorry for smiles back at the rear of an elephant.>
+TT $$,<One man tells a falsehood, a hundred repeat it as true.>
+TT $$,<Old men are fond of giving good advice to console themselves for their inability to give bad examples.>
+TT $$,<Often statistics are used as a drunken man uses lampposts - for support rather than illumination.>
+TT $$,<Of all forms of caution, caution in love is the most fatal.>
+TT $$,<Now and then an innocent man is sent to the legislature.>
+TT $$,<Nobody can be as agreeable as an uninvited guest.>
+TT $$,<No one can feel as helpless as the owner of a sick goldfish.>
+TT $$,<No doubt Jack the Ripper excused himself on the grounds that it was human nature.>
+TT $$,<Nice guys get sick.>
+TT $$,<Never say you know a man until you have divided an inheritance with him.>
+TT $$,<Never drink from your finger bowl - it contains only water.>
+TT $$,<Never call a man a fool; borrow from him.>
+TT $$,<My interest is in the future because I am going to spend the rest of my life there.>
+TT $$,<Money will say more in one moment than the most eloquent lover can in years.>
+TT $$,<Money may buy friendship but money cannot buy love.>
+TT $$,<Money cannot buy love, nor even friendship.>
+TT $$,<Mistakes are oft the stepping stones to failure.>
+TT $$,<Misery loves company, but company does not reciprocate.>
+TT $$,<Might as well be frank, monsieur. It would take a miracle to get you out of Casablanca.>
+TT $$,<Men seldom show dimples to girls who have pimples.>
+TT $$,<Matrimony is the root of all evil.>
+TT $$,<Many pages make a thick book, except for pocket bibles which are on very, very thin paper.>
+TT $$,<Many a family tree needs trimming.>
+TT $$,<Man''s horizons are bounded by his vision.>
+TT $$,<There are people so addicted to exaggerating that they can''t tell the truth without lying.>
+TT $$,<Make a wish, it might come true.>
+TT $$,<Love is sentimental measles.>
+TT $$,<Love and scandal are the best sweeteners of tea.>
+TT $$,<Like winter snow on summer lawn, time past is time gone.>
+TT $$,<Life is like an onion:  you peel off layer after layer, then you find there is nothing in it.>
+TT $$,<Let''s just be friends and make no special effort to ever see each other again.>
+TT $$,<Let not the sands of time get in your lunch.>
+TT $$,<Let he who takes the plunge remember to return it by Tuesday.>
+TT $$,<Let a fool hold his tongue and he will pass for a sage.>
+TT $$,<Lend money to a bad debtor and he will hate you.>
+TT $$,<Lawrence Radiation Laboratory keeps all its data in an old gray trunk.>
+TT $$,<It''s sweet to be remembered, but it''s often cheaper to be forgotten.>
+TT $$,<It''s not reality that''s important, but how you perceive things.>
+TT $$,<It''s later than you think, the joint Russian-American space mission has already begun.>
+TT $$,<It''s clever, but is it art?>
+TT $$,<It''s a poor workman who blames his tools.>
+TT $$,<It was a book to kill time for those who liked it better dead.>
+TT $$,<It takes both a weapon, and two people, to commit a murder.>
+TT $$,<It seems like the less a statesman amounts to, the more he loves the flag.>
+TT $$,<It is the wise bird who builds his nest in a tree.>
+TT $$,<It is impossible to enjoy idling thoroughly unless one has plenty of work to do.>
+TT $$,<It is far better to be deceived than to be undeceived by those we love.>
+TT $$,<It is easier to run down a hill than up one.>
+TT $$,<It is better to wear out than to rust out.>
+TT $$,<It is a poor judge who cannot award a prize.>
+TT $$,<It is Fortune, not wisdom that rules man''s life.>
+TT $$,<If you would keep a secret from an enemy, tell it not to a friend.>
+TT $$,<If you suspect a man, don''t employ him.>
+TT $$,<If you make people think they''re thinking, they''ll love you but if you really make them think they''ll hate you.>
+TT $$,<If you make a mistake you right it immediately to the best of your ability.>
+TT $$,<If you always postpone pleasure you will never have it. Quit work and play for once.>
+TT $$,<If some people didn''t tell you, you''d never know they''d been away on vacation.>
+TT $$,<If it pours before seven, it has rained by eleven.>
+TT $$,<I''ve given up reading books; I find it takes my mind off myself.>
+TT $$,<I never fail to convince an audience that the best thing they could do was to go away.>
+TT $$,<I like work; it fascinates me; I can sit and look at it for hours.>
+TT $$,<I fear explanations explanatory of things explained.>
+TT $$,<I don''t remember ever having had the itch, and yet scratching is one of nature''s sweet pleasures, and so handy.>
+TT $$,<I despise the pleasure of pleasing people whom I despise.>
+TT $$,<I must have slipped a disk - my pack hurts.>
+TT $$,<How you look depends on where you go.>
+TT $$,<How sharper than a hound''s tooth it is to have a thankless serpent.>
+TT $$,<How many "coming men" has one known!!!!  Where on earth do they all go to?>
+TT $$,<History books which contain no lies are extremely dull.>
+TT $$,<His life was formal; his actions seemed ruled with a ruler.>
+TT $$,<His heart was yours from the first moment that you met.>
+TT $$,<Here comes the orator, with his flood of words and his drop of reason.>
+TT $$,<He who invents adages for others to peruse takes along rowboat when going on cruise.>
+TT $$,<He who has imagination without learning has wings but no feet.>
+TT $$,<He who has a shady past knows that nice guys finish last.>
+TT $$,<He was so narrow-minded he could see through a keyhole with two eyes.>
+TT $$,<He is no lawyer who cannot take two sides.>
+TT $$,<Good news from afar can bring you a welcome visitor.>
+TT $$,<From listening comes wisdom and from speaking repentance.>
+TT $$,<Faith goes out through the window when beauty comes in at the door.>
+TT $$,<Expect a letter from a friend who will ask a favor of you.>
+TT $$,<Every purchase has its price.>
+TT $$,<Even the smallest candle burns brighter in the dark.>
+TT $$,<Even a hawk is an eagle among crows.>
+TT $$,<Enjoy your life; be pleasant and gay, like the birds in May.>
+TT $$,<Economy makes men independent.>
+TT $$,<Domestic happiness and faithful friends.>
+TT $$,<Do not clog intellect''s sluices with knowledge of questionable uses.>
+TT $$,<Deprive a mirror of its silver and even the Czar won''t see his face.>
+TT $$,<Creditors have much better memories than debtors.>
+TT $$,<Beware of friends who are false and deceitful.>
+TT $$,<Beauty seldom recommends one woman to another.>
+TT $$,<Beauty and harmony are as necessary to you as the very breath of life.>
+TT $$,<Avert misunderstanding by calm, poise, and balance.>
+TT $$,<An idea is not responsible for the people who believe in it.>
+TT $$,<Among the lucky, you are the chosen one.>
+TT $$,<Alimony and bribes will engage a large share of your wealth.>
+TT $$,<A wise man can see more from a mountain top than a fool can from the bottom of a well.>
+TT $$,<A wise man can see more from the bottom of a well than a fool can see from the top of a mountain.>
+TT $$,<A truly wise man never plays leapfrog with a Unicorn.>
+TT $$,<A plucked goose doesn''t lay golden eggs.>
+TT $$,<A man without a God is like a fish without a bicycle.>
+TT $$,<A man who turns green has eschewed protein.>
+TT $$,<A lie in time saves nine.>
+TT $$,<A king''s castle is his home.>
+TT $$,<We have met the enemy, and he is us!!!! (Pogo)>
+TT $$,<Be careful what you wish for, because you just might get it.>
+TT $$,<Why take life seriously?  You''ll never get out of it alive anyway.>
+TT $$,<It is said that a man who smokes will eventually make an ash of himself.>
+TT $$,<Watch out for Whoopie cushions.>
+TT $$,<A bird in the hand usually leaves a messy hand.>
+TT $$,<A bird in the bush usually has a friend in there with him.>
+TT $$,<The saddest words of tongue or pen, are nought but these; It might have been.>
+TT $$,<Whoever said "A bird in the hand is worth two in the bush" hasn''t been putting his bird in the right bush.>
+TT $$,<California reminds me of a bowl of Granola. What isn''t fruits and nuts, is flakes.>
+TT $$,<God helps those who help themselves, but God help those who get caught.>
+TT $$,<That light you see at the end of the tunnel, is a train coming toward you.>
+TT $$,<Nothing exceeds like excess.>
+TT $$,<"Cheer up!!!!", the man said. "Things could be worse." So I cheered up and sure enough, things got worse.>
+TT $$,<Whenever I feel really down and ask "Why me?", I hear this still small voice within me say, "You deserve it.">
+TT $$,<Remember to be alert. The country needs more lerts!!!!>
+
+NNN	defl	$$
+
+TENTE	MACRO	C
+	dw	S&C
+	ENDM
+
+TENT	MACRO	C
+	TENTE	%C
+$$$	defl	$$$+1
+	ENDM
+
+$$$	defl	0
+
+TAB:	REPT	$$
+	TENT	$$$
+	ENDM
+
+	DSEG
+
+gtimbf:	ds	8
+txtbuf:	ds	82
+
+	ds	256
+stack	equ	$
+
+	END	BEGIN

@@ -1,0 +1,193 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('SYSDAT')
+	TITLE	'RSX280 System Data Area'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	System Data Area and Variables.                                ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	include	SYSCONF.INC
+
+	public	SYSDAT,SYSVER,SYSEND,SYSTOP,$POOL,$POLSZ,$MEMSZ
+	public	$MFLGS,$PLIST,$TLIST,$RLIST,$WLIST,$CTCB,$CPCB
+	public	MCRTCB,LDRTCB,$SWSTK,$CLKQ,$PHYDV,$LOGDV,SFLAGS
+	public	$CLIST,$FORKQ,$HOSTN,$ERSEQ,$SCRBF,$MVTBL,$CPLST
+	public	$RNDC,$RNDCT,$RNDH,$RNDL,$SWPC,$SWPCT,$SWPRI
+	public	$FEAT
+
+;-----------------------------------------------------------------------
+
+; Note: link as last module!
+
+	dseg
+
+SYSDAT:	db	'SYSDAT'; signature
+
+SYSVER:	db	SVER.L	; system version
+	db	SVER.H
+
+$HOSTN:	ds	9	; host/node name
+
+$FEAT:	db	0	; feature bits
+
+SYSTOP:	ds	2	; end of pool area (system top)
+$POOL:	ds	2	; ptr to list of free blocks
+$POLSZ:	dw	0	; pool size, initialized to 0
+
+$MEMSZ:	ds	2	; system memory size
+
+$PHYDV:	dw	0	; ptr to list of DCBs
+$LOGDV:	dw	0	; ptr to list of logical-to-physical device assignments
+
+$PLIST:	dw	0	; ptr to list of memory partitions
+$CPLST:	dw	0	; ptr to list of checkpoint partitions
+$TLIST:	dw	0	; ptr to list of installed tasks, ordered by priority
+$RLIST:	dw	0	; ptr to list of ready tasks, ordered by priority
+$WLIST:	dw	0	; ptr to list of waiting tasks, ordered by priority
+$CTCB:	dw	0	; address of current task's TCB
+$CPCB:	dw	0	; address of current task's PCB
+$CLKQ:	dw	0	; ptr to head of clock queue
+$CLIST:	dw	0	; ptr to list of CLI Control Blocks
+
+$RNDC:	db	5	; round-robin interval in ticks
+$RNDCT:	ds	1	; round-robin interval counter
+$RNDH:	db	150	; highest priority for round-robin scheduling
+$RNDL:	db	1	; lowest  priority for round-robin scheduling
+$SWPRI:	db	5	; priority range for swapping
+$SWPC:	db	50	; swapping interval in ticks
+$SWPCT:	ds	1	; swapping interval counter
+
+MCRTCB:	ds	2	; MCR... TCB
+LDRTCB:	ds	2	; LDR... TCB
+
+$ERSEQ:	ds	2	; error sequence number
+
+SFLAGS:	ds	8	; 64 system flags
+
+$MFLGS:	db	0	; MCR flags:
+			;  bit 0 = 1 means logins are enabled
+			;  bit 1 = 1 means console log enabled
+
+$FORKQ:	dw	0	; ptr to list of fork blocks
+$MVTBL:	dw	0	; ptr to list of mounted volumes
+
+$SCRBF:	ds	16	; scratch buffer for priv task data transfer
+
+; Variables still used by the filesystem task - will be removed in the future
+
+	public	$FILBF
+
+$FILBF:	dw	0	; ptr to file I/O buffer area
+
+;-----------------------------------------------------------------------
+
+; The code stub below allows calling kernel routines directly from
+; privileged tasks while in supervisor mode, and is not available to
+; normal applications. Therefore it is placed here and not in the
+; common segment.
+;
+; Use like this:
+;
+;	call	$SWSTK
+;	dw	kernel_routine
+
+	.Z280
+
+	include	Z280.INC
+
+	extrn	SYSSTK,SYSLVL,SYSENT,$ITBL
+
+$SWSTK:	push	af
+	ld	a,-1
+	ex	a,(SYSLVL)	; disable task switching
+	ld	(prvlvl),a	; save previous system level
+	pop	af
+	ex	(sp),hl
+	push	de
+	ldw	de,(hl)		; get routine address into DE
+	ld	(tmppc),de	; save it
+	inc	hl
+	inc	hl
+	pop	de
+	ex	(sp),hl
+	ld	($ITBL+20*4+2),SW1    ; replace system call trap address
+	SC	0		      ; enter system mode
+	push	af
+	ld	a,(prvlvl)
+	ld	(SYSLVL),a	; restore previous system level
+	pop	af
+	ret			; return to caller
+
+SW1:	; restore system call trap entry point here, since some routines
+	; may not return (e.g. TKILL)
+
+	ld	($ITBL+20*4+2),SYSENT
+	ld	(tmpsp),sp	; save caller's SP
+	ld	sp,SYSSTK	; switch to system stack
+	ei
+	push	SW2		; push return address
+	push	(tmppc)
+	ret			; execute kernel routine
+SW2:
+  IF 1
+	include	TCB.INC
+	include	PCB.INC
+
+	push	af
+	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,($CPCB)
+	ld	e,(ix+P.BASE)	; get task bank base
+	ld	d,0
+	ld	b,(ix+P.SIZE)	; get number of pages
+	ld	ix,($CTCB)
+	bit	TS.SUP,(ix+T.ST); check if task is in supervisor mode
+	ld	hl,USRMAP##	; normal-mode memory map
+	jr	z,sw3
+	ld	hl,PRVMAP##	; supervisor-mode memory map
+sw3:	call	(hl)		; setup user mode map
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	pop	af
+  ENDIF
+	di
+	ld	sp,(tmpsp)	; restore user stack
+	inc	sp		; discard operand code
+	inc	sp
+	retil
+
+tmpsp:	ds	2
+tmppc:	ds	2
+prvlvl:	ds	1
+
+;-----------------------------------------------------------------------
+
+SYSEND	equ	$		; system end, start of free kernel memory
+
+	end

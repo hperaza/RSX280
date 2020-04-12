@@ -1,0 +1,164 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Pool statistics display
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+
+	public	POOLST
+
+	extrn	VPUTC,VPUTS,VXY,VGETXY,VHLDEC,VRPAD
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Display pool statistics
+
+POOLST:	VGTOXY	0,3
+	ld	hl,pmsg
+	call	VPUTS
+
+	ld	hl,0
+	ld	(ptotal),hl	; clear all variables
+	ld	(plrgst),hl
+	ld	(pfrags),hl
+
+	ld	hl,($POOL)
+	xor	a
+	ld	(SYSLVL),a
+p1:	ld	a,h
+	or	l		; no (more) free blocks?
+	jr	z,p2		; return then
+	ldw	de,(hl)		; get link to next block into DE
+	inc	hl
+	inc	hl
+	ldw	bc,(hl)		; get free block size into BC
+	call	collect		; collect statistics
+	ex	de,hl
+	jr	p1		; process next block
+
+p2:	ld	a,1
+	ld	(SYSLVL),a
+	ld	hl,(plrgst)
+	ld	a,'0'
+	call	VHLDEC
+	ld	c,':'
+	call	VPUTC
+	ld	hl,(ptotal)
+	ld	a,'0'
+	call	VHLDEC
+	ld	c,':'
+	call	VPUTC
+	call	VGETXY
+	ld	d,a		; starting X coord in D
+	ld	hl,(pfrags)
+	xor	a
+	call	VHLDEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	5,4
+
+	call	lowest
+	ld	hl,(wlrgst)
+	ld	a,'0'
+	call	VHLDEC
+	ld	c,':'
+	call	VPUTC
+	ld	hl,(wtotal)
+	ld	a,'0'
+	call	VHLDEC
+	ld	c,':'
+	call	VPUTC
+	call	VGETXY
+	ld	d,a		; starting X coord in D
+	ld	hl,(wfrags)
+	xor	a
+	call	VHLDEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+	ret
+
+collect:
+	push	hl
+	ld	hl,(ptotal)
+	add	hl,bc
+	ld	(ptotal),hl
+	ld	hl,(plrgst)
+	cpw	hl,bc
+	jr	nc,c1
+	ld	(plrgst),bc
+c1:	ld	hl,(pfrags)
+	inc	hl
+	ld	(pfrags),hl
+	pop	hl
+	ret
+
+lowest:	ld	hl,init
+	ld	a,(hl)
+	ld	(hl),0
+	or	a
+	jr	z,lw0
+	ld	hl,(ptotal)	; first-time init, just copy values
+	ld	(wtotal),hl
+	ld	hl,(plrgst)
+	ld	(wlrgst),hl
+	ld	hl,(pfrags)
+	ld	(wfrags),hl
+	ret
+lw0:	ld	hl,(ptotal)
+	ld	bc,(wtotal)
+	cpw	hl,bc
+	jr	nc,lw1
+	ld	(wtotal),hl	; min total
+lw1:	ld	hl,(plrgst)
+	ld	bc,(wlrgst)
+	cpw	hl,bc
+	jr	nc,lw2
+	ld	(wlrgst),hl	; min largest
+lw2:	ld	hl,(wfrags)
+	ld	bc,(pfrags)
+	cpw	hl,bc
+	ret	nc
+	ld	(wfrags),bc	; max fragments
+	ret
+
+pmsg:	db	'POOL=',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+init:	db	1
+
+ptotal:	ds	2		; total available pool space
+plrgst:	ds	2		; largest fragment size
+pfrags:	ds	2		; number of fragmens
+
+wtotal:	ds	2		; worst
+wlrgst:	ds	2		;  case
+wfrags:	ds	2		;   statistics
+
+	end

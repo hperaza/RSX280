@@ -1,0 +1,55 @@
+	.Z80
+
+	public	FNORM,FNORMX
+
+	extrn	FR0,?FRX,ZFR0
+
+; Normalize number in FR0
+
+	cseg
+
+FNORM:	xor	a
+	ld	(?FRX),a	; clear extra mantissa byte @ ?FRX+0
+FNORMX:	ld	b,4		; up to four shifts
+	ld	hl,FR0		; check exponent
+	ld	a,(hl)
+	or	a		; zero?
+	ret	z		; if yes, return with CY clear
+dc1:	inc	hl
+	ld	a,(hl)		; check first byte of mantissa (FR0+1)
+	dec	hl
+	or	a		; zero?
+	jr	nz,dc2		; jump if not (normalized)
+	push	hl		; remeber FR0 address
+	push	bc
+	inc	hl
+	ld	e,l		; DE = FR0+1
+	ld	d,h
+	inc	hl		; HL = FR0+2
+	ld	bc,5		; 5+1 bytes (normalizing through ?FRX+0)
+	ldir			; shift mantissa left two decimal places
+	pop	bc
+	pop	hl		; restore FR0
+	dec	(hl)		; correct exponent accordingly
+	djnz	dc1		; continue looping until normalized
+				;  or max shifts reached
+	inc	hl
+	ld	a,(hl)		; check first byte of mantissa (FR0+1)
+	dec	hl		; point back to start
+	or	a		; zero?
+	jr	nz,dc2		; jump if not
+	ld	(hl),a		; otherwise we have a zero number -
+				;  clear exponent
+	ret			;   and return with CY clear
+
+dc2:	ld	a,(hl)		; get exponent
+	and	7Fh		; kill sign bit
+	cp	113		; > 113?
+	ccf
+	ret	c		; return with error if yes (overflow)
+	cp	15		; < 15?
+	call	c,ZFR0		; clear FR0 if yes (underflow)
+	or	a		; return with clear CY
+	ret
+
+	end

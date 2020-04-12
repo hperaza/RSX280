@@ -1,0 +1,818 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of VMR, an utility to configure the RSX180       ;
+;   system image. Copyright (C) 1985-2020, Hector Peraza.              ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   VMR - Virtual Memory routines                                      ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	FCB.INC
+	include	VMR.INC
+
+NBUFS	equ	4		; number of buffers
+
+; Buffer structure fields
+
+BNEXT	equ	0		; pointer to next buffer in list
+BLKNO	equ	BNEXT+2		; current block number
+BLEN	equ	BLKNO+2		; valid bytes in buffer
+BFLG	equ	BLEN+2		; flags (valid data, modified)
+BUF	equ	BFLG+1		; start of buffer
+BSIZE	equ	BUF+512		; structure size
+
+; Bit flag values
+
+BITV	equ	0		; valid
+BITM	equ	1		; modified
+
+	public	SYSOPN,SYSCLS,SYSBUF
+	public	SGETB,SPUTB,SGETW,SPUTW,SGETM,SPUTM
+	public	LDHLIX,LDBCIX,LDEIX2,LDDEHL,LDDEBC,LDBCHL,LDHLHL,LDABC
+	public	LDDEIY,STIYHL,STHLDE,STHLBC,STIXHL,SIXHL2,STIXBC
+
+	extrn	PFN,CPHLDE,ADDEXT
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Open system image file. Called with HL = filename.
+
+SYSOPN:	ld	ix,SYSFDB
+	call	PFN		; parse file name
+	ret	c
+	ld	de,SYSEXT
+	call	ADDEXT		; add .SYS extension if none specified
+	ld	de,(SYSFDB+F.DEV)
+	ld	a,(SYSFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNSYS
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.ACW ; note: exclusive (non-shared) mode
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,SYSFDB
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO		; open file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,IO.RAT
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,SYSFDB
+	ld	(qio2+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,qio2
+	SC	.QIO		; read attributes
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(SYSFDB+F.NUSED)
+	ld	(SBLKS),hl	; remember file size in blocks
+	call	INIBUF		; init disk buffers
+	xor	a
+	ret
+
+SYSEXT:	db	'SYS'
+
+; Close system image file
+
+SYSCLS:	ld	ix,(BUFHD)
+sc1:	bit	BITV,(ix+BFLG)	; buffer contains valid data?
+	jr	z,sc2		; skip if not
+	bit	BITM,(ix+BFLG)	; write pending?
+	jr	z,sc2		; skip if not
+	push	ix
+	pop	hl
+	ld	de,BUF
+	add	hl,de
+	ex	de,hl		; DE = buffer address
+	ld	l,(ix+BLKNO)	; HL = block number
+	ld	h,(ix+BLKNO+1)
+	ld	bc,512 ;(ix+BLEN)
+	call	WRSYS		; write changes
+	jr	c,sc3		; on error, exit loop
+sc2:	ld	l,(ix+BNEXT)
+	ld	h,(ix+BNEXT+1)
+	push	hl
+	pop	ix
+	ld	a,h
+	or	l
+	jr	nz,sc1		; loop until all buffers are flushed
+sc3:	push	af		; remember write error/success code
+	call	scls1		; close file
+	ld	c,a
+	pop	af
+	ret	c		; return error if write failed
+	ld	a,c
+	or	a
+	ret	z
+	scf			; return error if close failed
+	ret
+
+scls1:	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Initialize buffers
+
+INIBUF:	ld	hl,BUFS
+	ld	(BUFHD),hl	; set list head
+	push	hl
+	ld	bc,NBUFS*BSIZE
+	call	CLRMEM		; clear buffer memory
+	pop	de
+	ld	b,NBUFS
+	dec	b
+	ret	z		; return if only one buffer
+ini1:	ld	hl,BSIZE
+	add	hl,de
+	ex	de,hl
+	ld	(hl),e		; else chain them in a single-linked list
+	inc	hl
+	ld	(hl),d
+	djnz	ini1
+	ret
+
+; Clear memory. HL = starting address, BC = length
+
+CLRMEM:	ld	(hl),0
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ldir
+	ret
+
+; Load system image block, if not already loaded. Block number in DE.
+;
+; The most recently used buffer is always kept at the head of the list,
+; while old ones migrate to the tail.
+
+SLDBLK:	ld	hl,BUFHD
+	ld	c,(hl)		; get head of buffer list
+	inc	hl
+	ld	b,(hl)
+	dec	hl
+gt1:	push	bc
+	pop	ix
+	bit	BITV,(ix+BFLG)	; buffer contains valid data?
+	jr	z,gt2		; skip if not
+	ld	a,(ix+BLKNO)
+	cp	e		; same block number?
+	jr	nz,gt2		; skip if not
+	ld	a,(ix+BLKNO+1)
+	cp	d
+	jr	z,gt5		; else return it
+gt2:	ld	c,(ix+BNEXT)
+	ld	b,(ix+BNEXT+1)
+	ld	a,b
+	or	c		; last buffer in list?
+	jr	z,gt3		; exit loop if yes to reallocate it
+	push	ix
+	pop	hl
+	jr	gt1		; else loop to process next buffer
+
+gt3:	push	hl
+	push	de
+
+	push	ix
+	pop	hl
+	ld	de,BUF
+	add	hl,de
+	ld	(SYSBUF),hl	; cache I/O buffer address
+
+	bit	BITV,(ix+BFLG)	; buffer contains valid data?
+	jr	z,gt4		; branch if not - use it right away
+	bit	BITM,(ix+BFLG)	; block modified?
+	jr	z,gt4		; branch if not
+
+	ex	de,hl		; DE = buffer address
+	ld	l,(ix+BLKNO)	; HL = old block number
+	ld	h,(ix+BLKNO+1)
+	ld	bc,512 ;(ix+BLEN)
+	call	WRSYS		; write changes back to disk
+	;jr	c,...
+
+gt4:	pop	de
+	ld	(ix+BLKNO),e	; assign new block number to buffer
+	ld	(ix+BLKNO+1),d
+
+	ld	hl,(SYSBUF)
+	ex	de,hl		; DE = buffer address, HL = new block number
+	call	ZFILL		; zero-fill any block gaps in system file
+	;jr	c,...
+	call	RDSYS		; load new contents
+	;jr	c,...
+	ld	(ix+BLEN),l	; remember length
+	ld	(ix+BLEN+1),h
+	call	PADBUF		; pad with zeros to erase any garbage left
+	pop	hl
+
+	set	BITV,(ix+BFLG)	; set valid bit
+	res	BITM,(ix+BFLG)	; clear modified bit
+
+gt5:	ld	a,(ix+BNEXT)	; unlink the buffer
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+BNEXT+1)
+	ld	(hl),a
+
+	ld	hl,(BUFHD)	; and move it to head of list
+	ld	(ix+BNEXT),l
+	ld	(ix+BNEXT+1),h
+	ld	(BUFHD),ix
+
+	push	ix
+	pop	hl
+	ld	bc,BUF
+	add	hl,bc
+	ld	(SYSBUF),hl	; set disk buffer pointer
+	ret
+
+PADBUF:	ex	de,hl		; get length into DE
+	ld	hl,512
+	or	a
+	sbc	hl,de		; full block read?
+	ret	z		; return if yes
+	ld	c,l		; else get difference into BC
+	ld	b,h
+	ld	hl,(SYSBUF)
+	add	hl,de		; index into buffer
+	xor	a
+	ld	(hl),a
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ldir			; clear remaining of buffer
+	ret
+
+; Get absolute address in DHL from relative address HL and bank E.
+
+;       hhhh hhhh llll llll
+;  eeee eeee
+;  ------------------------
+;  bbbb bbbb bbb
+;               o oooo oooo
+
+ABSADR:	xor	a
+	sla	e
+	rla
+	sla	e
+	rla
+	sla	e
+	rla
+	sla	e
+	rla
+	ld	d,a
+	ld	a,e
+	add	a,h
+	ld	h,a
+	ret	nc
+	inc	d
+	ret
+
+; Get block number and offset within block from absolute address in DHL.
+; Returns DE = block number, HL = offset.
+
+BLKADR:	ld	e,h
+	srl	d
+	rr	e		; block number in DE
+	ld	a,h
+	and	01h
+	ld	h,a		; offset in HL
+	ret
+
+; Read 512-byte block from system image file, return actual number of
+; bytes read in HL. Called with HL = block number, DE = buffer address.
+
+RDSYS:	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BUF),de
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO
+	ld	hl,0
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	or	a
+	ret
+
+; Write (possibly partial) 512-byte block to system image file.
+; Called with HL = block number, DE = buffer address, BC = bytes to write.
+
+WRSYS:	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BUF),de
+	ld	(qio2+Q.LEN),bc
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.WVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	or	a
+	ret
+
+; Zero-fill any block gaps. We need this since the bootloader does not
+; support loading a system image file with "holes".
+; Called with HL = block number.
+
+ZFILL:	push	de
+	inc	hl
+	ld	de,(SBLKS)
+	call	CPHLDE		; CY if blkno > SBLKS
+	dec	hl
+	pop	de
+	ret	nc
+	push	hl
+	push	de
+	push	bc
+	ld	hl,0
+	call	PADBUF
+	ld	hl,(SBLKS)
+	inc	hl
+	ld	(SBLKS),hl
+	dec	hl
+	ld	de,(SYSBUF)
+	ld	bc,512
+	call	WRSYS
+	pop	bc
+	pop	de
+	pop	hl
+	jr	nc,ZFILL
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get byte from system image file. HL = address, E = bank.
+
+SGETB:	push	ix
+	push	hl
+	push	de
+	push	bc
+	call	ABSADR		; compute absolute address
+	call	BLKADR		; compute block and offset
+	push	hl
+	call	SLDBLK		; load block
+	pop	hl
+	ld	de,(SYSBUF)
+	add	hl,de		; index into block
+	ld	a,(hl)		; fetch value
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+; Store byte into system image file. HL = address, E = bank, A = byte.
+
+SPUTB:	push	ix
+	push	hl
+	push	de
+	push	bc
+	push	af
+	call	ABSADR		; compute absolute address
+	call	BLKADR		; compute block and offset
+	push	hl
+	call	SLDBLK		; load block
+	pop	hl
+	ld	de,(SYSBUF)
+	add	hl,de		; index into block
+	pop	af
+	ld	(hl),a		; store value
+	set	BITM,(ix+BFLG)
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+; Get word from system image file into BC. HL = address, E = bank.
+
+SGETW:	call	SGETB
+	ld	c,a
+	inc	hl
+	call	SGETB
+	ld	b,a
+	inc	hl
+	ret
+
+; Store word in BC to system image. HL = address, E = bank.
+
+SPUTW:	ld	a,c
+	call	SPUTB
+	inc	hl
+	ld	a,b
+	call	SPUTB
+	inc	hl
+	ret
+
+; Get memory block from system image file.
+; HL = system src address, DE = local dst address, BC = length, A = bank
+
+SGETM:	call	CHKLEN		; safety check
+	ret	z
+	push	ix
+	push	hl
+	add	hl,bc
+	ex	(sp),hl		; push end src address for caller rotuine
+	push	bc		; push length
+	push	de		; push dst address
+	ld	e,a		; get bank into E
+	call	ABSADR		; compute absolute address
+	call	BLKADR		; compute block and offset
+sg1:	push	hl
+	push	bc
+	call	SLDBLK		; load block
+	pop	bc
+	pop	hl
+	push	hl
+	add	hl,bc
+	ld	de,512
+	call	CPHLDE		; offset + length <= 512?
+	pop	hl
+	jr	nc,sg2		; branch if yes (all data in current block)
+	ex	de,hl		; move offset to DE
+	ld	hl,512
+	or	a
+	sbc	hl,de		; bytes remaining on this block
+	ld	c,l
+	ld	b,h
+	ld	hl,(SYSBUF)
+	add	hl,de		; src address in HL
+	pop	de		; pop dst address
+	push	bc		; push diff
+	ldir			; copy what's on this block
+	pop	bc		; pop diff
+	pop	hl		; pop length
+	or	a
+	sbc	hl,bc		; remaining length
+	push	hl		; push it back
+	ld	c,l		; copy it to BC
+	ld	b,h
+	push	de		; push dst address
+	ld	e,(ix+BLKNO)
+	ld	d,(ix+BLKNO+1)
+	inc	de		; next block
+	ld	hl,0		; offset for next block
+	jr	sg1
+sg2:	ld	de,(SYSBUF)
+	add	hl,de		; index into block
+	pop	de		; pop dst address
+	pop	bc		; pop length
+	ldir
+	pop	hl
+	pop	ix
+	ret
+
+CHKLEN:	inc	b
+	dec	b
+	ret	nz
+	inc	c
+	dec	c
+	ret
+
+; Store memory block into system image file.
+; HL = local src address, DE = system dst address, BC = length, A = bank
+
+SPUTM:	call	CHKLEN		; safety check
+	ret	z
+	push	ix
+	ex	de,hl
+	push	hl
+	add	hl,bc
+	ex	(sp),hl		; push end dst address for caller rotuine
+	push	bc		; push length
+	push	de		; push src address
+	ld	e,a		; get bank into E
+	call	ABSADR		; compute absolute address
+	call	BLKADR		; compute block and offset
+sp1:	push	hl
+	push	bc
+	call	SLDBLK		; load block
+	pop	bc
+	pop	hl
+	push	hl
+	add	hl,bc
+	ld	de,512
+	call	CPHLDE		; offset + length <= 512?
+	pop	hl
+	jr	nc,sp2		; branch if yes (all data in current block)
+	ex	de,hl
+	ld	hl,512
+	or	a
+	sbc	hl,de		; bytes remaining on this block
+	ld	c,l
+	ld	b,h
+	ld	hl,(SYSBUF)
+	add	hl,de
+	ex	de,hl		; dst address in HL
+	pop	hl		; pop src address
+	push	bc		; push diff
+	ldir			; copy what's on this block
+	set	BITM,(ix+BFLG)	; set modified flag
+	ex	de,hl
+	pop	bc		; pop diff
+	pop	hl		; pop length
+	or	a
+	sbc	hl,bc		; remaining length
+	push	hl		; push it back
+	ld	c,l		; copy it to BC
+	ld	b,h
+	push	de		; push src address
+	ld	e,(ix+BLKNO)
+	ld	d,(ix+BLKNO+1)
+	inc	de		; next block
+	ld	hl,0		; offset for next block
+	jr	sp1
+sp2:	ld	de,(SYSBUF)
+	add	hl,de		; index into block
+	ex	de,hl
+	pop	hl		; pop src address
+	pop	bc		; pop length
+	ldir
+	set	BITM,(ix+BFLG)	; set modified flag
+	pop	de
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convenience memory access routines:
+
+; Load HL from value in system image pointed to by IX
+
+LDHLIX:	push	ix
+	pop	hl
+	push	de
+	ld	e,0		; system bank
+	call	SGETB
+	ld	d,a
+	inc	hl
+	call	SGETB
+	ld	l,d
+	ld	h,a
+	pop	de
+	ret
+
+; Load BC from value in system image pointed to by IX
+
+LDBCIX:	push	hl
+	push	de
+	push	ix
+	pop	hl
+	ld	e,0		; system bank
+	call	SGETB
+	ld	c,a
+	inc	hl
+	call	SGETB
+	ld	b,a
+	pop	de
+	pop	hl
+	ret
+
+; Load DE from value in system image pointed to by IX+2
+
+LDEIX2:	push	hl
+	push	ix
+	pop	hl
+	inc	hl
+	inc	hl
+	ld	e,0		; system bank
+	call	SGETB
+	ld	d,a
+	inc	hl
+	call	SGETB
+	ld	e,d
+	ld	d,a
+	pop	hl
+	ret
+
+; Load DE from value in system image pointed to by IY
+
+LDDEIY:	push	hl
+	push	iy
+	pop	hl
+	ld	e,0		; system bank
+	call	SGETB
+	ld	d,a
+	inc	hl
+	call	SGETB
+	ld	e,d
+	ld	d,a
+	pop	hl
+	ret
+
+; Load DE from value in system image pointed to by HL
+
+LDDEHL:	ld	e,0		; system bank
+	call	SGETB
+	ld	d,a
+	inc	hl
+	call	SGETB
+	ld	e,d
+	ld	d,a
+	inc	hl
+	ret
+
+; Load HL from value in system image pointed to by HL
+
+LDHLHL:	push	de
+	ld	e,0		; system bank
+	call	SGETB
+	ld	d,a
+	inc	hl
+	call	SGETB
+	ld	l,d
+	ld	h,a
+	pop	de
+	ret
+
+; Load A from value in system image pointed to by BC
+
+LDABC:	push	hl
+	push	de
+	ld	l,c
+	ld	h,b
+	ld	e,0		; systame bank
+	call	SGETB
+	inc	bc
+	pop	de
+	pop	hl
+	ret
+
+; Load DE from value in system image pointed to by BC
+
+LDDEBC:	push	hl
+	ld	l,c
+	ld	h,b
+	call	LDDEHL
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ret
+
+; Load BC from value in system image pointed to by HL
+
+LDBCHL:	push	de
+	ld	e,0		; system bank
+	call	SGETB
+	ld	c,a
+	inc	hl
+	call	SGETB
+	ld	b,a
+	inc	hl
+	pop	de
+	ret
+
+; Store DE in system image at address HL
+
+STHLDE:	push	de
+	ld	a,e
+	ld	e,0
+	call	SPUTB
+	inc	hl
+	ld	a,d
+	call	SPUTB
+	inc	hl
+	pop	de
+	ret
+
+; Store BC in system image at address HL
+
+STHLBC:	push	de
+	ld	a,c
+	ld	e,0
+	call	SPUTB
+	inc	hl
+	ld	a,b
+	call	SPUTB
+	inc	hl
+	pop	de
+	ret
+
+; Store HL in system image at address IX
+
+STIXHL:	push	hl
+	push	bc
+	ld	c,l
+	ld	b,h
+	push	ix
+	pop	hl
+	call	STHLBC
+	pop	bc
+	pop	hl
+	ret
+
+; Store HL in system image at address IX+2
+
+SIXHL2:	push	hl
+	push	bc
+	ld	c,l
+	ld	b,h
+	push	ix
+	pop	hl
+	inc	hl
+	inc	hl
+	call	STHLBC
+	pop	bc
+	pop	hl
+	ret
+
+; Store BC in system image at address IX
+
+STIXBC:	push	hl
+	push	ix
+	pop	hl
+	call	STHLBC
+	pop	hl
+	ret
+
+; Store HL in system image at address IY
+
+STIYHL:	push	hl
+	push	bc
+	ld	c,l
+	ld	b,h
+	push	iy
+	pop	hl
+	call	STHLBC
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+SYSFDB:	ds	FINFSZ
+SBLKS:	ds	2		; system image size in blocks
+
+BUFHD:	ds	2		; pointer to head of buffer list
+BUFS:	ds	NBUFS*BSIZE	; buffer space
+
+SYSBUF:	ds	2		; cached current block buffer address
+
+qio1:	QIOW$	IO.ACC,LUNSYS,EIO,iosb,,<SYSFDB>
+qio2:	QIOW$	IO.RVB,LUNSYS,EIO,iosb,,<,,,,>
+iosb:	ds	4
+
+	end

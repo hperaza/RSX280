@@ -1,0 +1,239 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('MMU')
+	TITLE	'RSX280 Task Memory Management'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	MMU initialization routines.                                   ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	ERRORS.INC
+
+	public	MMUINI		; initialize MMU
+	public	USRMAP		; setup MMU for non-privileged task
+	public	PRVMAP		; setup MMU for privileged task
+	public	INTMAP		; setup MMU for driver interrupt
+	public	MSIZE		; compute total amount of system memory
+	public	CLRMEM		; clear local block of memory
+
+	extrn	$MEMSZ,$SBANK,$UBANK
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; This routine is called with either the MMU disabled, or with the
+; MMU in system mode. In the last case the MMU translation is assumed
+; to be linear.
+
+MMUINI:	pop	ix		; pop ret addr, as we may invalidate the stack
+
+	iopage	MMUP		; select MMU I/O page
+
+	ld	a,16
+	out	(PDR),a		; select system PDR 0 for opertaions below
+
+	ld	c,MMCR
+	inw	hl,(c)		; read MMU Master Control Register
+	bit	3,h		; system translate enabled?
+	ld	hl,0		; if not, default starting system page is 0
+	jr	z,m1		; branch if still in Z80 mode
+
+	ld	c,DSP
+	inw	hl,(c)		; read system PDR 0
+
+m1:	push	hl
+	ld	de,0
+	divuw	dehl,4
+	ld	($SBANK),hl	; remember base of system bank
+	pop	hl
+
+	ld	a,l
+	and	0Fh
+	or	0Ah		; valid, writable, cacheable
+	ld	l,a
+	ld	c,BMP		; MMU Block Move Port
+	ld	de,0010h	; one-page increment
+	ld	b,16		; 16 PDRs to set
+m2:	outw	(c),hl		; setup system PDRs 0..15
+	add	hl,de
+	djnz	m2
+
+	ld	c,TCR
+	ld	hl,0
+	ldctl	(c),hl		; inhibit user I/O, EPU and stack ovfl warning
+
+	ld	hl,8800h	; enable user and system address translate
+	ld	c,MMCR
+	outw	(c),hl
+
+	jp	(ix)		; return
+
+;-----------------------------------------------------------------------
+
+; Set user-mode non-privileged task MMU mapping.
+; Called with DE = start page, B = num pages
+
+USRMAP:	ld	c,IOP
+	ldctl	hl,(c)
+	push	hl
+	ld	l,MMUP		; select MMU I/O page
+	ldctl	(c),hl
+
+	ld	a,0Ch
+	out	(IP),a		; invalidate all user pages
+
+	ex	de,hl
+	add	hl,hl		; get bits into position
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	set	3,l		; valid
+	set	1,l		; cacheable
+
+	xor	a
+	out	(PDR),a		; select user page 0
+
+	ld	c,BMP		; MMU Block Move Port
+	ld	a,10h		; one-page increment
+um1:	outw	(c),hl		; setup user PDRs 0..(B)
+	add	hl,a		; no 'outjmp' fix necessary for internal
+	djnz	um1		;  I/O accesses
+
+	pop	hl
+	ld	c,IOP
+	ldctl	(c),hl
+	ret
+
+; Set privileged-mode MMU mapping.
+; TODO: run privileged task in system mode?
+
+PRVMAP:	call	USRMAP		; also selects MMU I/O page
+	push	hl		; push orig I/O page (see USRMAP)
+	ld	hl,MMUP
+	ldctl	(c),hl		; C still equals IOP
+
+	ld	hl,($SBANK)	; TODO: do this with otirw
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,40h		; start of SYSDAT
+	add	hl,a
+	set	3,l		; valid
+	set	1,l		; cacheable
+
+	ld	a,4
+	out	(PDR),a		; select user page 4
+
+	ld	c,BMP		; MMU Block Move Port
+	ld	a,10h		; one-page increment
+	ld	b,12
+pm1:	outw	(c),hl		; setup user PDRs 4..15
+	add	hl,a		; no 'outjmp' fix necessary for internal
+	djnz	pm1		;  I/O accesses
+
+	pop	hl
+	ld	c,IOP
+	ldctl	(c),hl
+	ret
+
+; Set interrupt-mode MMU mapping.
+; TODO: run privileged task in system mode?
+
+INTMAP:	ld	c,IOP
+	ldctl	hl,(c)
+	push	hl
+	ld	l,MMUP		; select MMU I/O page
+	ldctl	(c),hl
+
+	ex	de,hl
+	add	hl,hl		; TODO: save in the int stub the ready
+	add	hl,hl		;  PDR value
+	add	hl,hl
+	add	hl,hl
+	ld	a,16		; note: using system-mode mapping
+	ld	(PDR),a
+	ld	b,4
+	call	im0
+
+	ld	hl,($SBANK)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,40h		; start of SYSDAT
+	add	hl,a
+	set	3,l		; valid
+	set	1,l		; cacheable
+	ld	b,12
+
+im0:	ld	c,BMP		; MMU Block Move Port
+	ld	a,10h		; one-page increment
+im1:	outw	(c),hl		; setup system PDRs 0..15
+	add	hl,a		; no 'outjmp' fix necessary for internal
+	djnz	im1		;  I/O accesses
+
+	pop	hl
+	ld	c,IOP
+	ldctl	(c),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Calculate the total amount of memory on the Z280RC board.
+
+MSIZE:
+  if 0
+	in0	a,(RAMUBR)	; upper RAM bound
+	add	a,1		; to 1st invalid page (set CY)
+	rra			; scale and keep CY
+	in0	l,(RAMLBR)	; lower bound
+	srl	l		; scale similarly
+	sub	l		; available RAM / 8
+	ld	l,a
+	ld	h,8
+	mlt	hl		; HL = size * 1kB
+  else
+	ld	hl,1024
+  endif
+	ld	($MEMSZ),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Clear local block of memory. HL = address, BC = size.
+
+CLRMEM:	ld	(hl),0
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,CLRMEM
+	ret
+
+	end

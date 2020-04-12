@@ -1,0 +1,947 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command INS for RSX280.                               ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	'01.09'
+
+	cseg
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	LCB.INC
+	include	THDR.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	extrn	PFN,PDN,PERROR,CRLF,UCASE,PUTCH,PUTSTR,TTFLSH,GCCL
+	extrn	CPHLDE
+
+; INS <filename>[/INC=nnnn][/RUN[=REM]][/CLI=YES][/PRI=<n>][/TASK=<name>]
+;               [/PAR=<name>][/TERM=<ttn>][/ACP=YES][/CKP=NO]
+
+; When invoking without a command tail, INS does not give a INS> prompt,
+; neither it accepts an indirect command file. In both cases it produces
+; a 'INS -- Syntax error' message.
+
+; INS is a privileged task that maps onto the kernel and calls kernel
+; routines. It also modifies the STD directly.
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack	; do not use the default stack set up
+				; by the task manager
+	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	call	GCCL		; get MCR command line
+	ex	de,hl
+	call	skpnam
+	ex	de,hl
+	ld	(lnptr),hl
+	call	doins
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'INS -- message'
+
+CMDERR:	ld	hl,snerr
+	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'INS -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get task name (9 chars) into cmdnam, padding with blanks if neccessary.
+
+getn9:	call	getcmd
+	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+isblnk:	call	iseol
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getns:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getns
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	jr	z,getns		; return via getns
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	call	iseol
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Read a decimal number from input line into HL
+; Returns CY if the number contains invalid chars or if overflow.
+
+GETDEC:	ld	de,(lnptr)
+	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	jr	z,endnum	; note no CY
+	sub	'0'
+	jr	c,endnum	; note CY
+	cp	10
+	ccf
+	jr	c,endnum	; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+endnum:	ld	(lnptr),de
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+fndcmd:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+; Add extension @DE to FDB @IX if none was originally specified.
+
+addext:	ld	a,(ix+F.ATTR)
+	and	FN.EXT		; extension present?
+	ret	nz		; return if yes
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc		; point to extension field in FDB
+	ex	de,hl
+	ld	bc,3
+	ldir			; copy extension
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT		; set flag
+	ld	(ix+F.ATTR),a
+	ret
+
+;-----------------------------------------------------------------------
+
+doins:	xor	a
+	ld	(runflg),a	; clear run flag
+	ld	(remflg),a	; clear remove-on-exit flag
+	ld	hl,(lnptr)
+	ld	ix,fdb
+	call	PFN		; get task file name into FDB
+	ld	(lnptr),hl
+	ld	de,tskext
+	call	addext		; add TSK extension if necessary
+	ld	a,(ix+F.ATTR)
+	ld	c,a
+	and	FN.NAME		; file name specified?
+	jp	z,CMDERR	; error if not
+
+	ld	hl,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	(ldev),hl	; save the original load device, as the one
+	ld	(ldev+2),a	;  in fdb will be overwritten by an IO.RAT call
+
+	ld	de,fdb+F.NAME
+	ld	hl,cmdbuf
+	ld	b,9
+cpnam:	ld	a,(de)
+	cp	' '
+	jr	z,done
+	ld	(hl),a		; copy file name to command line buffer
+	inc	hl
+	inc	de
+	djnz	cpnam
+done:	ld	(hl),0
+	ld	(cmdptr),hl
+
+	ld	ix,tcbbuf
+
+	xor	a
+	ld	(ix+T.NAME),a	; name defaults to task name
+	ld	(pname),a	; use partition from task header
+
+	xor	a
+	ld	(ix+T.ATTR),a	; clear all attributes
+	ld	(ix+T.ST),a	; clear status bits
+	ld	(ix+T.ST+1),a
+	ld	(ix+T.PRI),a	; no priority override
+
+	ld	hl,(gtkbuf+GT.TI)
+	ld	a,(gtkbuf+GT.TI+2)
+	ld	(tidev),hl	; default console
+	ld	(tidev+2),a	;  is user's console
+
+	xor	a
+	ld	(ix+T.END),a	; no increment by default
+	ld	(ix+T.END+1),a
+
+ckopt:	ld	de,(lnptr)	; check remainder of command line
+	call	getns		; skip any spaces
+	call	iseol		; end of command?
+	jp	z,strtsk	; then install and possibly start task
+	cp	'/'		; else check for option switch
+	jp	nz,CMDERR	; error if not a switch
+	inc	de		; skip switch delimiter
+	ld	(lnptr),de	; save command pointer
+	call	getcmd		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; not allowed
+	ld	hl,optbl
+	call	fndcmd		; else search for switch in option table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,CMDERR	; error if no match
+	ld	c,a		; save switch index in reg C
+	dec	c
+	jp	z,setrun	; set run flag
+	call	chkeq		; '=' required for all except RUN
+	jp	nz,CMDERR
+	dec	c
+	jp	z,defpar	; set task partition
+	dec	c
+	jp	z,defpri	; set task priority
+	dec	c
+	jp	z,defcon	; set task console
+	dec	c
+	jp	z,definc	; set increment
+	dec	c
+	jp	z,defnam	; set name
+	dec	c
+	jp	z,setckp
+	dec	c
+	jp	z,setcli
+	dec	c
+	jp	z,setacp
+	dec	c
+	jp	z,defcmd	; set command args, must be the last option
+	jp	CMDERR
+
+optbl:	db	'RUN',0
+	db	'PAR',0
+	db	'PRI',0
+	db	'TERM',0
+	db	'INC',0
+	db	'TASK',0
+	db	'CKP',0
+	db	'CLI',0
+	db	'ACP',0
+	db	'CMD',0
+null:	db	0
+
+argtbl:	db	'REM',0
+	db	'YES',0
+	db	'NO',0
+	db	0
+
+; process RUN switch
+
+setrun:	ld	a,1
+	ld	(runflg),a
+	ld	a,(gtkbuf+GT.ATTR)
+	and	1 SHL TA.MCR
+	ld	c,a
+	ld	a,(ix+T.ATTR)
+	or	c		; propagate TA.MCR attribute
+	ld	(ix+T.ATTR),a
+	call	chkeq		; see if '='
+	jp	nz,ckopt
+	call	getcmd
+	ld	hl,argtbl
+	call	fndcmd
+	dec	a		; only 'REM' accepted
+	jp	nz,CMDERR
+	ld	a,1
+	ld	(remflg),a
+	jp	ckopt
+
+; process PRI switch
+
+defpri:	call	GETDEC
+	jp	c,CMDERR
+	ld	a,h
+	or	a
+	jp	nz,CMDERR
+	ld	(ix+T.PRI),l	; set task priority
+	jp	ckopt
+
+; process TERM switch
+
+defcon:	call	PDN
+	jp	c,CMDERR
+	ld	(tidev),de	; set console device
+	ld	a,c
+	ld	(tidev+2),a
+	ld	(lnptr),hl
+	jp	ckopt
+
+; process INC switch
+
+definc:	call	GETDEC
+	jp	c,CMDERR
+	ldw	(ix+T.END),hl
+	jp	ckopt
+
+; process TASK switch
+
+defnam:	ex	de,hl
+	ld	hl,tcbbuf+T.NAME ; form task name
+dn0:	ld	b,6
+dn1:	call	getfs
+	jr	z,dn2
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	dn1
+	jr	dn3
+dn2:	ld	(hl),' '
+	inc	hl
+	djnz	dn2
+dn3:	ex	de,hl
+	ld	(lnptr),hl
+	jp	ckopt
+
+; process PAR switch
+
+defpar:	ex	de,hl
+	ld	hl,pname
+	jr	dn0		; continue via common code
+
+; process CKP switch
+
+setckp:	call	getcmd
+	ld	hl,argtbl
+	call	fndcmd
+	dec	a
+	jp	z,CMDERR	; only 'YES' and 'NO' are accepted
+	dec	a
+	jr	z,ckp1
+	dec	a
+	jp	nz,CMDERR
+	set	TA.CKD,(ix+T.ATTR)
+	jp	ckopt
+ckp1:	;;res	TA.CKD,(ix+T.ATTR)
+	jp	ckopt
+
+; process CLI switch
+
+setcli:	call	getcmd
+	ld	hl,argtbl
+	call	fndcmd
+	dec	a
+	dec	a		; only 'YES' accepted
+	jp	nz,CMDERR
+	set	TA.CLI,(ix+T.ATTR)
+	jp	ckopt
+
+; process ACP switch
+
+setacp:	call	getcmd
+	ld	hl,argtbl
+	call	fndcmd
+	dec	a
+	dec	a		; only 'YES' accepted
+	jp	nz,CMDERR
+	set	TA.ACP,(ix+T.ATTR)
+	jp	ckopt
+
+; process CMD option
+
+defcmd:	ld	a,(runflg)	; CMD is illegal option without RUN
+	or	a
+	jp	z,CMDERR
+	ex	de,hl
+	ld	hl,(cmdptr)
+	ld	(hl),' '
+	inc	hl
+	call	cpstr		; consumes everything until end of line
+	ld	(hl),0
+	ld	(cmdptr),hl
+	ex	de,hl
+
+	IF	0
+dc0:	ld	a,(hl)
+	or	a
+	jr	z,dc1
+	inc	hl		; skip everything until end of line
+	jr	dc0
+dc1:
+	ENDIF
+
+	ld	(lnptr),hl
+	jp	ckopt
+
+chkeq:	ld	hl,(lnptr)
+	ld	a,(hl)
+	cp	'='
+	ret	nz
+	inc	hl
+	ld	(lnptr),hl
+	ret
+
+; finally, execute the specified action
+
+strtsk:	ld	a,(remflg)
+	or	a
+	jr	z,run1
+	set	TA.REM,(ix+T.ATTR) ; set remove-on-exit attribute
+run1:	call	INS		; install task, sets/updates T.NAME in tcbbuf
+	jp	c,SYSERR
+	ld	a,(runflg)
+	or	a
+	ret	z
+	ld	hl,tcbbuf+T.NAME
+	ld	de,runtdb+TD.NAME
+	ld	bc,6
+	ldir
+	ld	hl,tidev
+	ld	de,runtdb+TD.TI
+	ld	bc,3
+	ldir
+	ld	hl,0
+	ld	(runtdb+TD.SDAT),hl
+	ld	(runtdb+TD.SLEN),hl
+	ld	hl,cmdbuf
+	call	setcml
+	ld	hl,runtdb
+	SC	.RPOI
+	jp	c,SYSERR
+	ret
+
+tskext:	db	'TSK'
+
+;-----------------------------------------------------------------------
+
+; Setup task command line. HL = address of command tail.
+
+setcml:	push	hl
+	call	strlen
+	ld	hl,0
+	ld	(runtdb+TD.CMD),hl
+	ld	(runtdb+TD.CML),hl
+	pop	hl
+	ld	a,c
+	or	a
+	ret	z		; no command supplied
+	ld	b,0
+	inc	bc		; count the trailing CR
+	ld	(runtdb+TD.CML),bc
+	dec	bc
+	ld	de,tskcml
+	ld	(runtdb+TD.CMD),de
+	ldir
+	ld	a,CR
+	ld	(de),a
+	ret
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+;-----------------------------------------------------------------------
+
+; Install task (add it to the STD)
+; Input:
+;   Parsed filename in 'fdb' buffer.
+;   Partition name in 'pname' buffer.
+;   Template TCB in local memory with the following fields set:
+;     - Task name
+;     - Priority
+;     - If T.END is not zero, it's value will be used to increment
+;       task size.
+; Returns:
+;   CY set on error and error code in A.
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+INS:	call	RDHDR		; read and validate task header
+	ret	c		; on error return
+
+	ld	de,(hdr+TH.END)	; get top address
+	ld	ix,tcbbuf
+	ldw	hl,(ix+T.END)	; check for user INC option
+	ld	a,h
+	or	l
+	jr	nz,useinc	; use it if specified
+	ld	hl,(hdr+TH.INC)	; else use the value from task header
+useinc:	add	hl,de
+	ld	a,E.PBIG
+	ret	c		; increment too large
+	ld	de,0EFFFh
+	call	CPHLDE
+	ld	a,E.PBIG
+	ret	c		; program extends above common area
+
+	push	hl		; remember task top
+
+	ld	a,(ix+T.NAME)
+	or	a		; user supplied a name?
+	jr	z,dfnam
+	cp	' '
+	jr	nz,usenam	; use it if yes
+dfnam:	push	ix
+	pop	hl
+	ld	de,T.NAME
+	add	hl,de
+	ex	de,hl
+	ld	hl,hdr+TH.NAME	; else use default task name from task header
+	ld	bc,6
+	ldir
+
+usenam:	ld	a,(pname)
+	or	a		; user supplied a partition name?
+	jr	z,dfpar
+	cp	' '
+	jr	nz,usepar	; use it if yes
+dfpar:	ld	hl,hdr+TH.PAR	; else use default partition from task header
+	ld	de,pname
+	ld	bc,6
+	ldir
+
+usepar:	push	ix
+	pop	hl
+	ld	de,T.VID
+	add	hl,de
+	ex	de,hl
+	ld	hl,hdr+TH.VID
+	ld	bc,6
+	ldir			; setup version identification
+
+	ld	a,(ix+T.PRI)
+	or	a		; user supplied a priority value?
+	jr	nz,usepri	; use it if yes
+	ld	a,(hdr+TH.PRI)	; else set default priority from task header
+	ld	(ix+T.PRI),a
+usepri:	ld	(ix+T.DPRI),a
+
+	res	TA.PRV,(ix+T.ATTR) ; ignore user priv bit
+	ld	a,(hdr+TH.ATTR)	; get task attributes from header
+	res	TA.REM,a	; reset the irrelevant bits
+	res	TA.AST,a
+	res	TA.FIX,a
+	res	TA.MCR,a
+	or	(ix+T.ATTR)	; merge with user bits
+	ld	(ix+T.ATTR),a	; set task attributes in TCB
+
+	ld	hl,0
+	ldw	(ix+T.CPCB),hl	; clear checkpoint PCB address
+
+	ld	hl,(fdb+F.BMAP)
+	ldw	(ix+T.SBLK),hl	; set starting block number
+	ld	a,(fdb+F.BMAP+2)
+	ld	(ix+T.SBLK+2),a
+	xor	a
+	ld	(ix+T.SBLK+3),a
+
+	pop	hl		; get saved task top
+	push	hl
+	ld	de,512		; conv to size (+1) and round to blk boundary
+	add	hl,de
+	rr	h
+	rr	l
+	ld	l,h
+	ld	h,0		; /512 = size in blocks
+	ld	de,(fdb+F.NUSED)
+	call	CPHLDE
+	jr	c,fs1		; use F.NUSED if smaller
+	ex	de,hl		; else don't load extra stuff such as overlays
+fs1:	ldw	(ix+T.NBLK),de	; set number of blocks
+
+	ld	hl,(hdr+TH.STRT)
+	ldw	(ix+T.STRT),hl	; task space starts at 0000h
+	ld	hl,100h
+	ldw	(ix+T.EPT),hl	; entry point is at 0100h
+	pop	hl		; pop saved task top
+	ldw	(ix+T.END),hl	; set top of task space
+	ldw	(ix+T.DEND),hl
+	inc	hl
+	ldw	(ix+T.SP),hl	; set stack to top of task memory
+
+	call	CHKPRV		; user privileged?
+	jr	nc,upriv	; branch if yes
+
+	bit	TA.REM,(ix+T.ATTR) ; remove-on-exit task?
+	scf
+	ret	z		   ; return E.PRIV if not
+	bit	TA.PRV,(ix+T.ATTR) ; installing privileged task?
+	scf
+	ret	nz		   ; return E.PRIV if yes
+	ld	(ix+T.PRI),50	   ; else limit priority to 50
+
+upriv:	ld	c,1
+	SC	.SUPER
+	ret	c
+	xor	a
+	ld	(SYSLVL),a	; disable task switching
+	ld	de,(ldev)
+	ld	a,(ldev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find load device
+	jr	c,ins1		; error if not found
+	ld	(tcbbuf+T.LDEV),hl
+	ld	hl,tcbbuf+T.NAME
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNTSK		; find task by name
+	ld	a,E.TNU
+	ccf
+	jr	c,ins1		; error if found - task name in use
+	ld	hl,pname
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNPAR		; find partition
+	jr	c,ins1		; error if not found
+
+	;TODO: check partition size, give an error if size is too small.
+
+	ld	(tcbbuf+T.PCB),hl ; set PCB address
+	ld	bc,TCBSZ
+	KCALL	$ALLOC		; allocate new TCB
+	jr	c,ins1
+	push	hl
+	pop	ix		; get TCB address into IX for $LKTCB call
+	ex	de,hl
+	ld	hl,tcbbuf
+	ld	bc,TCBSZ
+	ldir			; copy TCB
+	ld	iy,$TLIST
+	ld	bc,T.TCBL
+	KCALL	$LKTCB		; enter the task into the STD
+	xor	a
+ins1:	push	af
+	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret
+
+; Open task image file, read and validate header.
+;
+; Input:
+;   Parsed filename in fdb buffer.
+; Returns:
+;   CY set on error and error code in A.
+
+RDHDR:	ld	b,1		; LUN in B
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	SC	.ALUN		; assign LUN
+	ret	c
+
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open task image file
+	ret	c		; on error return
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+
+	ld	hl,IO.RAT
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; get file info
+	jr	c,rderr		; on error close file and return
+	ld	a,(iosb)
+	or	a
+	scf
+	jr	nz,rderr
+
+	ld	a,(fdb+F.ATTR)	; check file atrributes
+	and	FA.CTG		; contiguous?
+	ld	a,E.FNC		; error if not
+	scf
+	jr	z,rderr
+
+	ld	hl,qio2		; read first block (task header)
+	SC	.QIO		;  note: partial block read!
+	jr	c,rderr
+	ld	a,(iosb)
+	or	a
+	jr	c,rderr		; on error close file and return
+	ld	hl,(iosb+2)
+	ld	a,h		; read size must be 256 (0100h)
+	dec	a
+	or	l
+	ld	a,E.BADTH
+	scf
+	jr	nz,rderr	; otherwise return error
+
+	call	CHKHDR		; verify task header
+
+rderr:	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close task image file
+	pop	af
+	ret
+
+; Validate task header. Right now it simply checks signature and
+; version number.
+
+CHKHDR:	ld	hl,hdr
+	ld	de,thid
+	ld	b,6
+ckhdr:	ld	a,(de)		; check task header ID
+	cp	(hl)
+	ld	a,E.BADTH
+	scf
+	ret	nz		; return CY if header is invalid
+	inc	hl
+	inc	de
+	djnz	ckhdr
+	ld	hl,(hdr+TH.VER)
+	ld	de,0102h	; 1.2
+	or	a
+	sbc	hl,de
+	ret	z
+	scf
+	ret
+
+thid:	db	'TSK180'
+
+; Check if user is privileged. Return with CY set and error code in A
+; if not.
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	ld	a,E.PRIV
+	bit	LS.PRV,(hl)
+	scf
+	ret	z
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ		; buffer for task info
+
+lnptr:	ds	2		; command line pointer
+cmdnam:	ds	9		; buffer for option switch name
+
+pname:	ds	6		; partition name
+tcbbuf:	ds	TCBSZ		; TCB for new task
+runtdb:	ds	TDBSZ		; TDB for RUN command
+cmdptr:	ds	2		; ptr to command args (RUN command)
+runflg:	ds	1		; true if RUN option specified
+remflg:	ds	1		; true if RUN=REM option specified
+ldev:	ds	3		; load device name and unit
+tidev:	ds	3		; terminal device and unit
+
+cmdbuf:	ds	256		; buffer for command line (CMD option)
+tskcml:	ds	130
+
+qio1:	QIOW$	IO.ACC,1,9,iosb,,<fdb,FINFSZ>	; for IO.ACC, IO.RAT & IO.DEA
+qio2:	QIOW$	IO.RVB,1,9,iosb,,<hdr,256,0,0,0>
+iosb:	ds	4
+
+fdb:	ds	FINFSZ		; file descriptor for task image
+hdr:	ds	256		; buffer for task header
+lcbbuf:	ds	LCBSZ
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

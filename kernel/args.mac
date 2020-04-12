@@ -1,0 +1,65 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('ARGS')
+	TITLE	'RSX280 System Function Call Arguments'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	System Function Call get-argument and put-result routines.     ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	TCB.INC
+	include	PCB.INC
+
+	public	GTARGS		; get arguments from user's task registers
+	public	SVRSLT		; store result in user's task registers
+
+	extrn	$CTCB,$CPCB
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Get system call arguments. Arguments are mainly passed via registers,
+; here we fetch the values from the saved stack frame.
+
+GTARGS:	ldw	ix,($CTCB)
+	ldw	ix,(ix+T.CTX)
+	ldw	hl,(ix+TX.REGS+12) ; fetch HL
+	ldw	de,(ix+TX.REGS+14) ; fetch DE
+	ldw	bc,(ix+TX.REGS+16) ; fetch BC
+	ld	a,(ix+TX.REGS+20)  ; fetch function code
+	ret
+
+; Save result into task register frame.
+
+SVRSLT:	push	af
+	ldw	ix,($CTCB)
+	ldw	ix,(ix+T.CTX)
+	pop	bc
+	ldw	(ix+TX.REGS+18),bc ; save AF
+	ret
+
+	end

@@ -1,0 +1,885 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Indirect Command Processor - Main Section
+
+; Note: assemble with ZSM4
+
+	.Z80
+
+	ident	'2.38'
+
+	include	ICP.INC
+	include	SYSFN.INC
+	include	CLICB.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	cseg
+
+	public	PRMSG,ERRMSG,GPRMPT,MODE,LNBUF,LNPTR,MEMTOP,$MEMRY
+	public	GETPOS,SETPOS,RDCMD,STPFLG,INPBUF,SYSERR,PROCLN
+	public	EOFMSG,INDSTP,INDEOF,GSBTBL,GSBLVL,GTBUF,PRCMD
+	public	ERROR,CMDERR,EXSTAT,XQTMOD,PRMCR,FDB,EXTEND,ADDEXT
+
+	extrn	INTCMD,SKIPBL,SKPNAM,STRLEN,CLRVAR,SUBST,GCCL,PFN
+	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
+	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
+	extrn	CPHLDE
+
+;-----------------------------------------------------------------------
+
+START::	ld	sp,stack	; setup stack
+
+	call	INIT		; perform initializations
+
+	call	GCCL		; get MCR command line
+	call	STRPEL		; strip EOL
+	call	SKIPBL		; skip any blanks
+	call	SKPNAM		; skip first name (AT.)
+	ld	(LNPTR),hl	; init pointer to user command line
+	ld	de,LNBUF
+	call	STRCPY		; copy to LNBUF for possible error message
+	call	OPNCMD		; set COMMAN variable and open CMD file
+	jr	c,exsev1	; on error exit
+
+loop:	call	RDCMD		; read line from CMD file or device
+	jr	c,quit		; quit on E.EOF
+	call	PROCLN		; process the command line
+	jr	nc,loop		; loop unless error happened
+	ld	a,(STPFLG)
+	or	a
+	jr	nz,quit
+fatal:	ld	a,(indlvl)
+	or	a
+	jr	z,exsev
+	call	CLSIND		; close all indirect files
+	jr	fatal
+exsev:	call	EOFMSG
+exsev1:	ld	hl,EX.SEV	; else exit with error code
+	SC	.EXIT
+
+quit:	ld	a,(indlvl)
+	or	a		; at nesting level 0?
+	jr	z,exit		; exit if yes
+	call	CLSIND		; else close current level
+	ld	a,(STPFLG)
+	or	a
+	jr	nz,quit		; if .STOP, close all files and exit
+	jr	loop		; loop to continue one level higher
+
+exit:	call	EOFMSG
+	ld	hl,(EXSTAT)	; exit normally with last status code
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+INIT:	ld	hl,0
+	ld	de,GTBUF
+	SC	.GTSK		; get task info
+	ld	hl,(GTBUF+GT.END)
+	ld	(MEMTOP),hl	; save address of top of memory
+	call	INIBUF		; clear file buffers
+	call	CLRVAR		; clear variables
+	xor	a
+	ld	(indlvl),a	; clear indirect nesting level
+	ld	(STPFLG),a
+	ld	(GSBLVL),a	; clear .GOSUB level
+	ld	(XQTMOD),a
+	ld	(EXSTRI),a	; reset <EXSTRI> variable
+	ld	hl,prompt
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ex	de,hl
+	ld	hl,GTBUF+GT.NAME; point to task name
+	call	ckdots		; check for prefix dots
+	ld	bc,3
+	ldir			; set prompt from task name
+	ex	de,hl
+	ld	(hl),'>'
+	inc	hl
+	ld	(hl),0
+	ld	hl,EX.SUC
+	ld	(EXSTAT),hl
+	ld	ix,MODE
+	ld	(ix+0),0
+	ld	(ix+1),0
+	ld	(ix+2),0
+	set	B0.DPY,(ix+0)	; .enable display
+	set	B1.GBL,(ix+1)	; .enable global
+	set	B1.LWC,(ix+1)	; .enable lowercase
+	set	B1.TMO,(ix+1)	; .enable timeout
+	call	GETDPR		; get CLI default prompt
+	ret
+
+ckdots:	ld	b,3
+	push	hl
+ckd1:	ld	a,(hl)
+	cp	'.'
+	jr	nz,ckd2
+	inc	hl
+	djnz	ckd1
+	inc	sp
+	inc	sp
+	ret
+ckd2:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process indirect command.
+
+PROCLN:	ld	(spsav),sp
+	call	SUBST		; perform substitutions
+	ld	hl,LNBUF
+	call	TRACE
+PRCMD:	call	SKIPBL
+	ld	(LNPTR),hl
+	or	a
+	ret	z		; do not send empty lines to MCR
+	cp	1Ah
+	ret	z
+	ld	a,(hl)
+	cp	'.'		; internal command?
+	jp	z,INTCMD	; jump if yes
+	cp	'/'		; stop command?
+	jr	z,INDSTP
+	cp	'@'		; open indirect file? [only for inter. mode?]
+	jr	z,INDOPN
+
+PRMCR:	ld	hl,(LNPTR)	; else send command to MCR
+	push	hl
+	call	STRLEN
+	pop	hl
+	push	bc		; push length
+	ld	de,LNBUF
+	ldir			; move (tail of) command to start of buffer
+	ex	de,hl
+	ld	(hl),CR		; end line with a CR
+	ld	(LNPTR),hl	;* remember this location
+	inc	hl
+	ld	(hl),0		; end with null for ECHO routine in SNDMCR
+	pop	de		; pop length into DE
+	inc	de		; account for CR terminator
+	ld	hl,LNBUF
+	call	SNDMCR		; send command to MCR
+	ret	nc
+	jp	SYSERR
+
+INDEOF:	ld	sp,(spsav)
+	call	CLSIND
+	ld	a,(indlvl)
+	or	a
+	ret	nz
+INDSTP:	ld	a,1
+	ld	(STPFLG),a
+	ld	sp,(spsav)
+	ld	a,E.EOF
+	scf
+	ret
+
+INDOPN:	inc	hl
+	ld	(LNPTR),hl
+	jp	OPNCMD
+
+CMDERR:	ld	hl,snerr	; 'syntax error'
+ERROR:	ld	sp,(spsav)
+	jp	ERRMSG		; display message and return with CY set
+
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Trace internal command, if enabled
+
+TRACE:	ld	ix,MODE
+	bit	B1.TRC,(ix+1)	; trace mode enabled?
+	ret	z
+	push	hl
+	call	SKIPBL
+	cp	'.'		; internal command?
+	jr	nz,tr1		; return if not
+	bit	B0.DPY,(ix+0)	; display mode?
+	jr	z,tr2		; skip if not
+	push	hl
+	ld	hl,mcrdpr	; else display MCR prompt
+	call	PUTSTR
+	pop	hl
+	jr	tr3
+tr2:	call	CRLF
+tr3:	push	hl
+	ld	hl,1
+	xor	a
+	call	HLDEC		; display file nesting level
+	ld	c,'!'
+	call	PUTCH
+	pop	hl
+	call	PUTSTR		; display command
+	ld	c,CR
+	call	PUTCH
+	call	TTFLSH
+tr1:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Send command to MCR and wait until it is processed.
+; Called with HL = address of command block, DE = length
+
+SNDMCR:	ld	(mcrtdb+TD.CMD),hl
+	ld	(mcrtdb+TD.CML),de
+	call	ECHO		; echo command, if enabled
+	ccf
+	ret	nc		; return with CY clear if nothing to do
+	ld	hl,(LNPTR)	;* get saved location of CR terminator
+	ld	(hl),ESC	;* replace with ESC
+	ld	hl,EX.SUC
+	ld	(EXSTAT),hl	; we want status from task execution
+	ld	hl,mcrtdb
+	ld	a,(XQTMOD)
+	or	a
+	ld	e,SPWFLG
+	jr	z,sm1
+	ld	e,XQTFLG
+sm1:	ld	bc,EXSTAT
+	SC	.RQST		; request MCR and connect
+	ret	c		; an error here is fatal
+	ld	hl,XQTMOD
+	ld	a,(hl)
+	ld	(hl),0
+	or	a		; check .XQT flag
+	ret	nz		; return if set
+	ld	e,SPWFLG
+	SC	.STSE		; else stop until task completes
+	ret
+
+ECHO:	ld	hl,LNBUF
+	ld	a,(hl)
+	cp	CR		; empty line?
+	scf
+	ret	z
+	or	a
+	scf
+	ret	z		; return with CY set if yes
+	or	a
+	ld	ix,MODE
+	bit	B1.QIE,(ix+1)	; quiet mode?
+	jr	z,echo0		; jump if not
+	ld	hl,LNBUF
+	ld	a,(hl)
+	cp	';'		; comment line?
+	scf
+	ret	z		; return with CY set if yes
+	xor	a		; else return with CY clear
+	ret
+
+echo0:	bit	B0.DPY,(ix+0)	; display mode?
+	jr	z,echo1		; skip if not
+	ld	hl,mcrdpr	; else display MCR prompt
+	call	PUTSTR
+	call	TTFLSH
+	jr	echo3
+echo1:	call	CRLF
+echo3:	ld	hl,LNBUF
+	ld	a,(hl)
+	cp	';'		; comment line?
+	push	af
+	jr	nz,echo2
+	bit	B0.DPY,(ix+0)	; display mode?
+	jr	nz,echo2	; jump if yes
+	inc	hl		; else do not display the semicolon
+echo2:	call	PUTSTR		; output command
+	call	TTFLSH
+	pop	af
+	scf
+	ret	z		; return with CY set if comment line
+	xor	a		; else return with CY clear
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get default MCR prompt.
+
+GETDPR:	ld	c,1
+	SC	.SUPER
+	jr	c,gdpr0
+	ld	de,($CLIST)	; TODO: get CLICB associated to terminal
+	ld	a,d
+	or	e		; valid CLICB?
+	jr	nz,gdpr1	; jump if yes
+gdpr0:	ld	hl,DPR
+	ld	bc,DPRL
+	jr	gdpr2		; else use the 'emergency' prompt
+gdpr1:	ld	hl,CL.DPL
+	add	hl,de
+	ld	a,(hl)
+	and	1Fh		; trim length just in case
+	ld	c,a
+	ld	b,0
+	ld	hl,CL.DAT
+	add	hl,de
+gdpr2:	ld	de,mcrdpr
+	ldir
+	ld	c,0
+	SC	.SUPER
+	ret
+
+DPR:	db	CR,LF,'>',0	; 'emergency' prompt in case CLICB is not set
+DPRL	equ	$-DPR
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'AT. -- message' followed by the
+; source line where the error occurred.
+
+ERRMSG:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR		; output message
+	call	PRLN
+	call	CRLF
+	ld	hl,LNBUF
+	call	PUTSTR		; print also offending line
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+PRLN:	ld	a,(indlvl)
+	or	a
+	ret	z
+	add	a,a
+	add	a,a
+	add	a,a		; *8 (push-down list struct size)
+	ld	c,a
+	ld	b,0
+	ld	hl,indpdl
+	add	hl,bc
+	inc	hl		; point to device characteristics
+	bit	DV.DIR,(hl)
+	ret	z		; return if not a directory device (file)
+	ld	hl,atln
+	call	PUTSTR
+	ld	hl,(lnnum)
+	xor	a
+	jp	HLDEC
+
+; Print message in the form 'AT. -- message'
+
+PRMSG:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR		; output message
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'AT. -- ',0
+atln:	db	' at line ',0
+
+EOFMSG:	ld	ix,MODE
+	bit	B1.QIE,(ix+1)
+	ret	nz		; return if quiet mode
+	bit	B0.DPY,(ix+0)
+	ret	z		; return if display disabled
+	ld	hl,mcrdpr
+	call	PUTSTR
+	call	TTFLSH
+	ld	hl,ieeof
+	call	PUTSTR
+	call	TTFLSH
+	ret
+
+ieeof:	db	'@ <EOF>',CR,0
+
+;-----------------------------------------------------------------------
+
+; Get MCR prompt if display mode is enabled.
+
+GPRMPT:	ld	ix,MODE
+	bit	B0.DPY,(ix+0)	; display mode?
+	scf
+	ret	z		; return with CY set if not
+	ld	hl,mcrdpr
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Open indirect command file
+
+OPNCMD:	ld	a,(indlvl)	; check nesting level
+	cp	MAXIND		; at maximum?
+	jr	c,ind1		; branch if not
+	ld	hl,ielvl
+	call	ERRMSG		; else display error - already open
+	scf
+	ret
+
+ind1:	or	a
+	call	nz,CPUSH	; push current context
+
+	ld	hl,-1
+	ld	(indblk),hl	; reset blkno
+	ld	hl,(LNPTR)
+	call	SKIPBL		; skip blanks, empty command tail?
+	jr	nz,ind5		; branch if not
+	ld	hl,TICMD	; else fake a "TI:" argument
+ind5:	ld	(LNPTR),hl
+	push	hl
+	call	SETCMN		; set COMMAN variable
+	pop	hl
+	ret	c
+	ld	ix,FDB
+	call	PFN		; get file name
+	ld	(LNPTR),hl
+	ld	hl,CMDEXT
+	call	ADDEXT		; add CMD extension if necessary
+
+	ld	de,(FDB+F.DEV)
+	ld	a,(FDB+F.UNIT)
+	ld	c,a		; device name in DE-C
+	ld	a,(indlvl)
+	add	a,LUNIND
+	ld	(qio1+Q.LUN),a
+	ld	(qio2+Q.LUN),a
+	ld	b,a		; LUN in B
+	SC	.ALUN		; assign LUN
+	jr	c,ind3
+
+	ld	hl,luninf
+	ld	a,(indlvl)
+	add	a,LUNIND
+	ld	c,a
+	SC	.GTLUN		; get LUN info
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	jr	z,ind4		; branch if not
+
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open the command file
+	jr	c,ind3
+	ld	a,(res)		; get result code (lo-byte)
+	or	a
+	jr	z,ind2
+ind3:	ld	hl,iefnf
+	call	ERRMSG		; on error, display message and return
+	scf
+	ret
+
+ind2:	ld	hl,IO.RAT
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,FINFSZ
+	ld	(qio1+Q.LEN),hl
+	ld	hl,qio1
+	SC	.QIO		; read attrib to get full filespec
+ind4:	ld	hl,indlvl
+	inc	(hl)		; increase nesting level
+	ld	hl,0
+	ld	(lnnum),hl	; clear current line number
+	ld	(indcnt),hl	; invalidate input buffer
+	ret
+
+TICMD:	db	'TI:',0
+CMDEXT:	db	'CMD'
+
+; Set variable COMMAN to command line
+
+SETCMN:	call	ALLOC		; allocate space for command line string
+;	jr	c,...		; should not happen
+	ld	de,COMMAN
+	call	SETSV		; set COMMAN string variable
+;	jr	c,...
+	ld	hl,(LNPTR)
+	push	hl
+	ld	hl,ARGS
+	ld	(LNPTR),hl
+	call	PARSE
+	pop	hl
+	ld	(LNPTR),hl
+	or	a
+	ret
+
+COMMAN:	db	'COMMAN',0
+ARGS:	db	'COMMAN " " P0 P1 P2 P3 P4 P5 P6 P7 P8 P9',0
+
+; Read a single line from indirect file (or from console, depending on
+; program invocation).
+
+RDCMD:	ld	a,(indlvl)	; indirect file open?
+	or	a
+	ld	a,E.EOF
+	scf
+	ret	z		; return if not
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; reading from file?
+	jr	nz,rcm1		; branch if yes
+
+	; read from terminal
+
+	call	TTFLSH
+	ld	bc,prompt
+	ld	hl,INPBUF	; else read line from console
+	ld	de,131		; D = 0 (read with echo), E = length
+	ld	a,(indlvl)
+	dec	a
+	add	a,LUNIND
+	call	GETLNL		; note that A returns with E.EOF if ^Z
+	push	af
+	call	STRPEL		; strip EOL
+	pop	af
+	ret	nc
+	call	CLSIND		; close current level
+	jp	RDCMD		; and restart
+
+	; read from file
+
+rcm1:	ld	hl,(lnnum)
+	inc	hl
+	ld	(lnnum),hl
+	ld	hl,INPBUF	; read line from file
+	ld	b,131
+rloop:	push	hl
+	push	bc
+	call	INDGC
+	pop	bc
+	pop	hl
+	jr	c,reof		; exit on EOF
+	cp	LF
+	jr	z,rloop
+  IF 0
+	ld	(hl),a
+	inc	hl
+	cp	CR
+	jr	z,reol
+  ELSE
+	cp	CR
+	jr	z,reol
+	ld	(hl),a
+	inc	hl
+  ENDIF
+	djnz	rloop
+	ld	hl,ielnsz	; if line too long, exit with error
+	call	ERRMSG
+	call	CLSIND		; close current level
+	jp	RDCMD		; and restart
+
+reol:	xor	a
+	ld	(hl),a		; add a trailing zero
+	ret
+
+reof:	call	CLSIND		; close current level
+	jp	RDCMD		; and restart
+
+; Get char from indirect file
+
+INDGC:	ld	hl,(indcnt)
+	ld	a,h
+	or	l
+	jr	z,indnxt
+	dec	hl
+	jr	igch
+
+indnxt:	ld	hl,0
+	ld	(indpos),hl
+	ld	hl,(indblk)
+	inc	hl
+	ld	(indblk),hl
+	call	IREAD		; read next block
+	ret	c
+	ld	a,h
+	or	l
+	scf
+	ret	z
+	dec	hl		; since we're about to fetch first char
+igch:	ld	(indcnt),hl
+	ld	hl,indbuf
+	ld	de,(indpos)
+	add	hl,de
+	ld	a,(hl)
+	inc	de
+	ld	(indpos),de
+	or	a
+	ret
+
+; Read block from file
+
+IREAD:	ld	hl,(indblk)
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(res)		; check result code
+	or	a
+	scf
+	ret	nz
+	ld	hl,(nread)
+	xor	a
+	ret
+
+; Close indirect file, if open.
+
+CLSIND:	ld	a,(indlvl)
+	or	a
+	ret	z
+	ld	a,(luninf+4)
+	bit	DV.DIR,a
+	jr	z,cls1
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close the file
+cls1:	ld	hl,indlvl
+	dec	(hl)
+	call	nz,CPOP		; pop previous context
+	ret
+
+ielvl:	db	'Too many nested command files',0
+ielnsz:	db	'Line too long',0
+iefnf:	db	'File not found',0
+
+; Set indirect file position, HL = block #, DE = offset, BC = line #.
+
+SETPOS:	ld	a,(indlvl)
+	or	a
+	ret	z
+	ld	a,(luninf+4)
+	bit	DV.DIR,a
+	ret	z
+	ld	(indpos),de
+	ld	(lnnum),bc
+	ld	de,(indblk)
+	call	CPHLDE		; block already loaded?
+	jr	z,sp1
+	ld	(indblk),hl
+STPOS:	call	IREAD		; read file block
+	ret	c
+	jr	sp2
+sp1:	ld	hl,(nread)
+sp2:	ld	de,(indpos)
+	or	a
+	sbc	hl,de
+	ld	(indcnt),hl
+	ret	nc
+	ld	a,E.IO
+	ret
+
+; Get indirect file position. For best performance, use cached values
+; and do not call FPOS.
+
+GETPOS:	ld	hl,(indblk)
+	ld	de,(indpos)
+	ld	bc,(lnnum)
+	ret
+
+; Push current command file context
+
+CPUSH:	ld	a,(indlvl)
+	or	a
+	ret	z
+	dec	a
+	add	a,a
+	add	a,a
+	add	a,a		; *8 (push-down struct size)
+	ld	c,a
+	ld	b,0
+	ld	hl,indpdl
+	add	hl,bc
+	ld	a,(indlvl)
+	dec	a
+	add	a,LUNIND
+	ld	(hl),a
+	inc	hl
+	ld	a,(luninf+4)
+	ld	(hl),a
+	inc	hl
+	ld	bc,(indblk)
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	bc,(indpos)
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	bc,(lnnum)
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	ret
+
+; Pop current command file context
+
+CPOP:	ld	a,(indlvl)
+	or	a
+	ret	z
+	dec	a
+	add	a,a
+	add	a,a
+	add	a,a		; *8 (push-down struct size)
+	ld	c,a
+	ld	b,0
+	ld	hl,indpdl
+	add	hl,bc
+	ld	a,(hl)
+	ld	(qio1+Q.LUN),a
+	ld	(qio2+Q.LUN),a
+	inc	hl
+	ld	a,(hl)
+	ld	(luninf+4),a
+	push	af
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	(indblk),bc
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	(indpos),bc
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	(lnnum),bc
+	pop	af
+	bit	DV.DIR,a
+	call	nz,STPOS	; restore file position
+	ret
+
+;-----------------------------------------------------------------------
+
+; Add extension @HL to filename in FDB, if none was specified
+
+ADDEXT:	ld	a,(FDB+F.ATTR)
+	and	FN.EXT
+	ret	nz
+	ld	de,FDB+F.EXT
+	ld	bc,3
+	ldir
+	ret
+
+;-----------------------------------------------------------------------
+
+; Extend task limits by the specified amount
+
+EXTEND:	SC	.EXTSK
+	ret	c
+	ld	hl,0
+	ld	de,GTBUF
+	SC	.GTSK
+	ret	c
+	ld	hl,(GTBUF+GT.END)
+	ld	(MEMTOP),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+prompt:	db	CR,LF,'AT.>',0
+
+mcrdpr:	ds	32
+
+GTBUF:	ds	GTKSZ		; buffer for task info
+
+mcrtdb:	db	'MCR...'	; task name
+	dw	0		; address of command line block
+	dw	0		; length of command line
+	db	0,0,0		; attr, user, grp (not used)
+	db	'TI',0		; terminal device and unit (not used)
+	dw	0,0		; no data block to send
+
+EXSTAT:	ds	2
+
+LNBUF:	ds	132		; MCR command/substitution buffer
+LNPTR:	ds	2
+
+FDB:	ds	FINFSZ		; FDB for cmd file, .OPEN command, etc
+
+luninf:	ds	6		; .GTLUN buffer
+indlvl:	ds	1		; current indirect file nesting level
+indbuf:	ds	512		; buffer for indirect file I/O
+indpos:	ds	2		; offset to current char in indbuf
+indcnt:	ds	2		; number of bytes left in indbuf
+indblk:	ds	2		; current indirect file block number
+
+indpdl:	ds	MAXIND*8	; indirect nesting push-down list
+
+qio1:	QIOW$	IO.ACC,LUNIND,9,res,,<FDB,0>
+qio2:	QIOW$	IO.RVB,LUNIND,9,res,,<indbuf,512,0,0,0>
+res:	ds	2		;!   do not   !
+nread:	ds	2		;!change order!
+
+INPBUF:	ds	132		; input buffer
+lnnum:	ds	2
+
+STPFLG:	ds	1
+
+GSBTBL:	ds	MAXGSB*6	; .GOSUB return ptrs (blkno, offset, lineno)
+GSBLVL:	ds	1		; current .GOSUB nesting level
+
+XQTMOD:	ds	1
+
+MEMTOP:	ds	2
+MODE:	ds	3		; .ENABLE/.DISABLE mode bits
+$MEMRY:	ds	2
+
+spsav:	ds	2
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

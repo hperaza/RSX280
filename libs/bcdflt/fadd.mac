@@ -1,0 +1,100 @@
+	.Z80
+
+	public	FADD,FSUB
+
+	extrn	FNORM,DENOR0,DENOR1
+	extrn	FR0,FR1
+
+; Floating point subtraction
+;
+; FR0 = FR0 - FR1
+
+	cseg
+
+FSUB:	ld	a,(FR1)
+	xor	80h		; make second operand negative
+	ld	(FR1),a		;  then perform an addition
+
+; Floating point addition
+;
+; FR0 = FR0 + FR1
+
+FADD:	ld	a,(FR1+0)	; get FR1 exponent
+	and	7Fh		;   kill sign bit
+	ld	c,a		;  into C
+	ld	a,(FR0+0)	; get FR0 exponent
+	and	7Fh		;   kill sign bit
+	sub	c		;  compare with FR1
+	jp	p,fadd2		; jump if exp(FR0) >= exp(FR1)
+
+	; here if exp(FR0) < exp(FR1)
+
+	ld	b,6
+	ld	hl,FR0
+	ld	de,FR1
+fadd1:	ld	c,(hl)		; swap FR0 and FR1
+	ld	a,(de)
+	ld	(hl),a
+	ld	a,c
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	fadd1
+	jr	FADD
+
+fadd2:	jr	z,fadd3		; jump if exponents equal
+	cp	5		; difference >= 100000000?
+	jp	nc,FNORM	; normalize FR0 and return if yes
+	call	DENOR1		; denormalize FR1, amount in A
+fadd3:	ld	hl,FR1+0
+	ld	a,(FR0+0)	; different signs?
+	xor	(hl)
+	jp	m,fadd7		; jump if not
+	ld	hl,FR1+5
+	ld	de,FR0+5
+	ld	b,5
+	or	a
+fadd4:	ld	a,(de)		; add mantissas
+	adc	a,(hl)
+	daa
+	ld	(de),a
+	dec	hl
+	dec	de
+	djnz	fadd4
+	jp	nc,FNORM	; normalize FR0 and return
+	ld	a,1		; we have a carry
+	call	DENOR0		;  denormalize FR0 by one byte
+	ld	a,1
+	ld	(FR0+1),a	; store the carry byte
+	jp	FNORM		;  and normalize
+
+	; here if signs are different
+
+fadd7:	ld	hl,FR1+5
+	ld	de,FR0+5
+	ld	b,5
+	or	a
+fadd8:	ld	a,(de)		; subtract mantissas
+	sbc	a,(hl)
+	daa
+	ld	(de),a
+	dec	hl
+	dec	de
+	djnz	fadd8
+	jr	c,fadd9
+	jp	FNORM		; if no borrow, normalize and return
+fadd9:	ld	a,(FR0)		; otherwise, negate FR0
+	xor	80h
+	ld	(FR0),a
+	ld	hl,FR0+5
+	ld	b,5
+	or	a
+fadd10:	ld	a,0		;  and its mantissa
+	sbc	a,(hl)
+	daa
+	ld	(hl),a
+	dec	hl
+	djnz	fadd10
+	jp	FNORM		; normalize and return
+
+	end

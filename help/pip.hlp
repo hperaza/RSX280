@@ -1,0 +1,92 @@
+
+PIP is a program used to perform filesystem operations such as listing
+directories, copying, and renaming files.
+
+For help on PIP switches type
+
+  HELP PIP SW
+
+For help on directory operations type
+
+  HELP PIP DIR
+
+For help on single-file operations type
+
+  HELP PIP FILE
+
+For help on multiple-file operations type
+
+  HELP PIP COPY
+
+\DIR
+
+Command format:
+
+  PIP [outfile=][dev:[dir]]/sw
+
+where switch can be:
+
+  /LI    - display directory of mounted device
+  /BR    - display brief directory, can be used alone or together with /LI
+  /FU    - display full dir info, can be used alone or together with /LI
+  /FR    - display free space
+  /ID    - display PIP version
+
+\FIL*E
+
+Single-file operations:
+
+  PIP [dev:[dir]]file/sw
+
+where switch can be:
+
+  /DE                  - delete file
+  /SD                  - selective delete
+  /PU:n                - purge to the specified number of single copies
+                         (n is optional and defaults to 1)
+  /LD                  - list deleted files, used with /PU or /DE
+  /UN                  - unlock file
+  /PR:[rwed,rwed,rwed,rwed] - set file protection
+  /OW:[group,user]     - set file ownership
+  /NM                  - suppress "file not found" messages
+
+\COP*Y
+
+Multiple file operations:
+
+  PIP dest[/sw0]=src1[/sw1][,src2[/sw2]] etc.
+
+where sw0 (for output file) can be:
+
+  /CO  - make output file contiguous
+  /-CO - make output file non-contiguous (default is to make output
+         file of same type as original), /NOCO is also allowed
+  /PR:[rwed,rwed,rwed,rwed] - set output file protection
+  /OW:[user,group]          - set output file ownership
+
+and sw1, sw2, etc. (for input files) can be:
+
+  /NV - force new version of output file
+  /SU - supersede an existing version of the output file
+  /RE - rename file; the /CO output switch is not allowed
+  /CD - preserve creation date
+  /NM - suppress "file not found" messages
+
+Examples:
+
+  PIP dy1:[user2]=dy1:[user1]*.mac;*
+  PIP outfile.txt=file1.txt,file2.txt,[user5]file3.txt
+
+  PIP =[user2]*.mac     ; copies to current directory on SY: (implicit)
+  PIP DU2:=*.TXT;*      ; copies to current dir on device DU2:
+  PIP test.txt=TI:      ; creates file from console input
+  PIP TI:=test.txt      ; displays file on the terminal
+
+Notes on wildcards:
+
+  The asterisk '*' matches a group of chars, while the percent sign '%'
+  matches a single char.
+
+  The asterisk can be specified anywhere and in any combination with other
+  characters, including other asterisks and percent signs e.g.: A*, *A, *A*,
+  *A*B, *A*B% etc.

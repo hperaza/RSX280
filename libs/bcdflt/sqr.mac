@@ -1,0 +1,95 @@
+	.Z80
+
+	public	SQR
+
+	extrn	FLD0R,FLD1R,FMOVE,FSTOR,FADD,FSUB,FMUL,FDIV
+	extrn	FR0,FR1,?DIGRT,?FSCR,?FSCR1,FPhalf
+
+	cseg
+
+SQR:	xor	a
+	ld	(?DIGRT),a
+	ld	a,(FR0)
+	or	a
+	scf
+	ret	m		; negative square root
+	cp	3Fh
+	jr	z,sqr2
+	inc	a
+	ld	(?DIGRT),a
+	ld	hl,FR1
+	ld	(hl),a
+	inc	hl
+	ld	(hl),1
+	inc	hl
+	ld	b,5	;4?
+	xor	a
+sqr1:	ld	(hl),a
+	inc	hl
+	djnz	sqr1
+	call	FDIV
+sqr2:	ld	b,6
+	push	bc
+	ld	hl,?FSCR
+	call	FSTOR
+	call	FMOVE
+	ld	hl,FPtwo
+	call	FLD0R
+	call	FSUB
+	ld	hl,?FSCR
+	call	FLD1R
+	call	FMUL
+	pop	bc
+sqr3:	push	bc
+	ld	hl,?FSCR1
+	call	FSTOR
+	call	FMOVE
+	ld	hl,?FSCR
+	call	FLD0R
+	call	FDIV
+	ld	hl,?FSCR1
+	call	FLD1R
+	call	FSUB
+	ld	hl,FPhalf	; 0.5
+	call	FLD1R
+	call	FMUL
+	ld	a,(FR0)
+	or	a
+	pop	bc
+	jr	z,sqr4
+	push	bc
+	ld	hl,?FSCR1
+	call	FLD1R
+	call	FADD
+	pop	bc
+	dec	b
+	jp	p,sqr3
+sqr4:	ld	hl,?FSCR1
+	call	FLD0R
+	ld	a,(?DIGRT)
+	or	a
+	ret	z
+	sub	40h
+	or	a
+	rra
+	add	a,40h
+	and	7Fh
+	ld	hl,FR1
+	ld	(hl),a
+	inc	hl
+	ld	a,(?DIGRT)
+	rra
+	ld	(hl),1
+	jr	nc,sqr5
+	ld	(hl),10h
+sqr5:	inc	hl
+	ld	b,5	;4?
+	xor	a
+sqr6:	ld	(hl),a
+	inc	hl
+	djnz	sqr6
+	jp	FMUL
+
+FPtwo:	db	040h,002h,000h,000h,000h,000h	; 2.00000000
+
+	end

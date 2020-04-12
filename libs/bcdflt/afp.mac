@@ -1,0 +1,270 @@
+	.Z80
+
+	public	AFP
+
+	extrn	ZFR0,ROLFR0,FNORM
+	extrn	FR0,?EXP,?FLAG,?DIGRT,?SIGN
+
+; ASCII -> Floating Point conversion
+;
+; Entry: HL  = address of string containing ASCII number
+; Exit:  FR0 = floating point number
+;        HL  = address of input string where the conversion stopped
+;              CY set if invalid number
+
+	cseg
+
+AFP:	ld	(IOPTR),hl
+	ld	a,' '
+skip:	cp	(hl)
+	inc	hl
+	jr	z,skip		; skip leading spaces
+	dec	hl
+	ld	(IOPTR),hl
+	call	VALID		; ensure first char(s) is/are valid
+	ret	c		; return CY if number does NOT begin with
+				;   '.+-', '+.', '-.' or digit
+
+	; set initial values
+
+	xor	a		; clear
+	ld	hl,?EXP
+	ld	(hl),a		;  ?EXP,
+	inc	hl
+	ld	(hl),a		;   ?SIGN,
+	inc	hl
+	ld	(hl),a		;    ?FLAG,
+	ld	(ESIGN),a	;     and ESIGN
+	ld	a,0FFh
+	ld	(?DIGRT),a	; ?DIGRT = # of digits after decimal point
+	call	ZFR0		; clear FR0
+	jr	afp2		; get first character
+
+afp1:	ld	a,0FFh		; indicate not first character
+	ld	(?FLAG),a	; first character flag
+afp2:	call	LDCHAR		; get next character
+	jr	c,afp6		; jump if not numeric
+
+	; process numeric character
+
+	push	af		; save digit
+	ld	a,(FR0+1)	; check first byte of mantissa
+	or	a		; already filled?
+	jr	nz,afp3		; yes, skip remaining digits
+	call	ROLFR0		; rotate mantissa one decimal place left
+	pop	af		; restore digit
+	ld	hl,FR0+5
+	or	(hl)		; add it to the mantissa
+	ld	(hl),a		;  (insert into last byte)
+
+	; check for decimal point
+
+	ld	a,(?DIGRT)	; check ?DIGRT
+	or	a		; is 0FFh?
+	jp	m,afp1		; if no decimal point, process next
+
+	; increment number of digits after decimal point
+
+	inc	a		; increment number of digits
+	ld	(?DIGRT),a
+	jr	nz,afp1		; process next character
+
+	; increment exponent if necessary
+
+afp3:	pop	af		; discard digit
+	ld	a,(?DIGRT)	; check ?DIGRT
+	or	a		; is 0FFh?
+	jp	p,afp1		; jump if already have decimal point
+
+	ld	hl,?EXP
+	inc	(hl)		; otherwise increment ?EXP
+	jr	afp1		; process next character
+
+	; process non-numeric character
+
+afp6:	cp	'.'		; decimal point?
+	jr	z,afp8
+	cp	'E'		; exponent?
+	jr	z,afp9
+	cp	'e'
+	jr	z,afp9
+	ld	c,a
+	ld	a,(?FLAG)	; check first character flag
+	or	a
+	ld	a,c
+	jr	nz,afp16	; if not first character
+	cp	'+'
+	jr	z,afp1		; if '+', ignore
+	cp	'-'		; set Z flag if '-'
+;;	jr	z,afp7
+afp7:	ld	(?SIGN),a	; set negative flag
+	jr	z,afp1		; loop if '-', otherwise fall thru
+
+	; handle decimal point
+
+afp8:	ld	a,(?DIGRT)	; check ?DIGRT
+	or	a		; 0FFh?
+	jp	p,afp16		; jump if not (already have decimal point)
+	inc	a		; otherwise increment it
+	ld	(?DIGRT),a	;  (set it to zero)
+	jr	afp1		; process next character
+
+	; handle exponent specification
+
+afp9:	ld	hl,(IOPTR)
+	ld	(TEMP),hl	; remember current postion (exponent start)
+	call	LDCHAR		; get next character
+	jr	c,afp13		; jump if not a digit
+afp10:	ld	hl,?EXP
+	ld	c,a		; save first character of exponent
+	ld	a,(hl)		; number of digits more than 9 (current ?EXP)
+	push	af		;  save it
+	ld	(hl),c		; store new digit into ?EXP
+	call	LDCHAR		; get next character (second char of exponent)
+	jr	c,negexp	; jump if not a digit
+	ld	c,a		; save second digit
+	ld	hl,?EXP
+	ld	a,(hl)
+	add	a,a		; *2
+	ld	b,a
+	add	a,a		; *4
+	add	a,a		; *8
+	add	a,b		; *10
+	add	a,c		; insert new digit in exponent
+	ld	(hl),a		; update exponent
+	ld	hl,(IOPTR)
+	inc	hl
+	ld	(IOPTR),hl
+
+	; process sign of exponent
+
+negexp:	ld	a,(ESIGN)	; negative exponent?
+	or	a
+	jr	z,posexp
+	ld	a,(?EXP)	; get exponent
+	cpl
+	inc	a		; negate it
+	ld	(?EXP),a	; update exponent
+
+	; add in number of digits more than 9
+
+posexp:	pop	af		; get saved number of digits more than 9
+	ld	hl,?EXP
+	add	a,(hl)		; add exponent
+	ld	(hl),a		; update exponent
+	jr	afp16		; process end of input
+
+	; process non-numeric in exponent
+
+afp13:	cp	'+'		; must be exponent sign
+	jr	z,afp14		; ignore if '+'
+	cp	'-'
+	jr	nz,afp15
+	ld	(ESIGN),a	; set ESIGN if negative
+
+	; process next character
+
+afp14:	call	LDCHAR		; get next character
+	jr	nc,afp10	; loop if a digit
+
+	; process other non-numeric in exponent
+
+afp15:	ld	hl,(TEMP)	; restore saved position
+	ld	(IOPTR),hl
+
+	; process end of input
+
+afp16	ld	hl,(IOPTR)
+	dec	hl		; backup one position
+	ld	(IOPTR),hl
+	ld	a,(?EXP)	; get exponent
+	ld	c,a		;  into C
+	ld	a,(?DIGRT)	; and number of digits after decimal point
+	ld	b,a		;  into B
+	or	a
+	ld	a,c
+	jp	m,afp17		; if no decimal point
+	jr	z,afp17		; if no digits after decimal point
+	sub	b		; ?EXP - ?DIGRT
+afp17:	ld	c,a		; save adjusted exponent
+	rla			; get sign of exponent into CY
+	ld	a,c		; get adjusted exponent
+	rra			; shift sign bit into MSB
+	ld	(?EXP),a	; save power of 100
+	call	c,ROLFR0	; if CY, rotate mantissa one decimal
+				;  place left, else process even number
+	ld	a,(?EXP)	; get exponent
+	add	a,44h		; add bias + 4 for normalization
+	ld	(FR0+0),a
+	call	FNORM		; normalize number
+	ld	hl,(IOPTR)
+	ret	c		; if error, with HL pointing to end of string
+
+	; check sign of number
+
+	ld	a,(?SIGN)	; if (?SIGN != 0)
+	or	a		;   return with CY clear (positive number)
+	ret	z
+
+	; process negative number
+
+	ld	hl,FR0+0	; otherwise negate FR0
+	set	7,(hl)		; set sign bit on first byte
+	ld	hl,(IOPTR)
+	ret			; CY clear
+
+; Ensure the number begins properly.
+
+VALID:	ld	hl,(IOPTR)	; check digits up to 1st '0123456789'
+	push	hl
+	call	LDCHAR		; load digit or character
+	jr	nc,is_dig	; it's a digit, restore pointer and return
+	cp	'.'
+	jr	z,is_dot	; it's a DECIMAL POINT
+	cp	'+'
+	jr	z,is_sgn	; it's a PLUS sign
+	cp	'-'
+	jr	z,is_sgn	; it's a MINUS sign
+retc:	pop	hl
+	scf
+	ret
+is_sgn:	call	LDCHAR		; buffer starts with PLUS of MINUS
+	jr	nc,is_dig
+	cp	'.'
+	jr	nz,retc
+is_dot:	call	LDCHAR		; get next char
+	jr	c,retc		; if not a digit, return
+is_dig:	pop	hl
+	ld	(IOPTR),hl	; return with no CY
+	ret
+
+; Get next character from input string. If the character
+; is a decimal ASCII digit, convert it to binary and return
+; with CY clear. Otherwise return with CY set. The routine
+; advances the input pointer.
+
+LDCHAR:	call	LDNUM		; load A with 0..9 from IOPTR
+	jr	nc,lch1		; jump if decimal value
+	ld	a,(hl)
+lch1:	inc	hl		; advance pointer
+	ld	(IOPTR),hl
+	ret
+
+; Load decimal digit from input string into A.
+; Return carry if not decimal ((A < 0) || (A > 9))
+
+LDNUM:	ld	hl,(IOPTR)
+	ld	a,(hl)
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret
+
+	dseg
+
+IOPTR:	ds	2		; pointer to input string
+TEMP:	ds	2
+ESIGN:	ds	1		; exponent sign
+
+	end

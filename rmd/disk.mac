@@ -1,0 +1,198 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Disk Free Space display
+
+	.Z280
+
+	include	RMD.INC
+	include	FCB.INC
+	include	VCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+	public	DSKFRE,DEVTBL
+
+	extrn	VPUTC,VPUTS,VXY,VGETXY,VHLDEC,VADEC,VRPAD,SHRBHL
+
+	cseg
+
+LUNBM	equ	1		; use LUN 1 for disk I/O
+
+;-----------------------------------------------------------------------
+
+; Display free disk space in kbytes for up to four disks.
+
+DSKFRE:	VGTOXY	30,1
+	ld	hl,frmsg
+	call	VPUTS
+	ld	hl,DEVTBL
+	ld	ix,dxy
+	ld	b,4
+d1:	push	ix
+	push	bc
+	push	hl
+	ld	h,(ix+0)	; X
+	ld	l,(ix+1)	; Y
+	call	VXY
+	pop	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	push	hl
+	call	shdisk
+	pop	hl
+	pop	bc
+	pop	ix
+	inc	ix
+	inc	ix
+	djnz	d1
+	ret
+
+dxy:	db	38,1
+	db	51,1
+	db	38,2
+	db	51,2
+
+;-----------------------------------------------------------------------
+
+shdisk:	push	de
+	push	bc
+	ld	c,e
+	call	VPUTC		; display device name and unit
+	ld	c,d
+	call	VPUTC
+	pop	bc
+	push	bc
+	ld	a,c
+	call	VADEC
+	ld	c,':'		; followed by a colon
+	call	VPUTC
+
+	; compute and display free space
+
+	pop	bc
+	pop	de
+
+	call	frblks		; get number of free disk blocks
+	jr	c,fs1
+
+	call	SHRBHL		; blocks to Kbytes
+	ld	c,'K'
+	ld	a,b
+	or	a
+	jr	z,fs3		; branch if < 64M
+	ld	l,h
+	ld	h,b
+	ld	b,0		; /256
+	call	SHRBHL		; /512
+	call	SHRBHL		; /1024 = Kbytes to Mbytes
+	ld	c,'M'
+fs3:	ex	de,hl
+	call	VGETXY
+	ex	de,hl		; starting X coord in D
+	xor	a		; no filler for number
+	call	VHLDEC		; output value
+	call	VPUTC		; and units
+	ld	e,6		; field width
+	call	VRPAD
+	ret
+
+fs1:	cp	E.DEVNM
+	ld	hl,dmomsg
+	jr	z,fs2
+
+	ld	hl,errmsg
+fs2:	ex	de,hl
+	call	VGETXY
+	ex	de,hl		; starting X coord in D
+	call	VPUTS
+	ld	e,6		; field width
+	call	VRPAD
+	ret
+
+frmsg:	db	'Free:',0
+dmomsg:	db	'DMO',0
+errmsg:	db	'ERROR',0
+
+;-----------------------------------------------------------------------
+
+; Get number of free disk blocks. Called with device name in DE-C.
+; Returns result in BHL.
+
+frblks:	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find device
+	ret	c		; error if not found
+
+	KCALL	$REDIR		; follow redirection links
+	ex	de,hl		; get UCB address into DE
+
+	ld	hl,($MVTBL)	; get head of mounted volume list into HL
+fmnt1:	ld	a,h
+	or	l		; end of list?
+	ld	a,E.DEVNM
+	scf
+	ret	z		; return with error if yes
+	push	hl
+	inc	hl
+	inc	hl		; point to M.UCB field
+	ld	a,(hl)
+	cp	e		; same UCB?
+	jr	nz,fmnt2	; skip if not
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	z,fmnt3		; else we found it
+fmnt2:	pop	hl
+	ldw	hl,(hl)		; get next VCB in list
+	jr	fmnt1		; loop to process it
+
+fmnt3:	pop	ix		; pop VCB address into IX
+	ldw	hl,(ix+M.FREE)	; get cached number of clusters into BHL
+	ld	b,(ix+M.FREE+2)
+	ld	a,(ix+M.CLF)	; get cluster factor
+	call	CL2BK		; convert cluster to blocks
+	xor	a		; return success
+	ret
+
+CL2BK:	or	a
+	ret	z
+cb1:	add	hl,hl		; blocks = clusters SHL cluster_factor
+	rl	b
+	dec	a
+	jr	nz,cb1
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+DEVTBL:	db	'SY',0		; TODO: move the default settings to RMD.INC
+	db	'DY',1
+	db	'DU',0
+	db	'DU',2
+
+	end

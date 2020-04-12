@@ -1,0 +1,218 @@
+                    VOL180 Filesystem - Structure on Disk
+                    =====================================
+
+Version: 5.0
+
+Block size: 512 bytes
+Cluster size: 1,2,4,8,16 blocks (cluster factors 0 to 4)
+Max disk/partition size: 2^24 (16,777,216) clusters (8G to 549G)
+
+Boot record
+-----------
+
+The boot record consists of 2 blocks:
+
+Block 0: Bootstrap code
+Block 1: Volume ID:
+           Byte
+           ----
+           0..5   Identifier 'VOL180'
+           8-9    Filesystem version (2 bytes) = 5.0 (lo byte = 0, hi = 5)
+           16..31 Volume name (16 bytes max, padded with nulls)
+           32..34 Volume size in blocks
+           36-37  Default file protection bits
+           40..46 Created timestamp
+           48     Cluster factor
+           64..66 Index File starting block number (usually 2)
+           68..70 Allocation Bitmap File starting block number
+           72..74 Starting block number of system image
+           76-77  Size of system image in blocks
+
+
+Directory entry
+---------------
+
+A directory entry is 16 bytes long:
+
+  Byte
+  ----
+   0-1    Index File entry number (1-based, 0 = free entry)
+  2..10   Filename (9 ASCII chars)
+  11..13  Extension (3 ASCII chars)
+  14-15   Version (2 bytes)
+
+There are 32 directory entries per block.
+
+
+Index File entry
+----------------
+
+Each file has one and only one entry in the Index File. The entry is 64
+bytes long and contains (among other things) pointers to file data,
+timestamps, ownership ID and file protection bits.
+
+  Byte
+  ----
+   0-1    Link count (0 = deleted)
+    2     Attributes:
+            01h = regular file
+            08h = file is contiguous
+            10h = file is locked
+            80h = directory
+    3     Disk cluster factor
+   4-5    Usage/Sequence number
+    6     User ID
+    7     Group ID
+
+   8..10  Total data blocks allocated to the file
+  11..13  Number of blocks actually used (A)
+  14-15   Last block byte count (B)
+  16..22  Created timestamp (see below)
+  23..29  Modified timestamp (see below)
+  30-31   Protection bits/access permissions:
+            bit: 15 14 13 12  11 10  9  8   7  6  5  4   3  2  1  0
+                  R  W  E  D   R  W  E  D   R  W  E  D   R  W  E  D
+                 -----------  -----------  -----------  -----------
+                    system        user        group        world
+            bit set means access granted.
+
+  32..34  Number of the first block of the file (corresponding to the
+          first cluster)
+  35..46  Non-contiguous files: starting block numbers of the next 4
+          allocated clusters
+          Contiguous file: unused
+  47..49  Non-contiguous file: block number of the first storage allocation
+          map block (clusters 6 and above)
+          Contiguous file: unused
+  50..58  Original file name
+  59..61  Original extension
+  62..63  Original version
+
+  File size = (A-1) * 512 + B
+
+  Timestamp = 7 bytes:
+                 4 bytes = BCD date YYYYMMDD
+                 3 bytes = BCD time hhmmss
+              All zeros mean timestamp not set
+
+There are 8 Index File entries per block.
+
+Index File entry numbering is 1-based, since 0 is reserved to indicate a
+free/unused entry.
+
+There are several "known" entry numbers, corresponding to system files,
+that should never be changed:
+
+  1 = INDEXF.SYS
+  2 = BITMAP.SYS
+  3 = BADBLK.SYS
+  4 = BOOT.SYS
+  5 = MASTER.DIR
+
+The Index File is always contiguous for quick access.
+
+
+File types
+----------
+
+There are 2 types of files, depending on the way data blocks are allocated:
+
+ - Contiguous files: storage is allocated in a single, contiguous range
+   of disk blocks. Mainly used for tasks and system files that require
+   fast and/or easy access.
+
+ - Non-contiguous files: the contents can be scattered all over the disk;
+   they have one or more associated "allocation blocks" containing a list of
+   allocated data blocks.
+
+
+Storage allocation block
+------------------------
+
+There is at least one per non-contiguous files larger than 5 clusters, and
+contains the list of clusters allocated to the file. Large files contain
+multiple allocation blocks chained in a double-linked list.
+
+  Byte
+  ----
+  0..2    Link to prev logical block (0 = end)
+  3..5    Link to next logical block (0 = end)
+  6..509  Logical block list (168 data blocks per allocation block)
+ 510-511  Reserved (checksum?)
+
+
+Allocation Bitmap
+-----------------
+
+Has two sections:
+
+The first section is used to keep track of used/free blocks in the volume.
+Each disk block is represented by a single bit in the bitmap file.
+
+  Byte
+  ----
+  0..2    Number of valid bits in bitmap (= number of disk clusters)
+    3     Reserved
+    4     Cluster factor
+  5..7    Reserved
+  8..10   Relative block number of the second section
+ 11..15   Reserved
+ 16..n    where n = ceil(disk_blocks/8)+16: allocation bitmap
+            bit = 0 means free block, 1 means allocated
+            bits in a byte are allocated from MSB to LSB.
+
+The second section is used to keep track of used/free index file entries.
+Each index file entry is represented by a single bit in the bitmap file.
+
+  Byte
+  ----
+   0-1    Number of valid bits in bitmap (= number of index file entries)
+  2..15   Reserved
+ 16..n    where n = ceil(index_file_entries/8)+16: allocation bitmap
+            bit = 0 means free entry, 1 means allocated
+            bits in a byte are allocated from MSB to LSB.
+
+For quick access, the bitmap file is always contiguous and the size of
+the first section kept below 64K.
+
+   Disk size   Cluster size   Bitmap size
+   ---------   ------------   -----------
+      32M            0            8K
+      64M            0           16K
+     128M            1            8K
+     256M            1           16K
+     512M            2           32K
+       1G            2           64K
+       2G            3           16K
+       4G            3           32K
+       8G            3           64K
+
+
+File specification syntax
+-------------------------
+
+RSX180 system and utilities use the following convention to specify a file:
+
+  dev:[directory]filename.ext;ver
+
+specifically:
+
+  - Device name and unit specification ends with a colon
+  - Directory name is enclosed in square brackets
+  - A dot separates file name from extension
+  - A semicolon precedes the version number
+
+E.g.: SY0:[USER]DOCS.TXT;12
+
+Depending on the application and particular cases, some fields may be
+omitted:
+
+  - If no device name and unit is specified, SY0: (user's default device)
+    is assumed.
+  - If no directory is specified, the current task directory is assumed.
+  - Filename is always specified, although it can be null.
+  - Extension specification is application-specific (can be mandatory
+    or optional).
+  - If no file version is specified or specified as 0, the highest (newest)
+    version of a file is assumed. If specified as -1, the lowest (oldest)
+    version is assumed.

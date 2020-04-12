@@ -1,0 +1,1019 @@
+;**********************************************************************;
+;                                                                      ;
+;   DMP - File Dump Utility for RSX180.                                ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	"V3.13"
+
+	cseg
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+FALSE	equ	0
+TRUE	equ	NOT FALSE
+
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+TAB	equ	09h
+
+LUNCML	equ	1
+LUNSRC	equ	2
+LUNDST	equ	3
+LUNTI	equ	5
+
+MAXRPA	equ	1
+
+S1.AS	equ	0		; ASCII dump
+S1.OC	equ	1		; octal dump
+S1.HX	equ	2		; hexadecimal dump
+S1.WD	equ	3		; word dump
+S1.MX	equ	4		; mixed dump
+S1.ID	equ	5
+
+S2.NH	equ	0		; no header
+
+DBLBUF	equ	TRUE
+
+	extrn	PFN,PDN,FCREAT,FPUTLN,FCLOSE,GCML,RCML,PUTCH,PUTSTR
+	extrn	PERROR,UCASE,HLDEC,CVTWH,CVTBH,CVTLD,CVTWD,CVTBD
+	extrn	ATTACH,DETACH,RCTRLO,TTFLSH
+
+;-----------------------------------------------------------------------
+
+START::	ld	sp,stack
+
+	ld	de,0
+	ld	c,LUNTI
+	call	ATTACH
+	call	INIT
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	process		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; exit normally if yes
+
+	call	CMLERR		; else display error
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m3:	call	TTFLSH
+	ld	c,LUNTI
+	call	DETACH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Perform initializations
+
+INIT:	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task info
+	ld	hl,GTKBUF+GT.NAME
+	call	ckdots		; skip initial 3 dots if present
+	ld	de,(GDAT+G.PRM)	; set prompt to our task name
+	inc	de		;  skip CR
+	inc	de		;   skip LF
+	ld	bc,3
+	ldir
+	ret
+
+ckdots:	ld	b,3
+	push	hl
+ckd1:	ld	a,(hl)
+	cp	'.'
+	jr	nz,ckd2
+	inc	hl
+	djnz	ckd1
+	inc	sp
+	inc	sp
+	ret
+ckd2:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'DMP -- message'.
+; Called with HL = address of message string.
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	call	RCTRLO
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Same as above, but displays a standard system error message.
+; Called with A = error code.
+
+SYSERR:	push	af
+	call	RCTRLO
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	scf
+	ret
+
+eprfx:	db	CR,LF,'DMP -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+;-----------------------------------------------------------------------
+
+; Parse the command line and execute the command.
+
+; TODO:
+; - handle '!' comments
+
+process:
+	ld	de,(lnptr)
+	call	getnb		; get first non-blank character
+	ret	z		; return if empty line
+
+	call	PARSE		; parse command
+
+	ex	de,hl
+	jp	c,ERROR
+	call	iseol
+	jp	nz,CMDERR	; any extra characters here means error
+
+	; figure what to do
+
+	ld	a,(SWBITS)	; check switches
+	or	a
+	jp	z,DUMP		; mixed dump by default
+	and	1 SHL S1.MX
+	jp	nz,DUMP		; mixed dump
+
+	jp	CMDERR
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	1Ah
+	ret
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank.
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getnb:	ld	a,(de)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getnb
+
+;-----------------------------------------------------------------------
+
+; TODO:
+; - some switches apply to specific input files
+; - ignore extra chars in switch name
+; - process argument(s) for some switches /sw:n or /sw:[...]
+; - allow negation /-sw or /nosw
+
+PARSE:	xor	a		; initialize values
+	ld	(ASGN),a	; no assignment operator yet
+	ld	(NRPARM),a
+	ld	hl,SWBITS
+	ld	b,2
+pclsw:	ld	(hl),a		; clear all switches
+	inc	hl
+	djnz	pclsw
+	ld	ix,LFCB
+	ld	(ix+F.ATTR),0
+	ld	ix,RFCB
+	ld	de,FNSZ
+	ld	b,MAXRPA
+pclr:	ld	(ix+F.ATTR),0
+	add	ix,de
+	djnz	pclr
+	ld	hl,(lnptr)
+par0:	ld	a,(hl)
+	call	iseol
+	ret	z
+	ld	ix,RFCB		; assume right parameter
+	ld	a,(NRPARM)
+	ld	e,a
+	ld	d,FNSZ
+	push	hl
+	call	mult8
+	ex	de,hl
+	pop	hl
+	add	ix,de
+	call	PFN		; try to parse file name
+
+	ld	a,(NRPARM)	; check how many right params entered so far
+	inc	a
+	cp	MAXRPA+1	; 1 is maximum
+	ld	de,tmerr
+	ccf
+	ret	c
+	ld	(NRPARM),a	; increase counter
+
+par01:	ld	a,(hl)		; see where PFN stopped
+	call	iseol		; end of line?
+	ret	z		; then return
+	cp	'='		; assignment ?
+	jr	z,par1		; then it was a left parameter
+	cp	','		; comma?
+	jr	z,par2		; then a new right parameter begins
+	cp	'/'		; switch?
+	jr	z,par3		; then process it
+	cp	'!'		; a comment?
+	ret	z		; then just return - ignore it
+	ld	de,snerr	; else is error
+	scf
+	ret
+
+par1:	; handle assignment
+
+	ld	a,(ASGN)	; is this the first time?
+	or	a
+	ld	de,snerr
+	scf			; return with error if not
+	ret	nz
+	inc	a
+	ld	(ASGN),a	; else set flag
+	push	hl
+	ld	hl,RFCB
+	ld	de,LFCB
+	ld	bc,FNSZ
+	ldir			; copy the FCB to left side
+	pop	hl
+	ld	a,(NRPARM)
+	cp	2		; two or more params entered so far?
+	ld	de,snerr	; return error if yes, only 0 or 1 allowed
+	ccf
+	ret	c
+	xor	a		; reset right parameter counter
+	ld	(NRPARM),a
+	inc	hl		; else skip delimiter
+	jp	par0		; and loop
+
+par2:	; handle comma
+
+	inc	hl		; skip delimiter
+	jp	par0		; and loop
+
+par3:	; handle switch
+
+	inc	hl		; skip delim
+	ld	a,(hl)		; get first switch character
+	call	iseol		; end of command?
+	jr	z,par3e		; error if yes
+	call	UCASE
+	ld	d,a
+	inc	hl
+	ld	a,(hl)		; get second switch character
+	call	iseol
+	jr	z,par3e
+	call	UCASE
+	ld	e,a		; switch name now in DE
+	inc	hl
+	push	hl
+	ld	hl,swtab
+par30:	ld	a,(hl)
+	inc	hl
+	or	a		; end of table?
+	jr	z,par3e0	; error - no switch matches
+	cp	d
+	jr	nz,par31
+	ld	a,(hl)
+	cp	e
+	jr	z,par32
+par31:	inc	hl
+	inc	hl
+	jr	par30
+
+par32:	inc	hl		; we have a match
+	ld	a,(hl)		; get the byte that follows
+	rrca			; hi-nibble is switch byte index in table
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	e,a		; byte index in DE
+	ld	d,0
+	ld	a,(hl)
+	and	7		; bit number is in lo-nibble
+	ld	b,a
+	ld	a,80h
+	inc	b		; so mask starts from 01h
+par33:	rlca			; get bit into position
+	djnz	par33
+	ld	hl,SWBITS
+	add	hl,de
+	or	(hl)		; set switch bit
+	ld	(hl),a
+	pop	hl
+	jp	par01		; after a switch only a comma
+				;  or another switch can follow
+
+par3e0:	pop	hl
+par3e:	ld	de,swerr
+	scf
+	ret
+
+swtab:	db	'AS',(0 SHL 4) OR S1.AS
+	db	'OC',(0 SHL 4) OR S1.OC
+	db	'HX',(0 SHL 4) OR S1.HX
+	db	'WD',(0 SHL 4) OR S1.WD
+	db	'MX',(0 SHL 4) OR S1.MX
+	db	'ID',(0 SHL 4) OR S1.ID
+
+	db	'NH',(1 SHL 4) OR S2.NH
+
+	db	0	; end of table
+
+tmerr:	db	'Too many input filespecs',0
+swerr:	db	'Invalid switch',0
+tmserr:	db	'Too many command switches - ambiguous',0
+
+; HL = D * E
+
+mult8:	ld	hl,0
+	ld	a,d
+	ld	d,0
+mnext:	or	a
+	ret	z
+	rra
+	jr	nc,shift
+	add	hl,de
+shift:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	mnext
+
+;-----------------------------------------------------------------------
+
+DUMP:	ld	a,(ASGN)
+	or	a
+	jr	nz,dmp0
+
+	ld	ix,LFCB		; if no output file specified, assume TI:
+	ld	(ix+F.DEV),'T'
+	ld	(ix+F.DEV+1),'I'
+	ld	(ix+F.UNIT),0
+	ld	(ix+F.ATTR),FN.DEV
+
+dmp0:	ld	hl,LFCB
+	ld	de,(DSTF+FC.FDB)
+	ld	bc,FNSZ
+	ldir
+
+	ld	ix,DSTF
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT		; create output file using FCSLIB
+	jp	c,SYSERR
+
+	call	OPNSRC		; open source file using direct QIO
+	jr	nc,dmp1
+
+	push	af
+	ld	ix,DSTF
+	call	FCLOSE
+	call	c,SYSERR
+	pop	af
+	jp	SYSERR
+
+dmp1:	ld	hl,0
+	ld	(addr),hl	; clear the 32-bit address
+	ld	(addr+2),hl
+
+	ld	(blkno),hl	; start from block 0
+	xor	a
+	ld	(blkno+2),a
+
+	IF	DBLBUF
+
+	xor	a
+	ld	(flpflp),a
+	ld	hl,(blkno)
+	ld	(QIOBL1+Q.BLK),hl
+	ld	hl,(blkno+2)
+	ld	h,0
+	ld	(QIOBL1+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO
+	jr	c,dmperr
+
+	ENDIF
+
+dmp2:	call	RDBLK		; read next block
+	jr	c,dmperr
+	ld	a,b
+	or	c
+	jr	z,dmpeof
+	ld	(nread),bc
+
+	call	DMPBLK		; dump block
+
+dmp3:	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(blkno),hl
+	ld	a,b
+	ld	(blkno+2),a
+	jr	dmp2
+
+inc24:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+dmperr:	cp	E.UNA
+	jr	z,dmp3		; skip unallocated blocks
+	cp	E.EOF
+	call	nz,SYSERR
+dmpeof:	ld	hl,eofmsg
+	ld	a,(SWBITS+1)
+	bit	S2.NH,a
+	jr	nz,dmp4
+
+	ld	ix,DSTF
+	ld	hl,dstr
+	ld	(hl),0
+	call	FPUTLN
+	ld	hl,eofmsg
+	call	FPUTLN
+	ld	hl,dstr
+	call	FPUTLN
+	call	FPUTLN
+
+dmp4:
+	IF	DBLBUF
+
+	ld	e,11
+	SC	.WTSE		; just in case [else use IO.KIL]
+	ld	e,12
+	SC	.WTSE
+
+	ENDIF
+
+	call	CLSSRC
+	ld	ix,DSTF
+	call	FCLOSE
+	jp	c,SYSERR
+	ret
+
+eofmsg:	db	'*** EOF ***',0
+
+;------------------------------------------------------------------------
+
+	IF	DBLBUF
+
+RDBLK:	ld	hl,flpflp
+	ld	a,(hl)
+	cpl
+	ld	(hl),a
+	or	a
+	jr	z,rd1
+
+	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(QIOBL2+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(QIOBL2+Q.BLK+2),hl
+	ld	hl,QIOBL2
+	SC	.QIO		; read next block, don't wait for completion
+	ret	c
+	ld	e,11
+	SC	.WTSE		; wait for last block read to complete
+	ret	c
+	ld	hl,buf1
+	ld	(bufptr),hl
+	ld	bc,(nread1)
+	ld	a,(res1)
+	or	a
+	ret	z
+	scf
+	ret
+
+rd1:	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(QIOBL1+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(QIOBL1+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO		; read next block, don't wait for completion
+	ret	c
+	ld	e,12
+	SC	.WTSE		; wait for last block read to complete
+	ret	c
+	ld	hl,buf2
+	ld	(bufptr),hl
+	ld	bc,(nread2)
+	ld	a,(res2)
+	or	a
+	ret	z
+	scf
+	ret
+
+	ELSE
+
+RDBLK:	ld	hl,buf
+	ld	(bufptr),hl
+	ld	hl,(blkno)
+	ld	(QIOBL1+Q.BLK),hl
+	ld	hl,(blkno+2)
+	ld	h,0
+	ld	(QIOBL1+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO
+	ret	c
+	ld	a,(res1)
+	ld	bc,(nread)
+	or	a
+	ret	z
+	scf
+	ret
+
+	ENDIF
+
+;------------------------------------------------------------------------
+
+; Dump a single block contents using the specified format.
+; If 'no header' option was specifed, the full 32-bit address relative to
+; the start of the file will be displayed. Else a 16-bit address relative
+; to the start of block will be displayed.
+
+DMPBLK:	ld	ix,DSTF
+
+	ld	a,(SWBITS+1)
+	bit	S2.NH,a		; 'no header'?
+	jp	nz,dmpnh	; jump if yes
+
+	ld	hl,dstr
+	xor	a
+	ld	(hl),a
+	call	FPUTLN
+	call	FPUTLN
+	call	FPUTLN
+	call	FPUTLN
+
+	ld	hl,dstr
+	ld	de,hdr1
+	call	CPYSTR		; 'Dump of'
+	push	de
+	ld	iy,finfo
+	call	CPYFN		; output file name
+	pop	de
+	inc	de
+	call	CPYSTR		; 'file ID'
+	ld	e,(iy+F.INODE)
+	ld	d,(iy+F.INODE+1)
+	xor	a
+	call	CVTWD		; output file ID
+	ld	(hl),0
+	ld	hl,dstr
+	call	FPUTLN
+
+	ld	hl,dstr
+	ld	de,hdr2
+	call	CPYSTR		; 'Virtual block'
+	push	de
+	ld	bc,(blkno)
+	ld	de,(blkno+2)
+	ld	d,0
+	xor	a
+	call	CVTLD		; output block number
+	pop	de
+	inc	de
+	call	CPYSTR		; 'size'
+	push	de
+	ld	de,(nread)
+	push	de
+	xor	a
+	call	CVTWD		; output block size
+	pop	de
+	dec	de
+	ld	a,d
+	or	e
+	pop	de
+	inc	de
+	call	PLURAL
+	ld	(hl),0
+	ld	hl,dstr
+	call	FPUTLN
+
+	ld	hl,dstr
+	xor	a
+	ld	(hl),a
+	call	FPUTLN
+	call	FPUTLN
+
+	ld	hl,0
+	ld	(addr),hl	; reset the relative address
+	ld	(addr+2),hl
+
+dmpnh:	ld	hl,dstr
+
+	ld	a,(SWBITS+1)
+	bit	S2.NH,a		; 'no header'?
+	ld	de,(addr+2)
+	call	nz,CVTWH	; output hi-word of address
+	ld	de,(addr)
+	call	CVTWH		; output lo-word
+
+	push	hl
+	ld	hl,(nread)	; check number of bytes remaining
+	ld	de,16
+	or	a
+	sbc	hl,de
+	ld	b,16
+	jr	nc,dmpb1	; jump if >= 16
+
+	add	hl,de
+	ld	b,l		; number of remaining bytes in B
+	ld	hl,0
+
+dmpb1:	ld	(nread),hl
+	pop	hl
+
+	push	bc
+	ld	(hl),':'	; output separator
+	inc	hl
+	ld	(hl),' '
+	inc	hl
+
+	ld	de,(bufptr)
+dmph0:	ld	a,(de)
+	call	CVTBH		; output hexadecimal dump
+	ld	(hl),' '
+	inc	hl
+	inc	de
+	djnz	dmph0
+
+	pop	bc		; check number of bytes
+	push	bc
+	ld	a,16
+	sub	b
+	jr	z,dmph1		; jump if 16
+
+	ld	b,a
+dmph2:	ld	a,' '		; else fill the rest with spaces
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	djnz	dmph2
+
+dmph1:	pop	bc
+	ld	de,(bufptr)
+dmpa:	ld	a,(de)		; output ASCII dump
+	cp	' '
+	jr	c,dmpa1
+	cp	7Fh
+	jr	c,dmpa2
+dmpa1:	ld	a,'.'
+dmpa2:	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	dmpa
+
+	ld	(hl),0
+	ld	hl,dstr
+	call	FPUTLN
+
+	ld	hl,(bufptr)
+	ld	de,16
+	add	hl,de
+	ld	(bufptr),hl
+
+	ld	hl,(addr)
+	add	hl,de
+	ld	(addr),hl
+	ld	hl,(addr+2)
+	ld	de,0
+	adc	hl,de
+	ld	(addr+2),hl
+
+	ld	hl,(nread)
+	ld	a,h
+	or	l
+	jp	nz,dmpnh
+
+	ret
+
+; Copy null-terminated string @DE to @HL
+
+CPYSTR:	ld	a,(de)
+	ld	(hl),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	CPYSTR
+
+; Copy string @DE to @HL, handling escaped plural of words according
+; to value in A.
+
+PLURAL:	ld	b,a
+pl1:	ld	a,(de)
+	or	a
+	ret	z
+	cp	'\'
+	jr	nz,pl3
+	inc	de
+	inc	b
+	dec	b
+	jr	nz,pl2
+	inc	de
+pl2:	ld	a,(de)
+pl3:	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	pl1
+
+hdr1:	db	'Dump of ',0,' - File ID ',0
+hdr2:	db	TAB,TAB,'Virtual block ',0,' - Size ',0,' byte\s',0
+
+;-----------------------------------------------------------------------
+
+OPNSRC:	ld	de,(RFCB+F.DEV)
+	ld	a,(RFCB+F.UNIT)
+	ld	c,a
+	ld	b,LUNSRC
+	SC	.ALUN		; assign src LUN
+	ret	c
+	ld	hl,lisrc
+	ld	c,LUNSRC
+	SC	.GTLUN		; get LUN info
+	ret	c
+	ld	a,(lisrc+4)
+	bit	DV.DIR,a	; directory device?
+	jr	z,opns1		; jump if not
+	ld	hl,RFCB
+	ld	(SQIO+Q.P1),hl
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; else try to open output file on device
+	ret	c
+	ld	a,(res1)
+	or	a
+	scf
+	ret	nz
+	ld	hl,finfo
+	ld	(SQIO+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(SQIO+Q.LEN),hl
+	ld	hl,IO.RAT
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; get file attributes
+	jr	c,opns2
+	ld	a,(res1)
+	or	a
+	ret	z
+opns2:	push	af
+	call	CLSSRC
+	pop	af
+	ret
+opns1:	ld	hl,(lisrc)
+	ld	(finfo+F.DEV),hl
+	ld	a,(lisrc+2)
+	ld	(finfo+F.UNIT),a
+	ld	de,0		; no ASTs
+	ld	c,LUNSRC
+	call	ATTACH
+	ret
+
+CLSSRC:	ld	a,(lisrc+4)
+	bit	DV.DIR,a	; directory device?
+	jr	z,clss1		; jump if not
+	ld	hl,IO.DEA
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; else close the output file
+	ret
+clss1:	ld	c,LUNSRC
+	call	DETACH
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+CPYFN:	ld	a,(iy+F.DEV)
+	ld	(hl),a
+	inc	hl
+	ld	a,(iy+F.DEV+1)
+	ld	(hl),a
+	inc	hl
+	ld	a,(iy+F.UNIT)
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ld	a,(lisrc+4)
+	bit	DV.DIR,a
+	ret	z
+	ld	(hl),'['
+	inc	hl
+	ld	de,F.DIR
+	ld	b,8
+	call	CPYNAM
+	ld	(hl),']'
+	inc	hl
+	ld	de,F.NAME
+	ld	b,8
+	call	CPYNAM
+	ld	(hl),'.'
+	inc	hl
+	ld	de,F.EXT
+	ld	b,3
+	call	CPYNAM
+	ld	(hl),';'
+	inc	hl
+	ld	e,(iy+F.VER)
+	ld	d,(iy+F.VER+1)
+	xor	a
+	call	CVTWD
+	ret
+
+CPYNAM:	push	hl
+	push	iy
+	pop	hl
+	add	hl,de
+	ex	de,hl
+	pop	hl
+prn1:	ld	a,(de)
+	cp	' '
+	ret	z
+	ld	(hl),a
+	inc	de
+	inc	hl
+	djnz	prn1
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ		; buffer for task info
+
+GDAT:	GCML$	lnbuf,80,'DMP',LUNCML,2
+
+tmplun:	ds	1		; caller's LUN during error output
+lnbuf:	ds	82
+lnptr:	ds	2
+fname:	ds	FNSZ
+finfo:	ds	FINFSZ
+
+LFCB:	ds	FNSZ		; parsed left filespec of command
+RFCB:	ds	FNSZ*MAXRPA	; parsed right filespec of command
+ASGN:	ds	1		; true if '=' present on command
+NRPARM:	ds	1		; number of right filespecs (max 1 for DMP)
+SWBITS:	ds	2		; space for switch bits
+
+lisrc:	ds	6
+blkno:	ds	3
+bufptr:	ds	2
+nread:	ds	2		; number of valid bytes in buf
+addr:	ds	4
+dstr:	ds	82		; output string buffer
+
+DSTF:	FSR$	,<1 SHL FM.WR>,LUNDST,10
+
+SQIO:	QIOW$	IO.ACC,LUNSRC,11,res1,,<RFCB,0,0,0>
+
+	IF	DBLBUF
+
+QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,0,0,0>
+res1:	ds	2		; result
+nread1:	ds	2		; byte count
+
+QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,0,0,0>
+res2:	ds	2		; result
+nread2:	ds	2		; byte count
+
+flpflp:	ds	1
+buf1:	ds	512		; I/O buffer
+buf2:	ds	512		; I/O buffer
+
+	ELSE
+
+QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,0,0,0>
+res1:	ds	2		; result
+nread:	ds	2		; byte count
+buf:	ds	512		; I/O buffer
+
+	ENDIF
+
+	ds	256		; stack space
+stack	equ	$
+
+	end

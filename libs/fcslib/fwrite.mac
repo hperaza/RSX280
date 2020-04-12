@@ -1,0 +1,200 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+	public	FWRITE
+
+	extrn	CPHLDE,FWRBLK,?FINCB
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Write the specified number of bytes to a file.
+
+; Input:
+;   IX = address of file storage region
+;   DE = buffer address in user space
+;   BC = number of bytes to write
+;   A  = bank number of user task
+; Returns:
+;   BC = actual number of bytes written
+;   CY set on error and error code in A.
+
+FWRITE:	ld	a,b
+	or	c
+	ret	z
+
+	ld	hl,0		; HL = number of bytes written (nwritten)
+
+fwr1:	; write loop
+
+	push	hl		; save nwritten
+	push	de		; save src address
+
+	ld	l,(ix+FC.CUR)
+	ld	h,(ix+FC.CUR+1)
+	add	hl,bc		; HL = FC.CUR + len
+	ld	de,512
+	call	CPHLDE		; FC.CUR + len > 512?
+	jr	c,fwr2		; jump if yes
+
+	; data fits in current buffer
+
+	ld	a,b
+	or	c		; len == 0?
+	ld	a,E.OK
+	jp	z,fwr4		; return if yes (we are done)
+
+	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	add	hl,de		; offset into buffer
+	ex	de,hl		; DE = dst (file buffer)
+	pop	hl		; HL = src (user data)
+	push	bc		; save len
+	ldir			; store data in buffer
+	set	FS.BM,(ix+FC.MODE)
+	ld	l,(ix+FC.CUR)
+	ld	h,(ix+FC.CUR+1)
+	pop	bc
+	add	hl,bc		; update byte pointer: FC.CUR += len
+	ld	(ix+FC.CUR),l
+	ld	(ix+FC.CUR+1),h
+
+	ld	e,(ix+FC.CNT)
+	ld	d,(ix+FC.CNT+1)
+	call	CPHLDE		; FC.CUR > FC.CNT?
+	jr	nc,fwr5		; branch if not
+	ld	(ix+FC.CNT),l	; else update FC.CNT
+	ld	(ix+FC.CNT+1),h
+
+fwr5:	pop	hl		; pop nwritten
+	add	hl,bc		; nwritten += len
+	ld	b,h
+	ld	c,l		; return nwritten in BC
+	ld	a,E.OK
+	or	a
+	ret
+
+fwr2:	; data will overflow to next block(s)
+
+	ld	hl,512		; compute space remaining on this block
+	ld	(ix+FC.CNT),l	; set FC.CNT for FWRBLK call
+	ld	(ix+FC.CNT+1),h
+	ld	a,l
+	sub	(ix+FC.CUR)
+	ld	l,a
+	ld	a,h
+	sbc	a,(ix+FC.CUR+1)
+	ld	h,a		; nbytes = 512 - FC.CUR
+	or	l		; nbytes > 0?
+	jr	z,fwr3		; jump if not
+
+	; fill the remaining of this buffer
+
+	push	bc		; save len
+	ld	b,h
+	ld	c,l		; BC = nbytes
+
+	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	add	hl,de		; offset into buffer
+
+	ex	de,hl		; DE = dst (file buffer)
+	pop	hl		; pop len
+	ex	(sp),hl		; push len, pop src into HL
+
+	push	bc		; save nbytes
+	push	hl		; save src
+	ldir			; store data in buffer
+	set	FS.BM,(ix+FC.MODE)
+	pop	hl		; pop src
+	pop	bc		; pop nbytes
+	add	hl,bc		; HL += nbytes
+	ex	de,hl		; updated src pointer back in DE
+	pop	hl		; pop len
+	or	a
+	sbc	hl,bc		; len -= nbytes
+	ex	(sp),hl		; push len, pop nwritten
+	add	hl,bc		; nwritten += nbytes
+	pop	bc		; pop len into BC
+
+	push	hl		; push nwritten
+	push	de		; push src
+
+fwr3:	call	FWRBLK		; write block
+	jr	c,fwr4		; on error return
+
+	call	?FINCB		; move to next block
+
+	; update number of blocks in FDB
+
+	ld	l,(ix+FC.BLK)
+	ld	h,(ix+FC.BLK+1)
+
+	ld	e,(ix+FC.FDB)
+	ld	d,(ix+FC.FDB+1)
+	push	de
+	ex	(sp),ix
+
+	ld	e,(ix+F.NUSED)
+	ld	d,(ix+F.NUSED+1)
+	ex	de,hl		; HL = F.NUSED, DE = FC.BLK
+	call	CPHLDE		; F.NUSED > FC.BLK?
+	jr	c,fwr6		; branch if yes
+
+	inc	hl
+	ld	(ix+F.NUSED),l	; else set new F.NUSED
+	ld	(ix+F.NUSED),h
+
+	; TODO: update also F.LBCNT?
+
+fwr6:	pop	ix
+
+	xor	a
+	ld	(ix+FC.CUR),a	; reset FC.CUR
+	ld	(ix+FC.CUR+1),a
+	ld	(ix+FC.CNT),a	; reset FC.CNT
+	ld	(ix+FC.CNT+1),a
+
+;;	res	FS.BV,(ix+FC.MODE)
+
+	; TODO: if file is open in r/w mode and this is not the last block,
+	; then call FRDBLK to read-in next block before modifying it
+
+	pop	de		; restore src
+	pop	hl		;  and nwritten, len still in BC
+	jp	fwr1		; loop until all bytes written
+
+fwr4:	pop	de		; pop dst
+	pop	bc		; return nwritten in BC
+	ret			; return succes/error code
+
+	end

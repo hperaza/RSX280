@@ -1,0 +1,64 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+;  Write file attributes.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+
+	public	FWATTR
+
+	extrn	QIOBLK,QIOSB
+
+	cseg
+
+FWATTR:	push	ix
+	ld	ix,QIOBLK
+	ld	(ix+Q.LUN),c	; LUN
+	ld	(ix+Q.BUF),l	; buf
+	ld	(ix+Q.BUF+1),h
+	ld	(ix+Q.LEN),e	; len
+	ld	(ix+Q.LEN+1),d
+	ld	(ix+Q.FUNC),IO.WAT ; function code
+	ld	(ix+Q.SUBF),0	; subfunction
+	ld	(ix+Q.EFN),9	; flag number
+	ld	(ix+Q.WAIT),1	; wait for completion
+	xor	a
+	ld	(ix+Q.AST),a	; no AST
+	ld	(ix+Q.AST+1),a
+	ld	hl,QIOSB
+	ld	(ix+Q.IOSB),l	; set result address
+	ld	(ix+Q.IOSB+1),h
+	push	ix
+	pop	hl
+	SC	.QIO		; .QIOW
+	pop	ix
+	ret	c		; if queuing failed
+	ld	bc,(QIOSB+2)
+	ld	a,(QIOSB)
+	or	a		; check result
+	ret	z
+	scf
+	ret
+
+	end

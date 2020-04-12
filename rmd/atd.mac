@@ -1,0 +1,222 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Active Task Display page
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+
+	public	ATDPG
+
+	extrn	VPUTC,VPUTS,VPUTN,VXY,VGETXY,VHLHEX,VADEC
+	extrn	VCLEOL,VCLEOS,VRPAD,HEADER
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+ATDPG:	dw	dproc		; address of display procedure
+	dw	setup		; address of setup procedure
+	dw	hlptxt		; address of help text
+
+; This is the active task display procedure. It is called with a code
+; in register A:
+;   0 means redraw everything
+;   1 means draw only what has changed from the previous call
+
+dproc:	push	af
+	call	HEADER
+	pop	af
+
+	or	a		; check redraw flag
+	jr	nz,m0
+
+	call	thdr
+m0:	call	updtsk		; update task display
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process setup command @DE
+
+setup:	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Help text to add to the setup command page, if any
+
+hlptxt:	db	0
+
+;-----------------------------------------------------------------------
+
+; Display heading
+
+thdr:	VGTOXY	1,2
+	ld	hl,hdr
+	call	VPUTS
+	ret
+
+hdr:	db	'Name  Length  TI    Pri  I/O  Status flags',0
+
+;-----------------------------------------------------------------------
+
+; Update task display
+
+updtsk:	VGTOXY	0,4
+	ld	hl,($TLIST)
+
+upd1:	ld	a,h
+	or	l		; end of list?
+	jr	z,upd3		; exit loop if yes
+
+	push	hl
+	pop	ix
+	call	shwtsk		; show task
+	jr	c,upd2
+
+	call	VCLEOL
+	call	VGETXY
+	ld	h,0
+	inc	l
+	ld	a,l
+	cp	vsize
+	jr	nc,upd3
+	call	VXY		; next row
+
+upd2:	ldw	hl,(ix+T.TCBL)
+	jr	upd1		; loop
+
+upd3:	call	VCLEOS
+	ret
+
+; Show single task
+
+shwtsk:	bit	TS.ACT,(ix+T.ST); task active?
+	scf
+	ret	z		; skip it if not
+
+	push	ix
+	pop	hl
+	ld	de,T.NAME
+	add	hl,de
+	ld	b,6
+	call	VPUTN		; show task name
+
+	ld	c,' '
+	call	VPUTC
+	call	VPUTC
+
+	ldw	hl,(ix+T.PCB)
+	ld	bc,P.SIZE
+	add	hl,bc
+	ld	l,(hl)		; get subpartition size in 4K pages
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; *16
+	ld	h,l
+	ld	l,0		; *256 -> *4096 = size in bytes
+	call	VHLHEX		; display task length
+
+	ld	c,' '
+	call	VPUTC
+	call	VPUTC
+	call	VPUTC
+
+	ldw	de,(ix+T.TI)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e
+	call	VPUTC		; display terminal name
+	ld	c,d
+	call	VPUTC
+	call	VGETXY
+	ld	d,a		; starting X coord in D
+	ld	a,b
+	call	VADEC		; display terminal unit number
+	ld	e,4		; field size
+	call	VRPAD		; pad with spaces
+
+	call	VGETXY
+	ld	d,a		; starting X coord in D
+	ld	a,(ix+T.PRI)
+	call	VADEC		; display task priority
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	call	VGETXY
+	ld	d,a		; starting X coord in D
+	ld	a,(ix+T.IOC)
+	call	VADEC		; display I/O count
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	ld	d,(ix+T.ST)
+	ld	hl,stat		; status bit names
+	call	tbits
+
+	ld	d,(ix+T.ST+1)
+	ld	hl,stat2	; status bit names
+	call	tbits
+
+	ld	d,(ix+T.ATTR)
+	ld	hl,attr		; attribute bit names
+
+tbits:	ld	b,8		; 8 bits in a byte
+	ld	e,01h		; mask
+t1:	ld	a,d
+	and	e		; bit set?
+	jr	z,t2		; skip if not
+	ld	a,(hl)
+	inc	hl
+	or	a		; bit has a name?
+	jr	z,t3		; skip if not
+	dec	hl
+	push	bc
+	ld	b,3
+	call	VPUTN		; display bit name
+	pop	bc
+	ld	c,' '
+	call	VPUTC
+	call	VPUTC
+	jr	t3
+t2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	inc	hl		; skip name
+	inc	hl
+t3:	rl	e		; shift mask
+	djnz	t1		; loop until all bits processed
+	xor	a
+	ret
+
+stat:	db	0,'AST','SUP','CKR',0,0,0,0
+stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
+attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
+
+	end

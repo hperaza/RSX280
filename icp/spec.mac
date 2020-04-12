@@ -1,0 +1,574 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Special variables.
+
+	.Z80
+
+; Note: compile with ZSM4 (M80 reverts order of 'xy', etc.)
+
+	include	ICP.INC
+	include	SYSFN.INC
+	include	LCB.INC
+	include	ERRORS.INC
+
+	public	SPECV,FNDEV
+
+	extrn	UCASE,BCD2BIN,FNDCMD,LNPTR,FREMEM,ADDHLA,AHEX2
+	extrn	STYPE,SLEN,SNUM,SALNM,SVEOF,SVESC,SYSERR,EXSTAT
+	extrn	SVDFLT,SVTMO,DECSTR,FDB,FNBSTR,FILERR,EXSTRI
+	extrn	STRCPY
+
+	cseg
+
+CMD	MACRO	name,addr
+	db	name,0
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+SPECV:	ex	de,hl
+	ld	de,PVTBL
+	call	FNDCMD
+	ret	c		; error if not found
+	push	bc
+	ret			; go to processing routine (note: CY clear)
+
+; Special <variables>
+
+PVTBL:	; logical
+
+	CMD	'ALPHAN',	valnum
+	CMD	'ALTMOD',	vesc
+	CMD	'DEFAUL',	vdeflt
+	CMD	'EOF',		veof
+	CMD	'ERSEEN',	veseen
+	CMD	'ESCAPE',	vesc
+	CMD	'FALSE',	vfalse
+;;	CMD	'LOCAL',	vlocal
+	CMD	'NUMBER',	vnumb
+	CMD	'PRIVIL',	vpriv
+	CMD	'TIMOUT',	vtmout
+	CMD	'TRUE',		vtrue
+
+	; numeric
+
+	CMD	'ERRCTL',	verctl
+	CMD	'ERRNUM',	verrno
+	CMD	'ERROR',	verror
+	CMD	'ERRSEV',	versev
+	CMD	'EXSTAT',	vexst
+	CMD	'FILERR',	vferr
+	CMD	'FORATT',	vfattr
+	CMD	'MEMSIZ',	vmemsz
+	CMD	'SEVERE',	vsev
+	CMD	'SPACE',	vspace
+	CMD	'STRLEN',	vstrl
+	CMD	'SUCCES',	vsucc
+	CMD	'SYMTYP',	vstype
+	CMD	'SYSTEM',	vsys
+	CMD	'SYUNIT',	vsyun
+	CMD	'WARNIN',	vwarn
+
+	; string
+
+	CMD	'CLI',		vcli
+	CMD	'DATE',		vdat
+	CMD	'DIR',		vcdir
+	CMD	'EXSTRI',	vexstr
+	CMD	'FILATR',	vfattr
+	CMD	'FILSPC',	vfspec
+	CMD	'LIBDIR',	vlibd
+	CMD	'LOGDEV',	vldev
+	CMD	'LOGDIR',	vldir
+	CMD	'LOGUIC',	vluic
+	CMD	'NETNOD',	vhost
+	CMD	'SYSDEV',	vsydev
+	CMD	'SYDISK',	vsydsk
+	CMD	'SYSID',	vsysv
+	CMD	'SYSVER',	vsysv
+	CMD	'TIME',		vtim
+	CMD	'USER',		vldir
+	CMD	'UIC',		vcuic
+
+	db	0
+
+; <SYMTYP>
+
+vstype:	ld	a,(STYPE)
+	jr	vna
+
+; <STRLEN>
+
+vstrl:	ld	a,(SLEN)
+vna:	ld	l,a
+	ld	h,0
+	ld	c,V.NUM
+	ret
+
+; <ALPHAN>
+
+valnum:	ld	a,(SALNM)
+	jr	vtf
+
+; <NUMBER>
+
+vnumb:	ld	a,(SNUM)
+vtf:	or	a
+	jr	z,vfalse
+	; continue below
+
+; <TRUE>
+
+vtrue:	ld	hl,0FFFFh
+	ld	c,V.LOG		; variable type = logical
+	ret
+
+; <FALSE>
+
+vfalse:	ld	hl,0
+	ld	c,V.LOG		; variable type = logical
+	ret
+
+; <SUCCES>
+
+vsucc:	ld	hl,EX.SUC
+	ld	c,V.NUM
+	ret
+
+; <ERROR>
+
+verror:	ld	hl,EX.ERR
+	ld	c,V.NUM
+	ret
+
+; <WARNIN>
+
+vwarn:	ld	hl,EX.WRN
+	ld	c,V.NUM
+	ret
+
+; <SEVERE>
+
+vsev:	ld	hl,EX.SEV
+	ld	c,V.NUM
+	ret
+
+; <PRIVIL>
+
+vpriv:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c		; TODO: error
+	ld	hl,lcbbuf+L.ST
+	bit	LS.PRV,(hl)
+	jp	nz,vtrue
+	jp	vfalse
+
+; <LOCAL>
+
+;;vlocal:
+;;	scf
+;;	ret
+
+; <TIMOUT>
+
+vtmout:	ld	a,(SVTMO)
+	jp	vtf
+
+; <DEFAUL>
+
+vdeflt:	ld	a,(SVDFLT)
+	jp	vtf
+
+; <EOF>
+
+veof:	ld	a,(SVEOF)
+	jp	vtf
+
+; <ERSEEN>
+
+veseen:
+	scf
+	ret
+
+; <ERRCTL>
+
+verctl:
+	scf
+	ret
+
+; <ERRNUM>
+
+verrno:
+	scf
+	ret
+
+; <EXSTAT>
+
+vexst:	ld	hl,(EXSTAT)
+	ld	c,V.NUM
+	ret
+
+; <ERRSEV>
+
+versev:
+	scf
+	ret
+
+; <FILERR>
+
+vferr:	ld	a,(FILERR)
+	ld	l,a
+	ld	h,0
+	ld	c,V.NUM
+	or	a
+	ret	p
+	dec	h
+	ret
+
+; <ESCAPE>
+
+vesc:	ld	a,(SVESC)
+	jp	vtf
+
+; <EXSTRI>
+
+vexstr:	ld	hl,EXSTRI
+	ld	c,V.STR
+	or	a
+	ret
+
+; <MEMSIZ>
+
+vmemsz:
+	scf
+	ret
+
+; <LOGDEV>
+
+vldev:
+	scf
+	ret
+
+; <SYUNIT>
+
+vsyun:	ld	de,'SY'
+	ld	c,0
+	call	FNDEV
+	ld	l,c
+	ld	h,0
+	ld	c,V.NUM
+	or	a
+	ret
+
+; <SYDISK>
+
+vsydsk:	ld	de,'SY'
+	ld	c,0
+	call	FNDEV
+	ld	hl,tmpbuf
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),0
+	dec	hl
+	dec	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+; <SYSDEV>
+
+vsydev:	ld	de,'LB'
+	ld	c,0
+	call	FNDEV
+	ld	hl,tmpbuf
+	push	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ex	de,hl
+	ld	l,c
+	ld	h,0
+	xor	a
+	call	DECSTR
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+FNDEV:	push	de
+	push	bc
+	ld	b,LUNDEV
+	SC	.ALUN		; assign to misc LUN
+	jr	c,fndv1
+	ld	hl,tmpbuf
+	ld	c,LUNDEV
+	SC	.GTLUN		; det device info
+	jr	c,fndv1
+	ld	de,(tmpbuf)	; get physical device number
+	ld	a,(tmpbuf+2)
+	ld	c,a
+	pop	hl
+	pop	hl
+	ld	hl,tmpbuf
+	ret
+fndv1:	pop	bc		; on error, return logical device name
+	pop	de
+	ret
+
+; <LOGDIR> <USER>
+
+vldir:	ld	hl,tmpbuf
+	ld	c,GD.LOG
+	SC	.GDIR
+	ret	c		; TODO: error
+	ld	c,V.STR
+	ret
+
+; <CURDIR>
+
+vcdir:	ld	hl,tmpbuf
+	ld	c,GD.TI
+	SC	.GDIR
+	ret	c		; TODO: error
+	ld	c,V.STR
+	ret
+
+; <LOGUIC>
+; <CURUIC>
+
+vcuic:
+vluic:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c		; TODO: error
+	ld	hl,tmpbuf
+	push	hl
+	ld	(hl),'['
+	inc	hl
+	ex	de,hl
+	ld	a,(lcbbuf+L.GRP)
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	DECSTR
+	ld	a,','
+	ld	(de),a
+	inc	de
+	ld	a,(lcbbuf+L.USR)
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	DECSTR
+	ex	de,hl
+	ld	(hl),']'
+	inc	hl
+	ld	(hl),0
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+; <FILATR>
+
+vfattr:
+	scf
+	ret
+
+; <FILSPC>
+
+vfspec:	ld	ix,FDB
+	ld	hl,tmpbuf
+	push	hl
+	call	FNBSTR
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+; <LIBDIR>
+
+vlibd:	ld	hl,libdir
+	ld	de,tmpbuf
+	push	de
+	call	STRCPY
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+libdir:	db	'[SYSTEM]',0
+
+; <SYSID> <SYSVER>
+
+vsysv:	ld	hl,tmpbuf
+	ld	c,I.VERS
+	SC	.GIN
+	ret	c
+	push	hl
+	ld	bc,(tmpbuf)
+	ex	de,hl
+	ld	l,b
+	ld	h,0
+	xor	a
+	call	DECSTR
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	l,c
+	ld	h,0
+	xor	a
+	call	DECSTR
+	pop	hl
+	ld	c,V.STR
+	ret
+
+; <NETNOD>
+
+vhost:	ld	hl,tmpbuf
+	ld	c,I.HOST
+	SC	.GIN
+	jp	c,SYSERR
+	ld	hl,tmpbuf
+	ld	b,8
+	push	hl
+	call	trim
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+trim:	ld	a,(hl)
+	cp	' '
+	jr	z,trm1
+	inc	hl
+	djnz	trim
+trm1:	ld	(hl),0
+	ret
+
+; <SYSTEM>
+
+; 1 = RSX180
+; 2 = RSX280
+
+vsys:	ld	hl,1
+	ld	c,V.NUM
+	ret
+
+; <CLI>
+
+vcli:	ld	hl,mcrcli
+	ld	de,tmpbuf
+	push	de
+	call	STRCPY
+	pop	hl
+	ld	c,V.STR
+	or	a
+	ret
+
+mcrcli:	db	'MCR',0
+
+; <SPACE>
+
+vspace:	call	FREMEM
+	ld	c,V.NUM
+	or	a
+	ret
+
+; <DATE>
+
+vdat:	ld	hl,-8
+	add	hl,sp
+	ld	sp,hl		; allocate 8-byte buffer
+	SC	.GDAT
+	jp	c,vdt1
+	ld	ix,0
+	add	ix,sp
+	ld	de,tmpbuf
+	ld	a,(ix+3)	; day
+	call	AHEX2
+	ld	a,(ix+2)
+	call	BCD2BIN
+	dec	a		; make it base 0
+	add	a,a
+	add	a,a		; *4
+	ld	hl,months
+	call	ADDHLA
+	ld	bc,5
+	ldir
+	ld	a,(ix+0)	; year
+	call	AHEX2
+	ld	a,(ix+1)
+	call	AHEX2
+	xor	a
+	ld	(de),a
+	jr	vdt1
+
+months:	db	'-JAN-FEB-MAR-APR-MAY-JUN-JUL-AUG-SEP-OCT-NOV-DEC-'
+
+; <TIME>
+
+vtim:	ld	hl,-8
+	add	hl,sp
+	ld	sp,hl		; allocate 8-byte buffer
+	SC	.GDAT
+	jr	c,vdt1
+	ld	ix,0
+	add	ix,sp
+	ld	de,tmpbuf
+	ld	a,(ix+4)	; hours
+	call	AHEX2
+	ld	a,':'
+	ld	(de),a
+	inc	de
+	ld	a,(ix+5)	; min
+	call	AHEX2
+	ld	a,':'
+	ld	(de),a
+	inc	de
+	ld	a,(ix+6)	; secs
+	call	AHEX2
+	xor	a
+	ld	(de),a
+vdt1:	ld	hl,8
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	ld	hl,tmpbuf
+	ld	c,V.STR
+	or	a
+	ret	z
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+tmpbuf:	ds	40		; large enough for host name, full filespec
+				;  and date and time time strings
+lcbbuf:	ds	LCBSZ
+
+	end

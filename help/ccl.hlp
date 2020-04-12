@@ -1,0 +1,156 @@
+CCL is an extension to MCR that can run as standalone or catch-all task,
+and implements the following commands:
+
+  ASSIGN .......... Assign logical device to physical device
+  CD or CHDIR ..... Change current directory
+  COPY ............ Copy file
+  DATE ............ Displays current date and time
+  DELETE .......... Delete file
+  DIRECTORY ....... Display directory listing
+  DISMOUNT ........ Dismount device
+  FREE ............ Show available disk space
+  HEY ............. Wait for task and display exit status
+  MD or MKDIR ..... Create directory
+  PURGE ........... Purge old versions of files
+  RD or RMDIR ..... Remove a directory
+  RENAME .......... Rename a file
+  SHOW ............ Display system information and/or configuration
+  SYNC ............ Flush disk buffers
+  TYPE ............ Display file contents
+  WHO ............. Display logged-in users
+
+When entering a command, you do not have to type the whole word - the first
+unique letters are enough (for example, SH for SHOW). If the command is not
+recognized, CCL will try to find a program with the corresponding name in
+the LB0:[SYSTEM] directory and execute it.
+
+You can get a quick list of the available commands by typing '?' at the CCL
+prompt. Likewise, to get a list of options for a given commands, type the
+command name followed by '?', e.g.:
+
+  SHOW ?
+
+For help on specific CCL commands type
+
+  HELP CCL command
+\AS*SIGN
+
+Syntax:
+
+  ASSIGN physical logical
+
+Assigns the specified logical name to a physical device. The command is
+translated into a MCR 'ASN physical=logical' command.
+
+\CD|CHD*IR
+
+Syntax:
+
+  CHDIR directory
+
+or
+
+  CD directory
+
+Makes the specified directory current. If the name is not specified, the
+current directory name is displayed. The command is translated to a MCR
+'SET /DIR=directory' command.
+
+\CO*PY
+
+Syntax:
+
+  COPY oldname newname
+
+Copy a file. The command is translated into a MCR 'PIP newname=oldname/NV/CD'
+command.
+
+\DA*TE
+
+Syntax:
+
+  DATE
+
+Displays the current date and time. The command is translated into a
+MCR 'TIM' command.
+
+\DEL*ETE
+
+Syntax:
+
+  DELETE filespec
+
+Deletes the specified file or files. The command is translated into a MCR
+'PIP filespec/DE' command. This allows you to specify additional PIP switches
+to the command (e.g. /SD for a selective delete, etc.)
+
+\DIR*ECTORY
+
+Syntax:
+
+  DIRECTORY [filespec]
+
+Display the specified directory, or the current if none specified. The
+command is translated into a MCR 'PIP filespec/LI' command. This allows you
+to specify additional PIP switches to the command (e.g. /BR for a brief
+display, etc.)
+
+\DIS*MOUNT
+\FRE*E
+
+Syntax:
+
+  FREE [ddn:]
+
+Display the amount of free space in the specified device. The command is
+translated into a MCR 'PIP ddn:/FR' command.
+
+\HEY
+
+Syntax:
+
+  HEY taskname
+
+Waits for the specified task to terminate and then displays the exit status.
+The command is implemented internally by CCL.
+
+\MD|MKD*IR
+\PUR*GE
+\RD|RMD*IR
+\REN*AME
+
+Syntax:
+
+  RENAME oldname newname
+
+Renames a file. The command is translated into a MCR 'PIP newname=oldname/RE'
+command.
+
+\SH*OW
+
+Syntax:
+
+  SHOW option
+
+where option can be any of the following:
+
+  DATE ......... Show current date and time
+  DEVICES ...... Show physical and logical devices
+  LABEL ........ Show the volume label for the specified device
+  LOGINS ....... Show logged-in users
+  MEMORY ....... Show the amount of used and available memory
+  MOUNTED ...... Show mounted devices
+  TASKS ........ Show running tasks
+  VERSION ...... Show system version
+
+\SYN*C
+\TYP*E
+\WHO
+
+Syntax:
+
+  WHO
+
+Displays logged-in users.
+
+\;end

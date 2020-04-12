@@ -1,0 +1,490 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   RSX-11M RMD look-alike program for RSX-280.
+
+	.Z280
+
+	ident	'V6.15'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	AST.INC
+	include	RMD.INC
+	include	ERRORS.INC
+
+	public	ACTPG,CLS,CLEOS,CLEOL,HOME,PUTCUR,SYSVN,HEADER,RATE
+	public	FATAL,ERROR
+
+	extrn	PUTCH,PUTSTR,PERROR,TTFLSH,ATTACH,DETACH,UCASE,ADEC
+	extrn	GCCL,VCLS,VXY,VPUTC,VPUTS,VOUTP,VADEC,VADEC2,VHLDEC
+	extrn	VSNAP,SKIPBL,SKIPW,CMDBUF,ERRCMD
+
+	extrn	MEMPG,ATDPG,THDRPG,SYSUPT,SYSTIM,HELP,COMND,COMNDL
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+START:	jp	MAIN
+
+vt100	equ	$
+vclrscr:db	4,ESC,'[2J',0
+vclreos:db	3,ESC,'[J',0,0
+vclreol:db	3,ESC,'[K',0,0
+vhome:	db	3,ESC,'[H',0,0
+vcurprf:db	2,ESC,'[',0,0,0
+vcursep:db	1,';',0,0,0,0
+vcurpst:db	1,'H',0,0,0,0
+vcurbcd:db	true
+vcuryof:db	1
+vcurxof:db	1
+vxfirst:db	false
+tdlen	equ	$-vt100
+
+vt52	equ	$
+	db	4,ESC,'H',ESC,'J',0
+	db	2,ESC,'J',0,0,0
+	db	2,ESC,'K',0,0,0
+	db	2,ESC,'H',0,0,0
+	db	2,ESC,'Y',0,0,0
+	db	0,0,0,0,0,0
+	db	0,0,0,0,0,0
+	db	false
+	db	32
+	db	32
+	db	false
+
+;-----------------------------------------------------------------------
+
+; screen output routines
+
+CLS:	ld	hl,vclrscr
+	jp	putseq
+
+CLEOS:	ld	hl,vclreos
+	jp	putseq
+
+CLEOL:	ld	hl,vclreol
+	jp	putseq
+
+HOME:	ld	hl,vhome
+	ld	a,(hl)
+	or	a
+	jp	nz,putseq
+	ld	hl,0
+	jp	PUTCUR
+
+; H = x coord, L = y coord
+
+PUTCUR:	push	hl
+	push	de
+	ex	de,hl
+	ld	hl,(vcuryof)	; H = vcurxof, L = vcuryof
+	add	hl,de		; should not generate any CY from L to H
+	ex	de,hl
+	ld	a,(vxfirst)
+	or	a
+	jr	z,noswap
+	ld	a,e
+	ld	e,d
+	ld	d,a
+noswap:	ld	hl,vcurprf	; prefix
+	call	putseq
+	ld	c,e		; y coord
+	call	pcurnum
+	ld	hl,vcursep	; separator
+	call	putseq
+	ld	c,d		; x coord
+	call	pcurnum
+	ld	hl,vcurpst	; postfix
+	call	putseq
+;;	call	TTFLSH
+	pop	de
+	pop	hl
+	ret
+
+pcurnum:ld	a,(vcurbcd)
+	or	a
+	jp	z,PUTCH
+	ld	a,c
+	jp	ADEC		; note: no filler
+
+putseq:	ld	a,(hl)
+	or	a
+	ret	z
+	push	bc
+	ld	b,a
+	inc	hl
+pseq1:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pseq1
+;;	call	TTFLSH
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; unsolicited char AST service routine
+
+ttast:	ex	(sp),hl		; fetch argument
+	ld	a,l
+	ld	(astchr),a	; save received char
+	ld	hl,astflg
+	set	1,(hl)		; signal a character has arrived
+	push	de
+	ld	e,2
+	SC	.SETF		; set flag 2
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+; mark-time AST service routine
+
+tmast:	push	hl
+	ld	hl,astflg
+	set	0,(hl)		; signal time mark has arrived
+	push	de
+	ld	e,2
+	SC	.SETF		; set flag 2
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+;-----------------------------------------------------------------------
+
+; Draw header
+
+HEADER:	or	a		; check redisplay flag
+	jr	nz,h1
+
+	VGTOXY	0,0
+	ld	hl,sysnam
+	call	VPUTS
+	ld	c,' '
+	call	VPUTC
+	call	shvers		; show system version
+	call	shsize		; show system memory size
+h1:	call	shwhst		; show host name
+	call	SYSTIM		; show current date and time
+	call	SYSUPT		; show up time
+	ret
+
+sysnam:	db	'RSX-180',0
+
+shvers:	ld	c,'V'
+	call	VPUTC
+	ld	hl,(SYSVN)
+	ld	a,h
+	call	VADEC		; note: no filler
+	ld	c,'.'
+	call	VPUTC
+	ld	a,l
+	call	VADEC2		; note: two digits
+	ret
+
+shsize:	VGTOXY	15,0
+	ld	hl,($MEMSZ)	; get memsize in kb [system.inc]
+	xor	a		; no filler for number
+	call	VHLDEC
+	ld	c,'K'
+	jp	VPUTC
+
+shwhst:	VGTOXY	21,0
+	ld	hl,$HOSTN
+	ld	b,9
+snam:	ld	c,(hl)
+	call	VPUTC
+	inc	hl
+	djnz	snam
+	ret
+
+;-----------------------------------------------------------------------
+
+; ***** The Main Routine *****
+
+MAIN:	ld	sp,stack
+
+	xor	a
+	ld	(opts),a	; clear snapshot option
+	inc	a
+	ld	(RATE),a	; default replot rate is 1 second
+
+	ld	hl,MEMPG	; default mode is memory display
+	ld	(ACTPG),hl	; set display procedure
+
+	ld	hl,SYSVN
+	ld	c,I.VERS
+	SC	.GIN		; get system version number
+
+	ld	c,1
+	SC	.SUPER		; put us in supervisor mode
+	jp	c,fatal
+
+	call	GCCL		; get MCR command line
+	call	PARSE		; parse command line and process options
+
+	ld	a,(opts)	; snapshot requested?
+	or	a
+	jp	nz,snpsht	; if yes, output snapshot and exit
+
+	xor	a
+	set	0,a		; for the initial mark time request
+	ld	(astflg),a	; init AST flags
+
+	ld	de,'TI'
+	ld	c,0
+	ld	b,5
+	SC	.ALUN		; assign LUN 5 to TI:
+
+	ld	hl,qterm
+	SC	.QIO
+	ld	a,(ttchr+1)
+	or	a		; ANSI terminal?
+	jr	nz,t1
+	ld	hl,vt52		; default to VT52 if not
+	ld	de,vt100
+	ld	bc,tdlen
+	ldir
+
+t1:	ld	de,ttast	; attach with ASTs
+	ld	c,5		; LUN
+	call	ATTACH
+
+	ld	e,2
+	SC	.CLEF		; clear flag 2
+
+loop0:	call	CLS		; clear screen
+	call	VCLS		; clear frame buffer
+
+	xor	a		; redraw everything
+	call	display		; call display routine
+	call	VOUTP		; output frame buffer
+
+loop:	ld	hl,astflg
+	bit	0,(hl)		; time mark?
+	jr	z,wait		; jump if not yet arrived
+
+	res	0,(hl)
+	ld	hl,(RATE)
+	ld	h,0
+	ld	d,2		; units = seconds
+	ld	e,0		; no EFN
+	ld	bc,tmast	; AST routine address
+	SC	.MRKT		; setup AST to arrive in (RATE) seconds
+
+wait:	ld	e,2
+	SC	.WTSE		; wait for flag 2 (AST)
+
+	ld	e,2
+	SC	.CLEF		; clear flag 2
+
+loopk:	ld	hl,astflg	; see what happened
+	bit	1,(hl)		; char arrived?
+	jr	z,chkt		; jump if not
+
+	res	1,(hl)
+	ld	a,(astchr)	; fetch char
+	call	UCASE
+
+	cp	' '		; space
+	jr	z,loop0		; redraw all
+
+	cp	3		; ^C
+	jp	z,quit		; exit program
+
+	cp	1Ah		; ^Z
+	jp	z,quit		; exit program
+
+	cp	ESC		; escape
+	jr	nz,m1
+
+	ld	hl,(ACTPG)
+	cpw	hl,HELP
+	jr	z,loopk		; ignore setup command for help screen
+
+	call	COMND		; else prompt for and get command
+	jr	loop0		; replot everything afterwards
+
+m1:	call	SELPG		; check for switch page command
+	jp	loop0		; loop to redraw everything
+
+;;	jr	loopk		; note loopk and not chkt below, to avoid
+;;				; multi-seq keys affecting responsiveness
+
+chkt:	ld	hl,astflg
+	bit	0,(hl)		; time mark?
+	jr	z,wait		; jump if not (and do not clear the bit here)
+
+	ld	a,1
+	call	display		; call display routine
+	call	VOUTP		; output frame buffer
+
+	jp	loop
+
+display:
+	ld	hl,(ACTPG)
+	ldw	hl,(hl)
+	jp	(hl)
+
+snpsht:	call	VCLS		; clear frame buffer
+	xor	a		; redraw everything
+	call	display		; call display routine
+	call	VSNAP		; output snapshot of the frame buffer
+	ld	c,EX.SUC	; exit with success code
+	jp	exit
+
+quit:	call	CLS
+	ld	c,EX.SUC	; exit with success code
+	jp	exit
+
+	; select page
+
+SELPG:	cp	'M'
+	ld	hl,MEMPG
+	jr	z,setmod
+
+	cp	'A'
+	ld	hl,ATDPG
+	jr	z,setmod
+
+	cp	'T'
+	ld	hl,THDRPG
+	jr	z,setmod
+
+;;	cp	'H'
+	ld	hl,HELP		; default mode for unknown commands
+setmod:	ld	(ACTPG),hl
+	ret			; return with CY clear
+
+;-----------------------------------------------------------------------
+
+; Parse command line
+
+PARSE:	ex	de,hl		; get pointer to command line into DE
+	call	SKIPW		; skip program name
+	call	SKIPBL
+	or	a
+	ret	z
+	call	UCASE
+	call	SELPG		; first option is page number
+	call	SKIPW
+pcm1:	call	SKIPBL
+	or	a
+	ret	z
+	cp	'/'		; option?
+	jr	nz,pcm4
+	inc	de
+	call	GETOPT
+	push	de
+	ld	de,CMDBUF
+	call	SKIPBL
+	call	UCASE
+	cp	'S'		; check for 'S'napshot option
+	jr	nz,pcm2
+	ld	a,1
+	ld	(opts),a
+	jr	pcm3		; note CY clear
+pcm2:	ld	de,CMDBUF
+	call	COMNDL		; pass option to selected page
+pcm3:	pop	de
+	jr	c,pcm5
+	jr	pcm1		; loop until all processed
+
+pcm4:	call	ERRCMD
+pcm5:	ld	c,EX.ERR	; exit with error code
+	jp	exit
+
+GETOPT:	ld	hl,CMDBUF
+gtop1:	ld	a,(de)
+	or	a
+	jr	z,gtop2
+	cp	'/'
+	jr	z,gtop2
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	gtop1
+gtop2:	xor	a
+	ld	(hl),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle errors
+
+ERROR:	push	hl
+	ld	hl,rmdpfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+FATAL:	push	af
+	ld	hl,rmdpfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ld	c,EX.ERR	; exit with error code
+exit:	push	bc
+	call	TTFLSH
+	ld	c,5		; LUN
+	call	DETACH
+	pop	bc
+	ld	l,c		; exit code
+	ld	h,0
+	SC	.EXIT
+
+rmdpfx:	db	CR,LF,'RMD -- ',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qterm:	QIOW$	SF.GMC,5,1,iosb,,<ttchr,ttlen>
+ttchr:	db	TC.ANS,0
+ttlen	equ	$-ttchr
+iosb:	ds	4
+
+RATE:	ds	1		; replot rate in seconds
+ACTPG:	ds	2		; address of current page
+SYSVN:	ds	2		; system version number
+
+opts:	ds	1		; snapshot option
+astflg:	ds	1		; AST flags:
+				;   bit 0 set = mark time flag
+				;   bit 1 set = unsolicited char arrived
+astchr:	ds	1		; received char
+
+	ds	128
+stack	equ	$
+
+	db	0		; force output of last byte
+
+	end	START

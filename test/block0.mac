@@ -1,0 +1,165 @@
+	.z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	QIO.INC
+
+	extrn	GCCL,PDN,PUTCH,PUTSTR,PERROR,HLHEX,AHEX,CRLF,EXIT
+
+;-----------------------------------------------------------------------
+
+; Dumps the logical block 0 and physical block 0 of the specified device.
+
+	cseg
+
+START:	ld	sp,stack
+
+	call	GCCL		; get MCR command line
+	call	skpnam		; skip task name
+	call	PDN		; parse device name
+	ld	hl,snerr
+	jp	c,error
+
+	ld	b,1
+	SC	.ALUN		; assign LUN
+	jr	c,syserr
+
+	ld	hl,qio1
+	SC	.QIO		; read logical block 0
+	jr	c,syserr
+	ld	a,(iosb)	; check return code
+	or	a
+	scf
+	jr	nz,syserr
+
+	call	CRLF
+	ld	hl,lb0msg
+	call	PUTSTR
+	call	CRLF
+	call	dmpblk		; dump block contents
+
+	ld	hl,qio2
+	SC	.QIO		; read physical block 0
+	jr	c,syserr
+	ld	a,(iosb)	; check return code
+	or	a
+	scf
+	jr	nz,syserr
+
+	call	CRLF
+	ld	hl,pb0msg
+	call	PUTSTR
+	call	CRLF
+	call	dmpblk		; dump block contents
+
+	ld	hl,EX.SUC	; success exit
+quit:	jp	EXIT
+
+syserr:	push	af
+	call	CRLF
+	pop	af
+	call	PERROR
+	call	CRLF
+	ld	hl,EX.ERR	; error exit
+	jr	quit
+
+error:	call	CRLF
+	call	PUTSTR
+	call	CRLF
+	ld	hl,EX.ERR
+	jr	quit
+
+snerr:	db	'Missing device name',0
+
+lb0msg:	db	'Virtual block 0:',0
+pb0msg:	db	'Physical block 0:',0
+
+dmpblk:	ld	hl,buf
+	ld	b,32		; 32 * 16 = 512
+
+dmp16:	push	bc
+
+	push	hl
+	ld	de,buf
+	or	a
+	sbc	hl,de
+	call	HLHEX		; output address
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	pop	hl
+
+	ld	b,16
+	push	hl
+
+dmpb:	ld	a,(hl)
+	call	AHEX		; output hex values
+	ld	c,' '
+	call	PUTCH
+	inc	hl
+	djnz	dmpb
+
+	pop	hl
+	ld	b,16
+
+dmpa:	ld	c,'.'
+	ld	a,(hl)
+	cp	127
+	jr	nc,a1
+	cp	' '
+	jr	c,a1
+	ld	c,a
+a1:	call	PUTCH		; output ASCII representation
+	inc	hl
+	djnz	dmpa
+
+	call	CRLF
+
+	pop	bc
+	djnz	dmp16
+
+	ret
+
+;-----------------------------------------------------------------------
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	9
+	ret	z
+	cp	0Dh
+	ret	z
+	cp	1Ah
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+skpnam:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	jr	z,skipsp	; return via skipsp
+	inc	hl
+	jr	skpnam
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.RLB,1,9,iosb,,<buf,512,0,0,>
+qio2:	QIOW$	IO.RPB,1,9,iosb,,<buf,512,0,0,>
+iosb:	ds	4
+buf:	ds	512
+
+	ds	128		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,29 @@
+	.Z80
+
+	cseg
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	extrn	GCCL,PUTSTR,CRLF,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; Echoes the command line back.
+
+CMDPRN::
+	ld	sp,stack
+	call	GCCL
+	call	CRLF
+	call	PUTSTR
+	call	CRLF
+	ld	hl,EX.SUC
+	jp	EXIT
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	CMDPRN

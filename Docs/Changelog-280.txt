@@ -1,0 +1,125 @@
+Changelog
+---------
+
+(Starting from RSX180 V6.15 of 24/03/20, P112 version)
+
+
+03/04/20
+
+- First RSX280 version will be for Bill Shen's Z280RC board. The the clever
+  ROM-less design, the simpler ZZmon and the built-in CF interface makes it
+  easier to develop and test programs for the Z280RC than for the Tilmann
+  Reh's CPU280 board, whose ROM mainly implements a CP/M 3 BIOS with no
+  possibility of booting any foreign-OS disks. The CPU280 ROM BIOS also
+  limits programs to run in user mode, meaning no privileged instructions
+  can be executed that would allow one to e.g. take control of the MMU,
+  which is necessary to start a different OS (a sort of back-door exists,
+  but is a bit cumbersome to use).
+
+- Modified the ZZmon so it will load the boot sector of an existing RSX180
+  partition and execute it.
+
+
+04/04/20
+
+- Got the CF bootloader for the Z280RC board running. The system image is
+  loaded starting from physical address zero, and can be up to 512K in size.
+
+- Ported the system debugger to the Z280.
+
+- Ported the system MMU initialization routine. System size will be limited
+  at the moment to 1Mbyte (8-bit page numbers).
+
+- The system now boots into the debugger, but (obviously) can't continue
+  any further.
+
+
+06/04/20
+
+- More kernel modifications:
+  * interrupt initialization and handling code.
+  * task context switching: registers are now saved in the Task Context
+    structure and not in task space like the Z180 version did; that's
+    because the Z280 automatically switches stack upon entering a trap
+    or an interrupt and therefore registers must be saved in system space.
+  * new privileged and non-privileged task mapping code.
+
+- Ported the device drivers:
+  * DU: driver accesses the CF, partitions are fixed at the moment.
+  * TT: driver supports only one terminal (Z280's built-in UART).
+  * LP: and CT: drivers removed.
+
+
+07/04/20
+
+- Ported the loader task, but since the kernel $SWSTK routine is not ported
+  yet the loader will not be operational.
+
+- More kernel modifications:
+  * timer interrupt is working.
+  * task context switching seems to be equally working, the loader task
+    starts, but generates an access violation trap when it tries to access
+    the kernel database.
+  * GTARGS and SVRSLT routines now get/save system call arguments from/to
+    the task context register frame.
+  * the system call trap routine seems to be working, but very likely
+    several system functions will require modification.
+  * privileged and non-privileged task mapping is working.
+
+- The 'M' command of the built-in debugger now displays the MMU PDRs.
+
+- The 'D' command of the built-in debugger now accepts an extra parameter
+  (bank number), so task memory can be displayed in addition to system
+  memory.
+
+
+08/04/20
+
+- The initialization task must switch to kernel mode before accessing the
+  system database. That's irrelevant for RSX180, since the task runs in the
+  kernel partition, for on the Z280 that triggers an access violation trap.
+
+- More kernel modifications:
+  * new $SWSTK routine uses the syscall trap to switch to system mode.
+  * new $MCOPY, $UGETx and $UPUTx routines.
+
+- Debugging device drivers:
+  * interrupts now reaching the driver code.
+  * fork processing is working.
+  * fake a partition table for the DU: driver.
+
+- The initialization task now runs, the banner message appears and the
+  first MCR command is queued.
+
+- Added Z280-specific abort codes to TKTN.
+
+- The Z280 is a really *great* CPU, but it's biggest annoyance is the
+  I/O page selection/save/restore, as it wastes two registers and 3..4
+  instructions every time.
+
+
+09/04/20
+
+- More kernel modifications:
+  * ported the AST routines.
+  * DS1302 clock read/write routines.
+  * added the extra Z280 abort codes to TKTN.
+  * removed the "interrupt pool" on the old common area, since it is not
+    needed on the Z280 (ITBs can be allocated from system core).
+
+- Updated the Linux 'vol180' utility (the task context structure has
+  changed). 
+
+- The system now boots and works! (the port so far has been easier than 
+  I originally thought). Some utilities are aborted with a "Privileged
+  instruction" message because they use di/ei instructions in some parts
+  of the code.
+
+
+10/04/20
+
+- SHUTUP: switch to system mode before halting the CPU to prevent the Z280
+  privileged instruction trap from happening.
+
+- The system has been working fully stable during the whole day. Getting
+  ready for release on GitHub!

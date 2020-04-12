@@ -1,0 +1,1521 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command HELLO/HELP for RSX280.                        ;
+;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'03.06'
+
+	cseg
+
+	include	SYSFN.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	LCB.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	ACNT.INC
+	include	CLICB.INC
+	include	ERRORS.INC
+	include	SYSTEM.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNFIL	equ	1		; LUN for file I/O
+LUNCO	equ	2		; LUN for console logging
+LUNTI	equ	5		; standard LUN for terminal input
+
+EFN	equ	9		; event flag number
+
+	extrn	CRLF,UCASE,PUTCH,PUTSTR,TTFLSH,TTLUN,GCCL
+	extrn	PFN,PERROR,BCD2BIN,AHEX,ADEC,ADEC2,HLDEC
+	extrn	CVTBD,ATTACH,DETACH,MD5INI,MD5END,MD5UPD
+	extrn	CPHLDE
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task info
+	call	GCCL		; get MCR command line
+	ex	de,hl
+	push	de
+	call	SKPNAM
+	ld	(lnptr),de
+	pop	de
+	ld	hl,exit
+	push	hl		; push return address
+	ld	hl,hlpnam
+	ld	b,4
+	call	NMATCH		; invoked as HELP?
+	jp	z,HELP		; yes
+	jp	HELLO		; no
+
+exit:	ld	hl,EX.SUC
+	SC	.EXIT
+
+hlpnam:	db	'HELP'
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'HEL -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'HEL -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Copy string (HL) <- (DE)
+
+CPSTR:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	CPSTR
+
+; Copy string (HL) <- (DE), max B chars
+
+CPNSTR:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	CPNSTR
+	ret
+
+; Compare uppercase strings (HL) and (DE), max B chars
+
+NMATCH:	ld	a,(de)
+	call	UCASE
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	NMATCH
+	ret
+
+; Compare strings (HL) and (DE), max B chars
+
+STNCMP:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	STNCMP
+	ret
+
+; Compute string (HL) length, return value in C.
+
+STRLEN:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+; Clear memory region. HL = address, BC = length.
+
+CLRMEM:	ld	a,b
+	or	c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	(hl),0
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+	ldir
+	ret
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+GETCMD:	ld	b,9
+	ld	de,(lnptr)
+	ld	hl,cmdnam
+	call	GETNS
+	call	GETNAM
+	ld	(lnptr),de
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+GETNAM:	call	GETFS
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+gn2:	call	GETFS
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Pad name in (HL) with spaces, up to B in length.
+
+PADNAM:	ld	a,(hl)
+	or	a
+	jr	z,pad
+	inc	hl
+	djnz	PADNAM
+	ret
+pad:	ld	(hl),' '
+	inc	hl
+	djnz	pad
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+skip:	inc	de
+GETNS:	ld	a,(de)
+	or	a
+	ret	z
+	call	ISBLNK
+	jr	z,skip
+	ret
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	ret
+gf1:	xor	a
+	ret
+
+; Skip name
+
+SKPNAM:	ld	a,(de)
+	or	a
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS (skip spaces)
+	inc	de
+	jr	SKPNAM
+
+; Check for blank character in A
+
+ISBLNK:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	TAB
+	ret
+
+; Get decimal value.
+
+GETDEC:	ld	de,(lnptr)
+	call	GETNS
+	ld	hl,0
+nxtdig:	call	GETFS
+	jr	z,endnum	; note CY clear
+	sub	'0'
+	jr	c,endnum
+	cp	10
+	ccf
+	jr	c,endnum
+	push	bc
+	call	adddig
+	pop	bc
+	inc	de
+	jr	nc,nxtdig
+endnum:	ld	(lnptr),de
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print device name (HL = file info).
+
+PDEVNM:	ld	bc,F.DEV
+	add	hl,bc		; point to F.DEV
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ret
+
+; Print directory name (HL = file info), do not show the extension.
+
+PDNAME:	ld	bc,F.NAME
+	add	hl,bc		; point to F.NAME
+pfn0:	ld	c,'['
+	call	PUTCH
+	ld	b,9
+pfn1:	ld	a,(hl)
+	cp	' '
+	ld	c,a
+	call	nz,pfn2
+	inc	hl
+	djnz	pfn1
+	ld	c,']'
+	call	PUTCH
+	ret
+pfn2:	call	PUTCH
+	ret
+
+PRDAT:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; day
+	call	AHEX
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	ld	a,(hl)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	push	hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	b,3
+pm:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pm
+	pop	hl
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	dec	hl
+	ld	a,(hl)		; year
+	call	AHEX
+	inc	hl
+	ld	a,(hl)
+	call	AHEX
+	pop	hl
+	ret
+
+PRTIM:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; hour
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; min
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; sec
+	call	AHEX
+	pop	hl
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+; Validate date (only day and month)
+
+valdt:	inc	hl
+	inc	hl
+	ld	c,12h+1		; month
+	call	vldt1		; check if in range
+	ret	c
+	ld	c,31h+1		; day
+vldt1:	ld	a,(hl)
+	inc	hl
+	or	a
+	scf
+	ret	z
+	cp	c
+	ccf
+	ret
+
+;-----------------------------------------------------------------------
+
+; HELP [topic] [subtopic]
+
+; 'topic' determines the help file to use: topic.HLP
+; 'subtopic' determines the section within the help file.
+
+; The start of each section is indicated by a backslash '\' on column 1
+; followed by the subtopic name. Several names can be assigned to a single
+; section by separating them with a vertical bar '|'. An asterisk '*' can
+; be used inside a name to indicate that the charaters following it are
+; optional, thus allowing partial searches.
+
+; When searching for a subtopic, the first section that matches is
+; displayed.
+
+HELP:	ld	de,(lnptr)
+	call	GETNS
+	ld	hl,topic
+	ld	b,9
+	call	GETNAM		; get topic, if any
+
+	call	GETNS		; skip spaces
+	ld	hl,stopic
+	ld	b,40
+	call	GETNAM		; get subtopic, if any
+
+	ld	hl,topic
+	ld	a,(hl)
+	or	a		; topic specified?
+	ld	hl,dir		; if not, display SY0:[HELP]HELP.HLP and exit
+	jr	z,hlp2
+
+	ld	hl,dir
+	ld	de,buf
+	ld	bc,dirlen
+	ldir			; copy directory prefix
+	ld	hl,topic
+	ld	b,9
+hlp0:	ld	a,(hl)		; use topic as filename
+	call	UCASE
+	or	a
+	jr	z,hlp1
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	hlp0
+hlp1:	ld	hl,ext		; add .HLP extension
+	ld	bc,extlen
+	ldir
+
+	ld	hl,buf
+hlp2:	call	OPENF		; open help file
+	jp	c,errnt		; exit with error message if file not found
+	ld	hl,0
+	ld	(cnt),hl	; init char counter for readln
+
+	ld	hl,stopic	; check subtopic
+	ld	a,(hl)		; any specified?
+	or	a
+	jr	z,hlp4		; jump if not
+
+hlp3:	call	readln		; else find it
+	jr	c,errns		; exit with error message if not found
+	ld	a,(hl)
+	cp	'\'		; subtopic indicator?
+	jr	nz,hlp3		; loop if not
+	inc	hl
+	ld	a,(hl)
+	cp	';'		; comment?
+	jr	z,hlp3		; ignore if yes
+	call	smatch		; matches desired subtopic?
+	jr	c,hlp3		; loop if not
+
+hlp4:	ld	a,(TTLUN)
+	ld	c,a
+	ld	de,0		; no ASTs
+	call	ATTACH		; attach to terminal
+
+hlp5:	call	readln		; read line from file
+	jr	c,hlp6		; end if end of file
+	ld	a,(hl)
+	cp	'\'		; start of next subtopic?
+	jr	z,hlp6		; end if yes
+	ld	c,LF
+	call	PUTCH
+	call	PUTSTR		; else print line
+	ld	c,CR
+	call	PUTCH
+	jr	hlp5		; and loop for more
+
+hlp6:	call	TTFLSH
+	ld	a,(TTLUN)
+	ld	c,a
+	call	DETACH		; detach from terminal
+	call	CLOSEF		; close help file
+	ret			; and exit normally
+
+errnt:	ld	hl,ntmsg	; 'topic not found'
+	jr	errx
+
+errns:	call	CLOSEF		; close help file
+	ld	hl,nsmsg	; 'subtopic not found'
+errx:	push	hl
+	ld	hl,hpfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR		; print error message
+	call	TTFLSH
+	ld	hl,1
+	ret			; and exit with error code 1 (TODO)
+
+;-----------------------------------------------------------------------
+
+; Read line from file
+
+readln:	ld	hl,lnbuf
+	ld	b,0
+rdln1:	push	hl
+	push	bc
+	call	readch		; get char from file
+	pop	bc
+	pop	hl
+	ret	c		; return if end of file
+	cp	CR		; CR?
+	jr	z,rdln1		; ignore it if yes
+	cp	LF		; LF?
+	jr	z,rdln2		; then we're done
+	ld	c,a		; save char in C
+	ld	a,b		; check char counter
+	cp	128-1		; line buffer full?
+	jr	nc,rdln1	; then ignore the rest of the line
+	ld	(hl),c		; else store char in buffer
+	inc	hl
+	inc	b
+	jr	rdln1		; loop for more
+rdln2:	ld	(hl),0		; add a trailing zero
+	ld	hl,lnbuf
+	ret
+
+readch:	ld	hl,(cnt)	; check counter of bytes read
+	ld	a,h
+	or	l
+	jr	nz,rdch1	; jump if not zero
+	ld	hl,buf		; else is time to refill the buffer
+	ld	(ptr),hl	; reset pointer to begin of buffer
+	call	FRBLK		; read next block from file
+	ret	c
+	ld	a,h
+	or	l
+	ld	a,E.EOF
+	scf
+	ret	z
+rdch1:	dec	hl		; decrement counter of bytes read
+	ld	(cnt),hl
+	ld	hl,(ptr)
+	ld	a,(hl)		; get character from buffer
+	inc	hl		; advance pointer
+	ld	(ptr),hl
+	or	a
+	ret
+
+; Match subtopic
+
+smatch:	ld	hl,lnbuf	; HL = line buffer
+	ld	de,stopic	; DE = subtopic, already upper-cased
+sm1:	ld	a,(hl)
+	or	a		; end of line?
+	scf
+	ret	z		; return error, subtopic not found
+	cp	'\'		; '\' is the subtopic indicator
+	inc	hl
+	jr	z,sm1		;  thus ignore it
+	dec	hl
+sm2:	push	de
+	ld	b,1		; exact match by default
+sm21:	ld	a,(hl)
+	cp	'*'		; '*' means the chars following are optional
+	jr	nz,sm22
+	ld	b,0		; allow partial matches
+	inc	hl
+	ld	a,(hl)
+	or	a		; end of line?
+	jr	nz,sm21		; continue if not
+	scf
+	ret			; else return error, we have a bad help file
+sm22:	ld	a,(de)		; get char from user-specified subtopic
+	or	a
+	jr	z,sm4		; we may have a match
+	ld	c,a
+	ld	a,(hl)
+	cp	'|'		; '|' is used to separate synonyms
+	jr	z,sm3
+	call	UCASE
+	cp	c
+	jr	nz,sm3		; does not match this one
+	inc	hl
+	inc	de
+	jr	sm21		; else loop to continue matching
+
+sm3:	pop	de
+sm31:	ld	a,(hl)
+	inc	hl
+	or	a		; end of line?
+	scf
+	ret	z		; return error, subtopic not found
+	cp	'|'
+	jr	nz,sm31		; else look for next synonym
+	jr	sm2		; we got one
+
+sm4:	pop	de
+	ld	a,b
+	or	a		; partial match allowed?
+	ret	z		; return success if yes
+	ld	a,(hl)
+	or	a		; else check if all characters matched
+	ret	z		; return success if yes
+	cp	'|'
+	ret	z
+	scf			; else error, subtopic not found
+	ret
+
+hpfx:	db	CR,LF,'HELP -- ',0
+ntmsg:	db	'Topic not found',CR,0
+nsmsg:	db	'Subtopic not found',CR,0
+
+dir:	db	'LB0:[HELP]'
+dirlen	equ	$ - dir
+dfname:	db	'HELP'
+ext:	db	'.HLP',0
+extlen	equ	$ - ext
+
+;-----------------------------------------------------------------------
+
+; LOGIN [username] or HELLO [username]
+
+; - Finds username in account file
+; - Sets logged-in bit of terminal session
+; - Assigns SY: to login device
+; - Changes to user directory
+; - Executes login command file
+
+; TODO:
+; - SYSLOGIN.CMD should be executed with terminal slaved and privileged,
+;   to prevent user aborting it.
+; - If user logged in using g/u or name/ form:
+;   * if last login timestamp older than LOGIN.TXT timestamp or if
+;        last login timestamp day is older than today, then display
+;        the full LOGIN.TXT file contents.
+;   * else display LOGIN.TXT up to the line starting with a '%'.
+
+HELLO:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	jr	c,lgn1		; jump if no session found (not logged-in)
+
+	ld	hl,logmse	; else error - already logged in
+	jp	ERROR
+
+lgn1:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+	call	GETDPR		; get CLI default prompt
+	ld	a,($MFLGS)	; get MCR flags
+	push	af
+	ld	c,0
+	SC	.SUPER		; exit supervisor mode
+	pop	af
+	bit	0,a		; are logins enabled?
+	jr	nz,lgn2		; jump if yes
+
+	ld	hl,nlgtxt	; else type LB:[SYSTEM]NOLOGIN.TXT file
+	call	TYPE		;  on terminal (if file exists)
+	ld	hl,logdis	;   and exit with error message
+	jp	ERROR
+
+lgn2:	; get UIC or user name
+
+	ld	de,(lnptr)
+	call	GETNS		; UIC or name specified in command line?
+	jr	nz,lgn21	; branch if yes
+
+	ld	bc,logprm	; else prompt for UIC or name
+	ld	hl,lnbuf
+	ld	e,80		; max length
+	xor	a		; read with echo
+	call	TGETLN		; get user response
+	ret	c
+	ld	hl,lnbuf
+	ld	(lnptr),hl
+
+lgn21:	ld	hl,(lnptr)
+	push	hl
+	call	GETUIC		; valid UIC specified?
+	pop	de
+	jr	c,lgn22		; branch if not
+	ld	(usrid),hl	; store UIC
+	ld	a,1		; login using UIC
+	jr	lgn3
+
+lgn22:	ld	(lnptr),de
+	call	GETCMD		; get user name into cmdnam
+	xor	a		; login using user name
+lgn3:	ld	(lmode),a
+
+	; get password
+
+	ld	bc,pwdprm	; prompt for a password
+	ld	hl,lnbuf
+	ld	e,80		; E = max length
+	ld	a,1		; suppress echo
+	call	TGETLN		; get user response
+	ret	c
+
+	; search account file
+
+	ld	hl,actfil
+	call	OPENF		; open account file
+	jp	c,lgn9		; error if could not open file
+
+lgn4:	call	ACNTR		; read account record
+	jp	c,lgn8		; exit loop on EOF or error
+
+	ld	a,(lmode)
+	or	a		; login with user name?
+	jr	z,lgn41		; branch if yes to compare names
+
+	ld	hl,(usrid)	; else compare UIC
+	ld	de,(buf+AF.USR)
+	call	CPHLDE
+	jr	z,lgn5		; exit loop if match found
+	jr	lgn42
+
+lgn41:	ld	hl,buf+AF.UNAM
+	ld	de,cmdnam
+	ld	b,9
+	call	NMATCH		; compare user name
+	jr	z,lgn5		; exit loop if match found
+
+lgn42:	call	ACNXT		; else try next record
+	jr	lgn4
+
+lgn5:	; account or name matches
+
+	ld	hl,stopic	; use stopic as temp buffer
+	ld	bc,9+16
+	call	CLRMEM
+	ld	de,lnbuf
+	ld	hl,stopic+9
+	ld	b,16
+	call	GETNS
+	call	CPNSTR
+	ld	de,buf+AF.UNAM
+	ld	hl,stopic
+	ld	b,9
+	call	CPNSTR
+	call	MD5INI
+	ld	hl,stopic
+	ld	e,9+16
+	call	MD5END		; compute password hash
+	push	hl
+
+	ld	hl,stopic
+	ld	bc,9+16
+	call	CLRMEM		; erase all traces of ASCII password
+	ld	hl,lnbuf
+	ld	bc,80
+	call	CLRMEM
+
+	pop	hl
+	ld	de,buf+AF.PWD
+	ld	b,16
+	call	STNCMP		; compare passwords
+	jr	nz,lgn6		; fail it they don't match
+
+	; valid account
+
+	ld	hl,dtbuf
+	SC	.GDAT
+	ld	de,buf+AF.LDT	; DE = dst, src still in HL
+	ld	bc,7
+	ldir			; set last login date and time
+
+	ld	hl,(buf+AF.LGNS)
+	inc	hl		; increase login counter
+	ld	(buf+AF.LGNS),hl
+
+	xor	a
+	ld	(buf+AF.LLF),a	; clear failed login counters
+	ld	(buf+AF.LF10),a
+	jr	lgn7
+
+lgn6:	; failed attempt
+
+	ld	hl,dtbuf
+	SC	.GDAT
+	ld	de,buf+AF.LLA	; DE = dst, src still in HL
+	ld	bc,7
+	ldir			; set last login attempt date and time
+
+	ld	hl,(buf+AF.FAIL)
+	inc	hl		; increase total login failures
+	ld	(buf+AF.FAIL),hl
+
+	ld	a,(buf+AF.LLF)	; increase failed login counters
+	inc	a
+	ld	(buf+AF.LLF),a
+	ld	a,(buf+AF.LF10)
+	inc	a
+	ld	(buf+AF.LF10),a
+	scf
+
+lgn7:	push	af
+	call	ACNTW		; update login record
+	;jr	c,...
+	pop	af
+lgn8:	push	af
+	call	CLOSEF
+	pop	af
+lgn9:	ld	hl,loginv
+	jp	c,ERROR
+
+	ld	a,(buf+AF.USR)	; don't bother checking login mode
+	ld	(usrid),a	;  just copy UIC from account file record...
+	ld	a,(buf+AF.GRP)
+	ld	(grpid),a
+
+	ld	hl,buf+AF.UNAM	;  ...as well as user name
+	ld	de,cmdnam
+	push	de
+	ld	bc,9
+	ldir
+	pop	hl
+	ld	b,9
+	call	PADNAM
+
+	ld	de,cmdnam
+	ld	hl,uname
+	ld	b,9
+	call	GETNAM		; get user name also into 'uname' buffer
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	ld	iy,cmdnam
+	KCALL	$LOGIN		; login
+	jr	c,lgn10
+
+	ld	de,'TI'
+	ld	c,0
+	ld	ix,($CTCB)
+	KCALL	$FNDEV
+;	jr	c,...		; should not fail...
+
+	push	hl
+	pop	ix
+	ld	de,(buf+AF.SYD)
+	ld	a,(buf+AF.SYD+2)
+	ld	c,a		; DE-C = physical device name
+	ld	hl,'SY'
+	ld	b,0		; HL-B = logical device name
+	ld	a,N.LGN
+	KCALL	$ASGN		; assign SY:
+
+lgn10:	push	af
+	ld	c,0		; exit supervisor mode
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+
+	; login succesful
+
+	ld	de,'CO'
+	ld	c,0
+	ld	b,LUNCO
+	SC	.ALUN
+	jp	c,lgn11
+
+	ld	hl,lnbuf
+	ld	(hl),LF		; build message for console logging
+	inc	hl
+	ld	de,logms3
+	call	CPSTR		; 'logged user'
+	push	hl
+	ld	de,uname
+	call	CPSTR		; copy user name
+	pop	hl
+	ld	b,9
+	call	PADNAM		; pad to 9 chars
+	ld	(hl),' '
+	inc	hl
+	ld	(hl),'['
+	inc	hl
+	ld	a,(buf+AF.GRP)
+	call	CVTBD		; copy UIC
+	ld	(hl),','
+	inc	hl
+	ld	a,(buf+AF.USR)
+	call	CVTBD
+	ld	(hl),']'
+	inc	hl
+	ld	(hl),' '
+	inc	hl
+	call	GETTI
+	ld	(hl),e		; copy terminal name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),0
+	ld	de,lnbuf
+	or	a
+	sbc	hl,de		; compute length
+	ld	(qio5+Q.LEN),hl
+	ld	hl,0
+	ld	(qio5+Q.LEN+2),hl
+	ld	hl,qio5
+	SC	.QIO		; send to system console
+
+lgn11:	ld	hl,cmdnam
+	ld	c,SD.TI
+	SC	.SDIR		; set the user directory as current dir
+	jp	c,SYSERR	; should not fail...
+
+	ld	hl,cmdnam
+	ld	c,SD.TSK
+	SC	.SDIR		; set our current dir as well
+	jp	c,SYSERR	; should not fail...
+
+	ld	a,(grpid)
+	ld	c,a
+	call	STPRIV		; set terminal privileges
+
+	ld	hl,logms1	; display system identification
+	call	PUTSTR
+	push	hl
+	call	shver		; display system version
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	push	hl
+	ld	hl,hname
+	ld	c,I.HOST
+	SC	.GIN
+	jr	c,lgn12		; jump if host name not available
+	push	hl
+	ex	de,hl
+	ld	hl,hname
+	ld	b,9
+	call	GETNAM		; trim host name
+	pop	hl
+	call	PUTSTR		; display host name
+lgn12:	pop	hl
+	inc	hl
+	call	PUTSTR
+	ld	hl,dtbuf
+	call	PRDAT		; display login date
+	ld	c,' '
+	call	PUTCH
+	call	PRTIM		; and time
+	ld	hl,logms2	; 'logged on terminal ...'
+	call	PUTSTR
+	push	hl
+	call	GETTI
+	push	af
+	ld	c,e
+	call	PUTCH		; display terminal name
+	ld	c,d
+	call	PUTCH
+	pop	af
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	HLDEC
+	ld	c,':'
+	call	PUTCH
+	pop	hl
+	inc	hl
+	call	PUTSTR		; ' as '
+	ld	hl,uname
+	call	PUTSTR		; display user name
+	call	CRLF
+	ld	hl,good		; 'good ... morning, evening, etc.'
+	call	PUTSTR
+	ld	a,(dtbuf+4)	; get hour
+	call	chkhr		; greet accordingly
+	call	PUTSTR
+	call	CRLF
+	call	TTFLSH
+
+	ld	hl,logtxt
+	call	TYPE		; display LB:[SYSTEM]LOGIN.TXT if it exists
+
+	; check for system startup command file
+
+	ld	hl,syscmd
+	call	OPENF
+	jr	c,lgn13		; system startup file not found
+	call	CLOSEF
+
+	ld	hl,PROMPT
+	call	PUTSTR		; display CLI default prompt
+	call	TTFLSH
+
+	ld	hl,syscmd
+	call	pretdb
+	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,mcrtdb
+	ld	e,11		; flag number
+	SC	.RQST
+	jr	c,lgn13		; TODO: display error message?
+	ld	e,11
+	SC	.STSE		; stop until SYSLOGIN.CMD completes
+
+lgn13:	; check for local startup command file
+
+	ld	hl,inicmd
+	call	OPENF
+	ret	c		; startup file not found
+	call	CLOSEF
+
+	ld	hl,PROMPT
+	call	PUTSTR		; display CLI default prompt
+	call	TTFLSH
+
+	ld	hl,inicmd
+	call	pretdb
+	ld	hl,mcrtdb
+	SC	.RPOI		; request MCR and send command line
+	jp	c,SYSERR
+	ret
+
+; Display system version
+
+shver:	ld	hl,sver
+	ld	c,I.VERS
+	SC	.GIN
+	ret	c
+	ld	c,'V'
+	call	PUTCH
+	ld	hl,(sver)
+	ld	a,h
+	call	ADEC
+	ld	c,'.'
+	call	PUTCH
+	ld	a,l
+	call	ADEC2
+	ret
+
+; Prepare TDB to execute command file via MCR and echo the command on
+; the terminal. Called with HL = cmd file name.
+
+pretdb:	ex	de,hl		; DE = ptr to command file name
+	ld	hl,buf
+	push	hl		; remember start of command line
+	ld	(hl),'@'
+	inc	hl
+	call	CPSTR		; set filename
+	ld	(hl),CR		; add command terminator
+	inc	hl
+	ld	(hl),0
+	pop	hl		; pop start of command line
+	push	hl
+	call	PUTSTR		; echo command
+	call	TTFLSH
+	pop	hl
+	call	STRLEN
+	add	a,c
+	ld	e,a
+	ld	d,0
+	ld	hl,buf
+	ld	(mcrtdb+TD.CMD),hl
+	ld	(mcrtdb+TD.CML),de
+	ret
+
+loginv:	db	'Invalid account',0
+logmse:	db	'Other user logged in',0
+logdis:	db	'Logins are disabled',0
+
+logprm:	db	CR,LF,'Account or name: ',0
+pwdprm:	db	CR,LF,'Password: ',0
+
+logms1:	db	CR,LF,LF,'RSX280 ',0,' ',0,CR,LF,0
+logms2:	db	' Logged on terminal ',0,' as ',0
+logms3:	db	'Login  user ',0
+
+chkhr:	cp	18h
+	ld	hl,ge
+	ret	nc
+	cp	12h
+	ld	hl,ga
+	ret	nc
+	ld	hl,gm
+	ret
+
+good:	db	CR,LF,'Good ',0
+gm:	db	'Morning',0
+ga:	db	'Afternoon',0
+ge:	db	'Evening',0
+
+erropn:	db	'Failed to open ',0
+
+actfil:	db	'LB0:[SYSTEM]ACNT.DAT',0
+logtxt:	db	'LB0:[SYSTEM]LOGIN.TXT',0
+nlgtxt:	db	'LB0:[SYSTEM]NOLOGIN.TXT',0
+syscmd:	db	'LB0:[SYSTEM]SYSLOGIN.CMD',0
+inicmd:	db	'LOGIN.CMD',0
+
+;-----------------------------------------------------------------------
+
+; Display text file on terminal. Called with HL = filename.
+
+TYPE:	call	OPENF		; parse filename and open help file
+	ret	c		; return with CY set if file not found
+	ld	hl,0
+	ld	(cnt),hl	; init char counter for readln
+
+	ld	a,(TTLUN)
+	ld	c,a
+	ld	de,0		; no ASTs
+	call	ATTACH		; attach to terminal
+
+typ1:	ld	c,CR
+	call	PUTCH
+	call	readln		; read line from file
+	jr	c,typ2		; exit loop if end of file
+	ld	c,LF
+	call	PUTCH
+	call	PUTSTR		; else print line
+	jr	typ1		; and loop
+
+typ2:	call	TTFLSH
+	ld	a,(TTLUN)
+	ld	c,a
+	call	DETACH		; detach from terminal
+	call	CLOSEF		; close help file
+	ret			; and exit normally
+
+;-----------------------------------------------------------------------
+
+; Get user response with a 20-second timeout. Called with HL = input
+; buffer, E = max length, A = echo-suppress flag (non-zero disables
+; echo), BC = optional prompt. Returns actual length in BC.
+
+TGETLN:	push	hl
+	add	a,0FFh
+	sbc	a,a		; A = 0FFh if D was <> 0, else A = 0
+	and	TF.RNE
+	ld	(qio6+Q.SUBF),a	; set subfunction code
+	ld	(qio6+Q.BUF),hl	; set buffer address
+	ld	d,0
+	dec	de		; -trailing zero
+	ld	(qio6+Q.LEN),de	; bytes to read
+	ld	hl,0
+	ld	(qio6+Q.LEN+2),hl
+	ld	(qio6+Q.P3),bc	; optional prompt
+	call	TTFLSH		; flush any pending output
+	ld	hl,20		; timeout = 20 seconds
+	ld	d,2
+	ld	e,EFN
+	ld	bc,0		; no AST
+	SC	.MRKT		; mark time
+	ld	hl,qio6
+	SC	.QIO		; read with prompt
+	push	af
+	ld	bc,0
+	ld	e,0
+	SC	.CMKT		; cancel mark time event if pending
+	pop	af
+	pop	hl
+	jp	c,SYSERR	; error if queuing failed
+	ld	a,(iosb)	; fetch return code
+	or	a		; success?
+	jr	z,gc1		; brach if yes
+	cp	E.PEND		; request pending (timeout)?
+	jp	nz,SYSERR	; return error if not
+	ld	hl,qio7
+	SC	.QIO		; else kill pending I/O
+	ld	hl,tmomsg
+	jp	ERROR		; and return error
+
+gc1:	ld	bc,(iosb+2)	; fetch byte count
+	ld	a,b
+	or	c		; zero?
+	jr	z,gc2		; return if yes
+	add	hl,bc
+	dec	hl
+	ld	a,(hl)		; get terminator
+	cp	1Ah		; EOF?
+	ld	a,E.EOF
+	scf
+	ret	z		; return with CY set if yes
+gc2:	xor	a
+	ld	(hl),a		; replace terminator with a null
+	ret
+
+tmomsg:	db	'Timeout in response',0
+
+;-----------------------------------------------------------------------
+
+; Get terminal device name and unit into DE-A.
+
+GETTI:	ld	de,(GTKBUF+GT.TI)
+	ld	a,(GTKBUF+GT.TI+2)
+	ret
+
+; Get default MCR prompt. Called in supervisor mode.
+
+GETDPR:	ld	de,($CLIST)	; TODO: get CLICB associated to terminal
+	ld	a,d
+	or	e		; valid CLICB?
+	jr	nz,gdpr1	; jump if yes
+	ld	hl,DPR
+	ld	bc,DPRL
+	jr	gdpr2		; else use the 'emergency' prompt
+gdpr1:	ld	hl,CL.DPL
+	add	hl,de
+	ld	a,(hl)
+	and	1Fh		; trim length just in case
+	ld	c,a
+	ld	b,0
+	ld	hl,CL.DAT
+	add	hl,de
+gdpr2:	ld	de,PROMPT
+	ldir
+	ret
+
+DPR:	db	CR,LF,'>',0	; 'emergency' prompt in case CLICB is not set
+DPRL	equ	$-DPR
+
+;-----------------------------------------------------------------------
+
+; Get UIC from string. Return CY clear on success and UIC code in HL,
+; separating char in C.
+
+GETUIC:	ld	de,(lnptr)
+	call	GETNS
+	ld	b,a
+	cp	'['
+	jr	nz,gtu1
+	inc	de
+gtu1:	ld	(lnptr),de
+	call	GETDEC		; get group ID
+	ld	a,h
+	or	a
+	ld	h,l		;  into H
+	scf
+	ret	nz		; can't be > 255
+	call	GETNS
+	ld	c,a
+	cp	','
+	jr	z,gtu2
+	cp	'/'
+	scf
+	ret	nz
+gtu2:	inc	de
+	ld	(lnptr),de
+	push	hl
+	call	GETDEC		; get user ID
+	ld	a,h
+	or	a
+	ld	a,l
+	pop	hl
+	ld	l,a		;  into L
+	scf
+	ret	nz
+	ld	a,b
+	cp	'['
+	jr	z,gtu3
+	xor	a
+	ret
+gtu3:	call	GETNS
+	cp	']'
+	ret	z
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set session privileged if Group ID < 10
+
+STPRIV:	push	bc
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	pop	bc
+	ret	c
+	push	bc
+	call	GETTI
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV
+	pop	bc
+	jr	c,fnds2		; should not happen
+	push	hl
+	pop	ix
+	ld	l,(ix+U.LCB)
+	ld	h,(ix+U.LCB+1)
+	ld	a,h
+	or	l
+	scf
+	jr	z,fnds2		; should not happen
+	push	hl
+	pop	iy
+	ld	a,c
+	cp	10
+	jr	c,fnds1
+	res	LS.PRV,(iy+L.ST)
+	jr	fnds2
+fnds1:	set	LS.PRV,(iy+L.ST)
+fnds2:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse file name, assign LUN and open file. HL = filename.
+
+OPENF:	push	ix
+	ld	ix,fdb
+	call	PFN		; parse file name
+	pop	ix
+	ld	a,E.BADF
+	ret	c
+	ld	b,LUNFIL
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,qio1
+	SC	.QIO		; open file
+	ret	c
+	ld	hl,0
+	ld	(blkno),hl
+	ld	(offs),hl
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Close file
+
+CLOSEF:	ld	hl,qio4
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Read next block from file
+
+FRBLK:	ld	hl,(blkno)
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.OFS),hl
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	hl,(blkno)
+	inc	hl
+	ld	(blkno),hl
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	xor	a
+	ret
+
+; Read record from account file, does not advance file pointers.
+
+ACNTR:	ld	hl,(blkno)
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	hl,(offs)
+	ld	(qio2+Q.OFS),hl
+	ld	hl,AFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Write record to account file.
+
+ACNTW:	ld	hl,(blkno)
+	ld	(qio3+Q.BLK),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK+2),hl
+	ld	hl,(offs)
+	ld	(qio3+Q.OFS),hl
+	ld	hl,AFSZ
+	ld	(qio3+Q.LEN),hl
+	ld	hl,qio3
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Advance file pointers to next account record
+
+ACNXT:	ld	hl,(offs)
+	ld	de,AFSZ
+	add	hl,de
+	ld	(offs),hl
+	ld	de,512
+	or	a
+	sbc	hl,de
+	ret	c
+	ld	(offs),hl
+	ld	hl,(blkno)
+	inc	hl
+	ld	(blkno),hl
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ		; buffer for task info
+
+mcrtdb:	db	'MCR...'	; task name
+	dw	0		; address of command line
+	dw	0		; length of command line
+	db	0,0,0		; attr, user, grp (not used)
+	db	'TI',0		; terminal device and unit (not used)
+	dw	0,0		; no data block to send
+
+exstat:	ds	2
+
+lcbbuf:	ds	LCBSZ
+fname:	ds	FNSZ
+fdb:	ds	FDBSZ
+
+PROMPT:	ds	32
+
+dtbuf:	ds	8
+
+lnptr:	ds	2
+cmdnam:	ds	9		; ! do not !
+usrid:	ds	1		; ! change !
+grpid:	ds	1		; ! order  !
+uname:	ds	10
+hname:	ds	10
+sver:	ds	2
+lmode:	ds	1		; 0 = if login with user name
+				; 1 = if login with UIC
+				; hi-bit set if quiet mode
+topic:	ds	10
+stopic:	ds	41
+
+afmode	equ	IO.ACC OR (SF.ACR OR SF.ACW OR SF.SHR) SHL 8
+
+qio1:	QIOW$	afmode,LUNFIL,EFN,iosb,,<fdb>
+qio2:	QIOW$	IO.RVB,LUNFIL,EFN,iosb,,<buf,512,0,0,>
+qio3:	QIOW$	IO.WVB,LUNFIL,EFN,iosb,,<buf,512,0,0,>
+qio4:	QIOW$	IO.DEA,LUNFIL,EFN,iosb
+qio5:	QIOW$	IO.WVB,LUNCO,EFN,iosb,,<lnbuf,,,,>
+qio6:	QIOW$	IO.RPR,LUNTI,EFN,iosb,,<,,,,>
+qio7:	QIOW$	IO.KIL,LUNTI,EFN,iosb
+qtmod:	QIOW$	SF.GMC,LUNTI,EFN,iosb,,<ttchr,ttlen>
+iosb:	ds	4
+
+ttchr:	db	TC.SMR,0
+	db	TC.SLV,0
+ttlen	equ	$-ttchr
+
+lnbuf:	ds	128
+cnt:	ds	2
+ptr:	ds	2
+blkno:	ds	2
+offs:	ds	2
+buf:	ds	512
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,111 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+	extrn	GCML,RCML,HLDEC,PUTCH,PUTSTR,PERROR,CRLF,TTFLSH
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; Test of the GCML library call to read command lines from the terminal
+; and/or from (possibly nested) command files.
+
+	cseg
+
+main:	ld	sp,stack
+	call	TTFLSH
+
+loop:	ld	iy,gdat
+	call	GCML		; get command line
+	jr	nc,ok
+	cp	E.EOF
+	jr	z,exit		; on EOF exit
+	call	error		; on error display cause
+	call	RCML		;  and reset command processing
+	jr	loop
+ok:	push	hl
+	call	CRLF
+	ld	l,(iy+G.LVL)
+	ld	h,0
+	ld	a,'0'
+	call	HLDEC		; output command file nesting level
+	ld	c,':'
+	call	PUTCH
+	ld	l,(iy+G.LN)
+	ld	h,(iy+G.LN+1)
+	ld	a,'0'
+	call	HLDEC		; output line number for reference
+	ld	c,' '
+	call	PUTCH
+	pop	hl
+	call	PUTSTR		; echo the command line
+	ld	c,CR
+	call	PUTCH
+	call	TTFLSH
+	jr	loop		; loop
+
+exit:	call	error
+	ld	c,EX.SUC
+	SC	.EXIT
+
+error:	push	af
+	ld	hl,prefix
+	call	PUTSTR
+	pop	af
+	or	a
+	push	af
+	call	m,PERROR
+	pop	af
+	call	p,CMDERR
+	ld	c,CR
+	call	PUTCH
+	call	TTFLSH
+	ret
+
+prefix:	db	CR,LF,'CML -- ',0
+
+CMDERR:	ld	hl,ce1
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,msgsn
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	ld	hl,msgunk
+	ret
+ce1:	call	PUTSTR
+	ld	hl,atln
+	call	PUTSTR
+	ld	l,(iy+G.LN)
+	ld	h,(iy+G.LN+1)
+	xor	a
+	call	HLDEC
+	ret
+
+msgok:	db	'No error',0
+msgsn:	db	'Syntax error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+msgunk:	db	'Unknown error',0
+atln:	db	' at line ',0
+
+	dseg
+
+gdat:	GCML$	,80,'CML',1,3
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	main

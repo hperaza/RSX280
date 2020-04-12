@@ -1,0 +1,835 @@
+;**********************************************************************;
+;                                                                      ;
+;   MD5 - Compute the MD5 checksum of a file - RSX180 version.         ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	"V1.03"
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	GCML.INC
+	include	QIO.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+FALSE	equ	0
+TRUE	equ	NOT FALSE
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+LUNCML	equ	1
+LUNSRC	equ	2
+LUNDST	equ	3
+LUNTI	equ	5
+
+MAXRPA	equ	1
+
+S1.ST	equ	0		; string specified in command line
+
+DBLBUF	equ	TRUE
+
+	extrn	PFN,PDN,FCREAT,FRATTR,FPUTLN,FCLOSE,GCML,RCML
+	extrn	PUTCH,PUTSTR,PERROR,UCASE,HLDEC,CVTBH,ATTACH
+	extrn	DETACH,TTFLSH,MD5INI,MD5UPD,MD5END
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+START::	ld	sp,stack
+
+	call	INIT
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	PROCESS		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; exit normally if yes
+
+	call	CMLERR		; else display error
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m3:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Perform initializations
+
+INIT:	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task info
+	ld	hl,GTKBUF+GT.NAME
+	call	ckdots		; skip initial 3 dots if present
+	ld	de,(GDAT+G.PRM)	; set prompt to our task name
+	inc	de		;  skip CR
+	inc	de		;   skip LF
+	ld	bc,3
+	ldir
+	ret
+
+ckdots:	ld	b,3
+	push	hl
+ckd1:	ld	a,(hl)
+	cp	'.'
+	jr	nz,ckd2
+	inc	hl
+	djnz	ckd1
+	inc	sp
+	inc	sp
+	ret
+ckd2:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'MD5 -- message'.
+; Called with HL = address of message string.
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Same as above, but displays a standard system error message.
+; Called with A = error code.
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	scf
+	ret
+
+eprfx:	db	CR,LF,'MD5 -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank.
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is end-of-line.
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getnb:	ld	a,(de)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getnb
+
+;-----------------------------------------------------------------------
+
+; Usage is:
+;  MD5 [outfile=]infile
+;  MD5 [outfile=]/st:"string"
+
+; TODO:
+; - some switches apply to specific input files
+; - ignore extra chars in switch name
+; - handle '!' comments
+
+PARSE:	xor	a		; initialize values
+	ld	(ASGN),a	; no assignment operator yet
+	ld	(NRPARM),a
+	ld	(SWBITS),a	; clear all switches
+	ld	ix,LFCB
+	ld	(ix+F.ATTR),0
+	ld	ix,RFCB
+	ld	de,FNSZ
+	ld	b,MAXRPA
+pclr:	ld	(ix+F.ATTR),0
+	add	ix,de
+	djnz	pclr
+	ld	hl,(lnptr)
+par0:	ld	a,(hl)
+	call	iseol
+	ret	z
+	ld	ix,RFCB		; assume right parameter
+	ld	a,(NRPARM)
+	ld	e,a
+	ld	d,FNSZ
+	push	hl
+	call	mult8
+	ex	de,hl
+	pop	hl
+	add	ix,de
+	call	PFN		; try to parse file name
+
+	ld	a,(NRPARM)	; check how many right params entered so far
+	inc	a
+	cp	MAXRPA+1	; 1 is maximum
+	ld	de,tmerr
+	ccf
+	ret	c
+	ld	(NRPARM),a	; increase counter
+
+par01:	ld	a,(hl)		; see where PFN stopped
+	call	iseol		; end of line?
+	ret	z		; then return
+	cp	'='		; assignment ?
+	jr	z,par1		; then it was a left parameter
+	cp	','		; comma?
+	jr	z,par2		; then a new right parameter begins
+	cp	'/'		; switch?
+	jr	z,par3		; then process it
+	cp	'!'		; a comment?
+	ret	z		; then just return - ignore it
+par0e:	ld	de,snerr	; else is error
+	scf
+	ret
+
+par1:	; handle assignment
+
+	ld	a,(ASGN)	; is this the first time?
+	or	a
+	jr	nz,par0e	; return with error if not
+	inc	a
+	ld	(ASGN),a	; else set flag
+	push	hl
+	ld	hl,RFCB
+	ld	de,LFCB
+	ld	bc,FNSZ
+	ldir			; copy the FCB to left side
+	pop	hl
+	ld	a,(NRPARM)
+	cp	2		; two or more params entered so far?
+	jr	nc,par0e	; return error if yes, only 0 or 1 allowed
+	xor	a		; reset right parameter counter
+	ld	(NRPARM),a
+	inc	hl		; else skip delimiter
+	jp	par0		; and loop
+
+par2:	; handle comma
+
+	inc	hl		; skip delimiter
+	jp	par0		; and loop
+
+par3:	; handle switch
+
+	inc	hl		; skip delim
+	ld	a,(hl)		; get first switch character
+	call	iseol		; end of command?
+	jp	z,par3e		; error if yes
+	call	UCASE
+	ld	d,a
+	inc	hl
+	ld	a,(hl)		; get second switch character
+	call	iseol
+	jp	z,par3e
+	call	UCASE
+	ld	e,a		; switch name now in DE
+	inc	hl
+	push	hl
+	ld	hl,swtab
+par30:	ld	a,(hl)
+	inc	hl
+	or	a		; end of table?
+	jp	z,par3e0	; error - no switch matches
+	cp	d
+	jr	nz,par31
+	ld	a,(hl)
+	cp	e
+	jr	z,par32
+par31:	inc	hl
+	inc	hl
+	jr	par30
+
+par32:	inc	hl		; we have a match
+	ld	a,(hl)		; get the byte that follows
+	rrca			; hi-nibble is switch byte index in table
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	e,a		; byte index in DE
+	ld	d,0
+	ld	a,(hl)
+	and	7		; bit number is in lo-nibble
+	ld	b,a
+	ld	a,80h
+	inc	b		; so mask starts from 01h
+par33:	rlca			; get bit into position
+	djnz	par33
+	ld	b,a		; remember bit
+	ld	hl,SWBITS
+	add	hl,de
+	or	(hl)		; set switch bit
+	ld	(hl),a
+	pop	hl
+	bit	S1.ST,b		; ST switch requires string argument
+	jp	z,par01		; else only a comma or another sw can follow
+	ld	a,(hl)
+	cp	':'		; separator must follow
+	jp	nz,par0e	; else error
+	inc	hl
+	ld	a,(hl)
+	cp	'"'		; get quote character
+	jr	z,quot
+	cp	"'"
+	jp	nz,par0e
+quot:	ld	c,a		; save quote
+
+	IF	DBLBUF
+
+	ld	de,buf1		; DE = use buf1 as string buffer
+
+	ELSE
+
+	ld	de,buf		; DE = use buf as string buffer
+
+	ENDIF
+
+	ld	(bufptr),de
+q1:	inc	hl
+	ld	a,(hl)		; get string char
+	call	iseol
+	jp	z,par0e		; error if end of command
+	cp	c		; closing quote?
+	jr	z,qend		; exit loop if yes
+	ld	(de),a		; else store char
+	inc	de
+	jr	q1		; and loop for more
+
+qend:	xor	a
+	ld	(de),a		; add a trailing null
+	push	hl
+	ld	hl,(bufptr)
+	ex	de,hl
+	or	a
+	sbc	hl,de		; obtain string length
+	ld	(nread),hl
+	pop	hl
+	inc	hl
+	jp	par01		; loop to process more switches
+
+par3e0:	pop	hl
+par3e:	ld	de,swerr
+	scf
+	ret
+
+swtab:	db	'ST',(0 SHL 4) OR S1.ST
+	db	0		; end of table
+
+tmerr:	db	'Too many input filespecs',0
+swerr:	db	'Invalid switch',0
+tmserr:	db	'Too many command switches - ambiguous',0
+
+; HL = D * E
+
+mult8:	ld	hl,0
+	ld	a,d
+	ld	d,0
+mnext:	or	a
+	ret	z
+	rra
+	jr	nc,shift
+	add	hl,de
+shift:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	mnext
+
+;-----------------------------------------------------------------------
+
+; Parse the command line and execute the command.
+
+; TODO:
+; - if S1.ST is set, SRC file must be null
+; - if output to file -> txt,cr,lf else lf,txt,cr
+
+PROCESS:
+	ld	de,(lnptr)
+	call	getnb		; get first non-blank character
+	ret	z		; return if empty line
+
+	call	PARSE		; parse command
+
+	ex	de,hl
+	jp	c,ERROR
+	call	iseol
+	jp	nz,CMDERR	; any extra characters here means error
+
+	ld	iy,SWBITS	; IY points to option bits
+
+	xor	a
+	ld	(inpflg),a
+	ld	(eofflg),a
+
+	call	MD5INI		; init MD5 engine
+
+	ld	a,(ASGN)
+	or	a		; output file specified?
+	jr	nz,pr0		; jump if yes
+
+	ld	ix,LFCB		; else output is user's terminal
+	ld	(ix+F.DEV),'T'
+	ld	(ix+F.DEV+1),'I'
+	ld	(ix+F.UNIT),0
+	ld	(ix+F.ATTR),FN.DEV
+
+pr0:	ld	hl,LFCB
+	ld	de,(DSTF+FC.FDB)
+	ld	bc,FNSZ
+	ldir
+
+	ld	ix,DSTF
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT		; else create output file
+	jp	c,SYSERR
+
+	bit	S1.ST,(iy+0)	; input string specified?
+	jr	nz,pr3		; jump if yes, data already in buffer
+
+	call	OPNSRC		; else open input file
+	jr	nc,pr1
+
+	push	af
+	ld	ix,DSTF
+	call	FCLOSE		; on error close output file
+	call	c,SYSERR
+	pop	af
+	jp	SYSERR
+
+pr1:	ld	hl,0
+	ld	(blkno),hl
+	xor	a
+	ld	(blkno+2),a
+
+	IF	DBLBUF
+
+	xor	a
+	ld	(flpflp),a
+	ld	hl,(blkno)
+	ld	(QIOBL1+Q.BLK),hl
+	ld	hl,(blkno+2)
+	ld	h,0
+	ld	(QIOBL1+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO		; start reading of first block (doublebuf)
+	jr	c,prerr
+
+	ENDIF
+
+pr2:	call	RDBLK		; read next block
+	ld	(nread),bc
+	jr	c,prerr
+	ld	a,b
+	or	c
+	jr	z,preof
+
+pr3:	call	MD5BLK		; process block
+
+	bit	S1.ST,(iy+0)	; input string specified?
+	jr	nz,preof	; end processing if yes
+
+	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(blkno),hl
+	ld	a,b
+	ld	(blkno+2),a
+	jr	pr2		; else loop to process next block
+
+inc24:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+prerr:	cp	E.EOF
+	call	nz,SYSERR
+preof:	ld	a,(eofflg)
+	or	a
+	call	z,MD5BLK	; process last (null) block
+
+	ld	hl,dstr
+	ld	de,(md5ptr)	; output MD5 result
+	ld	b,16		;  (hash is in little-endian)
+outp:	ld	a,(de)
+	call	CVTBH		; convert byte to 2-digit hex string
+	inc	de
+	djnz	outp
+	xor	a
+	ld	(hl),a		; end with a null
+
+	ld	hl,dstr
+	ld	ix,DSTF
+	call	FPUTLN		; output line
+	call	c,SYSERR
+
+	bit	S1.ST,(iy+0)
+	jr	nz,pr4
+
+	IF	DBLBUF
+
+	ld	e,11
+	SC	.WTSE		; just in case [else use IO.KIL]
+	ld	e,12
+	SC	.WTSE
+
+	ENDIF
+
+	call	CLSSRC		; close src file
+pr4:	ld	ix,DSTF
+	call	FCLOSE		; close dest file
+	jp	c,SYSERR
+
+	ret
+
+;------------------------------------------------------------------------
+
+	IF	DBLBUF
+
+RDBLK:	ld	hl,flpflp
+	ld	a,(hl)
+	cpl
+	ld	(hl),a
+	or	a
+	jr	z,rd1
+
+	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(QIOBL2+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(QIOBL2+Q.BLK+2),hl
+	ld	hl,QIOBL2
+	SC	.QIO		; read next block, no wait
+	ret	c
+	ld	e,11
+	SC	.WTSE
+	ret	c
+	ld	hl,buf1
+	ld	(bufptr),hl
+	ld	bc,(nread1)
+	ld	a,(res1)
+	or	a
+	ret	z
+	scf
+	ret
+
+rd1:	ld	hl,(blkno)
+	ld	a,(blkno+2)
+	ld	b,a
+	call	inc24
+	ld	(QIOBL2+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(QIOBL2+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO		; read next block, no wait
+	ret	c
+	ld	e,12
+	SC	.WTSE
+	ret	c
+	ld	hl,buf2
+	ld	(bufptr),hl
+	ld	bc,(nread2)
+	ld	a,(res2)
+	or	a
+	ret	z
+	scf
+	ret
+
+	ELSE
+
+RDBLK:	ld	hl,buf
+	ld	(bufptr),hl
+	ld	hl,(blkno)
+	ld	(QIOBL1+Q.BLK),hl
+	ld	hl,(blkno+2)
+	ld	h,0
+	ld	(QIOBL1+Q.BLK+2),hl
+	ld	hl,QIOBL1
+	SC	.QIO
+	ret	c
+	ld	a,(res1)
+	ld	bc,(nread)
+	or	a
+	ret	z
+	scf
+	ret
+
+	ENDIF
+
+;------------------------------------------------------------------------
+
+; Process a single block.
+
+MD5BLK:	ld	hl,(bufptr)	; HL = message address
+	ld	de,(nread)	; DE = message length
+
+mblk1:	ld	bc,64
+	call	CPDEBC
+	jr	c,mkbl2		; exit loop if rem. length < 64 (last chunk)
+	push	hl
+	push	de
+	call	MD5UPD		; process next 512-bit (64 bytes) chunk
+	pop	de
+	ld	hl,-64
+	add	hl,de
+	ex	de,hl
+	pop	hl
+	ld	bc,64
+	add	hl,bc		; point to next 512-bit chunk
+	jr	mblk1
+
+mkbl2:	push	de
+	ld	de,(nread)	; check original message length
+	ld	bc,512
+	call	CPDEBC		; was it a full block?
+	pop	de
+	ret	z		; return if yes
+	ld	a,1
+	ld	(eofflg),a	; else this was the last block
+	call	MD5END		; process last bytes
+	ld	(md5ptr),hl	; store pointer to result
+	ret
+
+; Compare DE and BC, returns CY if BC > DE
+
+CPDEBC:	ld	a,d
+	cp	b
+	ret	nz
+	ld	a,e
+	cp	c
+	ret
+
+;-----------------------------------------------------------------------
+
+OPNSRC:	ld	de,(RFCB+F.DEV)
+	ld	a,(RFCB+F.UNIT)
+	ld	c,a
+	ld	b,LUNSRC
+	SC	.ALUN		; assign src LUN
+	ret	c
+	ld	hl,lisrc
+	ld	c,LUNSRC
+	SC	.GTLUN		; get LUN info
+	ret	c
+	ld	a,(lisrc+4)
+	bit	DV.DIR,a	; directory device?
+	jr	z,opns1		; jump if not
+	ld	hl,RFCB
+	ld	(SQIO+Q.P1),hl
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; else try to open output file on device
+	ret	c
+	ld	a,(res1)
+	or	a
+	scf
+	ret	nz
+	ld	a,1
+	ld	(inpflg),a
+	ld	hl,finfo
+	ld	(SQIO+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(SQIO+Q.LEN),hl
+	ld	hl,IO.RAT
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; get file attributes
+	jr	c,opns2
+	ld	a,(res1)
+	or	a
+	ret	z
+opns2:	push	af
+	call	CLSSRC
+	pop	af
+	ret
+opns1:	ld	de,0		; no ASTs
+	ld	c,LUNSRC
+	call	ATTACH
+	ret
+
+CLSSRC:	ld	a,(lisrc+4)
+	bit	DV.DIR,a	; directory device?
+	jr	z,clss1		; jump if not
+	ld	a,(inpflg)
+	or	a
+	ret	z
+	ld	c,LUNSRC
+	ld	hl,IO.DEA
+	ld	(SQIO+Q.FUNC),hl
+	ld	hl,SQIO
+	SC	.QIO		; else close the output file
+	xor	a
+	ld	(inpflg),a
+	ret
+clss1:	ld	c,LUNSRC
+	call	DETACH
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ		; buffer for task info
+
+GDAT:	GCML$	lnbuf,80,'MD5',LUNCML,2
+
+lnbuf:	ds	82
+lnptr:	ds	2
+finfo:	ds	FINFSZ
+
+LFCB:	ds	FNSZ		; parsed left filespec of command
+RFCB:	ds	FNSZ*MAXRPA	; parsed right filespec of command
+ASGN:	ds	1		; true if '=' present on command
+NRPARM:	ds	1		; number of right filespecs (max 1 for MD5)
+SWBITS:	ds	1		; space for switch bits
+
+inpflg:	ds	1
+eofflg:	ds	1
+lisrc:	ds	6		; src LUN info
+blkno:	ds	3
+bufptr:	ds	2
+nread:	ds	2		; number of valid bytes in buf
+dstr:	ds	40		; output string buffer
+
+DSTF:	FSR$	,<1 SHL FM.WR>,LUNDST,10
+
+SQIO:	QIOW$	IO.ACC,LUNSRC,11,res1,,<RFCB,0,0,0>
+
+	IF	DBLBUF
+
+QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,0,0,>
+res1:	ds	2		; result
+nread1:	ds	2		; byte count
+
+QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,0,0,>
+res2:	ds	2		; result
+nread2:	ds	2		; byte count
+
+flpflp:	ds	1
+buf1:	ds	512		; I/O buffer 1
+buf2:	ds	512		; I/O buffer 2
+
+	ELSE
+
+QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,0,0,>
+res1:	ds	2		; result
+nread:	ds	2		; byte count
+buf:	ds	512		; I/O buffer
+
+	ENDIF
+
+md5ptr:	ds	2		; pointer to computed MD5 hash
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

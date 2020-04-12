@@ -1,0 +1,736 @@
+	.Z80
+
+CR	equ	0Dh
+
+MAPW	equ	10
+MAPH	equ	23
+
+BUFW	equ	MAPW+2		; including side walls
+BUFH	equ	MAPH+2		; including top and bottom walls
+
+SCRX	equ	(80-20)/2
+
+	extrn	INIT,EXIT,CLS,HOME,SETCUR,DELAY,CSROFF,CSRON
+	extrn	REVVID,NORMAL,GETCH,INKEY,PUTCH,PUTSTR,TTFLSH
+	extrn	GRAPH,ALPHA,INKEY,HLDEC
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	SP,STACK
+	call	INIT
+BEGIN:	call	CLS
+	call	INIMAP		; initialize container map
+	ld	hl,0
+	ld	(FLROWS),hl
+	ld	(SHAPES),hl
+	ld	a,10
+	ld	(LCNT),a
+	call	DRWMAP		; draw container
+	call	GETLVL		; get initial level
+	call	STATUS		; output status info, etc.
+	ld	hl,MSTART
+	call	PRNTXY
+	call	TTFLSH
+	call	GETCH		; wait for a key
+	cp	3
+	jp	z,QUIT
+	ld	hl,CLRMST
+	call	PRNTXY
+	call	RND		; pick a random figure
+NEXTS:	ld	(INISHP),hl	; remember initial orientation
+	ld	(CURSHP),hl	; set current shape
+	call	RND		; pick a random figure
+	ld	(NXTSHP),hl	; save as next
+	call	DRWNXT		; draw next shape
+	call	CKFULL		; compress any for full rows
+	ld	hl,0*256+5	; set initial position
+	ld	(CPOS),hl	;  to the middle of the top line
+	ld	a,1
+	ld	(ORIENT),a	; reset figure orientation
+NEXTR:	ld	a,(DLYCON)
+	ld	(DLYCNT),a	; reset delay counter
+	call	DRWSHP		; draw shape
+CKEY:	ld	hl,DCNT
+	push	hl		; push return address
+	call	INKEY
+	cp	3
+	jp	z,QUIT
+	ld	hl,LASTK
+	cp	(hl)
+	ret	z
+	ld	(hl),a
+	cp	'D'
+	jp	z,LEFT
+	cp	'C'
+	jp	z,RIGHT
+	cp	'A'
+	jp	z,ROTATE
+	cp	'B'
+	jp	z,DROP
+	ret
+
+DCNT:	ld	a,1
+	call	DELAY
+	ld	hl,DLYCNT
+	dec	(hl)
+	jr	nz,CKEY
+	call	DOWN		; down one row
+	jr	NEXTR		; and loop
+
+DROP:	pop	hl		; drop return address
+drp1:	call	DOWN		; down one row
+	call	DRWSHP
+	jr	drp1		; until bottom reached
+
+QUIT:	call	CLS
+	call	HOME
+	call	CSRON
+	call	ALPHA
+	jp	EXIT
+
+; Initialize map
+
+INIMAP:	ld	hl,BUF
+	call	ini3		; top wall
+	ld	c,MAPH
+ini1:	ld	(hl),1		; left wall
+	inc	hl
+	ld	b,MAPW
+	xor	a
+ini2:	ld	(hl),a
+	inc	hl
+	djnz	ini2
+	ld	(hl),1		; right wall
+	inc	hl
+	dec	c
+	jr	nz,ini1
+ini3:	ld	b,BUFW
+ini4:	ld	a,1
+	ld	(hl),a		; bottom wall
+	inc	hl
+	djnz	ini4
+	ret
+
+; Draw container
+
+DRWMAP:	call	GRAPH
+	ld	h,SCRX-2	; X=SCRX-2, Y=0
+	ld	l,0
+dm1:	call	SETCUR
+	ex	de,hl
+	ld	hl,WROW		; draw well
+	call	PUTSTR
+	ex	de,hl
+	inc	l		; inc Y
+	ld	a,l
+	cp	MAPH
+	jr	nz,dm1
+	call	SETCUR
+	ld	hl,WBOTM	; draw well
+	call	PUTSTR
+	call	ALPHA
+	call	TTFLSH
+	ret
+
+; Prompt for and get initial level
+
+GETLVL:	ld	hl,BANNER
+	call	PRNTXY
+	call	CSRON
+	call	TTFLSH
+glv1:	call	RND
+	ld	a,1
+	call	DELAY
+	call	INKEY		; get char
+	cp	3		; ^C returns to system
+	jp	z,QUIT
+	sub	'0'
+	jr	c,glv1
+	cp	10
+	jr	nc,glv1
+	ld	(LEVEL),a	; store level char
+	call	SETSPD		; setup delay constant
+	call	CSROFF
+	ld	hl,CLRBNR
+	call	PRNTXY
+	ret
+
+; Set speed according to level
+
+SETSPD:	ld	hl,VTAB
+	ld	e,a
+	ld	d,0
+	add	hl,de		; index into table
+	ld	a,(hl)
+	ld	(DLYCON),a
+	ret
+
+VTAB:	db	140		;  0
+	db	120		;  1
+	db	100		;  2
+	db	80		;  3
+	db	60		;  4
+	db	48		;  5
+	db	36		;  6
+	db	22		;  7
+	db	12		;  8
+	db	5		;  9
+	db	2		; 10
+
+; Display status info
+
+STATUS:	ld	hl,STINFO
+	call	PRNTXY		; output status text
+UPDST:	ld	h,9
+	ld	l,2
+	call	SETCUR
+	ld	a,(LEVEL)
+	ld	l,a
+	ld	h,0
+	ld	a,' '
+	call	HLDEC		; display current level
+	ld	h,9
+	ld	l,3
+	call	SETCUR
+	ld	hl,(FLROWS)
+	ld	a,' '
+	call	HLDEC
+	ld	h,9
+	ld	l,4
+	call	SETCUR
+	ld	hl,(SHAPES)
+	ld	a,' '
+	call	HLDEC
+	call	TTFLSH
+	ret
+
+; Move shape right one column
+
+RIGHT:	ld	hl,(CPOS)
+	inc	l
+	jr	move
+
+; Move shape left one column
+
+LEFT:	ld	hl,(CPOS)
+	dec	l
+move:	ld	(NPOS),hl
+	ld	hl,(CURSHP)
+	ld	(TPTR),hl
+	ld	de,0
+	ld	b,4		; all shapes are made of 4 little blocks
+chk1:	ld	hl,(NPOS)
+	call	XYBUF
+	ld	a,(hl)
+	or	a		; busy cell?
+	ret	nz		; return if yes, can't move
+	ld	hl,(TPTR)
+	ld	e,(hl)		; else try next cell
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	chk1
+	call	CLRSHP		; clear shape
+	ld	hl,(NPOS)
+	ld	(CPOS),hl	; move to new position
+	jp	DRWSHP		; draw shape and return
+
+; Rotate shape
+
+ROTATE:	ld	a,(ORIENT)	; get current orientation
+	inc	a		; rotate
+	cp	5		; max reached? (1..4)
+	jr	nc,rot1		; branch if yes
+	ld	hl,(CURSHP)
+	ld	bc,6
+	add	hl,bc		; point to next fig data
+	jr	rot2
+rot1:	ld	a,1		; reset orientation
+	ld	hl,(INISHP)
+rot2:	ld	(NORIEN),a	; else save new
+	ld	(NPOS),hl	; save temp new fig ptr
+	ld	(TPTR),hl
+	ld	de,0		; then check if OK to rotate
+	ld	b,4
+chk4:	ld	hl,(CPOS)	; get current pos
+	call	XYBUF
+	ld	a,(hl)
+	or	a		; cell busy?
+	ret	nz		; return, can't rotate
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	chk4
+	call	CLRSHP		; rotate OK, clear shape
+	ld	a,(NORIEN)
+	ld	(ORIENT),a
+	ld	hl,(NPOS)
+	ld	(CURSHP),hl	; make this orientation current
+	jp	DRWSHP		; draw shape and return
+
+; Move shape down one row
+
+DOWN:	ld	hl,(CPOS)
+	inc	h
+	ld	(NPOS),hl	; save temp new pos
+	ld	hl,(CURSHP)
+	ld	(TPTR),hl
+	ld	de,0
+	ld	b,4
+chk2:	ld	hl,(NPOS)
+	call	XYBUF
+	ld	a,(hl)
+	or	a		; busy cell?
+	jr	nz,chk3		; exit loop if yes, can't go down any further
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	chk2
+	call	CLRSHP		; clear shape
+	ld	hl,(NPOS)
+	ld	(CPOS),hl	; set new pos
+	ret
+
+chk3:	pop	de		; drop return address
+	ld	hl,(CPOS)
+	ld	a,h
+	or	a		; at first row?
+	jr	z,over		; then game is over
+	call	FREEZE		; else shape freezes
+	ld	hl,(NXTSHP)	; next figure
+	jp	NEXTS		;  becomes current
+
+over:	ld	hl,GAMOVR
+	call	PRNTXY
+	call	TTFLSH
+wtcr:	call	GETCH
+	cp	3
+	jp	z,QUIT
+	cp	CR
+	jr	nz,wtcr		; wait for CR
+	ld	hl,CLRGMO
+	call	PRNTXY
+	jp	BEGIN		; then restart game
+
+; Freeze shape
+
+FREEZE:	ld	hl,(CURSHP)
+	ld	(TPTR),hl
+	ld	de,0
+	ld	b,4
+frz1:	ld	hl,(CPOS)
+	call	XYBUF
+	ld	(hl),2		; shape freezes
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	frz1
+	ret
+
+; Draw shape
+
+DRWSHP:	ld	hl,(CURSHP)
+	ld	(TPTR),hl
+	call	REVVID
+	ld	de,0
+	ld	b,4
+drw1:	ld	hl,(CPOS)
+	ld	a,e
+	add	a,l
+	add	a,a
+	add	a,SCRX		; shape is drawn relative to X=SCRX, Y=0
+	ld	e,a
+	ld	a,d
+	add	a,h
+	ld	l,a
+	ld	h,e
+	call	SETCUR
+	ld	c,' '
+	call	PUTCH
+	call	PUTCH
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	drw1
+	call	NORMAL
+	call	TTFLSH
+	ret
+
+; Clear shape
+
+CLRSHP:	ld	hl,(CURSHP)
+	ld	(TPTR),hl
+	ld	de,0
+	ld	b,4
+clr1:	ld	hl,(CPOS)
+	ld	a,e
+	add	a,l
+	add	a,a
+	add	a,SCRX		; shape is drawn relative to X=SCRX, Y=0
+	ld	e,a
+	ld	a,d
+	add	a,h
+	ld	l,a
+	ld	h,e
+	call	SETCUR
+	ld	c,' '
+	call	PUTCH
+	ld	c,'.'
+	call	PUTCH
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	clr1
+;;	call	TTFLSH
+	ret
+
+; Index into map, called with HL = x,y coordinates and DE = x,y shape data
+
+XYBUF:	push	bc
+	inc	d		; add wall offset, this also ensures that
+	inc	e		;  relative Y offset is always positive
+	ld	a,l
+	add	a,e
+	ld	c,a
+	ld	b,0
+	ld	a,h
+	add	a,d
+	ld	e,BUFW
+	call	MULT8
+	add	hl,bc
+	ld	bc,BUF
+	add	hl,bc
+	pop	bc
+	ret
+
+; HL = A * E
+
+MULT8:	ld	hl,0
+	ld	d,0
+nxt:	or	a
+	ret	z
+	rra
+	jr	nc,shft
+	add	hl,de
+shft:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	nxt
+
+; Draw next shape hint
+
+DRWNXT:	ld	hl,CLRSTR	; clear next shape
+	call	PRNTXY
+	call	REVVID
+	ld	hl,(NXTSHP)
+	ld	(TPTR),hl
+	ld	de,0
+	ld	b,4
+dnxt1:	ld	a,e
+	add	a,a
+	add	a,7		; shape is drawn at X=7, Y=16
+	ld	h,a
+	ld	a,d
+	add	a,16
+	ld	l,a
+	call	SETCUR
+	ld	c,' '
+	call	PUTCH
+	call	PUTCH
+	ld	hl,(TPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(TPTR),hl
+	djnz	dnxt1
+	call	NORMAL
+	call	TTFLSH
+	ret
+
+; Table of figures. Values are x,y offset from center of rotation point,
+; the center point itself is not included.
+
+FTAB:	; ####
+	db	-2, 0,  -1, 0,  1, 0	;   0 degrees
+	db	 0,-1,   0, 1,  0, 2	;  90   "
+	db	-2, 0,  -1, 0,  1, 0	; 180   "
+	db	 0,-1,   0, 1,  0, 2	; 270   "
+
+	;  #
+	; ###
+	db	-1, 0,   1, 0,  0, 1
+	db	 0, 1,   1, 0,  0,-1
+	db	-1, 0,   0,-1,  1, 0
+	db	-1, 0,   0, 1,  0,-1
+
+	; #  
+	; ###
+	db	-1, 0,   1, 0, -1, 1
+	db	 0,-1,   0, 1,  1, 1
+	db	-1, 0,   1,-1,  1, 0
+	db	 0,-1,  -1,-1,  0, 1
+
+	; ##
+	;  ##
+	db	 1, 0,  -1, 1,  0, 1
+	db	 0,-1,   1, 0,  1, 1
+	db	 1, 0,  -1, 1,  0, 1
+	db	 0,-1,   1, 0,  1, 1
+
+	;   #
+	; ###
+	db	-1, 0,   1, 0,  1, 1
+	db	 0,-1,   1,-1,  0, 1
+	db	-1, 0,  -1,-1,  1, 0
+	db	 0,-1,   0, 1, -1, 1
+
+	;  ##
+	; ##
+	db	-1, 0,   0, 1,  1, 1
+	db	 0, 1,   1, 0,  1,-1
+	db	-1, 0,   0, 1,  1, 1
+	db	 0, 1,   1, 0,  1,-1
+
+	; ##
+	; ##
+	db	-1, 0,  -1, 1,  0, 1
+	db	-1, 0,  -1, 1,  0, 1
+	db	-1, 0,  -1, 1,  0, 1
+	db	-1, 0,  -1, 1,  0, 1
+
+; Pick a random figure
+
+RND:	ld	hl,(RAND)
+	ld	b,16
+r1:	ld	a,h
+	add	hl,hl
+	and	60h
+	jp	pe,r2
+	inc	hl
+r2:	djnz	r1
+	ld	(RAND),hl
+	ld	a,l
+	and	7
+	cp	7
+	jr	z,RND		; number must be 0..6
+	ld	hl,LAST
+	cp	(hl)
+	jr	z,RND		; and different than the previous one
+	ld	(hl),a
+	add	a,a
+	add	a,a
+	add	a,a		; *8
+	ld	c,a
+	add	a,a		; *16
+	add	a,c		; *24
+	ld	c,a
+	ld	b,0
+	ld	hl,FTAB
+	add	hl,bc		; index into table
+	ret
+
+; Delete any rows that are full
+
+CKFULL:	ld	h,BUFH-2	; start from the bottom
+	ld	l,0
+ckfr1:	ld	(NPOS),hl
+	ld	de,0FF00h
+	call	XYBUF		; obtain map coordinates
+	ld	(TPTR),hl
+ckfr2:	ld	a,(hl)
+	dec	a		; wall?
+	jr	z,ckfr4		; exit this loop if yes, compress this row
+	dec	a		; old accumulated garbage?
+	jr	nz,ckfr3	; branch if not
+	inc	hl		; else advance to next cell
+	jr	ckfr2		; and loop
+
+ckfr3:	ld	hl,(NPOS)
+	dec	h		; up one row
+	jr	nz,ckfr1	; loop until top reached
+	ld	hl,(SHAPES)	; inc number of shapes
+	inc	hl
+	ld	(SHAPES),hl
+	jp	UPDST		; update status info and return
+
+ckfr4:	ld	hl,(FLROWS)	; inc number of full rows
+	inc	hl
+	ld	(FLROWS),hl
+	ld	hl,LCNT
+	dec	(hl)		; time to increase level?
+	jr	nz,upd		; branch if not
+	ld	(hl),10
+	ld	a,(LEVEL)
+	cp	10		; max allowed
+	jr	nc,upd
+	inc	a
+	ld	(LEVEL),a
+	call	SETSPD		; cranck up speed
+upd:	call	UPDST		; update status info on the screen
+cpr1:	ld	hl,(NPOS)
+	dec	h		; up one row
+	ld	(NPOS),hl
+	jr	z,cpr2		; exit loop when done
+	ld	de,(TPTR)	; DE = dst (current row)
+	ld	hl,-BUFW
+	add	hl,de		; HL = src (upper row)
+	ld	(TPTR),hl
+	ld	bc,MAPW
+	ldir			; copy row down
+	call	DROW		; update row on the screen
+	jr	cpr1		; continue compressing until top reached
+cpr2:	call	BEEP		; beep
+	call	TTFLSH
+	jr	CKFULL		; repeat until all full rows are deleted
+
+; Draw one row. Called during full row deletion
+
+DROW:	ld	hl,(NPOS)
+	ld	a,l
+	add	a,a
+	add	a,SCRX		; rows are drawn relative to X=SCRX, Y=0
+	ld	l,h
+	ld	h,a
+	call	SETCUR
+	ld	hl,(TPTR)
+	ld	b,MAPW
+	ld	e,0
+dr1:	ld	a,(hl)
+	or	a		; empty cell?
+	jr	z,dr2		; branch if yes
+	ld	a,e
+	or	a
+	call	z,REVVID
+	ld	e,1
+	ld	c,' '
+	call	PUTCH
+	call	PUTCH
+	jr	dr3
+dr2:	ld	a,e
+	or	a
+	call	nz,NORMAL
+	ld	e,0
+	ld	c,' '
+	call	PUTCH
+	ld	c,'.'
+	call	PUTCH
+dr3:	inc	hl
+	djnz	dr1
+	call	NORMAL
+	ret
+
+BEEP:	push	af
+	ld	a,7
+	call	PUTCHR
+	call	TTFLSH
+	pop	af
+	ret
+
+;---------------------------------------------------------------------------
+
+PUTCHR:	push	af
+	push	bc
+	ld	c,a
+	call	PUTCH
+	pop	bc
+	pop	af
+	ret
+
+PRNTXY:	ld	a,(hl)
+	cp	0FFh
+	ret	z
+	ld	d,a		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	ex	de,hl
+	call	SETCUR
+	ex	de,hl
+	call	PUTSTR
+	inc	hl
+	jr	PRNTXY
+
+BANNER:	db	4,2,'T E T R I S',0
+	db	2,4,'Level (0...9) ? ',0
+	db	0FFh
+
+CLRBNR:	db	4,2,'           ',0
+	db	2,4,'                  ',0
+	db	0FFh
+
+MSTART:	db	56,16,'Press any key to start',0
+	db	0FFh
+
+GAMOVR:	db	62,14,'GAME OVER',0
+	db	56,16,'Press Enter to restart',0
+	db	0FFh
+
+CLRGMO:	db	62,14,'         ',0
+CLRMST:	db	56,16,'                      ',0
+	db	0FFh
+
+WROW:	db	'<x . . . . . . . . . .x>',0
+WBOTM:	db	' mqqqqqqqqqqqqqqqqqqqqj ',0
+
+STINFO:	db	1,2,'Level:',0
+	db	1,3,'Score:',0
+	db	1,4,'Pieces:',0
+	db	1,14,'Next piece:',0
+	db	56,4,'left arrow: move left',0
+	db	55,5,'right arrow: move right',0
+	db	58,6,'up arrow: rotate',0
+	db	56,7,'down arrow: drop',0
+	db	0FFh
+
+CLRSTR:	db	2,16,'           ',0
+	db	2,17,'           ',0
+	db	0FFh
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+LEVEL:	ds	1	; current level
+LCNT:	ds	1	; rows to collect before switching to next level
+DLYCON:	ds	1	; delay constant, according to level
+DLYCNT:	ds	1
+LASTK:	db	0	; last key
+FLROWS:	ds	2	; rows completed
+SHAPES:	ds	2	; shapes used
+
+ORIENT:	db	1	; current orientation
+CPOS:	ds	2	; current shape position
+NORIEN:	ds	1	; next orientation
+NPOS:	ds	2	; next position
+INISHP:	ds	2	; ptr to current figure, initial orientation
+CURSHP:	ds	2	; ptr to current figure, current orientation
+NXTSHP:	ds	2	; ptr to next figure
+TPTR:	ds	2	; temp pointer, used mostly when drawing figs
+LAST:	db	0	; last figure used, to ensure next one is different
+RAND:	dw	0FD5Ah
+
+BUF:	ds	BUFW*BUFH
+
+	ds	256
+STACK	equ	$
+
+	end	START

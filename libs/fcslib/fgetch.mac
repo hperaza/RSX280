@@ -1,0 +1,65 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+	public	FGETCH
+
+	extrn	FRDBLK,CPHLDE,?FINCB
+
+	cseg
+
+FGETCH:	push	hl
+	push	de
+	bit	FS.BV,(ix+FC.MODE)
+	jr	z,fgc1
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	ld	l,(ix+FC.CNT)
+	ld	h,(ix+FC.CNT+1)
+	call	CPHLDE		; FC.CUR < FC.CNT?
+	jr	c,fgc2		; branch if yes
+	call	?FINCB		; prepare to read next block
+fgc1:	call	FRDBLK		; read block
+	jr	c,fgc3
+	ld	a,d
+	or	e
+	ld	a,E.EOF
+	scf
+	jr	z,fgc3
+	ld	de,0
+fgc2:	inc	de
+	ld	(ix+FC.CUR),e
+	ld	(ix+FC.CUR+1),d
+	dec	de
+	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	add	hl,de		; index into buffer
+	ld	a,(hl)		; return char in A
+	or	a
+fgc3:	pop	de
+	pop	hl
+	ret
+
+	end

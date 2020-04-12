@@ -1,0 +1,32 @@
+	.Z80
+
+	public	DENOR0,DENOR1
+
+	extrn	FR0,FR1
+
+; Denormalize number by the amount in A (two decimal places at a time)
+
+	cseg
+
+DENOR0:	ld	hl,FR0		; denormalize FR0
+	jr	dn0
+DENOR1:	ld	hl,FR1		; denormalize FR1
+dn0:	push	af
+dn1:	ld	bc,5
+	add	hl,bc		; point to last byte
+	ld	e,l
+	ld	d,h
+	dec	hl
+	ld	bc,4
+	lddr			; shift mantissa right two decimal places
+	inc	hl
+	ld	(hl),0		; clear first mantissa byte (FRx+1)
+	dec	hl		; HL = again FRx
+	dec	a
+	jr	nz,dn1
+	pop	af
+	add	a,(hl)		; correct exponent
+	ld	(hl),a
+	ret
+
+	end

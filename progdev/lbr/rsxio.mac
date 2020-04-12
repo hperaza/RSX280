@@ -1,0 +1,840 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of LBR, a relocatable object code librarian      ;
+;   program for CP/M and RSX180.                                       ;
+;   Copyright (C) 1992-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   RSX180-specific routines.                                          ;
+;                                                                      ;
+;   Usage:                                                             ;
+;     LBR [output][,listing[/M]=input[<module,...>][/E][/D][+...]      ;
+;                                                                      ;
+;   Examples:                                                          ;
+;     LBR NEWLIB=REL1/E+REL2/E   - create a NEWLIB lib containing      ;
+;                                  REL1 and REL2 modules.              ;
+;     LBR REL1=NEWLIB<REL1>/E    - extract module REL1 from NEWLIB     ;
+;     LBR =NEWLIB<REL1>/D        - delete module REL1 from NEWLIB      ;
+;     LBR ,TI:/M=NEWLIB          - list to console name of modules     ;
+;                                  contained in NEWLIB                 ;
+;     LBR NEWLIB2=NEWLIB1/E+REL3/E  - add module REL3 to NEWLIB,       ;
+;                                     note that the output name must   ;
+;                                     be different.                    ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+; TODO:
+; - check for min mem space
+; - automatic task extension
+; - create IRL file
+
+	.Z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	GCML.INC
+	include	FCSLIB.INC
+
+TAB	equ	09h
+CR	equ	0Dh
+LF	equ	0Ah
+
+LUN.I	equ	1
+LUN.O	equ	2
+LUN.L	equ	3
+LUN.E	equ	4
+LUN.C	equ	6
+
+	public	GETTOP,GETCMD,RESCMD,EXIT,ERRMSG,PARSE
+	public	SETINP,FGETRB,LNBUF,LNPTR,MAKEF,OPENF
+	public	CLSE.I,CLSE.O,CLSE.L,FPUTLB,FWRLST,GETDT
+	public	MODN,LIBNAM,LMODE,WRMODE,WRFLAG,PROGID
+	public	ADDHLA
+
+	extrn	ERROR,ADDR,MEMBOT,SYMTAB
+
+	extrn	PUTCH,PERROR,TTFLSH,GCML,RCML,UCASE
+	extrn	PUTSTR,HLDEC,PFN,FCREAT,FOPEN,FCLOSE
+	extrn	FPUTLN,FWRITE,FGETCH,FPUTCH,CVTWD,CVTBH
+	extrn	CVTBD,BCD2BIN
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Get top of memory
+
+GETTOP:	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK
+	ld	hl,GTKBUF+GT.VID
+	ld	de,PRGVER
+	ld	bc,6
+	ldir
+	ld	hl,(GTKBUF+GT.END)
+	ret
+
+GETCMD:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	ret	nc
+	cp	E.EOF		; end of file on command input?
+	jr	z,EXIT		; exit normally if yes
+	call	CMLERR		; else display error message
+	call	RESCMD		; reset command state
+	jr	GETCMD		; and loop for more
+
+RESCMD:	ld	iy,GDAT
+	call	RCML		; reset command state
+	ret
+
+EXIT:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+PRFX:	db	CR,LF,'LBR -- ',0
+
+; Display error message @HL
+
+ERRMSG:	ex	de,hl
+	ld	hl,PRFX
+	call	PUTSTR
+	ex	de,hl
+	call	PUTSTR		; display error message
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Display standard system error message
+
+SYSERR:	push	af
+	ld	hl,PRFX
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERRMSG
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,msgsn
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msgsn:	db	'Syntax error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Translate the command line to uppercase
+
+LNUPR:	ld	hl,(LNPTR)
+ln1:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	CR
+	jr	z,ln2
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	jr	ln1
+ln2:	ld	(hl),0
+	ret
+
+; Parse command line
+
+PARSE:	xor	a
+	ld	(WRFLAG),a	; write flag: no output
+	ld	(WRMODE),a
+	ld	(FLG.I),a	; no input file
+	ld	(OPN.I),a
+	ld	(FLG.O),a	; no output file
+	ld	(OPN.O),a
+	ld	(FLG.L),a	; no listing file
+	ld	(OPN.L),a
+	ld	a,2
+	ld	(LMODE),a	; default listing mode = list all
+	call	LNUPR
+	call	GETDST		; get output file
+NEXT:	ld	hl,(LNPTR)
+	ld	a,(hl)
+	inc	hl
+	or	a		; end of line?
+	jr	z,endp		; jump if yes
+	cp	'/'
+	jr	z,SWITCH	; process input switches
+	cp	','
+	jp	z,GETLST	; get the optional listing file
+	cp	'='
+	jp	z,GETINP	; get the input file
+	ld	(LNPTR),hl
+	jp	CMDERR
+endp:	ld	a,(FLG.I)	; do we have an input file?
+	or	a
+	jp	z,CMDERR	; error if not
+	ret
+
+; Get the input switches (only /M allowed)
+
+SWITCH:	ld	a,(hl)
+	inc	hl
+	ld	(LNPTR),hl
+	cp	'M'
+	jr	z,lstm
+ERRSW:	ld	hl,ESMSG
+	jp	ERROR
+lstm:	ld	a,1
+	ld	(LMODE),a	; list only module names
+	jp	NEXT
+
+ESMSG:	db	'Bad switch',0
+
+; Get output file name
+
+GETDST:	ld	ix,(FBK.O+FC.FDB)
+	ld	hl,(LNPTR)
+	call	PFN		; create output FCB
+	jr	c,OERR
+	ld	(LNPTR),hl
+	call	TSTFCB		; check FCB
+	ld	(FLG.O),a	; signal we have an output file
+	cp	2
+	jr	nc,OERR		; output cannot be a device
+	ld	de,EXT.O
+	call	ADDEXT		; add default extension if none was supplied
+	ret
+OERR:	ld	hl,OEMSG
+	jp	ERROR
+
+OEMSG:	db	'Illegal output file',0
+
+; Return 0 if the FCB is empty, 1 if it is a valid disk file FCB,
+; or 2 if only a device name (TI:, LP:, etc.) was specified.
+
+TSTFCB:	ld	a,(ix+F.ATTR)
+	or	a
+	ret	z		; empty FCB
+	ld	c,a
+	and	FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	a,1		; disk file
+	ret	nz
+	cp	FN.DEV
+	ld	a,2
+	ret	z
+	xor	a
+	ret
+
+; Get the listing file name
+
+GETLST:	ld	(LNPTR),hl
+	ld	a,(FLG.L)	; listing already specified?
+	or	a
+	jp	nz,CMDERR	; error if yes
+	ld	ix,(FBK.L+FC.FDB)
+	call	PFN		; create listing FCB
+	ld	(LNPTR),hl
+	call	TSTFCB
+	ld	(FLG.L),a	; remember listing type (disk, device or file)
+	cp	1
+	ld	de,EXT.L	; add default extension if none was supplied
+	call	z,ADDEXT	;  (and only if disk file)
+	jp	NEXT
+
+; Get the input file name(s)
+
+GETINP:	ld	a,(FLG.I)	; input already specified?
+	or	a
+	jp	nz,CMDERR	; error if yes
+get1:	ld	(LNPTR),hl
+	ld	de,(MODN)
+	push	de		; get starting address of name
+	pop	ix		;  into IX
+	call	PFN		; get input file name
+	ld	(LNPTR),hl
+	push	ix
+	pop	hl
+	ld	de,FNSZ
+	add	hl,de
+	ld	(hl),0
+	ld	(ADDR),hl	; addr. for switch
+	inc	hl
+	ld	(hl),0FEh
+	ld	(MODN),hl
+	call	TSTFCB		; check name specification
+	ld	(FLG.I),a
+	cp	2
+	jp	nc,IERR		; cannot be a device
+	ld	de,EXT.I
+	call	ADDEXT		; add REL extension if necessary
+get2:	ld	hl,(LNPTR)
+	ld	a,(hl)
+	inc	hl
+	cp	'<'
+	jp	z,GETMOD	; get module name
+	cp	'/'
+	jp	z,INPSW		; get input switches
+	cp	'+'
+	jr	nz,get3
+	ld	de,(MODN)	; keep the 0FEh if '+'
+	inc	de
+	ld	(MODN),de
+	jr	get1
+get3:	ld	hl,(MODN)
+	inc	hl
+	ld	(hl),0FFh	; end of input file list
+	inc	hl
+	ld	(SYMTAB),hl	; set start of symbol table
+	ld	hl,(MEMBOT)
+	ld	(MODN),hl
+	jp	NEXT
+IERR:	ld	hl,IEMSG
+	jp	ERROR
+
+IEMSG:	db	'Illegal input file',0
+
+; Extract module list
+
+GETMOD:	ld	b,8
+	ex	de,hl
+	ld	hl,(MODN)
+	call	GETNAM
+	ld	(hl),0
+	inc	hl
+	ld	(hl),0FEh
+	ld	(MODN),hl
+	ex	de,hl
+	ld	a,(hl)
+	cp	','
+	inc	hl
+	jr	z,GETMOD
+	dec	hl
+	cp	'>'
+	jp	nz,CMDERR
+	inc	hl
+	ld	(LNPTR),hl
+	jp	get2
+
+; Process input switches: /E - extract module, /D - delete module
+
+INPSW:	ld	a,(hl)
+	inc	hl
+	ld	(LNPTR),hl
+	cp	'E'
+	jr	z,incl
+	cp	'D'
+	jr	z,excl
+	jp	ERRSW
+excl:	ld	a,2		; WRMODE = 2 -> exclude (delete)
+	jr	SETSW
+incl:	ld	a,1		; WRMODE = 1 -> include (extract)
+SETSW:	ld	(WRMODE),a
+	ld	hl,(ADDR)	; get switch address (end of file name)
+	ld	(hl),a		; store switch for this file
+	xor	a
+	ld	(WRFLAG),a	; clear write flag
+	jp	get2
+
+; Get a name from the input line in (DE), up to C chars in length.
+; Store the name at (HL), padding with spaces if necessary.
+
+GETNAM:	call	GETFS
+	jr	z,sfill
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+skip:	call	GETFS
+	ret	z
+	inc	de
+	jr	skip
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get next (non-blank) symbol
+; Returns Z flag on EOL.
+
+GETNS:	ld	a,(de)
+	or	a
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Skip until next word
+
+SKPNAM:	ld	a,(de)
+	or	a
+	ret	z
+	cp	'/'
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS
+	inc	de
+	jr	SKPNAM
+
+; Returns Z if char is blank.
+
+ISBLNK:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; Get next symbol
+; Returns Z on delimiter or EOL.
+
+GETFS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,CMDERR
+	ret	z
+	cp	'='
+	ret	z
+	cp	'_'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'*'
+	ret	z
+	cp	'?'
+	ret	z
+	cp	','
+	ret	z
+	cp	'+'
+	ret
+
+CMDERR:	ld	hl,ERRCMD
+	jp	ERROR
+
+ERRCMD:	db	'Command line error',0
+
+; Add file ext (DE) to FCB in (IX) if necessary.
+
+ADDEXT:	ld	a,(ix+F.ATTR)
+	and	FN.EXT
+	ret	nz
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ret
+
+EXT.I:	db	'LIB'
+EXT.O:	db	'OBJ'
+EXT.L:	db	'LST'
+
+; Open input file
+
+OPENF:	ld	ix,FBK.I
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN
+	jr	c,OPNERR
+	ld	a,1
+	ld	(OPN.I),a
+	ret
+OPNERR:	call	SYSERR
+	ld	hl,0
+	jp	ERROR
+
+; Create output and listing files
+
+MAKEF:	ld	a,(FLG.O)	; WRMODE
+	or	a
+	jr	z,op1
+	ld	ix,FBK.O
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT
+	jr	c,OPNERR
+	ld	a,1
+	ld	(OPN.O),a
+op1:	ld	a,(FLG.L)
+	or	a
+	jr	z,op2
+	ld	ix,FBK.L
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT
+	jr	c,OPNERR
+	ld	a,1
+	ld	(OPN.L),a
+op2:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+SETINP:	ld	de,(FBK.I+FC.FDB)
+	ld	bc,FNSZ
+	ldir			; setup input FCB with next file name
+	ld	a,(hl)		; get switch
+	inc	hl
+	ret
+
+; Copy current library name to string buffer @DE
+
+LIBNAM:	ld	hl,(FBK.I+FC.FDB)
+	push	hl
+	ld	bc,F.DEV
+	add	hl,bc
+	ldi
+	ldi
+	ld	a,(hl)
+	ex	de,hl
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ex	de,hl
+	pop	hl
+	push	hl
+	ld	bc,F.DIR
+	add	hl,bc
+	ld	b,8
+	ld	a,'['
+	ld	(de),a
+	inc	de
+	call	CPNAM
+	ld	a,']'
+	ld	(de),a
+	inc	de
+	pop	hl
+	push	hl
+	ld	bc,F.NAME
+	add	hl,bc
+	ld	b,8
+	call	CPNAM
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	pop	hl
+	push	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	ld	b,3
+	call	CPNAM
+	ld	a,';'
+	ld	(de),a
+	inc	de
+	pop	hl
+	ld	bc,F.VER
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl
+	xor	a
+	call	CVTWD
+	ex	de,hl
+	ret
+
+CPNAM:	ld	a,(hl)
+	cp	' '
+	ret	z
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	CPNAM
+	ret
+
+; Read a byte from input REL file
+
+FGETRB:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK.I
+	call	FGETCH
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret	nc		; TODO: E.EOF else error
+ENDF:	cp	E.EOF
+	ld	hl,ERREOF
+	jp	z,ERROR
+	call	SYSERR
+	ld	hl,0
+	jp	ERROR
+
+ERREOF:	db	'Unexpected end of file',0
+
+; Write line to listing file
+
+FWRLST:	ld	a,(OPN.L)
+	or	a
+	ret	z
+	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK.L
+	ex	de,hl
+	call	FPUTLN
+	jr	c,ERRW
+WRP1:	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+; Write byte to output library file
+
+FPUTLB:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK.O
+	call	FPUTCH
+	jr	c,ERRW
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+ERRW:	call	SYSERR
+	ld	hl,0
+	jp	ERROR
+
+; Close input file
+
+CLSE.I:	ld	a,(OPN.I)
+	or	a
+	ret	z
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK.I
+	call	FCLOSE		; close input file
+	xor	a
+	ld	(OPN.I),a
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Close output file
+
+CLSE.O:	ld	a,(OPN.O)
+	or	a
+	ret	z
+	push	hl
+	push	de
+	push	bc
+	ld	a,9Eh		; REL EOF
+	call	FPUTLB
+	call	c,SYSERR
+	ld	ix,FBK.O
+	call	FCLOSE
+	call	c,SYSERR
+	xor	a
+	ld	(OPN.O),a
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Close listing file
+
+CLSE.L:	ld	a,(OPN.L)
+	or	a
+	ret	z
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK.L
+	call	FCLOSE
+	call	c,SYSERR
+	xor	a
+	ld	(OPN.L),a
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert current date and time to string @DE
+
+GETDT:	ld	hl,-8
+	add	hl,sp		; allocate 8-byte buffer
+	ld	sp,hl
+	SC	.GDAT		; get system time
+	jr	c,dt1
+
+	ld	ix,0
+	add	ix,sp
+
+	ex	de,hl		; address to store date now in HL
+	ld	a,(ix+3)	; day
+	call	CVTBH
+	ld	a,(ix+2)	; month
+	call	BCD2BIN
+	dec	a		; make it base 0
+	add	a,a
+	add	a,a		; *4
+	ex	de,hl		; DE = dst
+	ld	hl,MONTHS
+	call	ADDHLA		; HL = src
+	ld	bc,5
+	ldir			; store month name and separators
+	ex	de,hl
+	ld	a,(ix+0)	; year
+	call	CVTBH
+	ld	a,(ix+1)	; year
+	call	CVTBH
+	ld	a,' '
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl		; address to store time
+
+	ld	a,(ix+4)	; hours
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+5)	; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+6)	; sec
+	call	CVTBH
+	ex	de,hl
+
+dt1:	xor	a
+	ld	(de),a
+	ld	hl,8
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	ret
+
+MONTHS:	db	'-Jan-Feb-Mar-Apr-May-Jun-Jul-Aug-Sep-Oct-Nov-Dec-'
+
+; HL += A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+PROGID:	db	'LBR '
+PRGVER:	ds	6
+	db	0
+
+GTKBUF:	ds	GTKSZ
+
+GDAT:	GCML$	LNBUF,128,'LBR',LUN.C,2
+
+LMODE:	ds	1		; listing mode
+
+LNBUF:	ds	128		; command line buffer
+LNPTR:	ds	2
+
+MODN:	ds	2		; pointer to module list
+
+FLG.I:	ds	1		; input file
+OPN.I:	ds	1
+FBK.I:	FSR$	,<1 SHL FM.RD>,LUN.I,9,
+
+FLG.O:	ds	1		; output file
+OPN.O:	ds	1
+FBK.O:	FSR$	,<1 SHL FM.WR>,LUN.O,9,
+
+FLG.L:	ds	1		; listing file
+OPN.L:	ds	1
+FBK.L:	FSR$	,<1 SHL FM.WR>,LUN.L,9,
+
+WRMODE:	ds	1
+WRFLAG:	ds	1		; write flag: 0 = no output, <>0 = output
+
+	end

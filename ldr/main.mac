@@ -1,0 +1,416 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;       LOADER task. Runs in a separate partition.                     ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	ident	'V6.10'
+
+	include	SYSCONF.INC
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	THDR.INC
+	include	TKN.INC
+	include	ERRORS.INC
+
+LUN	equ	1		; LUN for file I/O
+EFN	equ	9		; event flag number for file I/O
+
+	public	LOADER
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+LOADER:	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER		; we always run in kernel mode
+	jr	c,exit
+
+next:	ld	iy,($CTCB)
+	ldw	ix,(iy+T.RCVL)	; check loader queue
+	ld	a,ixh
+	or	ixl		; got anything?
+	jr	z,wait		; jump if not
+
+	ldw	hl,(ix+T.LNK)	; else unlink TCB
+	ldw	(iy+T.RCVL),hl
+	call	TLOAD		; and load the task
+	jr	next		; loop for more
+
+wait:	SC	.WTDAT		; wait until something arrives
+	jr	next		; then loop to process it
+				; (this task never terminates)
+
+exit:	ld	hl,EX.SEV
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Process kernel task load request.
+
+; Load the requested task image from disk and then call the kernel to 
+; start execution. Memory for task has been already allocated. Aborts
+; task if it could not be loaded.
+; Input:
+;   IX = TCB addr
+; Returns:
+;   CY set on error and error code in A.
+
+;  T2.OUT  T2.CKP
+;    0       0      not allowed
+;    0       1      checkpoint write
+;    1       0      initial load
+;    1       1      checkpoint read
+
+TLOAD:	IF	F$CHKP
+
+	bit	T2.CKP,(ix+T.ST+1) ; is this a checkpoint request?
+	jp	z,iload		   ; branch if not (initial task load)
+
+	; checkpoint file operation
+
+	ldw	iy,(ix+T.CPCB)
+	ld	a,iyh		; ensure checkpoint PCB is allocated
+	or	iyl
+	ld	a,TK.CAF
+	jp	z,lderr
+
+	ldw	de,(iy+P.UCB)	; get UCB of checkpoint device
+	call	SETLUN		; assign LUN to checkpoint device
+
+	ldw	hl,(iy+P.LBN)	; get starting block number of checkpoint file
+	ldw	de,(iy+P.LBN+2)
+	ldw	bc,(iy+P.REL)	; get relative block number within file
+
+	add	hl,bc		; compute absolute block number
+	ld	bc,0
+	ex	de,hl
+	adc	hl,bc
+	ex	de,hl
+
+	ld	(QIOBLK+Q.BLK),hl ; set block number in QIO block
+	ld	(QIOBLK+Q.BLK+2),de
+
+	ldw	hl,(ix+T.PCB)
+	ld	de,P.BASE
+	add	hl,de
+	ld	a,(hl)		; get task bank number
+	ld	(TBASE),a
+
+	ld	hl,0		; starting address
+	ld	b,(iy+P.SIZE)	; number of blocks to read/write in B
+				;  (note: assuming max 128 blocks = 64K)
+
+	bit	T2.OUT,(ix+T.ST+1) ; checkpoint read?
+	jp	z,ckpwr		   ; branch if not (checkpoint write)
+
+	ex	de,hl		; dst
+
+ckprd:	; checkpoint read
+
+	push	bc
+
+	call	DSKRD		; read from checkpoint file
+	jp	c,rderr		; abort task on read error
+
+	ld	hl,IOBUF	; src
+	ld	bc,512		; len
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank
+	ld	a,(TBASE)
+	ld	d,a		; dst bank
+	exx
+	KCALL	$MCOPY		; copy block to task area
+
+	call	NXTBL
+	pop	bc
+	djnz	ckprd
+
+	KCALL	$LDCKR		; move task to ready list to resume execution
+	ret	nc
+	ld	e,TK.CAF	; tktn code = checkpoint failure
+	jp	lderr
+
+ckpwr:	; checkpoint write
+
+	push	bc
+
+	ld	de,IOBUF	; dst
+	ld	bc,512		; len
+	exx
+	ld	a,($UBANK)
+	ld	d,a		; dst bank
+	ld	a,(TBASE)
+	ld	e,a		; src bank
+	exx
+	KCALL	$MCOPY		; get block from task area
+
+	push	hl
+	call	DSKWR		; write to checkpoint file
+	pop	hl		; src
+	jp	c,rderr		; abort task on write error
+
+	push	hl
+	call	NXTBL
+	pop	hl
+	pop	bc
+	djnz	ckpwr
+
+	KCALL	$LDCKW		; move task to partition wait list
+	ret	nc
+	ld	e,TK.CAF	; tktn code = checkpoint failure
+	jp	lderr
+
+	ENDIF
+
+iload:	; initial task load
+
+	ldw	de,(ix+T.LDEV)	; get UCB of task load device into DE
+	call	SETLUN		; assign LUN
+
+	ldw	hl,(ix+T.SBLK)	; get starting block number
+	ld	(QIOBLK+Q.BLK),hl ; set block number in QIO block
+	ldw	hl,(ix+T.SBLK+2)
+	ld	(QIOBLK+Q.BLK+2),hl
+
+	call	DSKRD		; read 1st block (task header) into IOBUF
+	ld	e,TK.LDR	; abort code = read error
+	jp	c,lderr		; abort task on error
+
+	ld	hl,IOBUF
+	ld	de,TSKHDR
+	ld	bc,256
+	ldir
+
+	call	CHKHDR		; validate header
+	ld	e,TK.ITH	; abort code = invalid task header
+	jp	c,lderr		; abort task if header is invalid
+
+	ldw	hl,(ix+T.PCB)
+	ld	de,P.BASE
+	add	hl,de
+	ld	a,(hl)
+	ld	(TBASE),a
+
+	ld	de,100h		; program load address
+	ld	b,(ix+T.NBLK)	; number of blocks to read in B
+				;  kernel made sure that high byte is zero
+	ld	hl,IOBUF+256	; src in HL, dst in DE
+	push	bc		; save block counter
+	ld	bc,256		; length
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank
+	ld	a,(TBASE)
+	ld	d,a		; dst bank
+	exx
+	KCALL	$MCOPY		; copy 1st 256 bytes 
+	pop	bc
+	dec	b		; done with first block
+	jr	z,ldend
+
+load:	push	bc
+
+	call	NXTBL		; already copied first (half) block
+	call	DSKRD		; read from task image file
+	jp	c,rderr		; abort task on error
+
+	ld	hl,IOBUF	; src
+	ld	bc,512		; len
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank
+	ld	a,(TBASE)
+	ld	d,a		; dst bank
+	exx
+	KCALL	$MCOPY		; copy block to task area
+
+	pop	bc
+	djnz	load
+
+ldend:	call	INILUN		; initialize LUN table
+	ld	e,TK.MEM	; abort code = not enough pool
+	jr	c,lderr		; initiate task abort on error
+
+	KCALL	$LDGO		; move task to ready list to start execution
+	ret	nc
+	ld	e,TK.RUN	; tktn code = start failed
+
+; Free allocated task memory in case of start failure.
+
+lderr:	push	af
+	push	ix
+	pop	bc
+	set	T2.LDR,(ix+T.ST+1)
+	KCALL	TKILL		; abort task
+	pop	af
+	ret
+
+rderr:	pop	bc
+	ld	e,TK.LDR	; abort code = read error
+	jr	lderr
+
+;-----------------------------------------------------------------------
+
+; Validate task header. Right now it simply checks signature and
+; version number.
+
+CHKHDR:	ld	hl,TSKHDR
+	ld	de,thid
+	ld	b,6
+ckhdr:	ld	a,(de)		; check task header ID
+	cp	(hl)
+	ld	a,E.BADTH
+	scf
+	ret	nz		; return CY if header is invalid
+	inc	hl
+	inc	de
+	djnz	ckhdr
+	ld	hl,(TSKHDR+TH.VER)
+	ld	de,0102h	; 1.2
+	or	a
+	sbc	hl,de
+	ret	z
+	scf
+	ret
+
+thid:	db	'TSK180'
+
+;-----------------------------------------------------------------------
+
+; Initialize task's LUN table.
+
+INILUN:	ldw	hl,(ix+T.CTX)	; get address of task context block
+	ld	a,h
+	or	l
+	scf
+	ret	z		; error if not set
+	ld	hl,TSKHDR+TH.LUNT
+	ld	b,1
+ini1:	ldw	de,(hl)		; get device name into DE-C
+	inc	hl
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	inc	hl
+	push	hl
+	push	bc
+	KCALL	$ALUN
+	pop	bc
+	pop	hl
+	inc	b
+	ld	a,b
+	cp	17
+	jr	c,ini1
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set LUN for subsequent file I/O. DE = UCB address.
+
+SETLUN:	push	hl
+	push	bc
+	ld	hl,($CTCB)
+	ldw	hl,(hl+T.CTX)	; get context address
+	ld	bc,TX.LUT
+	add	hl,bc		; point to LUN table
+	ld	bc,4*(LUN-1)
+	add	hl,bc		; index into LUN table
+	ldw	(hl),de		; set LUN
+	pop	bc
+	pop	hl
+	ret
+
+; Write IOBUF contents to disk block (number already in QIO block).
+
+	IF	F$CHKP
+
+DSKWR:	ld	a,IO.WLB
+	jr	dskio
+
+	ENDIF
+
+; Read disk block (number already in QIO block) into buffer IOBUF.
+
+DSKRD:	ld	a,IO.RLB
+dskio:	ld	(QIOBLK+Q.FUNC),a
+	ld	hl,0
+	ld	(QIOSB+2),hl	; clear count of bytes read
+	ld	hl,QIOBLK
+	SC	.QIO		; .QIOW
+	ret	c		; if queueing failed
+	ld	hl,(QIOSB+2)	; fetch byte count
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; check result
+	ret	z
+	scf
+	ret
+
+; Set next block number in QIO block
+
+NXTBL:	ld	hl,QIOBLK+Q.BLK
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+TSKHDR:	ds	256		; buffer for task header
+IOBUF:	ds	512		; buffer for file I/O
+TBASE:	ds	1		; task base page
+
+QIOBLK:	QIOW$	IO.RLB,LUN,EFN,QIOSB,,<IOBUF,512,0,0,0>
+QIOSB:	ds	4
+
+RCVBUF:	ds	2		; receive buffer
+
+	ds	128		; stack space
+stack	equ	$
+
+	end

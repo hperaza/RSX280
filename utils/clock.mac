@@ -1,0 +1,864 @@
+; Clock demo application for RSX180. Based on a similar program from DECUS.
+
+	TITLE	CLOCK
+	IDENT	'V1.01'
+
+	.Z80
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	AST.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+TAB	equ	09h
+EOF	equ	1Ah
+
+false	equ	0
+true	equ	NOT false
+
+	extrn	ATTACH,DETACH,PUTSTR,PUTCH,CRLF,TTFLSH,UCASE,GETLN
+	extrn	ADEC,BCD2BIN,TTLUN
+
+; Conditional assembly controls
+; The following symbols allow you to tailor the program to your system.
+
+RMDSPT	equ	1		; RMD (system display)
+				; 1 if supported, 0 if not supported.
+				; For this function to work, the task
+				; must be installed as ...RMD
+
+INITX	equ	11		; initial horizontal position
+INITY	equ	3		; initial vertical position
+
+FORCHR	equ	'@'		; 'a'
+
+	cseg
+
+	PAGE
+
+;-----------------------------------------------------------------------
+
+START:	jp	CLOCK
+
+vt100	equ	$
+vclrscr:db	4,ESC,'[2J',0
+vclreos:db	3,ESC,'[J',0,0
+vclreol:db	3,ESC,'[K',0,0
+vhome:	db	6,ESC,'[H',0,0
+vgraph:	db	3,ESC,'(0',0,0
+valpha:	db	3,ESC,'(B',0,0
+vbold:	db	4,ESC,'[1m',0
+vnorm:	db	4,ESC,'[0m',0
+vcurprf:db	2,ESC,'[',0,0,0
+vcursep:db	1,';',0,0,0,0
+vcurpst:db	1,'H',0,0,0,0
+vcurbcd:db	true
+vcuryof:db	1
+vcurxof:db	1
+vxfirst:db	false
+tdlen	equ	$-vt100
+
+vt52	equ	$
+	db	4,ESC,'H',ESC,'J',0
+	db	2,ESC,'J',0,0,0
+	db	2,ESC,'K',0,0,0
+	db	2,ESC,'H',0,0,0
+	db	2,ESC,'F',0,0,0
+	db	2,ESC,'G',0,0,0
+	db	0,0,0,0,0,0
+	db	0,0,0,0,0,0
+	db	2,ESC,'Y',0,0,0
+	db	0,0,0,0,0,0
+	db	0,0,0,0,0,0
+	db	false
+	db	32
+	db	32
+	db	false
+
+;-----------------------------------------------------------------------
+
+; Screen output routines
+
+CLS:	ld	hl,vclrscr
+	jp	putseq
+
+CLEOS:	ld	hl,vclreos
+	jp	putseq
+
+CLEOL:	ld	hl,vclreol
+	jp	putseq
+
+HOME:	ld	hl,vhome
+	ld	a,(hl)
+	or	a
+	jp	nz,putseq
+	ld	hl,0
+	jp	PUTCUR
+
+GRAFIC:	ld	hl,vgraph
+	jp	putseq
+
+ALPHA:	ld	hl,valpha
+	jp	putseq
+
+BOLD:	ld	hl,vbold
+	jp	putseq
+
+NORM:	ld	hl,vnorm
+	jp	putseq
+
+; H = x coord, L = y coord
+
+PUTCUR:	push	hl
+	push	de
+	ex	de,hl
+	ld	hl,(vcuryof)	; H = vcurxof, L = vcuryof
+	add	hl,de		; should not generate any CY from L to H
+	ex	de,hl
+	ld	a,(vxfirst)
+	or	a
+	jr	z,noswap
+	ld	a,e
+	ld	e,d
+	ld	d,a
+noswap:	ld	hl,vcurprf	; prefix
+	call	putseq
+	ld	c,e		; y coord
+	call	pcurnum
+	ld	hl,vcursep	; separator
+	call	putseq
+	ld	c,d		; x coord
+	call	pcurnum
+	ld	hl,vcurpst	; postfix
+	call	putseq
+;;	call	TTFLSH
+	pop	de
+	pop	hl
+	ret
+
+pcurnum:ld	a,(vcurbcd)
+	or	a
+	jp	z,PUTCH
+	ld	a,c
+	jp	ADEC		; note: no filler
+
+putseq:	ld	a,(hl)
+	or	a
+	ret	z
+	push	bc
+	ld	b,a
+	inc	hl
+pseq1:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pseq1
+;;	call	TTFLSH
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; Control area.  Everything else comes from here.
+
+CLOCK:	ld	sp,stack
+
+	ld	de,'TI'
+	ld	c,0
+	ld	a,(TTLUN)
+	ld	(QTERM+Q.LUN),a
+	ld	b,a
+	SC	.ALUN		; assign LUN
+
+	ld	hl,QTERM
+	SC	.QIO
+	ld	a,(TTCHR+1)
+	or	a		; ANSI terminal?
+	jr	nz,DSPINI
+	ld	hl,vt52		; default to VT52 if not
+	ld	de,vt100
+	ld	bc,tdlen
+	ldir
+
+DSPINI:	call	CHRALT		; move display character into storage
+	call	REFRSH		; jump directly to refresh routine (default
+				; initial action)
+
+INCMND:	ld	e,2
+	SC	.WTSE		; wait for an input character
+TSTFLG:	ld	e,2
+	SC	.RDEF		; was flag set?
+	or	a		; if not, go back and wait for it to be set
+	jr	z,INCMND	;  (three lines above fix bug that occurs if
+				;  mark time elapses and sets flag while pro-
+				;  cessing is going on, and the QIO turns off
+				;  the flag again.)
+	ld	e,2
+	SC	.CLEF		; clear flag no. 2
+	ld	hl,COMBUF
+	ld	a,(hl)		; get command character
+	or	a
+	jr	z,INCMND	; if no character present, wait for command
+	ld	(hl),0		; erase character from buffer for next time
+
+	cp	EOF		; is it a Ctrl/Z?
+	jp	z,EXIT		; if Ctrl/Z, exit
+
+	call	UCASE		; convert character to uppercase
+	ld	b,NUMCOM	; scan commands. number of avail. coms. into B
+	ld	hl,COMNAM
+cm1:	cp	(hl)		; be this the one?
+	jr	z,cm2		; yes, go make your jump
+	inc	hl
+	djnz	cm1		; no, try the next one
+	call	ILLCOM		; if not, tell user
+	jr	TSTFLG		; and wait for next action
+
+cm2:	ld	hl,TSTFLG
+	push	hl		; push return address
+	ld	a,NUMCOM
+	sub	b
+	add	a,a		; make A a word index
+	ld	hl,COMADR
+	call	ADDHLA		; index into COMADR table
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; go off and do what you're supposed to
+
+	PAGE
+
+;-----------------------------------------------------------------------
+
+; Command processor subroutines, accessed with an indexed jump to
+; subroutine from the control area.
+
+; Time display routine.  enter with DIFPOS = -1 for normal update,
+; DIFPOS = 0 to force complete refresh of display
+
+; The following code gets the current time in buffer TIMEIN, then
+; calculates the time to the next regular update and issues a
+; mark time request, specifying a mark-time AST.
+
+UPDATE:
+;;	IOFNCT	IO.KIL		; kill any outstanding I/O requests
+	ld	hl,TIMEIN	; get current time in buffer TIMEIN
+	SC	.GDAT
+
+	ld	bc,0
+	ld	e,0
+	SC	.CMKT		; cancel any outstanding mark-time requests
+
+	ld	ix,TIMEIN
+	ld	a,(ix+6)	; get seconds
+	call	BCD2BIN		; convert to binary
+	ld	c,a
+	ld	a,60
+	sub	c		; get time to next min. change
+
+	ld	l,a
+	ld	h,0
+	ld	d,2		; units = seconds
+	ld	e,0		; no EFN
+	ld	bc,TIMAST	; AST routine address
+	SC	.MRKT		; do an AST when time changes
+
+; Following code converts BCD time in TIMEIN to decimal time digits
+; in TIME. It also checks each digit and sets DIFPOS to the first
+; digit that is different. Note that DIFPOS must be negative entering
+; this routine for scan to work. If DIFPOS is 0, all digits of time
+; are unconditionally updated (handy for refresh).
+
+	ld	a,(MODE)
+	or	a		; 12- or 24-hour clock?
+	ld	a,(ix+4)	; get hours
+	jr	nz,clk24	; if <>0 24-hour clock; skip subtraction
+	sub	12h		; check if am or pm
+	daa
+	jr	nc,clkpm	; if pm, print adjusted BCD value
+	ld	a,(ix+4)	; if am, use unmodified BCD value
+clkpm:	or	a
+	jr	nz,clk24
+	ld	a,12h		; in 12-hour clock, 0 hours is actually 12
+clk24:	ld	hl,TIME
+	ld	c,0		; C keeps track of position in time
+upd1:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh		; get tens
+	call	DIFF		; see if this digit different from last time
+	pop	af
+	and	0Fh		; get ones
+	inc	hl
+	inc	c		; bump the position counter
+	call	DIFF		; see if this digit different from last time
+	ld	a,c
+	cp	4		; done with conversion yet?
+	jr	nc,upd2		; yes, go do setup for print routine
+	inc	hl
+	inc	c		; no, bump C past colon to hours
+	inc	hl
+	inc	c
+	ld	a,(ix+5)	; get minutes
+	jr	upd1		; do minutes
+
+upd2:	ld	a,(DIFPOS)	; were there any new characters?
+	or	a
+	jp	m,DONE		; no, suppress printing
+	call	GRAFIC		; invoke graphics mode
+
+; The following code scans the buffer time from DIFPOS, the position
+; of the first digit that is different from before. It constructs
+; an output buffer with the elements of each character that is to be
+; output to the terminal, then prints the buffer. It does this ten
+; times, once for each line of the display.
+
+SCAN:	ld	b,10		; set up line count
+	ld	a,INITY
+	ld	(YPOS),a	; initialize cursor positioner vert. component
+sc1:	ld	a,(DIFPOS)	; get position of first digit to print
+	ld	c,a
+	ld	hl,CHRPOS
+	call	ADDHLA
+	ld	a,(hl)		; get horizontal cursor position of first digit
+	ld	(XPOS),a
+	ld	hl,IOBUF	; address of I/O buffer
+	ld	(BUFPTR),hl
+sc2:	ld	hl,LINOFF	; get offset into data base corresponding to
+	ld	a,b		;  the current line number
+	dec	a
+	call	ADDHLA
+	ld	e,(hl)
+	ld	d,10		; set up count of characters to move
+	ld	a,c
+	cp	2		; are we about to do the colon
+	jr	nz,sc3		; no, its a numeral
+	srl	e		; yes, colon. cut offset value in half
+	ld	hl,COLON
+	ld	a,e
+	call	ADDHLA		; add in address of colon data base
+	srl	d		; cut character count in half
+	jr	sc4		; go move colon to buffer
+
+sc3:	ld	hl,TIME
+	ld	a,c
+	call	ADDHLA
+	ld	a,(hl)		; get value of current digit
+	or	a
+	jr	nz,sc35		; if digit nonzero, do not check for leading zero
+	ld	a,c
+	or	a		; if digit zero, is it in position 0?
+	jr	nz,sc35		; no, print it
+	ld	hl,COLON	; yes, suppress it. Handy string of 10 spaces.
+	jr	sc4		; go move in the spaces
+
+sc35:	ld	a,(hl)
+	add	a,a		; make digit into word index
+	ld	hl,NUMADD
+	call	ADDHLA
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,e
+	call	ADDHLA		; add address of digit's data base to line ofst.
+sc4:	push	bc
+	push	de
+	ld	c,d
+	ld	b,0
+	ld	de,(BUFPTR)
+	ldir			; move chars from data base to print buffer
+	xor	a
+	ld	(de),a
+	ld	(BUFPTR),de
+	pop	de
+	pop	bc
+	inc	c		; bump digit position counter
+	ld	a,c
+	cp	5		; done with this line?
+	jr	c,sc2		; no, do another character
+	ld	hl,(YPOS)
+	call	PUTCUR
+	ld	hl,IOBUF	; yes, print the line
+	call	PUTSTR
+	ld	hl,YPOS
+	inc	(hl)		; move cursor down one line
+	djnz	sc1		; decr line count and if more lines, process them
+	xor	a
+	ld	(XPOS),a	; done, reset cursor to left margin
+	ld	hl,(YPOS)
+	call	PUTCUR		; reposition the cursor
+	call	ALPHA		; return to alpha mode
+	call	TTFLSH
+DONE:	ld	a,-1		; initialize DIFPOS for next time
+	ld	(DIFPOS),a
+	ret			; go back and wait for something to happen
+
+; Exit routine (this is a toughie)
+
+EXIT:	call	HOME
+	call	CLS		; clear the screen
+	call	TTFLSH
+	ld	a,(TTLUN)
+	ld	c,a
+	call	DETACH		; detach from terminal
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+; Illegal command notifier routine
+
+ILLCOM:	ld	l,INITY+10	; set up vert. cursor position
+	ld	h,0		; set up horiz. cursor position
+	call	PUTCUR
+	call	BOLD		; turn on bold mode
+	ld	hl,ILLMES	; print message
+	call	PUTSTR
+	ld	l,INITY+10	; reset cursor
+	ld	h,0
+	call	PUTCUR
+	call	NORM		; turn off bold
+	call	TTFLSH
+	ret			; not necessary to position cursor
+
+; Refresh routine
+
+REFRSH:	xor	a
+	ld	(DIFPOS),a	; force complete update of display
+	call	HOME
+	call	CLS		; clear screen
+	call	UPDATE		; and go fill in the time
+SETINP:	ld	de,CHRAST	; attach with ASTs
+	ld	a,(TTLUN)
+	ld	c,a
+	call	ATTACH
+	ret
+
+; Set 24-hour clock mode routine
+
+MODE24:	ld	a,1
+	ld	(MODE),a	; make clock mode word positive
+	call	CLRBS		; delete the command char
+	call	UPDATE		; refresh clock if necessary
+	ret
+
+; Set 12-hour clock mode routine
+
+MODE12:	xor	a
+	ld	(MODE),a	; clear clock mode word
+	call	CLRBS		; delete the command char.
+	call	UPDATE		; refresh clock if necessary
+	ret
+
+; Clear bottom of the screen
+
+CLRBS:	call	CLEOS
+	call	TTFLSH
+	ret
+
+; Spawn a task, wait for completion of task, and return to clock
+
+	IF	RMDSPT		; test for RMD support
+
+SPNRMD:	xor	a
+	ld	(MCRFLG),a
+	ld	hl,RMDNAM
+	ld	de,IOBUF
+	ld	bc,RMDLEN
+	push	bc
+	ldir			; copy RMD command to IOBUF
+	ex	de,hl
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),0
+	pop	bc		; pop command length
+	inc	bc		; include terminator
+	jr	SPAWN		; go spawn RMD
+
+	ENDIF
+
+SPNMCR:	ld	a,1
+	ld	(MCRFLG),a
+	call	HOME
+	call	CLS		; clean the screen
+GETCOM:	ld	hl,IOBUF
+	ld	de,79		; D = 0 (read with echo), E = max length
+	ld	bc,MCRPRM
+	call	GETLN		; output a prompt and wait for a line
+	dec	bc
+	ld	a,b		; check number of characters read in
+	or	c
+	jr	z,SPNDON	; if no characters, return to clock
+	inc	bc
+SPAWN:	ld	(MCRTDB+TD.CML),bc
+	ld	c,5
+	call	DETACH		; detach the terminal
+	ld	hl,MCRTDB
+	ld	e,4
+	ld	bc,EXSTAT
+	SC	.RQST		; spawn task, set efn 4 on exit
+	jr	nc,dirok	; if directive ok, wait for exit
+	cp	E.TNF		; is task not installed?
+	jr	nz,SPNDON	; no, funkier than that - quit.
+	ld	hl,NOTASK	; print "task not installed" message
+	call	PUTSTR
+	call	TTFLSH
+	jr	NOFRSH		; leave spawn without refreshing
+
+dirok:	ld	e,4
+	SC	.STSE		; wait for task to exit
+	ld	a,(MCRFLG)
+	or	a		; if non-zero, call was to a CLI
+	jr	nz,GETCOM	; go output another prompt
+SPNDON:	call	REFRSH		; refresh the clock display
+NOFRSH:	call	SETINP		; set up to capture input
+	ret
+
+; Alter display characteristics
+
+ALTER:	call	HOME
+	call	CLS		; clear screen
+	ld	hl,ALTMES	; tell about alterations available
+	call	PUTSTR
+	ld	hl,ATOZ		; print alphabet and invoke graphic mode
+	call	PUTSTR
+	call	GRAFIC		; shift to graphic mode
+	ld	hl,ATOZ		; print graphic alphabet
+	call	PUTSTR
+	call	ALPHA		; return to alpha mode
+	call	CRLF
+alt0:	ld	hl,IOBUF
+	ld	de,79		; read with echo
+	ld	bc,YRCHS
+	call	GETLN		; ask for character and wait for reply
+	dec	bc
+	ld	a,c
+	or	a		; how many characters supplied?
+	jr	z,alt2		; if none, no change; return
+	dec	a
+	jr	z,alt1		; if one, use it to change database
+	ld	hl,TUMANY	; if more than one, error message
+	call	PUTSTR
+	jr	alt0		; try again
+
+alt1:	ld	a,(IOBUF)
+	ld	(DSPCHR),a	; move new character to storage
+	call	CHRALT		; and thence to database
+alt2:	call	REFRSH		; refresh the clock display
+	ret
+
+	PAGE
+
+;-----------------------------------------------------------------------
+
+; Subroutine section
+
+; Subroutine to check if new digit is different from previous digit
+; and do good things if so
+
+DIFF:	ld	b,a
+	ld	a,(DIFPOS)
+	or	a		; has the first different digit been found?
+	jp	p,d1		; yes, move in the new digit unconditionally
+	ld	a,b
+	cp	(hl)		; no, compare new digit to previous
+	ret	z		; they're the same, return
+	ld	a,c
+	ld	(DIFPOS),a	; they're different, save position of digit
+d1:	ld	(hl),b		; move new digit into TIME
+	ret
+
+; Update-time AST routine
+
+TIMAST:	ld	a,'U'		; place update command in command buffer
+	ld	(COMBUF),a
+	push	de
+	ld	e,2
+	SC	.SETF		; set event flag 2 to clear the wait state
+	pop	de
+	SC	.ASTX		; return to program
+
+; Unsolicited character AST routine
+
+CHRAST:	ex	(sp),hl		; get character
+	ld	a,l		; place character in command buffer
+	ld	(COMBUF),a
+	push	de
+	ld	e,2
+	SC	.SETF		; set event flag 2 to clear the wait state
+	pop	de
+	pop	hl
+	SC	.ASTX		; return to program
+
+; Subroutine to alter char. gen. data base
+
+CHRALT:	ld	hl,CHAR0
+	ld	de,CGSIZE
+	ld	a,(DSPCHR)
+	ld	c,a
+ca1:	ld	a,(hl)
+	cp	' '		; check for space
+	jr	z,ca2
+	ld	(hl),c
+ca2:	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,ca1
+	ret
+
+; HL += A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+	PAGE
+
+;-----------------------------------------------------------------------
+
+; Offset and address tables
+
+; Print position for each character in print line - use these values as
+; arg. to cursor positioner.
+
+CHRPOS:	db	INITX		; tens of hours
+	db	INITX+10	; ones of hours
+	db	INITX+20	; colon
+	db	INITX+25	; tens of minutes
+	db	INITX+35	; ones of minutes
+
+; Offset to the N-th line of a given character
+
+LINOFF:	db	90,80,70,60,50,40,30,20,10,0
+
+; Letters identifying available commands
+
+COMNAM:	db	'REC21'		; refresh, exit, clear bottom, 24-hr., 12-hr.
+	db	'UA'		; update, alter
+	IF	RMDSPT		; test for RMD support
+	db	'S'		; spawn RMD
+	ENDIF
+	db	'M'		; spawn MCR
+NUMCOM	equ	$-COMNAM
+
+; Address of the data base for each numeral
+
+NUMADD:	dw	CHAR0,CHAR1,CHAR2,CHAR3,CHAR4
+	dw	CHAR5,CHAR6,CHAR7,CHAR8,CHAR9
+
+; Addresses of command routines
+
+COMADR:	dw	REFRSH		; jump address for refresh routine (r)
+	dw	EXIT		; jump address for exit routine (e)
+	dw	CLRBS		; jump address for clear bottom of screen (c)
+	dw	MODE24		; jump address for 24-hour mode routine (2)
+	dw	MODE12		; jump address for 12-hour mode routine (1)
+	dw	UPDATE		; jump address for update routine
+	dw	ALTER		; jump address for display alter routine
+	IF	RMDSPT		; test for RMD support
+	dw	SPNRMD		; address for routine to spawn RMD
+	ENDIF
+	dw	SPNMCR		; address for routine to spawn MCR
+
+	IF	RMDSPT
+RMDNAM:	db	'RMD'		; command name for RMD
+RMDLEN	equ	$-RMDNAM
+	ENDIF
+
+; Following is text of illegal command message
+
+ILLMES:	db	CR,LF,'Legal commands are --'
+	db	CR,LF,LF,'R - Refresh the display'
+	IF	RMDSPT
+	db	TAB,TAB,'S - System display (RMDEMO)'
+	ENDIF
+	db	CR,LF,'C - Clear bottom of screen',TAB
+	db	'E - Exit to monitor'
+	db	CR,LF,'1 - Set as a 12-hour clock',TAB
+	db	'2 - Set as a 24-hour clock'
+	db	CR,LF,'M - Call MCR (Press <CR> to return to clock)'
+	db	CR,LF,'A - Alter display character'
+	db	0
+
+; Pseudo-CLI prompt
+
+MCRPRM:	db	CR,LF,'MCR>',0
+
+NOTASK:	db	CR,LF,'No can do - that task is not installed',0
+ALTMES:	db	'Select a new display character (<CR> for no change).'
+	db	CR,LF,'Your selection is --',LF,0
+
+ATOZ:	db	CR,LF,TAB,'abcdefghijklmnopqrstuvwxyz{|}`~',0
+YRCHS:	db	CR,LF,'Your choice? ',0
+TUMANY:	db	CR,LF,'You can only specify one character.',0
+TERROR:	db	CR,LF,'You can only run the clock on a VT100 or VT52. Sorry...',0
+
+; Data base for character generator
+
+CHAR0:	db	'  aaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaa  '
+
+CHAR1:	db	'    aa    '
+	db	'   aaa    '
+	db	'    aa    '
+	db	'    aa    '
+	db	'    aa    '
+	db	'    aa    '
+	db	'    aa    '
+	db	'    aa    '
+	db	'  aaaaaa  '
+	db	'  aaaaaa  '
+
+CHAR2:	db	'  aaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	'       aa '
+	db	'      aa  '
+	db	'     aa   '
+	db	'    aa    '
+	db	'   aa     '
+	db	'  aaaaaaa '
+	db	' aaaaaaaa '
+
+CHAR3:	db	'  aaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	'       aa '
+	db	'     aaa  '
+	db	'     aaa  '
+	db	'       aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaa  '
+
+CHAR4:	db	'     aaa  '
+	db	'    aaaa  '
+	db	'   aa aa  '
+	db	'  aa  aa  '
+	db	' aa   aa  '
+	db	' aaaaaaaa '
+	db	' aaaaaaaa '
+	db	'      aa  '
+	db	'      aa  '
+	db	'      aa  '
+
+CHAR5:	db	' aaaaaaaa '
+	db	' aaaaaaaa '
+	db	' aa       '
+	db	' aaaaaaa  '
+	db	' aaaaaaaa '
+	db	'       aa '
+	db	'       aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaa  '
+
+CHAR6:	db	'  aaaaa   '
+	db	' aaaaaaa  '
+	db	' aa       '
+	db	' aa       '
+	db	' aaaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaa  '
+
+CHAR7:	db	' aaaaaaaa '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	'       aa '
+	db	'      aa  '
+	db	'     aa   '
+	db	'    aa    '
+	db	'   aa     '
+	db	'   aa     '
+	db	'   aa     '
+
+CHAR8:	db	'  aaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	'  aaaaaa  '
+	db	'  aaaaaa  '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaa  '
+
+CHAR9:	db	'  aaaaaa  '
+	db	' aaaaaaaa '
+	db	' aa    aa '
+	db	' aa    aa '
+	db	' aaaaaaaa '
+	db	'  aaaaaaa '
+	db	'       aa '
+	db	'       aa '
+	db	'  aaaaaaa '
+	db	'   aaaaa  '
+
+COLON:	db	'     '
+	db	'     '
+	db	'     '
+	db	'     '
+	db	'     '
+	db	' aaa '
+	db	' aaa '
+	db	'     '
+	db	' aaa '
+	db	' aaa '
+
+CGSIZE	equ	$-CHAR0		; character generator table size
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+QTERM:	QIOW$	SF.GMC,5,1,IOSB,,<TTCHR,TTLEN>
+TTCHR:	db	TC.ANS,0
+TTLEN	equ	$-TTCHR
+IOSB:	ds	4
+
+MCRTDB:	db	'MCR...'	; CLI task name
+	dw	IOBUF
+	dw	0
+	db	0,0,0
+	db	'TI',0
+	dw	0,0
+
+EXSTAT:	ds	2
+
+YPOS:	ds	1		; vert. cursor position
+XPOS:	ds	1		; horiz. cursor position
+
+TIMEIN:	ds	8		; buffer for time parameters from .GDAT
+DIFPOS:	db	0		; word to contain first different digit
+COMBUF:	db	0		; command input buffer
+MODE:	db	0		; clock mode (0=12-hour, +=24-hour)
+TIME:	ds	5		; 5-byte buffer for decimal time
+DSPCHR:	db	FORCHR		; display character, initialize to default
+MCRFLG:	ds	1		; 0=RMD, +=MCR
+BUFPTR:	ds	2		; pointer to current char in IOBUF
+IOBUF:	ds	79		; print buffer and CLI cmd line input buffer
+
+	ds	256
+stack	equ	$
+
+	END	START	;CLOCK

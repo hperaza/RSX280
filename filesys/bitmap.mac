@@ -1,0 +1,1039 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Storage allocation bitmap handling routines.
+
+	.Z280
+
+	cseg
+
+	include	VCB.INC
+	include	BUFFER.INC
+	include	ERRORS.INC
+
+	public	ALLSGC		; allocate single cluster in bitmap
+	public	ALLCTG		; allocate coutiguous clusters
+	public	FREECL		; free cluster
+	public	FRECNT		; get free cluster count
+
+	public	ALLIXE		; allocate index file entry
+	public	FREIXE		; free index file entry
+
+	public	BK2CL		; convert blocks to clusters
+	public	CL2BK		; convert clusters to blocks
+
+	public	INC24		; increment 24-bit value
+	public	DEC24		; decrement 24-bit value
+	public	CMP24		; compare two 24-bit values
+	public	CMP24R		; compare two 24-bit values
+	public	ADD24		; add two 24-bit values
+	public	ADD24B		; add 8-bit value to 24-bit value
+	public	ADD24W		; add 16-bit value to 24-bit value
+	public	SUB24		; subtract two 24-bit values
+
+	extrn	LUNUCB,LUNVCB,GETBLK,RLSBLK
+
+BMHSZ	equ	16		; size of bitmap header
+
+; Offsets to 'vars' storage space
+
+cstart	equ	0		;  starting bit number of contiguous chain
+nbits	equ	cstart + 3	;  number of contiguous bits to allocate
+bitcnt	equ	nbits + 3	;  contiguous bit count
+first	equ	bitcnt + 3	;  first bit in chain flag
+
+;-----------------------------------------------------------------------
+
+; Allocate a single disk cluster on the specified physical device (UCB
+; address in LUNUCB variable): find free cluster in bitmap file, mark
+; the cluster as allocated and return its 24-bit number in BHL. Returns
+; CY set and error code in A if disk is full.
+
+ALLSGC:	push	iy
+	ld	iy,(LUNVCB)	; get address of volume control block
+
+	ldw	de,(iy+M.BMLBN)	; get LBN of bitmap file into DEC
+	ld	c,(iy+M.BMLBN+2)
+
+	ldw	hl,(iy+M.BLKS)	; get number of disk blocks
+	ld	b,(iy+M.BLKS+2)
+	ld	a,(iy+M.CLF)
+	call	BK2CL		; compute number of clusters = number of bits
+
+	call	BMSNGL		; allocate single bit
+	push	af
+	call	nc,als1
+	pop	af
+	pop	iy
+	ret
+
+als1:	ld	a,(iy+M.FREE)
+	dec	(iy+M.FREE)
+	or	a
+	ret	nz
+	ld	a,(iy+M.FREE+1)
+	dec	(iy+M.FREE+1)
+	or	a
+	ret	nz
+	dec	(iy+M.FREE+2)
+	ret
+
+; Allocate contiguous disk space on the specified physical device (UCB
+; address in variable LUNUCB): find a chain of contiguous clusters in
+; bitmap file, mark them as allocated and return the starting cluster
+; number in BHL. Number of clusters to allocate in BHL. Returns CY set
+; and error code in A if disk is full.
+
+ALLCTG:	ld	a,l
+	dec	a
+	or	h
+	or	b		; single cluster?
+	jp	z,ALLSGC	; use the faster ALLSGC if yes
+
+	push	ix
+	ld	ix,vars
+	ldw	(ix+nbits),hl	; store number of bits to allocate
+	ld	(ix+nbits+2),b
+
+	push	iy
+	ld	iy,(LUNVCB)	; get VCB address into IY
+
+	ldw	de,(iy+M.BMLBN)	; get LBN of bitmap file into DEC
+	ld	c,(iy+M.BMLBN+2)
+
+	ldw	hl,(iy+M.BLKS)	; get number of disk blocks
+	ld	b,(iy+M.BLKS+2)
+	ld	a,(iy+M.CLF)
+	call	BK2CL		; compute number of clusters = number of bits
+
+	call	BMCNTG		; allocate contiguous chain of bits
+	push	af
+	call	nc,alc1
+	pop	af
+	pop	iy
+	pop	ix
+	ret
+
+alc1:	ld	a,(iy+M.FREE)
+	sub	a,(ix+nbits)
+	ld	(iy+M.FREE),a
+	ld	a,(iy+M.FREE+1)
+	sbc	a,(ix+nbits+1)
+	ld	(iy+M.FREE+1),a
+	ld	a,(iy+M.FREE+2)
+	sbc	a,(ix+nbits+2)
+	ld	(iy+M.FREE+2),a
+	ret
+
+; Free disk cluster on device (UCB address in LUNUCB variable).
+; BHL = cluster number. Returns CY set on error.
+
+FREECL:	push	iy
+	ld	iy,(LUNVCB)	; get VCB address
+
+	ex	de,hl
+	ld	c,b
+
+	ldw	hl,(iy+M.BLKS)	; get number of disk blocks
+	ld	b,(iy+M.BLKS+2)
+	ld	a,(iy+M.CLF)
+	call	BK2CL		; compute number of clusters = number of bits
+	call	CMP24		; error if BHL >= number of clusters
+	ccf
+	ld	a,E.BADOP
+	jr	c,fre1
+
+	ex	de,hl
+	ld	b,c
+
+	ldw	de,(iy+M.BMLBN)	; get LBN of bitmap file into DEC
+	ld	c,(iy+M.BMLBN+2)
+
+	call	BMFREE		; unset bit
+	push	af
+	call	nc,fre2
+	pop	af
+fre1:	pop	iy
+	ret
+
+fre2:	inc	(iy+M.FREE)
+	ret	nz
+	inc	(iy+M.FREE+1)
+	ret	nz
+	inc	(iy+M.FREE+2)
+	ret
+
+; Get number of free clusters on device (UCB address in LUNUCB variable).
+; Sets M.FREE of VCB and returns result in BHL.
+
+FRECNT:	push	iy
+	push	ix
+	ld	iy,(LUNVCB)	; get address of volume control block
+
+	ldw	de,(iy+M.BMLBN)	; get LBN of bitmap file into DEC
+	ld	c,(iy+M.BMLBN+2)
+
+	ldw	hl,(iy+M.BLKS)	; get number of disk blocks
+	ld	b,(iy+M.BLKS+2)
+	ld	a,(iy+M.CLF)
+	call	BK2CL		; compute number of clusters = number of bits
+
+	ld	ix,vars
+	call	BMCNT		; count bits
+	push	af
+	call	nc,frc1
+	pop	af
+	pop	ix
+	pop	iy
+	ret
+
+frc1:	ldw	(iy+M.FREE),hl
+	ld	(iy+M.FREE+2),b
+	ret
+
+;-----------------------------------------------------------------------
+
+; Allocate an index file entry on the specified physical device (UCB
+; address in LUNUCB variable): find unset bit in index file bitmap, set
+; the bit to mark the entry as allocated and return its 16-bit number
+; in HL. Returns CY set and error code in A if not more entries are free.
+
+ALLIXE:	push	iy
+	ld	iy,(LUNVCB)	; get address of volume control block
+
+	ldw	de,(iy+M.IBLBN)	; get LBN of index bitmap file into DEC
+	ld	c,(iy+M.IBLBN+2)
+
+	ldw	hl,(iy+M.IXSZ)	; get index file size in blocks
+	xor	a
+	add	hl,hl		; 8 entries/block
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	ld	b,a		; HLB = max number of files (note: B will be 0)
+
+	call	BMSNGL		; allocate single bit
+	pop	iy
+	ret	nc
+	cp	E.DSKF
+	scf
+	ret	nz
+	ld	a,E.IDXF
+	ret
+
+; Free index file entry on device (UCB address in LUNUCB variable).
+; HL = entry number. Returns CY set on error.
+
+FREIXE:	push	iy
+	ld	iy,(LUNVCB)	; get VCB address
+
+	ex	de,hl
+	ldw	hl,(iy+M.IXSZ)	; get index file size in blocks
+	xor	a
+	add	hl,hl		; 8 entries/block
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	ex	de,hl
+	ld	c,a		; CDE = max number of files (note: C will be 0)
+	ld	b,0
+	call	CMP24R		; error if BHL >= number of files
+	ccf
+	ld	a,E.IDXE
+	jr	c,frx1
+
+	ldw	de,(iy+M.IBLBN)	; get LBN of index bitmap file into DEC
+	ld	c,(iy+M.IBLBN+2)
+
+	call	BMFREE		; unset bit
+frx1:	pop	iy
+	ret
+
+;-----------------------------------------------------------------------
+
+; Allocate single bit on the specified bitmap file.
+; CDE = LBN of bitmap file
+; BHL = number of valid bits in bitmap file
+; Returns result (bit number) in BHL
+
+BMSNGL:	ld	(bmlbn),de	; store LBN of bitmap file
+	ld	a,c
+	ld	(bmlbn+2),a
+
+	ld	(bmbits),hl	; store bitmap size in bits
+	ld	a,b
+	ld	(bmbits+2),a
+	call	BBYTES		; compute bitmap size in bytes
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a	; bytes = (bits + 7) / 8
+
+	ld	de,512-BMHSZ
+	ld	c,0
+	call	CMP24
+	jr	nc,bma1		; branch if BHL <= DEC
+	ex	de,hl
+bma1:	ld	(len),hl	; len = min(bmlen, 512-BMHSZ)
+
+	ld	hl,BMHSZ
+	ld	(offset),hl	; skip header on first block
+
+	ld	hl,0		; 16-bit VBN is more than enough here
+bma2:	ld	(vbn),hl	; remember VBN
+	call	RDBMP		; read bitmap block
+	ret	c
+
+	ld	hl,(iobuf)
+	ld	de,(offset)
+	add	hl,de		; point to start of data
+	ld	de,(len)	; get number of bytes in buffer
+
+bma3:	ld	a,(hl)		; load bitmap byte
+	inc	a		; all bits set?
+	jr	z,bma5		; skip byte if yes
+	dec	a
+	ld	c,80h		; C = bit mask
+
+	; search for unset bit in bitmap byte
+
+	ld	b,a
+bma4:	ld	a,b
+	and	c		; find the bit
+	jr	z,bma7		; branch when found
+	srl	c		; else shift mask
+	jr	bma4		; and try next
+
+bma5:	inc	hl		; point to next byte in buffer
+	dec	de		; decrement byte counter
+	ld	a,d		; all bytes processed?
+	or	e
+	jr	nz,bma3		; loop if not
+
+	call	RLSBMP		; release bitmap buffer
+
+	; time to load next bitmap block
+
+	ld	hl,(bmlen)
+	ld	a,(bmlen+2)
+	ld	b,a
+	ld	de,(len)
+	ld	c,0
+	call	SUB24		; bmlen -= len
+	ld	a,E.DSKF
+	ret	c		; if bmlen <= 0 return E.DSKF
+	ld	a,b
+	or	h
+	or	l
+	scf
+	ret	z
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a
+
+	ld	de,512
+	ld	c,0
+	call	CMP24
+	jr	nc,bma6		; branch if BHL <= DEC
+	ex	de,hl
+bma6:	ld	(len),hl	; len = min(bmlen, 512)
+
+	ld	hl,0
+	ld	(offset),hl	; no header to skip
+
+	ld	hl,(vbn)
+	inc	hl
+	jr	bma2		; loop to process next block
+
+bma7:	; free entry found, mark it as allocated
+
+	ld	a,b
+	or	c		; set bit
+	ld	(hl),a
+
+	ld	de,(iobuf)
+	sbc	hl,de		; compute byte offset (note CY is clear)
+	ex	de,hl
+	ld	hl,(vbn)
+	call	BITNO		; compute absolute bit number
+	ld	de,(bmbits)	; ensure result is within limits
+	ld	a,(bmbits+2)
+	ld	c,a
+	call	CMP24R		; CY if BHL > CDE (bmbits > bitno)
+	ccf
+	ld	a,E.DSKF
+	push	af
+	push	hl
+	push	bc
+	call	nc,WRBMP	; write the modified block back
+	call	RLSBMP		; release the buffer
+	pop	bc
+	pop	hl
+	pop	af
+	ret	c
+	xor	a
+	ret
+
+; Allocate a contiguous chain of bits on the specified bitmap file.
+; CDE = LBN of bitmap file
+; BHL = number of valid bits in bitmap file
+; IX  = pointer to variables area
+; Returns result (starting bit number of the chain) in BHL
+
+BMCNTG:	ld	(bmlbn),de	; store LBN of bitmap file
+	ld	a,c
+	ld	(bmlbn+2),a
+
+	ld	(bmbits),hl
+	ld	a,b
+	ld	(bmbits+2),a
+	call	BBYTES		; compute bitmap size in bytes
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a	; bytes = (bits + 7) / 8
+
+	ld	de,512-BMHSZ
+	ld	c,0
+	call	CMP24
+	jr	nc,bmc1		; branch if BHL <= DEC
+	ex	de,hl
+bmc1:	ld	(len),hl	; len = min(bmlen, 512-BMHSZ)
+
+	ld	(ix+first),1	; reset bit chain
+
+	ld	hl,BMHSZ
+	ld	(offset),hl	; skip header on first block
+
+	ld	hl,0		; 16-bit VBN is more than enough here
+bmc2:	ld	(vbn),hl
+	call	RDBMP		; read bitmap block
+	ret	c
+
+	ld	hl,(iobuf)
+	ld	de,(offset)
+	add	hl,de		; point to start of data
+	ld	de,(len)	; get number of bytes in buffer
+
+bmc3:	ld	a,(hl)		; load bitmap byte
+	inc	a		; all bits set?
+	jr	z,bmc6		; skip byte if yes
+	dec	a
+	ld	c,80h		; C = bit mask
+
+	; search for unset bit in bitmap byte
+
+	ld	b,a
+bmc4:	ld	a,b
+	and	c		; find the bit
+	jr	z,bmc9		; branch when found
+	ld	(ix+first),1	; if not set, reset bit chain
+bmc5:	srl	c		; shift mask
+	jr	nz,bmc4		; and try the next one
+	jr	bmc7
+
+bmc6:	ld	(ix+first),1	; reset bit chain
+bmc7:	inc	hl		; point to next byte in buffer
+	dec	de		; decrement byte counter
+	ld	a,d		; all bytes processed?
+	or	e
+	jr	nz,bmc3		; loop if not
+
+	call	RLSBMP		; release bitmap buffer
+
+	; time to load next bitmap block
+
+	ld	hl,(bmlen)
+	ld	a,(bmlen+2)
+	ld	b,a
+	ld	de,(len)
+	ld	c,0
+	call	SUB24		; bmlen -= len
+	ld	a,E.NCSPC
+	ret	c		; if bmlen <= 0 return E.NCSPC
+	ld	a,b
+	or	h
+	or	l
+	scf
+	ret	z
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a
+
+	ld	de,512
+	ld	c,0
+	call	CMP24		; CY if BHL > DEC
+	jr	nc,bmc8
+	ex	de,hl
+bmc8:	ld	(len),hl	; len = (bmlen > 512) ? 512 : bmlen
+
+	ld	hl,0
+	ld	(offset),hl	; no header to skip
+
+	ld	hl,(vbn)
+	inc	hl
+	jr	bmc2		; loop to process next bitmap block
+
+bmc9:	; free entry found, see if we have collected enough contiguous bits
+
+	ld	a,(ix+first)
+	or	a		; first bit in a chain?
+	jr	z,bmc10		; jump if not
+
+	xor	a
+	ld	(ix+first),a	; else clear flag
+	ld	(ix+bitcnt),a	;  and reset contiguous bit counter
+	ld	(ix+bitcnt+1),a
+	ld	(ix+bitcnt+2),a
+
+	push	hl
+	push	de
+	ld	de,(iobuf)	; and remember file pointers
+	sbc	hl,de		; (note CY clear)
+	ld	(oldpos),hl
+	ld	hl,(vbn)
+	ld	(oldvbn),hl
+	ld	a,c
+	ld	(mask),a
+	pop	de
+	pop	hl
+
+bmc10:	call	INCCNT		; increment contiguous bit count
+	call	CMPCNT		; enough bits found in a row found?
+	jr	nz,bmc5		; keep looking if not
+
+	call	RLSBMP		; release bitmap buffer
+
+	; chain found, now mark bits as allocated
+
+	ld	hl,(oldvbn)
+	ld	de,(oldpos)
+	ld	a,(mask)
+	ld	c,a
+	call	BITNO		; compute starting bit number of the chain
+	ldw	(ix+cstart),hl	; remember it
+	ld	(ix+cstart+2),b
+
+	ldw	de,(ix+nbits)
+	ld	c,(ix+nbits+2)
+	call	ADD24
+	call	DEC24		; number of last bit
+	ld	de,(bmbits)	; ensure chain is within bitmap boundaries
+	ld	a,(bmbits+2)
+	ld	c,a
+	call	CMP24R		; CY if CDE > BHL (bmbits > bitno + nbits)
+	ccf
+	ld	a,E.NCSPC
+	ret	c
+
+	ld	hl,(oldpos)	; restore file pointers
+	ld	(offset),hl	; offset
+	ex	de,hl
+	ld	hl,512
+	or	a
+	sbc	hl,de		; remaining length
+	ld	(len),hl
+
+	xor	a
+	ld	(ix+bitcnt),a	; reset counter of bits to set
+	ld	(ix+bitcnt+1),a
+	ld	(ix+bitcnt+2),a
+
+	; don't bother restoring the original len and bmlen, we know that
+	; the chain is within bitmap limits
+
+	ld	hl,(oldvbn)
+set0:	ld	(vbn),hl
+	call	RDBMP		; load bitmap block where chain begins
+	ret	c
+	
+	ld	hl,(iobuf)
+	ld	de,(offset)
+	add	hl,de		; index into buffer
+	ld	de,(len)	; get number of bytes in buffer
+
+	ld	a,(mask)
+	ld	c,a
+
+set1:	ld	b,(hl)		; load bitmap byte
+set3:	ld	a,b
+	or	c		; set bit
+	ld	b,a
+	call	INCCNT		; increment contiguous bit count
+	call	CMPCNT		; all bits set?
+	jr	z,set4		; we're done if yes
+	srl	c		; else shift mask
+	jr	nz,set3		; and try next
+
+	ld	(hl),b		; store bitmap byte
+	inc	hl		; point to next byte in buffer
+	dec	de		; decrement byte counter
+	ld	a,d		; all bytes processed?
+	or	e
+	ld	c,80h		; reset mask
+	jr	nz,set1		; and loop if not
+
+	call	WRBMP		; update block
+	call	RLSBMP		; release buffer
+
+	; time to load next bitmap block
+
+	ld	hl,512
+	ld	(len),hl	; reset length
+
+	ld	hl,0
+	ld	(offset),hl	; reset buffer offser
+
+	ld	a,80h
+	ld	(mask),a	; reset mask
+
+	ld	hl,(vbn)
+	inc	hl
+	jr	set0
+
+set4:	ld	(hl),b		; store last bitmap byte
+
+	call	WRBMP		; update last block
+	call	RLSBMP
+
+	ldw	hl,(ix+cstart)	; return starting bit number
+	ld	b,(ix+cstart+2)
+	xor	a		; success
+	ret
+
+INCCNT:	inc	(ix+bitcnt)
+	ret	nz
+	inc	(ix+bitcnt+1)
+	ret	nz
+	inc	(ix+bitcnt+2)
+	ret
+
+CMPCNT:	ld	a,(ix+bitcnt+2)
+	cp	(ix+nbits+2)
+	ret	nz
+	ld	a,(ix+bitcnt+1)
+	cp	(ix+nbits+1)
+	ret	nz
+	ld	a,(ix+bitcnt)
+	cp	(ix+nbits)
+	ret
+
+; Compute absolute bit number from current relative block number (HL),
+; relative offset within block (DE) and bit mask (C). Returns 24-bit
+; result in regs BHL.
+
+BITNO:	ld	a,h
+	ld	h,l
+	ld	l,0		; *256
+	add	hl,hl
+	adc	a,a		; *512 = convert VBN to bytes
+
+	add	hl,de
+	adc	a,0		; add byte offset
+
+	ld	de,BMHSZ
+	or	a
+	sbc	hl,de		; subtract header size
+	sbc	a,0
+
+	add	hl,hl
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	add	hl,hl		; *8 = convert to bits
+	adc	a,a
+	ld	b,a		; result in BHL
+
+	ld	a,-1
+bn1:	inc	a		; find bit position within byte
+	rl	c
+	jr	nc,bn1
+
+	call	ADD24B		; add bit position to get final result
+	ret
+
+; Free single bit on the specified bitmap.
+; CDE = LBN of bitmap file
+; BHL = number of the bit to free.
+
+BMFREE:	ld	(bmlbn),de	; store LBN of bitmap file
+	ld	a,c
+	ld	(bmlbn+2),a
+
+	ld	a,l
+	and	7
+	ld	c,a		; bit pos in byte = bitno AND 7
+
+	ld	a,3
+bmf1:	srl	b		; byte pos = bitno / 8
+	rr	h
+	rr	l
+	dec	a
+	jr	nz,bmf1
+
+	ld	de,BMHSZ
+	call	ADD24W		; skip header
+
+	ld	a,1		; mask = 80h SHR (bitno AND 7)
+	inc	c		; so mask starts from 80h
+bmf2:	rrca			; rotate mask until bit is in position
+	dec	c
+	jr	nz,bmf2
+	ld	c,a		; mask in C
+
+	push	bc		; push mask
+	push	hl		; push byte pos
+	ld	l,h		; /256
+	ld	h,b
+	srl	h		; /512
+	rr	l
+	ld	(vbn),hl	; relative block number = bytepos / 512
+	call	RDBMP		; load bitmap block
+	pop	de		; pop byte pos into DE
+	pop	bc		; pop mask
+	ret	c		; on error, return
+
+	ld	a,d
+	and	1
+	ld	d,a		; DE = byte offset in block
+	add	hl,de		; index into block
+
+	ld	a,c
+	cpl			; complement mask
+	and	(hl)		; clear bit
+	ld	(hl),a
+	call	WRBMP
+	call	RLSBMP		; write the modified block back
+	xor	a
+	ret
+
+; Count free (unset) bits on the specified bitmap.
+; CDE = LBN of bitmap file
+; BHL = number of valid bits in bitmap file
+; IX  = pointer to variables area
+
+BMCNT:	ld	(bmlbn),de	; store LBN of bitmap file
+	ld	a,c
+	ld	(bmlbn+2),a
+
+	ld	(bmbits),hl
+	ld	a,b
+	ld	(bmbits+2),a
+	call	BBYTES		; compute bitmap size in bytes
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a	; bytes = (bits + 7) / 8
+
+	ld	de,512-BMHSZ
+	ld	c,0
+	call	CMP24
+	jr	nc,bct1		; branch if BHL <= DEC
+	ex	de,hl
+bct1:	ld	(len),hl	; len = min(bmlen, 512-BMHSZ)
+
+	xor	a
+	ld	(ix+bitcnt),a	; clear free bit count
+	ld	(ix+bitcnt+1),a
+	ld	(ix+bitcnt+2),a
+
+	ld	hl,BMHSZ
+	ld	(offset),hl	; skip header on first block
+
+	ld	hl,0
+bct2:	ld	(vbn),hl
+	call	RDBMP		; read bitmap block
+	ret	c
+
+	ld	hl,(iobuf)
+	ld	de,(offset)
+	add	hl,de		; point to start of data
+	ld	de,(len)	; get length
+
+bct3:	ld	a,(hl)		; get bitmap byte
+	ld	c,a
+	or	a		; all bits unset?
+	ld	a,8
+	jr	z,bct5		; branch if yes - simply add 8 to total
+
+	ld	a,c
+	cpl			; invert byte
+	or	a		; all bits were set?
+	jr	z,bct6		; skip byte if yes
+
+	ld	c,a
+	xor	a
+	ld	b,8
+bct4:	rl	c
+	adc	a,0		; else count bits
+	djnz	bct4
+
+bct5:	call	ADDCNT		; add to total
+
+bct6:	inc	hl		; next bitmap byte
+	dec	de
+	ld	a,d		; done with this block?
+	or	e
+	jr	nz,bct3		; loop if not
+
+	call	RLSBMP		; else release buffer
+
+	ld	hl,(bmlen)
+	ld	a,(bmlen+2)
+	ld	b,a
+	ld	de,(len)
+	ld	c,0
+	call	SUB24		; bmlen -= len
+	jr	c,bct8		; return success if bmlen <= 0
+	ld	a,b
+	or	h
+	or	l
+	jr	z,bct8
+	ld	(bmlen),hl
+	ld	a,b
+	ld	(bmlen+2),a
+
+	ld	de,512
+	ld	c,0
+	call	CMP24
+	jr	nc,bct7
+	ex	de,hl
+bct7:	ld	(len),hl
+
+	ld	hl,0
+	ld	(offset),hl	; no header on next block
+
+	ld	hl,(vbn)
+	inc	hl
+	jr	bct2		; loop to process next block
+
+bct8:	ldw	hl,(ix+bitcnt)	; return result in regs BHL
+	ld	b,(ix+bitcnt+2)
+	xor	a
+	ret
+
+ADDCNT:	add	a,(ix+bitcnt)
+	ld	(ix+bitcnt),a
+	ret	nc
+	inc	(ix+bitcnt+1)
+	ret	nz
+	inc	(ix+bitcnt+2)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert blocks in BHL to clusters. Returns remainder in A.
+
+BK2CL:	or	a
+	ret	z
+	push	de
+	ld	e,a
+	ld	d,a
+	xor	a
+bc1:	srl	b		; clusters = blocks >> cluster_factor
+	rr	h
+	rr	l
+	rra
+	dec	d
+	jr	nz,bc1
+bc2:	rlca
+	dec	e
+	jr	nz,bc2
+	pop	de
+	ret
+
+; Convert clusters in BHL to blocks.
+
+CL2BK:	or	a
+	ret	z
+cb1:	add	hl,hl		; blocks = clusters << cluster_factor
+	rl	b
+	dec	a
+	jr	nz,cb1
+	ret
+
+; Compute bitmap size in bytes
+
+BBYTES:	ld	a,3		; divide by 8
+	ld	c,0
+bm1:	srl	b
+	rr	h
+	rr	l
+	rr	c
+	dec	a
+	jr	nz,bm1
+	ld	a,c
+	or	a
+	ret	z
+	inc	l		; round up
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+; Increase 24-bit value in BHL
+
+INC24:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+; Decrease 24-bit value in BHL
+
+DEC24:	ld	a,l
+	dec	l
+	or	a
+	ret	nz
+	ld	a,h
+	dec	h
+	or	a
+	ret	nz
+	dec	b
+	ret
+
+; Compare two 24-bit values, returns CY if BHL > CDE
+
+CMP24:	ld	a,c
+	cp	b
+	ret	nz
+	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+; Compare two 24-bit values, returns CY if CDE > BHL
+
+CMP24R:	ld	a,b
+	cp	c
+	ret	nz
+	ld	a,h
+	cp	d
+	ret	nz
+	ld	a,l
+	cp	e
+	ret
+
+; BHL += A, sets CY on overflow
+
+ADD24B:	add	a,l
+	ld	l,a
+	ret	nc
+	or	a
+	inc	h
+	ret	nz
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += DE, sets CY on overflow
+
+ADD24W:	add	hl,de
+	ret	nc
+	or	a
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += CDE, sets CY on overflow
+
+ADD24:	add	hl,de
+	ld	a,b
+	adc	a,c
+	ld	b,a
+	ret
+
+; BHL -= CDE, sets CY on borrow
+
+SUB24:	or	a
+	sbc	hl,de
+	ld	a,b
+	sbc	a,c
+	ld	b,a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read bitmap block. Starting LBN is in bmlbn variable, VBN is in vbn
+; variable.
+
+RDBMP:	ld	hl,(bmlbn)	; get LBN of bitmap file
+	ld	a,(bmlbn+2)
+	ld	b,a
+	ld	de,(vbn)
+	call	ADD24W		; add VBN
+	ld	de,(LUNUCB)
+	call	GETBLK		; load block
+	ret	c		; on error, return
+	ld	(buf),hl	; store buffer address
+	ld	de,B.DATA
+	add	hl,de		; point to data area
+	ld	(iobuf),hl	; set pointer
+	xor	a		; return success
+	ret
+
+; Set bitmap buffer modified flag. Does not release the buffer.
+
+WRBMP:	push	hl
+	push	de
+	ld	hl,(buf)
+	ld	de,B.ST
+	add	hl,de
+	set	BS.MOD,(hl)	; set modified flag
+	pop	de
+	pop	hl
+	ret
+
+; Release current bitmap buffer
+
+RLSBMP:	ld	hl,(buf)
+	call	RLSBLK
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+bmlbn:	ds	3		; LBN of bitmap file
+bmbits:	ds	3		; number of valid bits in bitmap file
+bmlen:	ds	3		; bitmap size in bytes
+
+buf:	ds	2		; bitmap buffer address returned by GETBLK
+iobuf:	ds	2		; pointer to data area of above buffer
+offset:	ds	2		; offset to start of bitmap data in buffer
+
+vbn:	ds	2		; current bitmap VBN
+len:	ds	2		; number of valid bytes in buffer
+
+oldvbn:	ds	2		; saved bitmap VBN
+oldpos:	ds	2		; saved bitmap buffer relative index
+mask:	ds	1		; saved bit mask
+
+vars:	ds	3+3+3+1		; storage space for BMCNTG routine:
+
+	end

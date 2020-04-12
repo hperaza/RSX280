@@ -1,0 +1,787 @@
+;**********************************************************************;
+;                                                                      ;
+;   BROadcast command for RSX180.                                      ;
+;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.03'
+
+	include	SYSFN.INC
+	include	AST.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	LCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+BELL	equ	07h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNDST	equ	2
+
+EFN	equ	4
+
+	extrn	RCML,GCML,PERROR,UCASE,PDN,BCD2BIN,PUTCH,PUTSTR
+	extrn	CVTBH,CVTWD,HLDEC,TTFLSH
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack
+
+	call	INIT
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	process		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; exit normally if yes
+
+	call	CMLERR		; else display error
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m3:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Perform initializations
+
+INIT:	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task info
+	ld	hl,GTKBUF+GT.NAME
+	call	ckdots		; skip initial 3 dots if present
+	ld	de,(GDAT+G.PRM)	; set prompt to our task name
+	inc	de
+	inc	de
+	ld	bc,3
+	ldir
+ckdots:	ld	b,3
+	push	hl
+ckd1:	ld	a,(hl)
+	cp	'.'
+	jr	nz,ckd2
+	inc	hl
+	djnz	ckd1
+	inc	sp
+	inc	sp
+	ret
+ckd2:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Print error message in the form 'BRO -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+; Print standard error message, A = error code.
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'BRO -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank.
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret
+
+; Get next non-blank char.
+
+getns:	ld	a,(de)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getns
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	cp	':'
+	ret	z
+	cp	'-'
+	ret
+gf1:	xor	a
+	ret
+
+; Get word (max B chars) until delimiter found. Returns word length in C.
+
+getw:	ld	c,0
+gw1:	call	getfs
+	ret	z
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	inc	c
+	djnz	gw1
+gw2:	call	getfs
+	ret	z
+	inc	de
+	jr	gw2
+
+; Read a decimal number from (DE) line into HL
+; Returns CY if the number contains invalid chars or if overflow happens.
+
+GETDEC:	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	ret	z		; note no CY
+	sub	'0'
+	ret	c		; note CY
+	cp	10
+	ccf
+	ret	c		; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process the command.
+
+process:
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNDST
+	SC	.ALUN
+	jp	c,SYSERR
+	ld	hl,luninf
+	ld	c,LUNDST
+	SC	.GTLUN
+	jp	c,SYSERR
+	ld	hl,(luninf)	; get our terminal name
+	ld	(srctty),hl
+	ld	a,(luninf+2)
+	ld	(srctty+2),a
+
+	ld	hl,(lnptr)
+	call	PDN		; attempt to parse device name
+	jr	c,chkw		; on error, try keyword
+	ld	(lnptr),hl
+	ld	(dsttty),de	; store dest device
+	ld	a,c
+	ld	(dsttty+2),a
+	ld	b,LUNDST
+	SC	.ALUN
+	jp	c,SYSERR
+	ld	hl,luninf
+	ld	c,LUNDST
+	SC	.GTLUN
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)	; get U.CW lo-byte
+	bit	DV.TTY,a	; ensure is a terminal
+	ld	hl,invdev
+	jp	z,ERROR
+
+	jr	bro
+
+chkw:	ld	de,(lnptr)
+	call	getns		; skip blanks
+	ret	z		; return if command empty
+	ld	hl,kwbuf
+	ld	b,3
+	call	getw		; get keyword
+	cp	':'		; verify delimiter
+	jp	nz,CMDERR
+
+	inc	de
+	ld	(lnptr),de
+
+	ld	hl,kwbuf
+	ld	de,kwall
+	call	kwcmp
+	ld	a,0		; broadcast to all terminals
+	ld	(dsttty),a
+	jr	z,bro
+
+	ld	hl,kwbuf
+	ld	de,kwlog
+	call	kwcmp
+	jp	nz,CMDERR
+	ld	a,1		; broadcast to logged-on terminals
+	ld	(dsttty),a
+
+bro:	ld	hl,msgbuf
+	ld	de,templt	; get address of template into DE
+	call	strcpy		; copy leading part
+	push	de
+	call	CVTDT		; insert date and time
+	pop	de
+
+	inc	de
+	call	strcpy		; 'from'
+	push	de
+	ld	de,(srctty)
+	ld	a,(srctty+2)
+	ld	c,a
+	call	CVTDEV
+	pop	de
+
+	inc	de
+	call	strcpy		; 'to'
+	push	de
+	ld	a,(dsttty)
+	ld	de,kwall
+	or	a
+	jr	z,bro1
+
+	ld	de,kwlog
+	dec	a
+	jr	z,bro1
+
+	ld	de,(dsttty)
+	ld	a,(dsttty+2)
+	ld	c,a
+	call	CVTDEV
+	jr	bro2
+
+bro1:	call	strcpy
+	ld	(hl),':'
+	inc	hl
+
+bro2:	pop	de
+
+	inc	de
+	call	strcpy		; newline
+	push	de
+	ld	de,(lnptr)
+	call	strcpy		; copy user message
+	pop	de
+
+	inc	de
+	call	strcpy		; trailing newline
+
+	ld	(hl),0
+	ld	hl,msgbuf
+	ld	(qsend+Q.BUF),hl
+	call	strlen
+	ld	l,b
+	ld	h,0
+	ld	(qsend+Q.LEN),hl
+
+	ld	de,bro3
+	push	de
+
+	ld	a,(dsttty)
+	or	a
+	jp	z,msgall	; send message to all terminals
+
+	dec	a
+	jp	z,msglog	; send message to logged-in terminals
+
+	jp	msgone		; send message to one terminal
+
+bro3:	jp	c,SYSERR
+	ret
+
+templt:	db	BELL,CR,LF,LF,0,9,'From ',0,9,'To ',0
+	db	CR,LF,0,CR,LF,0
+
+kwcmp:	ld	b,3
+cmp1:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	cmp1
+	ret
+
+kwall:	db	'ALL',0		; null terminator is for strcpy
+kwlog:	db	'LOG',0		;  in bro routine
+
+invdev:	db	'Illegal device specified',0
+
+;-----------------------------------------------------------------------
+
+; Copy string @DE to @HL
+
+strcpy:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	strcpy
+
+strlen:	push	hl
+	ld	b,0
+strl1:	ld	a,(hl)
+	or	a
+	jr	z,strl2
+	inc	hl
+	inc	b
+	jr	strl1
+strl2:	pop	hl
+	ret
+
+; Send message to one terminal.
+
+msgone:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	ret	c
+	ld	de,(dsttty)
+	ld	a,(dsttty+2)
+	ld	c,a
+	call	chkbro		; receiving broadcast messages?
+	jr	c,mo1		; error if not a terminal
+	jr	nz,mo2
+	ld	hl,nmserr	; error if not receiving messages
+	call	ERROR
+	jr	mo3
+mo1:	call	SYSERR
+	jr	mo3
+mo2:	call	TTSTR		; send message
+mo3:	ld	c,0
+	SC	.SUPER		; exit supervisor mode
+	xor	a
+	ret
+
+nmserr:	db	'User not receiving messages',0
+
+; Send message all logged-on terminals.
+
+msglog:	call	CHKPRV		; LOG is a privileged option
+	jp	c,SYSERR
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	ret	c
+	ld	de,($PHYDV)	; DE = start of physical device list
+ml1:	ld	a,d		; end of list?
+	or	e
+	jr	z,ml5		; done if yes
+	push	de
+	ld	hl,D.UCBL
+ml2:	add	hl,de		; index into UCB list
+	ld	e,(hl)		; get next UCB
+	inc	hl
+	ld	d,(hl)
+	ld	a,d		; end of list?
+	or	e
+	jr	z,ml4		; exit inner loop if yes
+	push	de
+	ld	hl,U.LCB
+	add	hl,de
+	ld	a,(hl)		; check LCB address
+	inc	hl
+	or	(hl)		; set?
+	jr	z,ml3		; skip if not logged-in
+	KCALL	$UCBDN		; get full device name into DE-C
+	call	chkbro		; receiving broadcast messages?
+	jr	c,ml3		; skip if not a terminal
+	call	nz,TTSTR	; send message
+ml3:	pop	de
+	ld	hl,U.LNK
+	jr	ml2
+ml4:	pop	de
+	ld	hl,D.LNK
+	add	hl,de
+	ld	e,(hl)		; get next DCB
+	inc	hl
+	ld	d,(hl)
+	jr	ml1
+ml5:	ld	c,0
+	SC	.SUPER		; exit supervisor mode
+	xor	a
+	ret
+
+; Send message to all terminals.
+
+msgall:	call	CHKPRV		; ALL is a privileged option
+	jp	c,SYSERR
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	ret	c
+	ld	de,($PHYDV)	; DE = start of physical device list
+ma1:	ld	a,d		; end of list?
+	or	e
+	jr	z,ma5		; done if yes
+	push	de
+	ld	hl,D.UCBL
+ma2:	add	hl,de		; index into UCB list
+	ld	e,(hl)		; get next UCB
+	inc	hl
+	ld	d,(hl)
+	ld	a,d		; end of list?
+	or	e
+	jr	z,ma4		; exit inner loop if yes
+	push	de
+	push	de
+	pop	iy
+	ld	c,(iy+U.UNIT)
+	ld	l,(iy+U.DCB)
+	ld	h,(iy+U.DCB+1)
+	ld	de,D.NAME
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	call	chkbro		; receiving broadcast messages?
+	jr	c,ma3		; skip if not a terminal
+	call	nz,TTSTR	; else send message
+ma3:	pop	de
+	ld	hl,U.LNK
+	jr	ma2
+ma4:	pop	de
+	ld	hl,D.LNK
+	add	hl,de
+	ld	e,(hl)		; get next DCB
+	inc	hl
+	ld	d,(hl)
+	jr	ma1
+ma5:	ld	c,0
+	SC	.SUPER		; exit supervisor mode
+	xor	a
+	ret
+
+; Check if terminal is receiving broadcast messages. Called while in
+; supervisor mode with terminal name in DE-C.
+
+chkbro:	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get physical device name and UCB address
+	ret	c
+	push	de
+	push	bc
+	push	hl
+	pop	ix		; IX = UCB
+	bit	DV.TTY,(ix+U.CW)
+	ld	a,E.BADOP
+	scf
+	jr	z,ckb1		; error if not a terminal
+	ld	a,(ix+U.CW+1)
+	or	a		; clear CY
+	cpl
+	bit	TC.NBR,a	; Z flag set means NOT receiving messages
+ckb1:	pop	bc
+	pop	de
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert device name in DE-C to string @HL.
+
+CVTDEV:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	e,c
+	ld	d,0
+	xor	a		; no filler
+	call	CVTWD
+	ld	(hl),':'
+	inc	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert date and time to string @HL.
+
+CVTDT:	ex	de,hl
+	ld	hl,dtbuf
+	SC	.GDAT
+	ex	de,hl
+	call	CVTDAT
+	ld	(hl),' '
+	inc	hl
+	call	CVTTIM
+	ret
+
+CVTDAT:	push	de
+	inc	de
+	inc	de
+	inc	de
+	ld	a,(de)		; day
+	call	CVTBH
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	ld	a,(de)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	push	de
+	ex	de,hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	bc,3
+	ldir
+	ex	de,hl
+	pop	de
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	dec	de
+	ld	a,(de)		; year
+	call	CVTBH
+	inc	de
+	ld	a,(de)
+	call	CVTBH
+	pop	de
+	ret
+
+CVTTIM:	push	de
+	inc	de
+	inc	de
+	inc	de
+	inc	de
+	ld	a,(de)		; hour
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; sec
+	call	CVTBH
+	pop	de
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+;-----------------------------------------------------------------------
+
+; Output message to terminal device in DE-C.
+
+TTSTR:	push	ix
+	push	bc
+	push	de
+	ld	b,LUNDST	; assign LUN to output device
+	SC	.ALUN
+	jp	c,tts1
+	ld	hl,20		; timeout = 20 seconds
+	ld	d,2
+	ld	e,EFN
+	ld	bc,0		; no AST
+	SC	.MRKT		; schedule a timeout event
+	ld	hl,qsend
+	SC	.QIO		; send message
+	push	af
+	ld	bc,0
+	ld	e,0
+	SC	.CMKT		; cancel timeout event if still pending
+	pop	af
+	jr	c,tts1
+	ld	a,(iosb)
+	or	a		; success?
+	jr	z,tts1		; return if yes
+	cp	E.PEND		; request pending (timeout)?
+	scf
+	jr	nz,tts1		; error if not
+	ld	hl,qkill
+	SC	.QIO		; else kill pending I/O
+	ld	a,E.TMO		; and set error code = timeout
+	scf
+tts1:	pop	de
+	pop	bc
+	pop	ix
+	ret	nc
+	push	bc
+	push	de
+	ld	hl,tmpbuf
+	ld	de,snderr
+	call	strcpy
+	pop	de
+	pop	bc
+	call	CVTDEV
+	ld	(hl),0
+	ld	hl,tmpbuf
+	jp	ERROR
+
+snderr:	db	'Message failed to reach ',0
+
+;-----------------------------------------------------------------------
+
+; Check if user is privileged. Return with CY set and error code in A
+; if not.
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	ld	a,E.PRIV
+	bit	LS.PRV,(hl)
+	scf
+	ret	z
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ
+
+GDAT:	GCML$	CMDBUF,80,'BRO',LUNCML,2
+
+CMDBUF:	ds	82
+
+luninf:	ds	6
+
+lnptr:	ds	2
+dtbuf:	ds	8		; date/time buffer
+
+srctty:	ds	3
+dsttty:	ds	3
+kwbuf:	ds	3		; buffer for keyword
+
+lcbbuf:	ds	LCBSZ
+
+msgbuf:	ds	256		; message buffer
+tmpbuf:	ds	80		; temp buffer
+
+IO.WBT	equ	IO.WLB OR ((TF.WBT OR TF.CCO) SHL 8)
+
+qsend:	QIOW$	IO.WBT,LUNDST,EFN,iosb,,<msgbuf,0>
+qkill:	QIOW$	IO.KIL,LUNDST,EFN,iosb
+iosb:	ds	4
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

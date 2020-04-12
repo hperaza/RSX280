@@ -1,0 +1,390 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   String Substitutions.
+
+	.Z80
+
+	include	ICP.INC
+
+	public	SUBST
+
+	extrn	GETVAR,DECSTR,HEXSTR,OCTSTR,HLNEG,ATOU,MODE
+	extrn	INPBUF,LNBUF,UCASE,ISALPN,ISDIG,ISBLNK
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Perform string substitutions in command line.
+
+; Format options are preceded by a % and can be one or more of the
+; following:
+;  C  - compress all blanks
+;  D  - display numeric value as decimal
+;  O  - display numeric value as octal
+;  H  - display numeric value as hexadecimal
+;  S  - display numeric value as signed
+;  Z  - return leading zeros for a positive numeric value
+;  Rn - right-justify, truncate to 'n' chars if necessary
+;  Ln - left-justify, truncate to 'n' chars if necessary
+;  V  - if symbol is numeric, convert lo-byte of value to ASCII
+;       character and substitute it; if symbol is a string, convert
+;       the first character to numeric value and substitute it.
+
+SUBST:	ld	ix,MODE
+	bit	B1.SUB,(ix+1)	; substitutions enabled?
+	jr	nz,sub1		; jump if yes
+	ld	hl,INPBUF	; else simply copy input line to output buffer
+	ld	de,LNBUF
+	ld	bc,132
+	ldir
+	ret
+
+	; substitutions enabled, search for 'varname%format' 
+
+sub1:	ld	hl,INPBUF
+	ld	de,LNBUF
+	ld	b,132
+sub2:	ld	a,(hl)		; get char from input line
+	cp	"'"		; quote?
+	jr	z,sub3		; jump if yes (begin of variable)
+sub21:	ld	(de),a		; else store char in dest buffer
+	or	a		; end of line?
+	ret	z		; return if yes
+	inc	hl
+	inc	de
+	djnz	sub2		; else keep copying
+	ret
+
+	; quote found, extract variable name
+
+sub3:	xor	a
+	ld	(fmtopt),a	; clear all format options
+	ld	(sgnflg),a
+	ld	(radix),a
+	ld	(justif),a
+	ld	(width),a
+	ld	a,' '
+	ld	(filler),a
+	inc	hl		; skip quote
+	push	de		; save dst
+	push	bc		; save count
+	ld	de,varnam
+  IF 0
+	ld	b,12
+sub4:	ld	a,(hl)		; get next char
+	or	a		; end of line?
+	jr	z,sub5		; jump if yes - unpaired quote
+	cp	"'"		; quote?
+	jr	z,sub7		; jump if yes - end of variable
+	cp	'%'		; format option?
+	jr	z,sub60		; jump if yes
+	call	UCASE
+	ld	(de),a		; else extract variable name
+	inc	hl
+	inc	de
+	djnz	sub4		; loop for more
+sub5:	xor	a
+	ld	(de),a
+  ELSE
+	call	VNAME##
+	ld	a,c
+	ld	(vspec),a
+	ld	a,(hl)		; get next char
+	or	a		; end of line?
+	jr	z,sub51		; jump if yes - unpaired quote
+	cp	"'"		; quote?
+	jr	z,sub7		; jump if yes - end of variable
+	cp	'%'		; format option?
+	jr	z,sub60		; jump if yes
+  ENDIF
+sub51:	pop	bc		; name too long or unclosed quote, pop count
+	pop	de		; pop original dst
+	ld	hl,varnam	; src is now extracted variable name
+sub6:	ld	a,(hl)		; get char
+	ld	(de),a		; copy to dest
+	or	a		; end of line?
+	ret	z		; return if yes
+	inc	hl
+	inc	de
+	djnz	sub6		; loop
+	ret			; and return
+
+	; extract format options
+
+sub60:	xor	a
+	ld	(de),a		; add a trailing zero to variable name
+sub61:	inc	hl		; skip format delimiter
+sub63:	ld	a,(hl)
+	or	a		; end of line?
+	jr	z,sub51		; jump if yes - unpaired quote
+	cp	"'"		; closing quote found?
+	ld	b,1
+	jr	z,sub71		; exit loop if yes
+	call	UCASE
+	call	ISALPN		; alphanumeric?
+	jr	c,sub61		; loop if not
+	call	ISDIG		; digit?
+	jr	nc,sub62	; jump if yes
+	call	setopt		; else set format option
+	jr	sub61		; and loop
+sub62:	ex	de,hl
+	call	ATOU		; convert number
+	ld	a,l
+	ld	(width),a
+	ex	de,hl
+	jr	sub63		; TODO: better error checking?
+
+	; end of quoted text found (variable name and format)
+
+sub7:	xor	a
+	ld	(de),a		; add a trailing zero to variable name
+sub71:	ld	a,b
+	cp	12		; null variable name ('')?
+	pop	bc		; pop count
+	pop	de		; pop dst
+	ld	a,"'"
+	jr	z,sub21		; '' -> convert to single quote and continue
+	inc	hl		; skip end quote
+	push	hl		; push src
+	push	de		; push dst
+	push	bc		; push cnt
+	ld	de,varnam
+	ld	a,(vspec)
+	call	GETVAR		; get variable
+	jr	c,sub80		; jump if not found - use var name as subst
+	ld	a,c		; check type
+	cp	V.NUM		; numeric?
+	jr	z,sub82
+	cp	V.LOG		; logical?
+	jr	z,sub72
+	ld	a,(filler)	; else is string
+	ld	c,a
+	ld	a,' '
+	ld	(filler),a	; force filler to space
+	ld	a,(fmtopt)
+	cp	'V'		; check for V format option
+	jr	nz,sub8		; jump if not specified
+	xor	a		; clear V option, or else effect will be
+	ld	(fmtopt),a	;  reverted back by NUMSTR
+	ld	a,c
+	ld	(filler),a	; restore numeric filler
+	ld	l,(hl)		; else convert first char to number
+	ld	h,0
+	jr	sub82
+sub72:	call	LVSTR
+	jr	sub8
+sub82:	ld	de,numbuf
+	push	de
+	call	NUMSTR		; convert value to string
+	pop	de
+sub80:	ex	de,hl		; get src into HL
+sub8:	pop	bc		; pop cnt
+	pop	de		; pop dst
+	call	lpad		; pad left, if specified
+	jr	c,sub9		; jump if buffer got full
+	call	cpstr		; copy string according to format options
+	jr	c,sub9		; jump if buffer got full
+	ld	a,' '
+	ld	(filler),a	; always pad right with spaces
+	call	pad		; pad right as necessary
+	pop	hl		; end of string, pop orig src
+	ret	c		; return if buffer got full
+	jp	sub2		; and continue scanning input buffer
+
+sub9:	pop	hl		; if buffer full, pop src
+	ret			; and return
+
+; Get logical value string
+
+LVSTR:	ld	a,h
+	or	l
+	ld	hl,fstr
+	ret	z
+	ld	hl,tstr
+	ret
+
+fstr:	db	'F',0
+tstr:	db	'T',0
+
+; Set format option and modifiers
+
+setopt:	cp	'S'
+	jr	z,setsgn
+	cp	'Z'
+	jr	z,setzf
+	cp	'D'
+	jr	z,setrdx
+	cp	'O'
+	jr	z,setrdx
+	cp	'H'
+	jr	z,setrdx
+	cp	'L'
+	jr	z,setjst
+	cp	'R'
+	jr	z,setjst
+	ld	(fmtopt),a
+	ret
+setsgn:	ld	(sgnflg),a
+	ret
+setzf:	ld	a,'0'
+	ld	(filler),a
+	ret
+setrdx:	ld	(radix),a
+	ret
+setjst:	ld	(justif),a
+	ret
+
+; Convert value to string according to format options
+
+NUMSTR:	ld	a,(fmtopt)
+	cp	'V'
+	jr	z,nchar
+	call	chksgn		; check for signed format option
+	ld	a,(radix)	; check radix
+	cp	'H'
+	jr	z,numhex
+	cp	'O'
+	jr	z,numoct
+	xor	a		; no filler
+	jp	DECSTR
+numhex:	xor	a
+	jp	HEXSTR
+numoct:	xor	a
+	jp	OCTSTR
+nchar:	ld	a,l
+	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a
+	ret
+
+chksgn:	ld	a,h		; check value
+	or	a		; positive?
+	ret	p		; return if yes, nothing to do
+	ld	a,(sgnflg)
+	or	a		; signed wanted?
+	ret	z		; return if not
+	ld	a,'-'
+	ld	(de),a
+	inc	de
+	ld	a,' '
+	ld	(filler),a	; no zero fill
+	jp	HLNEG		; negate HL and return
+
+; L/R padding. HL = src string, DE = dst, B = max len
+
+lpad:	push	hl
+	call	slen		; compute effective string length
+	pop	hl
+	ld	a,c
+	ld	(strw),a
+	ld	a,(width)
+	or	a
+	ret	z		; no padding if width is zero
+	sub	c
+	jr	c,lp1		; jump if < 0 (truncation needed)
+	ld	(width),a	; width now contains padding amount
+	ld	a,(justif)
+	cp	'L'		; left justify?
+	ret	z		; return if yes (needs R padding instead)
+pad:	ld	a,(width)
+	or	a
+	ret	z
+	ld	c,a
+	ld	a,(filler)
+p1:	ld	(de),a
+	inc	de
+	dec	c
+	jr	z,p2		; note CY is clear
+	djnz	p1
+	scf
+	ret
+p2:	xor	a
+	ld	(width),a
+	ret
+
+	; string width > field width
+
+lp1:	ld	a,(width)
+	ld	(strw),a	; string width is set to field width
+	xor	a
+	ld	(width),a	; and padding width set to zero
+	ret
+
+; Compute effective string length, preserves B.
+
+slen:	ld	c,0
+sl0:	ld	a,(hl)		; get char from string
+	or	a		; end of string?
+	ret	z		; return if yes
+	ld	a,(fmtopt)	; check format option
+	cp	'C'		; compress all spaces?
+	jr	nz,sl1		; jump if not
+	ld	a,(hl)
+	call	ISBLNK		; blank?
+	jr	z,sl2		; skip if not
+sl1:	inc	c		; else count it
+sl2:	inc	hl
+	jr	sl0		; loop
+
+; Copy string according to format options, truncate as necessary.
+
+cpstr:	ld	a,(strw)
+	or	a
+	ret	z		; return if string was truncated to null
+	ld	c,a
+cps0:	ld	a,(hl)		; get char to output
+	or	a		; end of string?
+	ret	z		; return if yes
+	ld	a,(fmtopt)	; check format option
+	cp	'C'		; compress all spaces?
+	ld	a,(hl)
+	inc	hl
+	jr	nz,cps1		; jump if not
+	call	ISBLNK		; blank?
+	jr	z,cps0		; skip if not
+cps1:	ld	(de),a		; else copy to dest
+	inc	de
+	or	a		; clear CY
+	dec	c
+	ret	z
+	djnz	cps0		; loop
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+varnam:	ds	13
+vspec:	ds	1
+fmtopt:	ds	1
+justif:	ds	1
+sgnflg:	ds	1
+radix:	ds	1
+filler:	ds	1
+width:	ds	1
+strw:	ds	1
+numbuf:	ds	8		; decimal conversion output buffer
+
+	end

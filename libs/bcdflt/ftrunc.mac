@@ -1,0 +1,18 @@
+	.Z80
+
+	public	FTRUNC
+
+	cseg
+
+FTRUNC:	ld	c,a
+	ld	b,0
+	add	hl,bc
+tr1:	inc	hl
+	inc	a
+	cp	6
+	ret	nc
+	ld	(hl),0		; clear the fractionary part
+	jr	tr1
+
+	end
+

@@ -1,0 +1,78 @@
+	.Z80
+
+	name	'FPAUX'
+
+	public	RORDBL,MDSIGN,MDPREP,?ADDFR
+
+	extrn	FCOPY,ROLFR2,ZFR0
+	extrn	FR0,FR1,FR2,?FRX,?EXP,?SIGN
+
+	cseg
+
+; Helper routine for multiplication and division. Shifts the
+; long FR0-?FRX mantissa two BCD places to the right.
+
+RORDBL:	ld	hl,FR0+10
+	ld	b,11
+d1:	ld	a,(hl)		; shift double-prec intermediate
+	inc	hl		;  value two decimal places
+	ld	(hl),a		;   to the right
+	dec	hl
+	dec	hl
+	djnz	d1
+	xor	a		; the leftmost byte (leftmost 2 decimals)
+	ld	(FR0),a		;  becomes zero
+	ret
+
+; Helper routine for multiplication and division.
+; Stores in ?SIGN the sign of the result and makes FR1 positive.
+;
+; Returns A = exponent of FR0, HL points to FR0
+
+MDSIGN:	ld	hl,FR1+0
+	ld	a,(FR0+0)	; ?SIGN = sign(FR0) ^ sign(FR1)
+	xor	(hl)
+	and	80h
+	ld	(?SIGN),a	; i.e. 80h if signs are different
+	res	7,(hl)		; force FR1 positive
+	ld	a,(FR0+0)	; A = exponent bits of FR0
+	and	7Fh
+	ret
+
+; Helper routine for multiplication and division. Stores in
+; ?EXP the exponent of the result, and prepares FR0-?FRX and
+; FR1-FR2 for the computation.
+;
+; On entry A contains the exponent of the result.
+
+MDPREP:	ld	hl,?SIGN
+	or	(hl)		; add sign bit to exponent
+	ld	(?EXP),a	; store the new exponent in ?EXP
+	xor	a
+	ld	(FR0+0),a	; clear exponent bytes
+	ld	(FR1+0),a	;  of both operands
+	ld	hl,FR1
+	ld	de,FR2
+	call	FCOPY		; FR2 <- FR1
+	call	ROLFR2		; rotate FR2 left
+	ld	(FR2+0),a	; store overflow digit in exponent byte of FR2
+	ld	hl,FR0
+	ld	de,?FRX
+	call	FCOPY		; ?FRX <- FR0
+	jp	ZFR0		; clear FR0 and return
+
+; Helper routine for multiplication and division.
+
+?ADDFR:	ld	c,6		; reg B is busy
+	or	a
+afr1:	ld	a,(de)
+	adc	a,(hl)
+	daa
+	ld	(de),a
+	dec	de
+	dec	hl
+	dec	c
+	jr	nz,afr1
+	ret
+
+	end

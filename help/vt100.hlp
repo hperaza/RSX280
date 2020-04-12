@@ -1,0 +1,317 @@
+
+                   VT100 Programming Reference Card
+
+ The following help is available for VT100s:
+
+	 CURSOR     - Cursor movement commands and control key codes
+	 SIZE       - Line size, double height and double width commands
+	 ATTRIBUTES - Character attributes, bold, underscore and blink
+	 ERASING    - Erasing all or part of the screen
+	 LEDS       - Programming the LED's
+	 CHARACTER  - Selecting characters set
+	 SCROLL     - Setting scrolling region
+	 TABSTOPS   - Setting tab stops
+	 MODES      - Selecting operating modes
+	 REPORTS    - Cursor position, status and identify
+	 RESET      - Reset to initial power-up state
+	 TESTS      - Confidence tests
+	 VT52       - VT52 compatible mode
+	 KEYPAD     - Auxiliary keypad codes
+	 PARAMETERS - Report on terminal setup parameters
+	 CONTROL    - Actions upon receiving control characters
+	 GRAPHICS   - Line drawing character set (Requires VT100 for display)
+
+\CUR*SOR
+
+                cursor up                     - ESC [ Pn A
+                cursor down                   - ESC [ Pn B
+                cursor forward (right)        - ESC [ Pn C
+  Cursor        cursor backward (left)        - ESC [ Pn D
+ Movement       direct cursor addressing      - ESC [ Pl ; Pc H
+ Commands       direct cursor addressing      - ESC [ Pl ; Pc f
+                index                         - ESC D
+                next line                     - ESC E
+                reverse index                 - ESC M
+                save cursor and attributes    - ESC 7
+                restore cursor and attributes - ESC B
+
+ 
+              Cursor Key      VT52      ANSI/Cursor    ANSI/Cursor
+               (arrow)        Mode     Key Mode Reset  Key Mode Set
+ Cursor       ----------      ----     --------------  ------------
+ Control         UP           ESC A       ESC [ A         ESC O A
+   Key          DOWN          ESC B       ESC [ B         ESC O B
+  Codes         RIGHT         ESC C       ESC [ C         ESC O C
+                LEFT          ESC D       ESC [ D         ESC O D
+
+
+\SIZ*E
+
+ Line Size (Double-Height and Double-Width) Commands:			  
+
+   Change this line to double-height top half              - ESC # 3
+   Change this line to double-height bottom half           - ESC # 4
+   Change this line to single-width single-height (normal) - ESC # 5
+   Change this line to double-width single-height	   - ESC # 6
+
+\ATT*RIBUTES
+
+ Character Attributes:
+
+        ESC [ Ps;Ps;Ps;...;Ps m
+
+        Ps =    0 or none      All attributes off
+	            1          Bold on
+	            4          Underscore on
+	            5          Blink on
+	            7          Reverse video on
+
+\ERA*SING
+
+ Erasing:
+
+           From cursor to end of line         - ESC [ K
+           From cursor to end of line         - ESC [ 0 K
+           From beginning of line to cursor   - ESC [ 1 K
+           Entire line containing cursor      - ESC [ 2 K
+           From cursor to end of screen       - ESC [ J
+           From cursor to end of screen       - ESC [ 0 J
+           From beginning of screen to cursor - ESC [ 1 J
+           Entire screen                      - ESC [ 2 J
+
+\LED*S
+
+ Programmable LEDs:
+
+          ESC [ Ps;Ps;...Ps q
+
+          Ps =     0 or none      All LEDs off
+                       1          L1 on
+                       2          L2 on
+                       3          L3 on
+                       4          L4 on
+
+\CH*ARACTER
+
+ Character Sets (G0 and G1 Designators):
+
+    Character Set                       G0 Designator    G1 Designator
+    -----------------------------       -------------    -------------
+    United Kingdom (UK)                    ESC ( A          ESC ) A
+    United States (USASCII)                ESC ( B          ESC ) B
+    Special Graphics Characters            ESC ( 0          ESC ) 0
+      and Line Drawing Set
+    Alternate Character ROM                ESC ( 1          ESC ) 1
+    Alternate Character ROM                ESC ( 2          ESC ) 2
+      Special Graphics Characters
+
+\SCR*OLL
+
+ Scrolling Region:
+
+      ESC [ Pt ; Pb r
+
+      Pt = Top line of scrolling region
+      Pb = Bottom line of scrolling region
+
+\TAB*STOPS
+
+ TAB Stops:
+
+            Set tab at current column   - ESC H
+            Clear tab at current column - ESC [ g
+            Clear tab at current column - ESC [ 0 g
+            Clear all tabs              - ESC [ 3 g
+
+\MOD*ES
+
+ Modes:
+                                 To Set                   To Reset
+ Mode Name                 Mode         Sequence    Mode          Sequence
+ -------------------       ---------------------    ----------------------
+ Line feed/New line        New line     ESC [20h    Line feed     ESC [20l
+ Cursor key mode           Application  ESC [?1h    Cursor        ESC [?1l
+ ANSI/VT52 mode            ANSI           n/a       VT52          ESC [?2l
+ Column mode               132 Column   ESC [?3h    80 Column     ESC [?3l
+ Scrolling mode            Smooth       ESC [?4h    Jump          ESC [?4l
+ Screen mode               Reverse      ESC [?5h    Normal        ESC [?5l
+ Origin mode               Relative     ESC [?6h    Absolute      ESC [?6l
+ Wraparound                On           ESC [?7h    Off           ESC [?7l
+ Auto repeat               On           ESC [?8h    Off           ESC [?8l
+ Interlace                 On           ESC [?9h    Off           ESC [?9l
+ Graphic proc. option      On           ESC 1       Off           ESC 2
+ Keypad mode               Application  ESC =       Numeric       ESC >
+
+\REP*ORTS
+
+ Reports:
+
+ Cursor Position Report:              Device status report:
+    Invoked by      ESC [6n              Invoked by                  ESC [5n
+    Response is     ESC [ Pl;Pc R        Response: Terminal OK       ESC [0n
+                                                   Terminal not OK   ESC [3n
+ Device attributes (What are you):
+              Invoked by          ESC [ c   or   ESC [ 0 c
+                  or              ESC Z       (not recommended)
+
+ VT100 Response:                   | VT125 Response:
+  ESC [?1; Ps c                    |  ESC [?12; <vt100> ; <vt125> ; <version> c
+                                   |
+  Ps = 0 Base VT100 (no options)   |    <vt100>        5 = no advanced video, 
+       1 Processor Option (STP)    |                   7 = advanced video
+       2 Advanced video opt. (AVO) |    <vt125>        1 = Aux. printer, 
+       3 AVO and STP               |                   0 = no aux. printer
+       4 Graphics proc. opt. (GPO) |    <version>      Graphics firmware
+       5 GPO and STP               |
+       6 GPO and AVO               |
+       7 GPO, AVO and STP          |
+
+\RES*ET
+
+ Reset:
+
+          ESC c
+
+ Reset VT100 to initial power-up state and execute power up self test.
+
+\TEST*S
+
+ Confidence Tests:
+
+      Fill screen with E's               ESC # 8
+
+      Invoke Test(s)                     ESC [2; Ps y
+
+      Ps = 1                             Power-up self test
+                                         (ROM checksum, RAM, NVR, keyboard
+                                          and AVO if installed)
+           2 (Loop back connector req.)  Data loop back
+           4 (Loop back connector req.)  EIA modem control test
+           8                             Repeat selected test(s) indefinitely
+                                         (Until failure or power off)
+
+\VT52
+
+ VT52 Compatible Mode:
+
+     Cursor up                             - ESC A
+     Cursor down                           - ESC B
+     Cursor right                          - ESC C
+     Cursor left                           - ESC D
+     Select special graphics character set - ESC F
+     Select ASCII character set            - ESC G
+     Cursor to home                        - ESC H
+     Reverse line feed                     - ESC I
+     Erase to end of screen                - ESC J
+     Erase to end of line                  - ESC K
+     Direct cursor address                 - ESC Pl Pc  (see note 1)
+     Identify                              - ESC Z      (see note 2)
+     Enter alternate keypad mode           - ESC =
+     Exit alternate keypad mode            - ESC >
+     Enter ANSI mode                       - ESC <
+
+ Note 1:  Line and column numbers are single character codes whose values are
+          the desired number plus 37 octal. Line and column numbers start at 1.
+ Note 2:  Response to ESC Z is ESC / Z
+
+\KEY*PAD
+
+ Auxiliary Keypad Codes:
+
+                 Numeric      Application       Numeric       Application
+       Key      mode VT52      mode VT52       mode VT100     mode VT100
+    ---------   ----------   -------------     ----------     -----------
+        0           0           ESC ? p             0           ESC O p
+        1           1           ESC ? q             1           ESC O q
+        2           2           ESC ? r             2           ESC O r
+        3           3           ESC ? s             3           ESC O s
+        4           4           ESC ? t             4           ESC O t
+        5           5           ESC ? u             5           ESC O u
+        6           6           ESC ? v             6           ESC O v
+        7           7           ESC ? w             7           ESC O w
+        8           8           ESC ? x             8           ESC O x
+        9           9           ESC ? y             9           ESC O y
+    -(minus)    -(minus)        ESC ? m         -(minus)        ESC O m
+    ,(comma)    ,(comma)        ESC ? l         ,(comma)        ESC O l
+    .(period)   .(period)       ESC ? n         .(period)       ESC O n
+      ENTER      RETURN         ESC ? M          RETURN         ESC O M
+       PF1        ESC P         ESC P            ESC O P        ESC O P
+       PF2        ESC Q         ESC Q            ESC O Q        ESC O Q
+       PF3        ESC R         ESC R            ESC O R        ESC O R
+       PF4        ESC S         ESC S            ESC O S        ESC O S
+
+\PAR*AMETERS
+
+ Request Terminal parameters:
+
+ Invoked by:
+            ESC [ Ps x
+            Ps = 0 or none     Request parameters, allow unsolicited reports
+                 1             Request parameters, disable unsolicited reports
+ Response is:
+            ESC [ <sol>;<par>;<nbits>;<xspeed>;<rspeed>;<clkmul>;<flags> x
+
+            <sol> =             2 - Unsolicited report, 3 - Solicited report
+            <par> =             1 - none, 4 - odd parity, 5 - even parity
+            <nbits> =           1 - 8 bits, 2 - 7 bits per character
+            <xspeed>,<rspeed>   Value    Baud        Value    Baud
+                                  0       50           64     1200
+                                  8       75           72     1800
+                                  16      110          80     2000
+                                  24      134.5        88     2400
+                                  32      150          96     3600
+                                  40      200          104    4800 
+                                  48      300          112    9600
+                                  56      600          120    19200
+            <clkmul>            1 - Bit rate multiplier is 16
+            <flags>             Set to values in block 5 of SET-UP B (STP only)
+
+\CON*TROL|CTRL
+
+ Control Characters Received:
+
+ Character   Octal
+ Mnemonic    Code    Function
+ ---------   -----   --------------------------------------------------------
+   NUL        000    Ignored, can be used as a fill character
+   ENQ        005    Transmit answerback message
+   BEL        007    Generate bell tone
+   BS         010    Backspace cursor 1 position
+   HT         011    Move cursor to next tab stop
+   LF         012    Causes linefeed on new line (See Linefeed/Newline mode)
+   VT         013    Same as LF
+   FF         014    Same as LF
+   CR         015    Return cursor to beginning of current line
+   SO         016    Select G1 char. set (See Select Character Set sequence)
+   SI         017    Select G0 char. set (See Select Character Set sequence)
+   DC1        021    XON, causes terminal to continue transmitting characters
+   DC3        023    XOFF, causes terminal to stop sending chars. until XON
+   CAN        030    Cancel escape or control sequence, display blip character
+   SUB        032    CTRL Z, same as CAN
+   ESC        033    Processed as sequence introducer
+   DEL        177    Ignored
+
+\GRA*PHICS
+
+ The following is a list of lower case characters and their "Special Graphic" 
+ equivalent. "Special Graphics" is selected with "<ESC>(0" and the normal
+ character set (US) is selected with "<ESC>(B".
+
+ (B      a      b      c      d      e      f      g      h      i      j
+ (0      a      b      c      d      e      f      g      h      i      j
+
+ (B      k      l      m      n      o      p      q      r      s      t
+ (0      k      l      m      n      o      p      q      r      s      t
+
+ (B      u      v      w      x      y      z      {      |      }      ~
+ (0      u      v      w      x      y      z      {      |      }      ~
+ (B
+ The following is an example using the "Special Graphics" character set:
+
+         (B  lqqwqqwqqwqqwqqwqqwqqk       (0lqqwqqwqqwqqwqqwqqwqqk
+         (B  x  x  x  x  x  x  x  x       (0x  x  x  x  x  x  x  x
+         (B  tqqnqqnqqnqqnqqnqqnqqu       (0tqqnqqnqqnqqnqqnqqnqqu
+         (B  x  x  x  x  x  x  x  x       (0x  x  x  x  x  x  x  x
+         (B  mqqvqqvqqvqqvqqvqqvqqj       (0mqqvqqvqqvqqvqqvqqvqqj
+ (B             Characters used                   Result
+

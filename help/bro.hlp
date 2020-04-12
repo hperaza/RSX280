@@ -1,0 +1,9 @@
+
+Syntax:
+
+  BRO ttn:message	; send message to one terminal
+  BRO LOG:message	; send message to logged-on terminals
+  BRO ALL:message	; send message to all terminals
+
+ALL and LOG are privileged keywords.
+

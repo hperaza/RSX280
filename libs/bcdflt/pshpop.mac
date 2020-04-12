@@ -1,0 +1,33 @@
+	.Z80
+
+	public	FPUSH,FPOP
+
+	cseg
+
+FPUSH:	pop	bc		; save return address in BC
+	ld	a,3		; 6/2 words
+psh1:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	de
+	dec	a
+	jr	nz,psh1
+	push	bc		; restore return address
+	ret
+
+FPOP:	pop	bc		; save return address in BC
+	ld	a,3
+	ld	de,5
+	add	hl,de
+pop1:	pop	de
+	ld	(hl),d
+	dec	hl
+	ld	(hl),e
+	dec	hl
+	dec	a
+	jr	nz,pop1
+	push	bc		; restore return address
+	ret
+
+	end

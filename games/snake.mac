@@ -1,0 +1,400 @@
+	.Z80
+
+	extrn	CLS,HOME,CSROFF,CSRON,REVVID,NORMAL,SETCUR
+	extrn	PUTCH,PUTSTR,TTFLSH,INKEY,DELAY,INIT,EXIT
+	extrn	GETCH,CPHLDE,UCASE,HLDEC,ADEC
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	27h
+CTRLC	equ	03h
+CTRLZ	equ	1Ah
+
+XMAX	equ	78		; playfield size
+YMAX	equ	22
+
+	cseg
+
+START:	ld	sp,stack
+	call	INIT
+
+MLOOP:	; main loop
+
+	call	CLS
+	call	CSRON
+	ld	h,20
+	ld	l,3
+	call	SETCUR
+	ld	hl,SPDMSG
+	call	PUTSTR
+	call	TTFLSH
+
+wtk:	call	RND		; to generate different random seq each time
+	call	INKEY
+	cp	CTRLC
+	jp	z,quit
+	cp	CTRLZ
+	jp	z,quit
+	cp	'0'
+	jr	c,wtk1
+	cp	'9'+1
+	jr	c,setspd
+wtk1:	ld	a,10
+	call	DELAY
+	jr	wtk
+
+setspd:	ld	c,a
+	ld	b,a
+	ld	a,'9'
+	sub	b
+	inc	a
+	ld	b,a
+	add	a,a
+	add	a,b		; *3
+	srl	a		; /2
+	ld	(speed),a
+	call	PUTCH
+	call	TTFLSH
+	
+	call	CLS
+	call	CSROFF
+
+	ld	hl,256*XMAX/2+YMAX/2
+	ld	(head),hl	; snake starts at the center of screen
+	ld	(snake),hl
+
+	xor	a
+	ld	(eaten),a
+	ld	h,1
+	ld	l,0
+	ld	(dir),hl	; and moving right
+	ld	a,2
+	ld	(len),a		; initial size is 2
+
+	call	NEWCUK		; new cookie
+	call	STATLN
+    
+LOOP:	; game loop
+
+	ld	hl,(snake)	; get head coordinates
+	call	SETCUR		; place cursor
+	ld	c,'O'
+	call	PUTCH		; display head
+	call	TTFLSH
+	ld	a,(speed)
+	call	DELAY
+
+	call	INKEY
+	cp	CTRLC
+	jp	z,quit
+	ld	h,0
+	ld	l,-1
+	cp	'A'		; up
+	jr	z,k1
+	inc	l
+	inc	l
+	cp	'B'		; down
+	jr	z,k1
+	dec	l
+	inc	h
+	cp	'C'		; right
+	jr	z,k1
+	dec	h
+	dec	h
+	cp	'D'		; left
+	jr	z,k1
+	ld	hl,(dir)
+	jr	k2
+
+k1:	ld	(dir),hl	; store direction
+k2::	ld	ix,snake
+
+	ld	a,h		; dx
+	add	(ix+1)		; px
+	ld	h,a
+	ld	a,XMAX
+	jp	m,k5
+	ld	a,h
+	cp	XMAX+1
+	jr	c,k5
+	xor	a
+k5:	ld	h,a
+
+	ld	a,l		; dy
+	add	(ix+0)		; px
+	ld	l,a
+	ld	a,YMAX
+	jp	m,k6
+	ld	a,l
+	cp	YMAX+1
+	jr	c,k6
+	xor	a
+k6:	ld	l,a
+
+	ld	(head),hl	; store new head coordinates
+
+	ld	de,(len)
+	ld	ix,snake
+chk1:	ld	a,(ix+1)	; compare head coordinate with stored
+	cp	h		;  snake coordinates
+	jr	nz,chk2
+	ld	a,(ix+0)
+	cp	l
+	jp	z,CRASH
+chk2:	inc	ix
+	inc	ix
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,chk1
+
+	dec	ix
+	dec	ix
+	ld	l,(ix+0)	; get tail coordinates
+	ld	h,(ix+1)
+	call	SETCUR
+	ld	c,' '
+	call	PUTCH		; erase from the screen
+
+	ld	hl,(len)
+	add	hl,hl
+	ld	c,l
+	ld	b,h
+	push	ix
+	pop	hl
+	inc	hl
+	ld	e,l		; dst
+	ld	d,h
+	dec	hl
+	dec	hl		; src
+	lddr			; shift array
+
+	ld	hl,(head)
+	ld	(snake),hl	; store head coordinates
+
+	ex	de,hl
+	ld	hl,(cookie)
+	call	CPHLDE		; cookie eaten?
+	jp	nz,LOOP		; loop if not
+
+	; cookie eaten
+
+	ld	hl,(len)
+	ex	de,hl
+	ld	hl,snake
+	dec	de
+	add	hl,de
+	add	hl,de		; point to tail
+	ld	e,l
+	ld	d,h
+	inc	de
+	inc	de
+	ld	a,(cval)
+	ld	c,a
+	ld	b,0
+	push	bc
+	ldir			; replicate tail (grow)
+
+	ld	hl,(len)
+	pop	bc
+	add	hl,bc
+	ld	(len),hl	; store new length
+
+	ld	hl,(eaten)
+	inc	hl
+	ld	(eaten),hl
+
+	call	NEWCUK		; get new cookie
+	call	UPDST		; update status
+	jp	LOOP
+
+CRASH:	; snake crashed
+
+	ld	hl,(head)
+	call	SETCUR
+	ld	c,'*'
+	call	PUTCH		; show crash location on the screen
+	call	CSRON
+	ld	h,30
+	ld	l,3
+	call	SETCUR
+	ld	hl,CMSG
+	call	PUTSTR
+	ld	h,26
+	ld	l,5
+	call	SETCUR
+	ld	hl,AGMSG
+	call	PUTSTR
+	call	TTFLSH
+
+WNXT:	call	GETCH		; wait for key
+	cp	CTRLC
+	jp	z,quit
+	cp	CTRLZ
+	jp	z,quit
+	call	UCASE
+	cp	'N'
+	jp	z,quit
+	cp	'Y'
+	jp	z,MLOOP
+	jr	WNXT
+
+quit:	call	CLS
+	call	CSRON
+	ld	hl,0
+	call	SETCUR
+	call	TTFLSH
+	jp	EXIT
+
+SPDMSG:	db	'Enter speed (0-9): ',0
+CMSG:	db	' C R A S H !!! ',0
+AGMSG:	db	' Another game (Y/N) ? ',0
+
+; Generate random number in the 0..A-1 range
+
+RND:	push	af
+	ld	bc,(rseed)
+	ld	de,61069
+	call	MULT16
+	inc	hl
+	ld	(rseed),hl	; rseed = rseed * 61069 + 1
+	ld	e,h
+	pop	af
+	ld	d,a
+	call	DIV8		; rnd = (rseed >> 8) % A
+	ld	a,c
+	ret
+
+; DEHL = DE * BC
+
+MULT16:	ld	hl,0
+	ld	a,16
+mu1:	add	hl,hl
+	rl	e
+	rl	d
+	jr	nc,mu2
+	add	hl,bc
+	jr	nc,mu2
+	inc	de
+mu2:	dec	a
+	jr	nz,mu1
+	ret
+
+; H = E / D, remainder in C
+
+DIV8:	ld	b,8
+	ld	c,0
+next:	rl	e
+	ld	a,c
+	rla
+	sub	d
+	jr	nc,noadd
+	add	a,d
+noadd:	ld	c,a
+	ccf
+	rl	h
+	djnz	next
+	ret
+
+; Display status line
+
+STATLN:	call	REVVID
+	ld	h,0
+	ld	l,23
+	call	SETCUR
+	ld	b,79
+	ld	c,' '
+invln:	call	PUTCH		; put bottom line in reverse video
+	djnz	invln
+	ld	h,10
+	ld	l,23
+	call	SETCUR
+	ld	hl,STMSG1
+	call	PUTSTR
+	ld	h,31
+	ld	l,23
+	call	SETCUR
+	ld	hl,STMSG2
+	call	PUTSTR
+UPDST:	call	REVVID
+	ld	h,18
+	ld	l,23
+	call	SETCUR
+	ld	hl,(len)
+	xor	a
+	call	HLDEC
+	ld	h,38
+	ld	l,23
+	call	SETCUR
+	ld	hl,(eaten)
+	xor	a
+	call	HLDEC
+	call	HOME
+	call	NORMAL
+	jp	TTFLSH
+
+STMSG1:	db	'Length:',0
+STMSG2:	db	'Eaten:',0
+
+; Get new cookie
+
+NEWCUK:	ld	a,XMAX
+	call	RND
+	ld	h,a
+	ld	a,YMAX
+	push	hl
+	call	RND
+	pop	hl
+	ld	l,a
+	ld	(cookie),hl
+
+	ld	bc,(len)
+	ld	de,(cookie)
+	ld	ix,snake
+nc1:	ld	a,(ix+1)
+	cp	d		; ensure location is free
+	jr	nz,nc2
+	ld	a,(ix+0)
+	cp	e
+	jr	z,NEWCUK
+nc2:	inc	ix
+	inc	ix
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,nc1
+
+	ld	a,9
+	call	RND
+	inc	a
+	ld	(cval),a
+	ld	hl,(cookie)
+	call	SETCUR
+	ld	a,(cval)
+	add	a,'0'
+	ld	c,a
+	call	PUTCH		; display cookie
+	call	TTFLSH
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+speed:	ds	1
+len:	ds	2
+eaten:	ds	2
+
+cookie:	ds	2
+cval:	ds	1
+
+head:	ds	2
+dir:	ds	2
+snake:	ds	2*2000
+
+rseed:	dw	22095
+
+	ds	256
+stack	equ	$
+
+	end	START

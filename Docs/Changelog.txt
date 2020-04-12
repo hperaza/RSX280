@@ -1,0 +1,6042 @@
+RSX180 Changelog
+----------------
+
+(Starting from P112 port V2.0 - didn't keep any early modification records)
+
+18/12/14
+
+- Filesys: file information is now embedded in the queued packet and no
+  longer needs to be read from user space.
+
+- Added IO.RUN function to filesys services.
+
+
+21/12/14
+
+- Changed flag implementation: now flags bits are set in a special TCB area
+  and no longer in blocks of separately allocated pool memory.
+
+- SYSFN is now in a separate directory.
+
+- Optimized inter-bank MEMCPY routine: now it copies 256 bytes at a time.
+  Does not seem to improve performance of task activation.
+
+- Applications now follow the RSX-11M output convention: begin with a LF and
+  end with a CR.
+
+- Started working on a new PIP program.
+
+
+22/12/14
+
+- More work on PIP: pattern matching algorithm.
+
+
+23/12/14
+
+- Linux 'diskrw' utility: preliminary support for contiguous files.
+
+
+24/12/14
+
+- exec.mac: task is now read directly from file into task memory, avoiding
+  an intermediate buffer copy step.
+
+
+25/12/14
+
+- Fixed a bug in FREBLK (bitmap.mac): the block number was getting lost
+  after a call to FNDMNT and an arbitrary block was being released!
+
+- Fixed a bug in ALLBLK: the routine returned success if no disk blocks were
+  available. This also affected the diskrw Linux utility.
+
+- Switching to filesys structure V2: 48-byte directory entries with support
+  for version numbers and contiguous files. Read routines done, tasks start
+  at least twice as fast.
+
+
+26/12/14
+
+- Fixed file name parsing problems (file version number was not being
+  recognized).
+
+- Implementing PIP command parser.
+
+- Experimental: CLI now calls PIP to display the directory.
+
+- Fixed a bug in the MOUNT routine that caused master directory operations
+  to fail under certain circumstances: the attributes field of the FCB was
+  not being initialized correctly, and the contiguous file routines were
+  called when in fact the file was not contiguous.
+
+
+29/12/14
+
+- Fixed a bug in the 'show resources' debug function. To display the pool
+  free memory, a call to KFREE (!) was being issued, instead of calling
+  KSIZE. Also, the return value was being copied to HL wrongly!.
+
+- Implemented task send/receive mechanism, right now using queue elements as
+  data packets. Named queues seem no longer necessary, as the task TCB has
+  now a T.RCVL link.
+
+- Task names shortened to 6 bytes.
+
+- RMD bug fixed: new tasks are now displayed after erasing the old ones, so
+  they are not accidentally erased from the screen.
+
+- CLI renamed to CCL. Started working on a MCR-style CLI.
+
+- The filesystem task was renamed as RTSFCS, and makes use of the new task
+  send/receive mechanism.
+
+
+30/12/14
+
+- Working on a new TT: driver, I/O packet-oriented.
+
+
+31/12/14
+
+- Got the new TT driver working, although there are still some stability
+  issues (e.g. the HELP command crashes sometimes).
+
+- FNDDEV now recognizes the special pseudo-device TI:
+
+- Removed console I/O system calls; now all the I/O is done via QIO calls.
+  Adapted SYSLIB to the new console QIO calls (although not optimal).
+
+- Experimental XON/XOFF support for TT0: works.
+
+
+01/01/15
+
+- The HELP command crash was due to a bug in SYSLIB (PUTSTR function with
+  empty strings).
+
+- SYSLIB: buffered version of PUTCH implemented.
+
+- FD driver: the FDCHK function is no longer exposed, the timeout entry
+  point is now called every clock tick from the task manager. Still, the
+  FD code needs to be rewritten in order make it fully interrupt-driven
+  without any waiting loops.
+
+
+02/01/15
+
+- Added UCBs to device drivers. UCBs also contain status.
+
+- Converted FD and NL device drivers to the new packet-driven mechanism.
+
+
+03/01/15
+
+- Adding support for unsolicited input to the TT terminal driver: ^C brings
+  the MCR prompt (only if terminal is in input mode) and characters can be
+  entered. The command is buffered and queued to MCR.
+
+- Device cleanup routine now calls driver's IOKILL entry point if the
+  current packet being processed belongs to the aborted task. Killing, e.g.
+  CCL leaves the driver in a clean state.
+
+- Experimental MCR processes commands received at receive queue.
+
+- CCL no longer started on TT0: during boot, MCR takes over unsolicited input.
+
+
+04/01/15
+
+- Extended terminal changes to TT1:
+
+- Device name and unit now passed in command packet to MCR.
+
+- MCR is now able to handle commands from multiple terminals. There are
+  still some problems:
+   - second terminal does not get a prompt on startup as before, unless CR
+     is pressed (but that may be normal)
+   - the initial terminal needs to be set explicitly in the code to TT0:
+     or else no prompt will be displayed on TT0: either (apart from the fact
+     that the PUTCH routine enters an infinite loop)
+   - MCR needs to recognize the session the terminal is connected to in order
+     to pass that information to child processes (such as PIP to display the
+     correct directory, etc.)
+   - for better responsiveness, MCR should be two processes: MCR... which
+     receives commands from all terminals, and ...MCR which is spawned on
+     each terminal to actually process the command and display output.
+     MCR... could handle only simple commands like activating an installed
+     task.
+   - ^C is not handled correctly if terminal is busy outputting data from a
+     task.
+
+- Expanding TCB structure to support a future System Task Directory.
+
+
+05/01/15
+
+- TT driver now handles ^Z, ^R and ^U. Still TODO: redisplay prompt.
+
+- Removed the old queue manager (named queues), which was made redundant
+  by the send/receive mechanism.
+
+
+07/01/15
+
+- Preliminary work on a 'fork queue' engine.
+
+
+09/01/15
+
+- Exec function is now in a separate 'loader' task.
+
+- Fixed a couple of bugs in the filesys FPOS and FSIZE functions: first, the
+  result was being copied to the wrong bank; second, FSIZE was actually
+  calling FPOS! (cut and paste error).
+
+- Fixed a bug in the exec function that caused task memory not to be freed
+  if an error occurred.
+
+
+10/01/15
+
+- More work on the STD: tasks now can be installed (preliminary via LDR),
+  but cannot be requested yet to run.
+
+- Terminal driver bug: if a key is pressed during task output (e.g. PIP),
+  TT1: starts outputting garbage.
+
+- Working on the indirect command processor: can read commands from a file
+  and send them to MCR. How to synchronize operation? (i.e. how to wait for
+  the MCR command to finish?)
+
+
+13/01/15
+
+- Tasks are now removed on exit only if the TS.REM bit is set.
+
+- Preliminary task request function (via loader) to start an installed task.
+
+
+14/01/15
+
+- Tasks now can be installed and requested, although the functions are not
+  yet complete.
+
+
+15/01/15
+
+- Implemented parent-offspring communication mechanism. Added CONNECT
+  function. Also the EXIT function now passes status back to parent or
+  connected task(s).
+
+- Installed tasks can now be removed (function right now via loader).
+
+
+16/01/15
+
+- Fixed a bug in devtt.mac that corrupted pool memory. Still, it did not
+  fix the erratic output that happens, for example, when executing ICP.TSK.
+
+- MCR now requests the AT. task if a command begins with @.
+
+- Implemented 'emit status' function. This allows for much better
+  synchronization between AT. and MCR.
+
+- RMDEMO memory display now only shows the active tasks.
+
+- Fixed a bug in LDR that caused installed tasks to 'grow' every time
+  they were requested until they did no longer fit in memory.
+
+BUGS:
+- RMD sometimes shows memory 'holes' that are not occupied by tasks.
+
+- Sometimes INS installs a task with an invalid LB: device (first char
+  of device name gets corrupt - only happens to PIP when called from CCL?).
+
+
+17/01/15
+
+- More kernel changes towards the fork processing capabilities.
+
+- INS is now an external MCR task (still does its job via LDR).
+
+- INIT now gets automatically removed on exit. Also, the startup command is
+  sent to MCR via the QMCR routine.
+
+
+18/01/15
+
+- Changed the timer dispatch and system services routines in order to
+  linearize access to the kernel data: systems services now run to
+  completion and task dispatching can happen only when the kernel exits
+  system state.
+
+
+19/01/15
+
+- INIT, RSTFCP, LDR: calling kernel routines is OK only if:
+   1. The kernel routines do not modify the current task state.
+   2. The call is enclosed in either ei/di or --SYSLVL/++SYSLVL pairs.
+   3. All other functions that modify task state must be called via system
+      trap (e.g. TWAIT, SETFLG, etc.)
+
+- Got the new system running. Still some synchronization issues exist (e.g.
+  ...AT. is not able to process the command file properly and blocks after
+  the first line). The problem seems to be related to the device I/O + fork,
+  since IODONE does not currently check for pending packets in the device
+  queue.
+
+
+22/01/15
+
+- Found a bug in the new timer interrupt routine that caused the frequent
+  crashes.
+
+- Added a WTDAT (wait for data) system function to synchronize RCVD
+  operation.
+
+
+23/01/15
+
+- DEVTT: iend now calls ioreq at the end in order to process any pending
+  queued packet. In the future IODONE should call driver's IOREQ.
+
+- Got the synchronization between MCR... and ...AT. working. Still there is
+  a race condition when processing the comments (wait-for-status right now
+  uses the generic TWAIT which does not check for the status block being
+  present).
+
+- Fixed a bug in the loader that caused the system device of an installed
+  task to be corrupted (the FCB fields were being accessed after the file
+  was closed and the FCB deallocated and very likely reallocated).
+
+
+24/01/15
+
+- TCB: status bits now split into 'status' (T.ST) and 'attributes' (TA.ATTR)
+  for better task control. Attributes (such as 'remove on exit') can be
+  specified at task creation time.
+
+- Preliminary work on AST support.
+
+- MCR SHUTUP command is now a separate program.
+
+
+25/01/15
+
+- Got the basic Asynchronous System Trap (AST) mechanism working.
+
+- Improved MCR-terminal and MCR-@ synchronization (at least for one
+  console). Executing a command file with mixed comments and commands
+  (e.g. '@[user]login') works cleanly again!
+
+
+26/01/15
+
+- Fixed the race condition in devtt.mac that caused the terminal to hang
+  when e.g. the CR key was kept pressed for a long time. The fix also
+  corrects the problem of application output interrupted and never resumed
+  when ^C or some other key was pressed while the application was outputting
+  data.
+
+- Fixed the problem that caused the very first character typed after boot to
+  be lost (due to the delayed MCR buffer allocation). The fix should be
+  rewritten, though: characters should be collected into the input queue and
+  processed by a fork block routine outside the interrupt handler.
+
+
+30/01/15
+
+- DEVTT: input char processing now done in a fork block. This shortens the
+  processing time with interrupts disabled, and reduces the amount of fork
+  switching. This also fixes the problem that happened when chars were left
+  in the input queue without being processed as unsolicited input, and being
+  passed instead to the following task.
+
+- DEVTT: unit 0 and unit 1 should now queue separate fork blocks on output
+  completion. This fix allows them to work simultaneously again without
+  crashing the system.
+
+
+31/01/15
+
+- More work on the Indirect Command Processor.
+
+- MOU and DMO are now external MCR commands.
+
+- Fixed DEVFD: the second unit is now working again.
+
+- UPTIME: the system now keeps track of seconds/minutes/hours/days, instead
+  of leaving the job of converting the 32-bit unit number to the application.
+
+
+01/02/15
+
+- DEVTT now properly restores an input operation in progress that was
+  interrupted by ^C.
+
+- Added subfunction field to I/O packet.
+
+- ICP: do not pass empty lines to MCR. Added variable processing (from
+  PILOTZ code). Simple substitutions now work.
+
+- DEVTT now supports line read (IO.RLB) and read with prompt (IO.RPR).
+
+
+02/02/15
+
+- QIO now handles IO.ATT and IO.DET requests. Attach and detach packets are
+  queued normally, but handled directly by the kernel and not passed to the
+  driver. If the task is aborted or exits without detaching, an automatic
+  detach is done by the kernel.
+
+- Added ATTACH and DETACH routines to SYSLIB.
+
+
+05/02/15
+
+- DEVTT: CR was not being echoed immediately after ending line in solicited
+  input mode.
+
+
+08/02/15
+
+- MCR now looks for a task named TTnn if no explicit argument is supplied to
+  the ABO, REM, RES, STP, DLY and similar commands.
+
+- RUN now gives the task a default name of TTnn.
+
+- Task manager: clear T.ID field as safety measure before freeing the TCB.
+
+- IO.ATA QIO code added. Attaching to terminal with unsolicited AST now
+  works!
+
+- Renamed FD: device to DY: for compatibility with RSX-11M device naming.
+  Hard disk will be DU:
+
+
+14/02/15
+
+- DEVTT: ^R now re-displays the task buffer directly, so output is no longer
+  cropped due to size limitations of the output queue.
+
+- Bug fix:
+
+    >@
+    AT.>^C
+    MCR>^Z^Z
+    >
+      $TTx#��>2800 FD0:-00BE   <-- garbage output
+
+  The problem originated in MCR and happened because the same character
+  output routine was used for the main code and AST. Thus, when AT. exited
+  the prompt was redisplayed via AST using the same PUTCH routine that was
+  stopped waiting for the output of another prompt to finish (as response
+  to ^Z). Both BUFCNT and BUFPTR in PUTCH got messed up, resulting in MCR
+  sending garbage to the screen the next time PUTCH was called. The solution
+  was to use separate output routines for main code and AST.
+
+
+26/07/15
+
+- Bug fix: PUTCH routine did not set BUFPTR properly if not all chars were
+  sent (rare case, anyway).
+
+- Bug fix: AST routine in vdo.tsk and view.tsk corrupted C register. Still,
+  that was not the cause of crash.
+
+
+25/12/15
+
+- Fixed size of T.ATTR in TCB (1 byte).
+
+
+26/12/15
+
+- EMITST now also sends the cause (right now always 0), terminal and task
+  name. Now MCR can display the prompt on the correct terminal when a
+  program exits.
+
+- Fixed a bug in MCR AST routine: reg pair BC was modified and not saved!
+
+
+27/12/15
+
+- Fixed a bug in the LDR RQST routine which caused task memory leaks if
+  a task was already active.
+
+- More work on AT.: better handling of DISPLAY mode, MCR prompt in
+  interactive (terminal) mode, substitution of decimal variables, etc.
+  NOTE: prompt misses a LF if AT. is started via RUN command.
+
+
+28/12/15
+
+- Fixed a bug in applications that use AST+queue for character input (VIEW,
+  VDO, etc.): disable interrupts while reading the queue to prevent
+  interfering with the AST routine. This still does not fix the VIEW messed
+  up screen problem when e.g. the down arrow key is pressed for too long.
+
+- INS now accepts the RUN switch with the optional REM argument. Problem:
+  when the RUN option is used, MCR re-displays the prompt when INS exits, not
+  when the run task exits. Also: 1) right now INS allows duplicate names in
+  STD; 2) if the task is installed, but not active, INS task/RUN should
+  complain about 'task name already in use', but INS task/RUN=REM should
+  start the task using a TTnn name (like the normal RUN command).
+
+
+29/12/15
+
+- Bug fix: the ASTEXT system call should *not* return via SVRSLT like the
+  other functions!!! Doing so will save the return values into the task
+  registers on the stack frame, corrupting them in the main thread upon AST
+  return. That was the cause of the elusive bugs of the VIEW.TSK program.
+  Also, MCR no longer crashes on e.g. a stream of ^Z's from terminal.
+
+
+30/12/15
+
+- Code cleanup. QIO and QMCR modules moved to TSKMGR.LIB. Removed old
+  DMPRES debug code from SYSFCP, as well as the 'undocumented' 0F3h
+  system call code to access it. DMPRES is now a separate privileged
+  utility.
+
+
+31/12/15
+
+- RQST is now a kernel function and not a loader request. When a task is
+  requested, the kernel queues its TCB to the loader, which allocates memory
+  for it, loads the task from disk and moves the TCB to the ready list in
+  order to start execution.
+
+- Command lines are now passed to the application via a system function in
+  a dynamically allocated block.
+
+- Bug fix: the task load routines in loader did not calculate the upper
+  task boundary properly and less memory than necessary was allocated for
+  some tasks, with the result that the loaded task would overwrite the
+  page zero of another task, causing a crash.
+
+
+01/01/16
+
+- GETCML (Get Command Line) is now a syslib function.
+
+- Started splitting MCR into MCR and SYS + other small utilities.
+
+- Implemented RPOI system call.
+
+- More work on INS:
+  * it now chains to programs via RPOI
+  * it now recognizes the CMD option
+  * EXEC routine no longer used
+
+- MCR now fully uses INS task for the RUN command.
+
+
+02/01/16
+
+- LDR no longer processes QIO packets to execute, install or remove a task.
+  It has the single job of loading tasks upon kernel request.
+
+- Added kernel functions INS and REM. Note that the INS call installs a task
+  from a properly initialized TDB; it does not do disk I/O to read the task
+  header.
+
+- MCR... now runs as privileged task.
+
+- If a task ...XXX is active, MCR starts a copy with name XXXTn.
+
+
+03/01/16
+
+- MCR, SYS: fixed a bug concerning usage of BIN2BCD function: return value
+  is in A and not in BC.
+
+- Bug fix: interrupts should be kept disabled while dequeuing a fork packet,
+  as interrupt handlers that create fork blocks will also manipulate the
+  FORKQ pointer, causing pointer corruption. This was apparently the
+  remaining cause of random crashes in VIEW.TSK and VDO.TSK, as no more
+  crashes have happened ever since.
+
+- DY: driver now uses interrupts to read the FDC status. Still not fully
+  interrupt-driven.
+
+
+04/01/16
+
+- DY: disk r/w now done via interrupt. Still to do: recalibrate and motor-on
+  via interrupt. Works way slower than originally (why???).
+
+- Changing the order of fork, dispatch and AST in SYSXIT (now in that order)
+  seems to fix the performance problem; now is similar as before, but still
+  lags somewhat: Boot time from logmsg appearing to end of AT. execution:
+
+    old driver = 18 sec
+    new driver = 24 sec
+    new driver on PC formatted floppy (wrong interleave) = 46 sec
+
+- TKTN task implemented, but not yet used by the kernel or MCR.
+
+
+09/01/16
+
+- DY: motor spin-up now done via timer interrupt. Still to do: recalibrate
+  wait.
+
+- Added TS.OUT bit to T.ST to signal when task is out of memory (i.e. not
+  loaded or swapped out). Not fully used yet.
+
+- Added T.SIZE field to TCB to keep track of the number of pages allocated
+  to a task.
+
+- Fixed task memory allocation: one page too much was often being allocated
+  to a task.
+
+
+10/01/16
+
+- Merged tskmgr and sysfn directories.
+
+- Started implementing LUNs:
+  * mktask now saves default LUN assignment in task header
+  * dynamic LUN table is allocated by tskmgr
+  * loader attempts to resolve device names into UCBs and stores them in
+    the LUN table.
+
+- FNDDEV function now requires a valid TCB in IX (for TI:).
+
+- Implemented ALUN system call.
+
+- Fixed a bug in DY: driver: unit number 1 was not set in UCB.
+
+- Device I/O now uses LUNs. TODO: file I/O via LUNs.
+
+- SYSFCP task is now fixed in memory (in system partition, as is LDR...).
+
+- RMD: do not show the idle task. Use '=' for fixed tasks.
+
+- RMD now displays POOL usage statistics as lrgst:total:frags.
+
+
+11/01/16
+
+- MCR, SYS and INS now pass full command line to spawned tasks, including
+  task invocation name.
+
+- RMD: preliminary display of partition boundaries.
+
+- HEL and BYE are now external MCR commands. HEL also processes HELP.
+
+- Task manager: when requesting a task, link it to the SCB associated to its
+  terminal.
+
+- MCR command parser now requires a minimum of 3 chars in command, extra
+  chars are ignored.
+
+- More work on session management to make login/logout work. Still problems:
+  * when logged on [USER] account, 'dir' command still shows [SYSTEM],
+    since MCR... runs on CO:=TT0:, however 'pip/li' correctly shows [USER]???
+  * TT1: is shown as privileged in the 'who' command, when it shouldn't.
+  * LOGIN.CMD is not yet executed.
+
+
+12/01/16
+
+- Login command now executes LOGIN.CMD file from user directory, if it
+  exists.
+
+- snake.plm programming example :)
+
+
+13/01/16
+
+- Sleep function: if called with task ID zero, delay the current task.
+
+- Timer accuracy: in 3h the timer lags approx 3 seconds.
+    Time 16:30:26 - Uptime 00:26:00
+    Time 19:30:23 - Uptime 03:26:00  -3 sec
+    Time 23:30:20 - Uptime 07:26:00  -6 sec
+  -1 sec/h = -0.0277% = -277.77 usec/s = -2.77 usec/tick (-2.77e-6 sec/tick)
+  1 tick = 1/100 sec = 10msec, so no ticks were lost.
+  Real clock freq is 15,995,555.555 MHz
+  More accurate timer reload value = 8000 - 0.0277% = approx. 7998
+
+
+14/01/16
+
+- SYSFCP: finished contiguous block allocation routine in bitmap.mac.
+  Still needs to be tested thoroughly. Also version numbers need to be
+  implemented.
+
+
+15/01/16
+
+- TRQST: free dynamic LUN table if QCMD fails before returning to user.
+
+- Cleanup of some filesystem routines.
+
+- Removed unused .TWAIT function call. Use .WTFLG or .WTDAT instead.
+
+- .WTDAT function no longer requires a task ID.
+
+- Implemented send-data-and-request function using existing .RQST and .RPOI
+  system calls, by just filling the TD.SDAT and TD.SLEN fields of the TDB.
+
+- TKTN potential race condition if data is sent when the task is already
+  exiting. We'll need an 'exit-if' function.
+
+- MCR TIM: started implementing set date function.
+
+- .SETFL and .CLRFL functions now always use CTCB and so no longer require
+  a task ID.
+
+- Task ID is no longer passed in HL register to task on startup.
+
+
+16/01/16
+
+- Changed the format of the home block: instead of a magic number an
+  identifier label is used. Also changed arrangement of index values.
+
+- Inverted the meaning of allocation bitmap bits: 1=allocated, 0=free.
+
+- .REM, .ABORT, .TSTOP, .TRESUM, .TDLY and .TSPRI functions now require a
+  task name in HL instead of an ID in BC.
+
+- Fixed a bug in GETCMD: one byte less was being passed to KFREE as length.
+
+- MCR REM command: if task XXX not found, try ...XXX
+
+- MCR ABO command: if task XXX not found, try XXXTnn, then ...XXX
+
+
+17/01/16
+
+- .CONN now requires a task name and not an ID.
+
+- T.ID field is no longer used by the task manager.
+
+- Task memory is now allocated by the kernel, and not by the loader.
+
+- DY: driver: added error count.
+
+- Kernel now requests TKTN on task abort.
+
+- Illegal instruction trap handler now aborts the task and posts a message
+  via TKTN.
+
+- Loader now aborts the task correctly on disk I/O errors, but note that
+  TKTN will report the message only if TKTN can be loaded from the disk or
+  if it is active in memory. Since TKTN load errors will cause TKTN to
+  abort, the kernel will try to load TKTN again and so on and on... But
+  for some reason when it finally gets loaded, the message does not get
+  displayed. ***To avoid the problem TKTN should be fixed in memory.***
+
+
+18/01/16
+
+- Wrote a program to test disk I/O reliability. No problems found when
+  running RMD or typing on the second terminal, etc. But the problem
+  appeared as soon as some application outputs text on the first terminal
+  (which uses the same FDC37C665IR chip). Typing (RX) does not seem to cause
+  a problem, but output (TX) does (INT conflict? DMA service latency?).
+
+- Enabled FDC FIFO on DY: driver with a threshold value of 16. That seems to
+  *almost* fix the "lost byte" problem. (!!!)
+
+
+20/01/16
+
+- INIMNT now merged with DEVINI in kernel.
+
+- PIP now correctly implements 'filename.ext;rev' pattern matching. Still
+  TODO: directory name matching, e.g. [*]*.mac;*
+
+
+21/01/16
+
+- More work on PIP: made a generic directory search routine that can be used
+  to display directory(ies), multiple file copy or move, file merge, etc.
+  Can be called recursively.
+
+- SYSLIB routines now preserve IX register (file I/O routines thrashed it).
+
+
+22/01/16
+
+- PIP now supports wildcards in directory specification. TODO: when
+  displaying multiple dirs, do not show directories that do not have any
+  files that match the pattern (i.e. suppress the header and summary lines).
+
+
+23/01/16
+
+- Added handler for task-unhandled RSTs.
+
+- When installing a task, TINS returns an error if a task with the same name
+  already exists.
+
+- Removed TCB T.ID field. All tasks searches now done by task name.
+
+- Removed .TFIND system call (.TINFO can be used for the same purpose).
+
+- SYSFCP: if a file exists FMAKE function creates a file with a higher
+  version number.
+
+- diskrw tool bug fixes:
+  * fileseek function: (blkno > 254) should be (blkno >= 254), since
+    block numbers in an allocation block are 0..253 (256 blks - 2 ptrs =
+    254 blks => 0...253)
+  * fileseek function: if nused is zero, reset both curblk and byteptr
+    to zero and return
+  * fileread: fixed filepos when reading beyond eof.
+
+- Fixed the same problems above in SYSFCP.
+
+
+24/01/16
+
+- diskrw tool fixes:
+  * createfile: free allocated file blocks if directory entry could not
+    be saved.
+  * closefile: skip deleted entries when updating the file entry!
+
+- Modified the SYSFCP file I/O routines to match diskrw ones.
+
+- SYSFCP: FOPEN now opens the file with the highest version number, if no
+  explicit version is specified.
+
+- SYSFCP: FCREAT now creates a file with a version number higher than the
+  highest, if no explicit version number is specified.
+
+- tskmgr GETDT: always return with CY clear if date/time read is successful.
+
+- SYSFCP: file write routines seems to work correctly. Creating and writing
+  contiguous files not fully supported yet.
+
+
+25/01/16
+
+- MCR DEV command now shows units as well.
+
+
+26/01/16
+
+- File I/O now uses LUNs.
+
+- SYSLIB PERROR: preserve HL and DE registers.
+
+
+27/01/16
+
+- Added .GTLUN system function, .TDLY renamed to .SLEEP, removed .SHTDN
+  function.
+
+- Changed the wait-for-object TWAIT function to a generic TWAIT one.
+
+- T.WAIT is now a 32-bit wide flag wait mask for future flag OR-waiting
+  operations.
+
+
+29/01/16
+
+- Mount and dismount functions now set and clear the DV.MNT bit in U.CW.
+
+- More work on PIP:
+  * better switch handling
+  * /FR now works and displays disk usage statistics
+  * /BR can be used without /LI
+  * an output file or device can be specified for the /LI function.
+
+- SYSLIB PUTCH routines uses LUN from public variable TTLUN.
+
+- SYSLIB FCREAT now takes a 'parse flag' argument like FOPEN.
+
+- SYSLIB: use IO.RVB and IO.WVB (and not RLB/WLB) for terminal I/O.
+
+- QIO: translate IO.RVB and IO.WVB to IO.RD and IO.WR if device is mounted.
+
+
+30/01/16
+
+- SYSFCP: FMAKE/FCREAT can now create contiguous files. No QIO support for
+  this yet.
+
+- Fixed a bug in bitmap.mac that was introduced in 24/01/16 (not all bytes
+  were saved back to file).
+
+- More work on PIP:
+  * implemented file copy operation (right now single-file output)
+
+- MCR internal TYP command now calls PIP (PIP TI:=userfile).
+
+
+31/01/16
+
+- More work on PIP:
+  * process multiple right-side arguments
+
+- SYSFCP:
+  * do not delete system files
+  * do not delete directories unless they are empty
+  * fixed CHDIR
+
+- INIT bug fix: current dir was not being set properly for TT0: session.
+
+- CHD function now moved to SYS.TSK in order to be able to set the directory
+  of the user session.
+
+- MCR: if user did not specify a filespec, do not force current MCR
+  directory, translate command to just 'PIP/LI'.
+
+- RMD:
+  * optimized display by using an internal video buffer and displaying
+    only what changed from previous frame.
+  * preliminary code to compute disk free space.
+
+
+01/02/16
+
+- DMP now parses command line like PIP: outfilespec=infilespec/switches
+
+- AT.: implemented logical variable type.
+
+
+02/02/16
+
+- PIP:
+  * implemented file delete operation with optional confirmation.
+  * file/directory search function can now be aborted (needed for delete).
+
+- DEVTT: fixed display of user prompt (now it is fetched from user space
+  as requested by transmitter, before it was loaded into output queue and
+  therefore limited to 64 chars). This fixed also the problem of ^R not
+  working properly if it was the first character typed on the line.
+
+- MCR: if command not found, try catch-all task.
+
+- Old CCL now morphing into a 'catch-all' task.
+
+- DEVTT: accept ESC as end-of-line character too (usually used to tell MCR
+  not to redisplay the prompt).
+
+
+03/02/16
+
+- RMD:
+  * code cleanup.
+  * use '[]' brackets for fixed task.
+  * do not overwrite the right bracket of an existing task
+
+- TED: system-dependent routines now in a separate file. The RSX180 version
+  can already read files.
+
+- Added SYSLIB.HLP and SYSFUNC.HLP to the HELP directory.
+
+
+04/02/16
+
+- PIP bug fix: version number matching was not done correctly.
+
+
+05/02/16
+
+- TED: got the virtual memory working under RSX180 (TED writes data to work
+  file leaving gaps or "holes" that may get filled later; since RSX180 does
+  not support "holes" yet, a workaround had to be implemented in the code.)
+
+  A bug appeared:
+    'run $ted/inc=10000' and read a large file, e.g.: 'r [test]snake.lst',
+    then 'pr 1 $' shows only 905 lines instead of 1833.
+
+
+06/02/16
+
+- TED: fixed the bug above. It was in the main code and affected the CP/M
+  version as well (NEWBUF routine modified register B, so the 'dirty' flag
+  set by LDBLKD was lost and the corresponding modified buffer was not
+  saved back to disk).
+
+- SYSFCP: set directory name in FCB to current dir (and do not leave it
+  empty) if user did not specify one. That way we can always retrieve the
+  full filespec via .FINFO syscall.
+
+- TED now processes command line. File read and write practically finished,
+  so the editor is now usable.
+
+- VDO code split into system-dependent and system-independent modules. It
+  can now read and write files, so is usable as well. ^Q commands do not
+  work because of the terminal driver restrictions (perhaps a subfunction
+  code could be used with IO.ATA?).
+
+- Found the "mystery" flag 29 bug: in TWAIT, testing for null wait mask
+  skipped the fourth byte of the mask.
+
+
+07/02/16
+
+- VDO now processes command line.
+
+- Added T.DEND (task default end address) field to TCB, so if a running
+  task changes its size, the original value could be used for the next
+  instance of the task.
+
+- Implemented .EXTSK (extend task) syscall. If task allocated region cannot
+  be extended because of lack of contiguous space, the task is relocated to
+  another region. TODO: check that there are no outstanding I/O (terminal or
+  disk)! - check I/O queues, etc.
+
+- Fixed a bug in the computation of the number of pages needed by a task that
+  did not allow a task to reach the max size of 60K (0000-EFFF).
+
+- Added D.START and D.END entries to DCB, so we can display device drivers
+  in RMD and also in preparation for future loadable drivers.
+
+
+08/02/16
+
+- Started working on an INI (disk init) utility.
+
+
+11/02/16
+
+- INI utility moved to MCR directory. Almost finished.
+
+- Started working on a GIDE secondary boot loader.
+
+
+12/02/16
+
+- GIDE secondary boot loader complete.
+
+- More work on DU: device driver.
+
+
+13/02/16
+
+- DU: device driver complete, but write operations are disabled.
+
+- GTLUN system function: return correct error code if device not found.
+
+- More work on INI: better command line parsing, allow ';' comments and
+  '!' comment blocks. Switches can be negated with /-sw or /NOsw.
+
+- Bootloader now passes boot device to initialization code. That way we
+  should be able to boot from different devices and do the correct
+  assignments on startup.
+
+
+14/02/16
+
+- ALUN: refuse assignment if task is attached to the old device, except  
+  if another LUN is assigned to the same device.
+
+- RMD: fixed display of overlapping tasks, so an exiting task no longer
+  leaves the overlapped one partially erased on the screen.
+
+- QIO: allow direct r/w access to device if task is privileged and attached
+  to device (in addition to SYSFCP and LDR...).
+
+- DY: and DU: drivers:
+  * some of the fixed variables moved to extended UCB fields.
+  * added IO.SEC (sense characteristics) function to get device size in
+    blocks (needed for INI).
+
+- INI utility already works. Not all switches are implemented yet.
+
+- Fixed a bug in FMAKE that caused the directory entry for the new file
+  to be appended at the end of the directory file, instead of reusing an
+  existing one.
+
+- PIP: multiple file copy to a directory now works (e.g. pip dy1:=*.*, etc.)
+  Still TODO: contiguous file support! Also, buffers are not apparently
+  released when a device is dismounted, because even after the device is
+  reinitialized/changed/erased, mounting it again shows the old files.
+
+
+15/02/16
+
+- SYSFCP:
+  * contiguous files can now be created. SYSLIB function FCREAT changed
+    accordingly. For consistency, FOPEN and FDEL were also changed (parse
+    flag now in reg. B).
+  * fixed a couple of bugs in bitmap block allocation routine for contiguous
+    files ACBLKS. Fixed also contiguous block allocation problems in FSTDBL
+    and NXTDBL routines.
+  * fixed a bug in FWRITE that caused it to allocate one extra block if the
+    file length was a multiple of 512.
+  * FDEL now handles contiguous files properly.
+
+- PIP:
+  * fixed the 'No error' message when the output file creation failed.
+  * now can copy contiguous files, but the /CO switch applies globally to
+    all copied files.
+
+- The changes above allow to create a working system on e.g. DU2: (although
+  not yet bootable, since INI needs to be finished so it can update the
+  system image info on the boot blocks).
+
+
+16/02/16
+
+- INI: hard disk bootloader now makes use of parameters passed by the
+  primary loader (like MP/M and CP/M 3.0 boot loaders). Implemented the /WB
+  switch to update system image information on boot tracks without having to
+  reinitialize the disk.
+
+- The DU2: test partition is now bootable!
+
+- HELP: did not close the help file when subtopic was not found.
+
+- SYSFCP: do not return E.EOF when reading exactly up to the last byte of
+  the last block.
+
+- PIP: when copying files, use the same attributes for the output file as
+  the original (currently only the contiguous bit).
+
+
+17/02/16
+
+- ...MCR:
+  * ACT command now uses privileged mode to access task list.
+  * ACT command now accepts the /ALL and /TERM=ttn: switches.
+  * DEV command now uses privileged mode to access device list.
+  * TAS command now uses privileged mode to access task list.
+  * ATL command now uses privileged mode to access task list.
+
+- .TINFO system call sub-options removed. Now it simply searches the STD by
+  name and returns the TCB contents. If no name is specified, CTCB contents
+  are returned.
+
+
+19/02/16
+
+- MCR/AT. synchronization now done via D2.TTS bit in U.CW of terminal. Now
+  the indirect command processor can be running simultaneously on both
+  terminals without interfering with each other.
+
+
+20/02/16
+
+- New TA.MCR bit of T.ATTR, used by MCR as prompt flag. Now using ESC to
+  suppress prompt works.
+
+- T.ATTR and T.ST of exiting task now passed in the AST packet to connected
+  task. That way MCR can easily check for the TA.MCR bit.
+
+
+21/02/16
+
+- More work on ...AT.:
+  * evaluation of string expressions (but no [n1:n2] operator yet).
+  * evaluation of numeric expressions.
+  * .setn, .sets, .sett and .setf now work.
+  * .ask sets value to true if response is 'Y', else to false.
+  * implemented .inc and .dec operators.
+  * for better performance, read 256 bytes at a time from input file
+    instead of a single char at a time.
+  * .goto implemented
+  * .stop implemented (TODO: value for exit status)
+  * first try at .IF implementation (numeric expr only)
+  * .parse implemented
+  * fixed a bug in numeric evaluation that affected PILOTZ as well.
+  Error handling still is not correct, as some processing routines will set
+  the CY without emitting an error message and causing AT. to exit silently.
+
+- DEVTT: fixed a bug in user display prompt (UM.PRM bit was set even if
+  there was no prompt to display, which caused random output after typing
+  first char of response).
+
+- TED: use existing filename from R command for W command without arguments
+  (this affected the CP/M version as well).
+
+
+22/02/16
+
+- More work on ...MCR:
+  * TAS command now accepts an argument.
+  * ASN command now follows the normal MCR syntax (still no switches
+    accepted).
+  * ALT command implemented (old SET PRI removed). Right now it requires
+    exact task name specification and sets both running and default priority
+    independently of the switch.
+
+- INI: show device name in confirmation prompt.
+
+- .ASGN syscall now de-assigns a logical device if the passed physical
+  device is null.
+
+- .TSPRI syscall now re-links the TCB according to priority in both STD and
+  RLIST/WLIST.
+
+
+24/02/16
+
+- More work on ...MCR:
+  * TAS command now also accepts a /DEV=ddn: switch (TODO: translate
+    device names to physical before comparison).
+  * LUN command implemented.
+
+
+25/02/16
+
+- Fixed VIEW.TSK goto-end command problem.
+
+
+27/02/16
+
+- Task manager:
+  * Implemented clock queue and related functions 
+  * Replaced .SLEEP system call with .MRKT
+  * Removed T.SLPC field of TCB and TS.DLY status bit
+  * Removed TSLEEP function
+
+- MCR...: removed SLP command.
+
+- SYSLIB: added SLEEP function.
+
+
+28/02/16
+
+- Task manager:
+  * .TSPRI system call renamed to .ALTPR
+  * .ALTPR allows now to set running and/or installed priority, the last
+    requires privileges.
+  * .ALTPR now checks correctly for task privileges according to the
+    requested operation.
+
+
+29/02/16
+
+- SYSFCP: invalidate all buffers for the device being dismounted.
+
+- RMD: combined AST for mark time and unsolicited char. Responsiveness to
+  keystrokes improved.
+
+
+02/03/16
+
+- Fixed a bug in GETPKT that caused packets not belonging to the attached
+  task to be lost instead of remaining in the queue. This fixes the problem
+  of background tasks remaining blocked after the attached task releases
+  the terminal.
+
+
+03/03/16
+
+- Terminal driver: the TX interrupt handler should queue a fork call to
+  ioend if not an input operation *and* the busy bit is set. That was the
+  bug that caused an output operation to end prematurely if executed
+  immediately after an input operation (especially affected e.g. the display
+  of the MCR prompt for the slower TT1:).
+
+
+04/03/16
+
+- DMP, PIP: do not attach the terminal on startup. Do so only during output.
+
+
+05/03/16
+
+- MCR: TIM command now accepts time in 24-hour format hh:mm[:ss] and date
+  like DD-MMM-[YY]YY or MM/DD/[YY]YY in any order.
+
+- System date and time now can be set and saved into the DS1202 chip.
+
+- Ported LBR application. Input files are now properly closed after
+  processing (was not necessary for CP/M). Still TODO: @cmdfiles, device
+  output, etc.
+
+
+06/03/16
+
+- Bug fix: DS1202 chip expects dow 1..7 and not 0..6. Task manager and MCR
+  routines changed accordingly.
+
+* bug? run snake and/or any other application that loops with 100% cpu time,
+  ^T to go to debugger, then n to continue -> task is aborted with a
+  'unhandled rst execution' PC shows value near TTDEV ^T breakpoint.
+  Debugger continue error? Does not happens if n1 is used instead.
+  [not a bug! n1 must be used, and not n, since ^T breaks from the
+  interrupt routine!]
+
+
+10/03/16
+
+- Implemented LP: driver.
+
+- Fixed unit number in UCB of NL: driver (was set to 1 and not to 0).
+
+- PIP: copying from terminal device now works, but still some checking is
+  needed to avoid ambiguous and/or invalid operations (e.g. PIP =TI:).
+
+- SETDT function: DS1202 '24h bit' value was wrong when setting time.
+
+- ...MCR: implementing SET command. SET /DIR already works and eventually
+  will replace CHD (CHD and/or CD will be moved to CCL).
+
+
+18/03/16
+
+- Ported CALendar program from RSX-11M.
+
+
+19/03/16
+
+- Working on a new version of the GETCML routine that supports nested
+  indirect files, etc.
+
+- SYSLIB PFN: handle CR and LF as delimiters, otherwise they'll get into the
+  FDB/FCB.
+
+
+20/03/16
+
+- Got the new GETCML routine working, including nested command files. Still
+  needs some polishing (options, returning first word of MCR command line,
+  alternative prompt, etc.)
+
+- SYSLIB: old GETCML renamed to GCCL. New routines are named GCML, RCML and
+  CCML.
+
+- INI, DMP, LBR, MOU, DMO, VIEW and PIP now use the new GCML routines.
+
+- Fixed an initialization bug in VIEW that caused the old buffer to be
+  displayed when a new file was opened.
+
+
+27/03/16
+
+- SYSLIB PFN: do not return error if char after filename is not end-of-line.
+  Instead, HL should point to the first invalid character. OTOH, make sure
+  that all file fields are specified correctly (e.g. return error if no
+  matching directory ']' found).
+
+
+28/03/16
+
+- Fixed a bug in TRQST: a task installed with too large increment was set
+  set to active (but not placed in the ready list) even when memory could
+  not be allocated for it. The result was an active 'ghost' task that did
+  not appear in RMD and could not be remover or aborted.
+
+- Bug: can install a task with inc for 60K total size, but cannot start it.
+
+
+31/03/16
+
+- Porting DR LINK (TKB).
+
+- Porting mktask (MKT).
+
+
+02/04/16
+
+- More work on TKB.
+
+
+03/04/16
+
+- More work on TKB:
+  * interactive mode already works (under CP/M).
+  * fixed some overlay-related glitches.
+
+
+04/04/16
+
+- More work on TKB:
+  * code optimized (300 bytes freed).
+  * separate file seek function now used where necessary (except in one
+    last place to fix) instead of online code that manipulates FCB ex and
+    cr fields directly.
+  * preliminary code to support direct TSK file generation.
+
+
+09/04/16
+
+- More work on TKB:
+  * more code optimizations (139 bytes freed).
+  * main code no longer manipulates FCB ex and rc fields, the file seek
+    routine is always called instead.
+
+
+10/04/16
+
+- More work on TKB:
+  * more code optimizations.
+  * RSX180 version now uses GCML for command line reading.
+  * temporary file structures moved to CP/M and RSX modules, and now use
+    different FCB structures.
+  * options under RSX are specified with '/' (not tested) to avoid conflict
+    with '[' and directory specifications.
+
+
+17/04/16
+
+- Bug fix: the routines used to access data on another bank (e.g. UGETB,
+  UPUTB, etc.) must set (and restore afterward) CBAR in addition to BBR:
+  if an interrupt happens when a privileged task is in supervisor mode, then
+  the interrupt handler will be called with a 'supervisor mode' CBAR (which
+  normally is not an issue since drivers run in kernel bank); but if the
+  handler tries to read/write (another) task data (e.g. TTDRV), then it
+  may read/write the wrong values if the buffers are above the supervisor-
+  mode CBAR (i.e. data will be fetched/written from/to the "common" kernel
+  area!). Note that the fixes increase the size of the access routines and
+  makes them slower. Another solution would be to change the interrupt stub
+  code to switch to normal-mode CBAR (we'll have to do that in the future
+  as well), but the access routines may be used also by privileged tasks
+  while in supervisor mode... The routines may be made faster if we use the
+  alternate register set.
+
+
+24/04/16
+
+- Created UFD utility (replaces MCR MKD internal command, which will be
+  moved to CCL).
+
+
+05/05/16
+
+- More work on TKB:
+  * using SetName, SetExt, CopyFN functions instead of ldir to copy/set
+    specific FCB fields.
+  * fixed PrFN function.
+  * moved FCB structures to system-dependent source files.
+  * REL files can already be read (and processed), but temporary XX/YY
+    and output files do not get created.
+
+
+07/05/16
+
+- More work on TKB:
+  * close REL/IRL file after read.
+  * output COM and SYM files can already be saved (although they may be not
+    correct, e.g. $MEMRY not updated).
+  * more code optimizations.
+
+
+11/05/16
+
+- More work on TKB:
+  * $MEMRY now properly updated.
+  * REL extension not forced on object files.
+  * output file seems to be correct, at least for single input file.
+  * XX????.$$$ files can be read/written, but code has not been checked
+    yet (in particular, code that sets CP/M drive is still there and may
+    corrupt the FDB)
+
+
+13/05/16
+
+- More work on TKB:
+  * command options seem to be working now, although specifying e.g.
+    /s/a gives a /S? error.
+  * temp XX/YY files are closed and deleted after use.
+  * using default OBJ extension under RSX180.
+  * get full filespec for re-opening and/or deleting file.
+  * link operation seems to be correct now, even with libs in command line
+    (but no IRL support yet.)
+
+
+17/05/16
+
+- More work on TKB:
+  * FExist function now also used to open file (avoids extra call to OpenF).
+  * more code optimizations.
+
+
+18/05/16
+
+- More work on MKT.
+
+- More work on TKB:
+  * more code optimizations.
+
+
+19/05/16
+
+- More work on MKT. TSK can be created, but options are not correctly
+  processed yet.
+
+
+20/05/16
+
+- Finished MKT. Options are correctly processed, including LUN assignment.
+  Output file is contiguous.
+
+
+21/05/16
+
+- More work on TKB:
+  * use one FCB to access IRL index and data, use FSEEK to switch fields.
+
+
+22/05/16
+
+- More work on TKB:
+  * CP/M version now uses same RSX-style of switch specifications.
+  * fixed problem of consecutive options, /s/a no longer gives error.
+  * using absolute record numbers for file seek functions and no longer
+    CP/M-specific extent+record pairs.
+  * IRL support complete.
+  * close input files on error.
+  * close and delete XX/YY files on error.
+  * preliminary code to output TSK header.
+  * more code optimizations.
+
+
+29/05/16
+
+- SYSLIB PFN: allow '(' and ')' as delimiters.
+
+- More work on TKB:
+  * all TSK header fields generated, but not all can be set yet via options.
+  * more code optimizations.
+
+
+11/11/16
+
+- Working on a new virtual-terminal driver (8 units on the second serial
+  line via software multiplexing). Preliminary Linux application to serve
+  the virtual terminals via telnet connections.
+
+- 'diskrw' Linux utility renamed to 'vol180'.
+
+
+13/11/16
+
+- Optimized TT: driver code (removed tt0/tt1 redundancy, common code now
+  makes better use of UCB in IY).
+
+- TT/VT driver: ignore null input chars.
+
+- More work on virtual terminals: driver nearly finished and seems to work
+  OK. The system init routine now determines how many units the TT device
+  has, and creates a session on each one of them so user can login. But
+  sometimes the system hangs (no response from virtual terminals, although
+  a prompt can be get with Enter or Ctrl-C on TT0: but there is no response
+  from MCR).
+
+- Linux vtcp application now works, but needs some minor touches (telnet
+  handshake, finish command line args, RTS/CTS control?, etc.)
+
+
+14/11/16
+
+- Syslib PDN now returns B=1 if device name explicitly contains an unit
+  number (e.g. TT0:) else 0 (e.g. TT:).
+
+- MCR DEV command now accepts arguments (dd: ddu: /log /mou). User name
+  is displayed for logged-in terminals.
+
+- Added MCR flags kernel variable to control enabling/disabling of logins,
+  console log, etc.
+
+- HEL now displays an error message if logins are disabled.
+
+- MCR SET /[NO]LOGON command now works.
+
+- GETPKT: dispatch a packet that has the TF.WBT (write break-through)
+  subfunction bit set regardless of the attached state if the unit is a
+  terminal (DV.TTY bit set in U.CW).
+
+- SHUTUP utility now disables logins and displays a warning message on all
+  logged-in terminals. It also now asks for minutes to wait, and for user
+  confirmation before shutdown operation is started.
+
+
+15/11/16
+
+- MCR: do not wait for completion in ASTSTR to avoid MCR lockup due some
+  terminal preventing output of the prompt (^S, etc.). This works since
+  the routine is used only to output the prompt, and the buffer contents
+  never change.
+
+- DEVTT, DEVVT: fixed a bug that caused a spurious null character to be
+  output after a prompt ('MCR>' or used-specified one).
+
+- DEVVT: fixed a bug that caused IO.RPR to end sometimes prematurely.
+
+- Do not use the TA.FIX bit as a kludge to avoid releasing task memory
+  of a task in kernel space. Instead check for T.BANK == (SYSBBR).
+
+- RMD bug fix: a fixed inactive task did not appear on display.
+
+- Kernel now supports fix/unfix of a task in memory, code not fully tested
+  yet.
+
+- REMoving a fixed task UNFixes the task first.
+
+- TKTN, ...MCR and RMD work fine when fixed, but other (e.g. PIP, LBR) do
+  not work when invoked a second time (initialization/syslib problems?).
+  CAL has display problems when FIXed.
+
+
+17/11/16
+
+- TAS command now displays partition names (only SYSPAR or GEN at this
+  point).
+
+- Optimized RMD display: do not delete and add a task if only attributes
+  change (that would cause a full redisplay of the task).
+
+- Wrote BROadcast utility. Does not check user privileges yet.
+
+- Fixed a bug in TIM command: month was not being converted to BCD, and
+  thus the command failed if month was Oct, Nov or Dec.
+
+
+18/11/16
+
+- vtcp application: negotiate char mode with client, remove telnet handshake
+  codes from the input stream.
+
+
+19/11/16
+
+- Removed the no-longer-used IO.RDX and IO.WRX filesystem requests.
+
+- Removed .FINFO system call, use IO.RAT instead.
+
+- HEL: set session privileged if user ID < 10.
+
+- SYS: implemented SET /PRIV command.
+
+- SYS: check user privileges for privileged commands such as SET /LOGON,
+  SET /PRIV=ttn:, TIM date/time, etc.
+
+
+20/11/16
+
+- Working on a new filesystem version: index file (inode table) means
+  shorter directory entries, and eliminates directory lookups when closing
+  the file (which is prone to race conditions). File version numbers are
+  now 16-bit. Linux vol180 application now working, but not fully tested.
+
+- vol180: do not allocate FCBs for bitmap and index files, use known
+  locations from volume header (simpler code, faster lookups). Bitmap
+  and index file are now contiguous by definition.
+
+
+21/11/16
+
+- More work on filesystem v4:
+  * revised FCB, VCB and directory structures, added inode structure to
+    FCB.INC file.
+  * bitmap and mount code converted, indexf routines added.
+  * syslib PFN updated.
+
+
+22/11/16
+
+- More work on filesystem v4:
+  * dirio code converted, fileio half done (found a bug in the old FOPEN
+    code that caused the wrong file to be opened when no version number
+    was specified: last file on dir that matched name was open instead of
+    the file with highest version number).
+
+
+23/11/16
+
+- More work on filesystem v4:
+  * fileio code finished.
+  * PIP partially converted (still to finish copy and dir).
+  * converted RMD, TKB, TED (all to be tested).
+
+
+24/11/16
+
+- More work on filesystem v4:
+  * fixed code conversion bugs.
+  * system now boots (45 sec v4 vs 50 sec v3 = 10% faster).
+  * finished PIP dir.
+
+
+25/11/16
+
+- More work on filesystem v4:
+  * finished PIP copy.
+  * converted INI, /MF switch not implemented yet (found some bugs in the
+    old INI program: too many bits were written to the bitmap, and BOOT.SYS
+    directory info was not correct).
+  * bug fix: WRINOD did not set the modified flag on index file block, so
+    inode changes were not committed.
+  * bug fix: MKDIR and FMAKE did not setup the new inode properly.
+
+
+26/11/16
+
+- More work on filesystem v4:
+  * file seqno is incremented when a new inode is created.
+  * bug fix: ACBLKS crash due to wrong push/pop balance.
+  * bug fix: bitmap buffer was not properly released in RDNXT.
+  * bug fix: contiguous allocated chain bits were not saved to the right
+    block address.
+  * bug fix: wrong unit number when calling RDINOD/WRINOD.
+  * bug fix: FNSZ in fcb.inc was wrong (used only one byte of F.REV).
+  * the above bug fixes fixed PIP copy problem.
+  * bug fix: INI bootloaders for DY: and DU: were not updated.
+  * bug fix: wrong params to FCBCMP in FDEL and FREN.
+  * the above bugfix fixes PIP delete problem.
+  * bug fix: NEWINO did not release buffer.
+  * bug fix: ALCBLS did not set the buffer modified flag if the allocated
+    bit chain was all contained within a single byte, which resulted in
+    cross-linked files.
+
+
+27/11/16
+
+- More work on filesystem v4:
+  * added default file protection bits to volume header.
+  * INI now supports /MF=nnn and /MP=hhhh switches.
+  * MOUNT no longer calls PFN (but INIT task does).
+  * FNDFRE now looks first for invalid buffers, and only if none found it
+    will look for valid unused ones in a round-robin fashion. This reduces
+    unnecessary disk activity (e.g. floppy boot time is twice as fast!):
+
+    FD boot time: v3 = 49.56 sec, v4 = 46.49 sec (23.46 sec after FNDFRE fix)
+    HD boot time: v3 =  8.36 sec, v4 =  8.36 sec  (6.80 sec after FNDFRE fix)
+
+- Fixed a bug in PFN decimal value parsing.
+
+- RMD no longer displays seconds in uptime field.
+
+
+30/11/16
+
+- Fixed a bug in DEVVT that caused a virtual terminal to hang if ^Q was
+  pressed (or ESC, or any other key that did not produce echo).
+
+- Fixed a bug in DEVVT that caused the output stopped by ^S in one virtual
+  line to be resumed by outputting text on another virtual line.
+
+- DEVVT: preliminary TF.RNE support.
+
+
+01/12/16
+
+- DEVVT: do not process unsolicited input if terminal is busy (except ^C).
+  This avoids task lockup if a key is pressed while text is being output.
+  The change is a quick fix and needs to be revised. Specifically, switching
+  to forced unsol input (^C) while in ^S or during output should remember
+  unit state and resume output after the line has been queued to MCR or
+  input canceled with ^U.
+
+- RMD: added Active Task Display page, updated the Help Page.
+
+
+02/12/16
+
+- RMD: adding Task Header Display page. Can already display a few fields,
+  including registers. LUN table display not finished yet.
+
+
+03/12/16
+
+- tskmgr: removed some superfluous register operations in flag routines.
+
+- RMD: preliminary support for setup commands. Fixed main loop bug that
+  caused additional Mark Time requests to be queued when changing display
+  pages.
+
+
+04/12/16
+
+- Device drivers: all UCBs are now in DSEG, so they can now be accessed
+  easily from a privileged task without having to resort to UGETBB, etc.
+  (theoretically they should be in pool area). MCR and ICP code updated
+  accordingly.
+
+- Device drivers: the kernel now calls the IOREQ entry point with IY=UCB,
+  thus is no longer necessary for the driver to check and call GETPKT
+  for all non-busy units.
+
+- Renamed Session Control Block (SCB) to Login Control Block (LCB).
+
+- Removed I.NSCB and I.GSCB .SINFO subfunctions (no longer used).
+
+- Implemented Status Control Block (SCB) for devices. This simplifies
+  packet checking and delivery for units that share a common controller.
+  The busy state S.ST is now set and cleared only by the kernel.
+
+- Removed session ID (no longer used); T.SSID in TCB renamed to T.LCB.
+
+
+14/01/17
+
+- DEVVT: when requested, always queue an AST even if device is busy.
+
+
+15/01/17
+
+- Porting BASIC-11 interpreter:
+  * CAT command now works.
+  * files can be loaded.
+
+
+18/01/17
+
+- Fixed a bug in DEVTT/DEVVT that caused the same fork block to be scheduled
+  twice. If a fork block of another unit or device was queued in-between, it
+  would not be serviced: upon queuing the duplicated fork block the 'next'
+  pointer of the first will be cleared. This apparently was the cause of
+  random task lookup waiting for an event flag that was never set after
+  output to the terminal (or disk read/write) completed.
+
+
+19/01/17
+
+- More work on the BASIC interpreter:
+  * file create/write support.
+
+
+21/01/17
+
+- More work on RMD:
+  * added a table to display pages that contains the address of the display
+    and setup command processing routines, as well as the address of help
+    text to display on the setup page. This results in a more modular
+    design, and should make it easier to add additional pages in the future.
+  * RATE, TASK (T), FREEn (M), TOP (M) and BOTTOM (M) setup commands are now
+    processed.
+  * IN/OUT block now displayed only if there is enough space (i.e. it will
+    not overwrite a displayed task)
+  * fixed cumulative rounding errors of tick values for cases where range
+    in kbytes does not divide evenly by the number of ticks.
+
+
+22/01/17
+
+- More work on RMD:
+  * fixed task name position for tasks that are partially outside the
+    displayed range.
+
+
+26/01/17
+
+- More work on RMD:
+  * round up the upper task limit for correct display when the memory range
+    is not a power of two.
+
+- Removed the 256K and 512K memory limit conditionals in bootloaders code.
+  Use P112 ROM commands to limit the available memory to RSX180 if/when
+  necessary.
+
+
+30/01/17
+
+- PIP: fixed plural output for number of blocks, used blocks, etc.
+
+- DMP: display block header unless /NH option is specified.
+
+- ICP: implemented .GOSUB/.RETURN commands. TODO: pass .GOSUB arguments to
+  subroutine in <COMMAND> string.
+
+
+31/01/17
+
+- Implemented CLICB for MCR. Used by DEVTT/DEVVT, HEL, MCR, TKTN and ICP.
+
+
+01/02/17
+
+- More work on ICP:
+  * implemented .IFINS/.IFNINS/.IFACT/.IFNACT.
+  * fixed .IF: the 'then' part can be an MCR or an internal command, so e.g.
+    the following statement now works: '.ifnins ...pip ins $pip'.
+  * fixed display of some substitution error conditions.
+  * preliminary support of string substitution format.
+
+- DEVTT/DEVVT:
+  * fixed ^R buffer redisplay when no user prompt was supplied.
+  * ^R now does not output user buffer if TF.RNE was specified.
+
+
+02/02/17
+
+- More work on ICP:
+  * implemented hexadecimal and octal numeric substitution formats.
+  * signed format is now a modifier, and can be applied together with
+    D, H and O options.
+  * implemented V, C, Z, Ln and Rn format options.
+  * fixed a memory corruption bug in SETSV (write to null pointer).
+  * duplicate variable names for different variable types no longer
+    allowed.
+  * preliminary support for built-in variables: <TRUE>, <FALSE>, <TIME>,
+    <DATE> and <SPACE> now work, but only in substitution mode.
+
+- DEVTT/DEVVT: fixed a bug in 'uend' routine.
+
+- DEVTT/DEVVT: set UM.INP bit in 'ttrpr' before displaying prompt, otherwise
+  spurious chars may appear unexpectedly on the input buffer.
+
+
+04/02/17
+
+- Added TA.CLI bit to task attributes.
+
+- Added 'standard' exit status codes to ERRORS.INC. Tasks now use the exit
+  code definitions.
+
+- TKTN: emit severe exit code and reason to parent(s).
+
+- Connections are now passed to TKTN when a task is aborted, so the abort
+  code can reach the parents. This also breaks the connections as if the
+  task exited normally, so no OCBs are no longer leaked. Also, TKTN no
+  longer needs to emit the MCR prompt.
+
+- .RQST directive now takes extra parameters (flag and ECB address), so it
+  could be used as 'request and connect' (or 'spawn') as well.
+
+- .CONN: do not allow connecting to a CLI.
+
+
+05/02/17
+
+- The kernel now determines CPU frequency on startup and sets up the timer
+  accordingly.
+
+- Added host/node name (max 9 chars) to SYSDAT. Can be changed with MCR
+  SET /HOST or SET /NODE commands. Host name is displayed by HEL on login
+  and by RMD on the top line of the screen.
+
+- UFD now processes the /OWNER=[gid,uid] switch.
+
+- SYSFCP: IO.WAT now supports setting of F.USER, F.GROUP and F.PROT
+  values.
+
+- User with group ID > 10 is privileged (before was user ID > 10).
+
+- vol180: updboot command now accepts an optional filename parameter for
+  the bootloader binary.
+
+- BRO command: ALL and LOG keywords are now privileged.
+
+
+06/02/17
+
+- More work on ICP:
+  * implemented .IFDF/.IFNDF/.IFT/.IFF.
+  * .IF now works like in the original RSX-11M ICP (except .AND, .OR).
+
+
+09/02/17
+
+- More work on ICP:
+  * special variables '<vvv>' can now be used in expressions, etc.
+  * better handling of error conditions.
+  * implemented '.TEST varname'
+  * implemented special vars <STRLEN>, <NUMBER>, <ALPHAN> and <SYMTYP>;
+    also constants <SUCCES>, <WARNIN>, <ERROR> and <SEVERE>.
+  * implemented substrings 'symbol[start:end]'.
+
+
+11/02/17
+
+- More work on ICP:
+  * implemented special var <NETNOD>.
+  * .ENABLE and .DISABLE now accept a list of comma-separated options.
+  * .ASKS now sets <STRLEN> special symbol.
+  * .PARSE now sets <STRLEN> to the number of assigned variables, including
+    explicit null ones.
+
+
+12/02/17
+
+- OCB pointer field added to data packet queued to MCR. Updated DEVTT/DEVVT,
+  as well as tasks INIT, CCL, ICP, HEL and MCR.
+
+- Connect now is rejected and the OCB is not queued if flag number is wrong
+  (before the OCB was queued anyway).
+
+- Fixed a bug in the INIT task that caused the TA.CLI bit to be lost when
+  installing a task.
+
+- Tasks now can use .RQST and .RPOI to request an active CLI task.
+
+- ICP, CCL and HEL now send MCR commands via .RPOI and no longer use .SEND
+  directly.
+
+- ICP prompt issues seem to be now fixed; .ENABLE/.DISABLE DISPLAY,QUIET
+  now work as supposed.
+
+- CCL/MCR prompt conflict seem to be solved as well.
+
+- ICP: implemented <EXSTAT> special var.
+
+- Exit status is now properly propagated to parent when the task was spawned
+  via MCR.
+
+- RMD now accepts command line arguments like 'RMD <page>/opt=val'
+
+
+13/02/17
+
+- DMP now uses double-buffering (via a compile-time option) for better
+  performance and smoother display.
+
+
+14/02/17
+
+- HELP: search for help file on LB0: and not on SY0:
+
+- HEL now displays LB:[SYSTEM]LOGIN.TXT (or LB:[SYSTEM]NOLOGIN.TXT if
+  logins are disabled) on user's terminal, and executes LB:[SYSTEM]
+  SYSLOGIN.CMD if it exists.
+
+- Fixed a bug in GETPKT: controller busy state was not being correctly
+  tested.
+
+- DEVTT/DEVVT: set busy state in SCB when starting unsolicited input.
+
+- RMD: enter supervisor mode before processing command line, otherwise
+  options for M page may not be set correctly (e.g. MEMSZ system variable
+  needs to be accessed).
+
+
+15/02/17
+
+- CCL: translate MOUNT and DISMOUNT to MCR MOU and DMO respectively.
+
+- CCL: SHOW DATE is now translated into MCR TIM.
+
+
+16/02/17
+
+- INI: set exit status to 'severe' if user canceled the operation, or if
+  an I/O error occurred. Exit status is set to 'warning' if /WB was specified
+  and a suitable bootstrap loader could not be not found.
+
+- ICP: accept EQ NE LE LT GE GT in addition to = <> <= < >= >.
+
+- SYSFCB: working on file protection support.
+
+
+17/02/17
+
+- More work on ICP:
+  * support for COMMAN and P0..P9 variables.
+  * implemented <SYSDEV>, <SYDISK> and <SYUNIT> special vars.
+  * implemented .IFENABLED/.IFDISABLED instructions.
+
+
+18/02/17
+
+- More work on ICP:
+  * preliminary support of .ASKx []-options.
+  * implemented <EOF>, <DEFAUL> and <ESCAPE> special vars.
+  * ^Z now ends ICP if CONTROL-Z option is not enabled.
+  * .ASKx default value assignment for strings and numeric variables
+    now works.
+  * implemented trace mode as in RSX-11M.
+
+
+19/02/17
+
+- Fixed an obscure bug in tskmgr that caused system crash in rare cases
+  (e.g. when typing 'hel' on TT1: while TT0: was still executing
+  startup.cmd): TRPOI assumed that TRQST always returned A=0 on success,
+  but that is not always the case since when the loader task is active
+  the return code is E.RUN with CY clear. That caused the T.OCBL field
+  to become corrupt, and a crash when the spawned task tried to emit
+  status.
+
+- ICP:
+  * fixed a bug in SETNV/SETLV routines that caused the program to
+    crash when a string variable was redefined as numeric or logical.
+  * .STOP now accepts an optional expression that sets the program's
+    exit status.
+  * preliminary work on .XQT/.WAIT commands.
+
+- CCL:
+  * fixed SET PRI command.
+  * added HEY command.
+
+- tskmgr:
+  * do not connect to a task that is not active.
+  * fixed a bug that caused the wrong status value to be emitted to tasks
+    other than the first in the OCB list.
+
+
+20/02/17
+
+- Ported clock example application from DECUS.
+
+- ICP: fixed bug in .IFDF command.
+
+
+21/02/17
+
+- Example DS1820 CT: driver and application.
+
+- RMD: display device name for assigned LUNs in Task Header page.
+
+
+22/02/17
+
+- DEVNL: on read, always return an end-of-file error condition with 0 bytes
+  read (i.e. do not fill the buffer with EOF chars).
+
+- Removed explicit IO.KIL processing from device driver code, now the
+  driver's IOKILL entry point is called by the kernel when IO.KIL is
+  encountered.
+
+- DEVTT/DEVVT: keep S.ST busy state if S.CPKT is still set after processing
+  unsolicited input; reset input buffer address properly if previous mode
+  was input.
+
+
+23/02/17
+
+- Implemented .CMKT (Cancel Mark Time Request) system call.
+
+- Added SWSTK routine to SYSDAT to allow privileged tasks to call kernel
+  functions.
+
+- Removed .LOGIN and .LOGOUT system calls, as HEL and BYE now call the
+  corresponding kernel routines directly.
+
+- Removed .TFIX and .ASGN system calls, MCR now calls the corresponding
+  kernel routines directly.
+
+- CCL now translates the ASSIGN command into MCR ASN.
+
+
+24/02/17
+
+- Fixed D.BANK field of DCB (should be before D.START).
+
+- RMD now shows device drivers on M page.
+
+- Removed .INS and .REM system calls; MCR, SYS and INS now call the
+  corresponding kernel routines directly.
+
+
+26/02/17
+
+- Added 'public', 'slave' and 'no-broadcast' bits to device-unit status
+  byte. Not used yet.
+
+- Removed MOUNT and DISMNT routines from SYSLIB.
+
+- Added ERRSEQ variable to SYSDAT. Updated by I/O drivers in event of
+  errors and displayed in RMD's M page.
+
+- Added N.TTYx field to logical device assignment structure, to be used
+  for local assignments. Not used yet.
+
+- SYSFCP: fixed a bug in MKDIR - get a free inode only after translating
+  logical device name to physical and after ensuring that the device is
+  mounted.
+
+
+27/02/17
+
+- PIP: /FU switch can be used now to display file ownership and protection
+  bits.
+
+- vol180:
+  * added /f switch to dir command.
+  * fixed file ownership and permissions of system files.
+
+- INI: fixed file ownership and permissions of system files.
+
+- UFD: set default directory protection to [RWED,RWED,RWED,R].
+
+- SYSFCP:
+  * set gid,uid of new file equal to gid,uid of dest directory.
+  * set F.PROT in FCB from inode value upon opening a file.
+
+
+28/02/17
+
+- IDLE task now calls a system function in order to redispatch in a loop.
+  That slightly improves performance.
+
+- Removed DEL, DIR, MKD, RUN, TYP and REN commands from MCR... (now
+  processed by CCL except RUN, which is processed by ...MCR).
+
+
+01/03/17
+
+- Implemented MCR TAL command. Also, ATL is much more detailed. Both
+  commands now accept an optional task name argument.
+
+
+05/03/17
+
+- Working on a fsck180 program:
+  * volume ID check - partially done.
+  * index file check - preliminary.
+  * master directory check - not done,
+  * file and directory check - not done.
+  * allocation bitmap check - not done.
+  * cross-linked file fix - not done.
+
+
+05/03/17
+
+- vol180/fsck180: optimized buffer usage.
+
+- More work on fsck180:
+  * allocation bitmap check - done and tested.
+  * index file check - validation of stblk, nalloc, nused and lbcnt.
+  * file and directory check - partially done (scan, name validation,
+    and inode number validation).
+
+06/03/17
+
+- More work on fsck180:
+  * file and directory check - compute inode link count from directory
+    entry info and compare against the value stored in the index file.
+  * allocation bitmap consistency check - report which blocks are wrong,
+    and not bitmap byte values.
+
+
+21/03/17
+
+- ICP: fixed a bug in %C substitution option.
+
+
+02/04/17
+
+- SYSFCP: fixed a bug in MKDIR (the initial FSEEK was being called with
+  an invalid FCB argument, preventing in some cases the reuse of a deleted
+  dir entry).
+
+
+25/04/17
+
+- RMD: IN/OUT information was not being refreshed due to an incorrect test,
+  fixed.
+
+
+20/07/17
+
+- tskmgr: TINS returns E.PRIV is user is not privileged and remove-on-exit
+  bit is not set.
+
+  TODO: - this test should be done by INS task itself, tskmgr should allow
+          operation for any privileged calling task
+        - TODO: same for TREM
+
+
+22/07/17
+
+- Moved 'who' task source file from mcr to prvutl directory.
+
+- WTDAT: fail if an AST operation is in progress (note TWAIT is allowed,
+  so QIO operations -and thus the CPU application- work).
+
+- TRESUM, SEND: set T.SVST bit (instead of T.ST) if task is executing an
+  AST (note TCONT is not included, see TWAIT note above).
+
+- Implemented data-received ASTs.
+
+- SYSFCP now flushes disk buffers after 5 seconds of inactivity.
+
+
+09/08/17
+
+- DEVTT/DEVVT: ^R now displays control chars as ^x.
+
+- SYSFCP: set master directory FCB protection bits upon mount, so they don't
+  get lost when the inode is written back during dismount.
+
+
+12/08/17
+
+- Added MD5 utility.
+
+
+15/08/17
+
+- PIP: fixed PIP/FR command (got broken on 24/11/06?). Quick fix, PIP/LI/FR
+  was working, dir code should be revised again (e.g. CLSIXF gets called on
+  PIP/FR even when index file had not been opened).
+
+- Added MD5 and TEA-based CRYPT routines to SYSLIB.
+
+
+19/08/17
+
+- MCR: implemented SET /[NO]PUB=ddn: command.
+
+- MCR: SET /[NO]PRIV now displays which terminals are[n't] privileged.
+
+- Kernel: clear privileged bit of session on logout.
+
+- BYE command now aborts non-privileged tasks active at the current
+  terminal.
+
+
+20/08/17
+
+- tskmgr: fixed several bugs in IOKILL function of qio.mac:
+  * first device in list was not being processed!
+  * driver's IOKILL entry point was not being called with UCB address in
+    IY as required.
+  * the current packet address was not being properly cleared, as the
+    corresponding address was corrupted.
+  * task's packets should be removed from the queue *before* killing
+    the current I/O operation, otherwise the driver might pick up a next
+    packet that also belongs to the current task, and the new I/O operation
+    will not be aborted.
+
+- tskmgr: tasks that exit or are aborted with outstanding I/O now have
+  the TK.EIO bit added to the reason code.
+
+- TKTN:
+  * loop until receive list is empty.
+  * process 'outstanding I/O' bit.
+
+- BYE: attach to terminal while emitting logout message.
+
+
+21/08/17
+
+- tskmgr: on AST exit, check queue and start AST execution again if another
+  packet is waiting. This fixes the case when a packet is queued while a
+  I/O-waiting task is executing an AST, and the new packet will not be
+  processed until the task enters the ready list again.
+
+- tskmgr: do not free the current I/O packet of an aborted operation in the
+  CLNCPK routine; the packet will be freed by the driver itself.
+
+- tskmgr: when requesting TKTN, add the task's OCBs to the end of the TKTN
+  list instead of replacing the old list, as TKTN might be active.
+
+- BYE: display host name in logout message.
+
+- PIP: do not display grand totals in brief mode.
+
+
+10/09/17
+
+- Working on a Z80/Z180/Z280 assembler, taking ZSM 2.8 from CP/M UG UK
+  as starting point. The idea is to convert it to a macro-assembler that
+  outputs REL files instead of HEX, and to support all Z180 and Z280 opcodes
+  as per Zilog docs.
+
+
+11/09/17
+
+- More work on ZSM:
+  * switched away from 8080-only instructions in favor of more efficient
+    Z80 instructions.
+  * source split into several modules for easier (later) port to RSX180.
+  * code reformatted.
+  * symbol table now starts at the beginning of the available memory
+    and is separated from opcode+regs+conds list.
+
+12/09/17
+
+- More work on ZSM:
+  * code cleanup.
+  * version number is now 3.0
+  * removed tab compression for listing output, as the original
+    source line now starts at a tab boundary.
+  * removed TABS and NOTABS LIST options.
+
+13/09/17
+
+- More work on ZSM:
+  * double-quotes can now be used where single quotes are allowed.
+  * preliminary set of routines to output REL code.
+  * some jp->jr optimizations.
+  * listing output is now more M80-like, with error code on first
+    column and space for segment type identification chars.
+
+
+15/09/17
+
+- More work on ZSM:
+  * switching to REL output, HEX support removed.
+  * DS output on listing now shows number of bytes reserved.
+  * DSEG and CSEG segment types are now supported.
+  * ID routine now better checks for legal identifier chars, and
+    prevents buffer overrun.
+  * the input line is now terminated with a null and no longer with
+    a CR/LF; this simplifies checkings through the code.
+  * GNC no longer advances PTR1 past end of input record.
+  * the old monolithic code is now split into a more convenient set of
+    routines; this eliminates a lot of jump instructions, replacing them
+    with a shorter ret, and also makes adding new features easier.
+  * more strict syntax checking.
+  * non-closed quoted strings now produce an error.
+  * after a label only TAB or ':' is now allowed (before, any separator
+    char was allowed).
+
+
+16/09/17
+
+- More work on ZSM:
+  * symbol entries are now written to REL file (right now all of them).
+  * syntax check: jp (?l/?x/?y) did not generate errors! (first character
+    of register pair was simply ignored).
+  * closing bracket now required for most of the relevant instructions.
+  * more code optimizations.
+
+
+17/09/17
+
+- More work on ZSM:
+  * optimized a bit EVALREG and EVALCND, register and condition tables
+    were split to avoid prevent name collisions.
+  * $ is now allowed at the start of a label.
+  * 'extended' operators (AND, OR, MOD, etc.) no longer require dots;
+    this is done for compatibility with M80, and in order to allow dots
+    in labels.
+  * SYMENT and SIMLUK routines optimized; now symbol table searches are
+    much faster.
+  * added support for absolute segments.
+  * added .Z80/.Z180/.Z280 pseudo-ops.
+  * optimized INT, the numeric conversion routine.
+  * the input REC buffer is no longer filled with spaces prior to loading
+    the line; this further improves performance.
+  * similarly, IDBUF is no longer filled with spaces before collecting
+    an identifier.
+  * added support for PUBLIC and EXTRN pseudo-ops; now only public
+    symbols are output to the REL file.
+  * public labels can now be defined with a double-colon.
+  * added support for all (TODO: check!) the extra Z180 instructions.
+  * added support for a few of the simplest Z280 instructions.
+
+
+19/09/17
+
+- More work on ZSM:
+  * better syntax checking for A,I A,R I,A, R,A SP,HL SP,IX SP,IY, etc.
+  * spaces are now allowed before and after commas, names, etc.
+  * preliminary EMITB and EMITW routines.
+  * code generation routines now use EMITB and EMITW.
+
+
+21/09/17
+
+- More work on ZSM:
+  * symbol flags field now contains a 0..15 value, and is no longer a bit
+    field (thus, can carry more information).
+  * DB and DW now use EMITB and EMITW.
+  * more syntax check fixes: ADD A,xx and ADD xx; JP $; LD HL,$+xx; etc.
+  * empty expressions now produce a syntax error.
+
+
+23/09/17
+
+- More work on ZSM:
+  * PUSH/POP: ensure operand is register pair.
+  * preliminary support for undocumented Z80 (and documented Z280)
+    instructions that use half index registers IXH/IXL/IYH/IYL.
+  * more Z280 instructions supported:
+     ADD/ADC/AND/SUB/SBC/OR/XOR A,(addr)
+     ADD/ADC/AND/SUB/SBC/OR/XOR A,(IX/IY/HL+d16)
+     ADD/ADC/AND/SUB/SBC/OR/XOR A,<offs>
+     ADD/ADC/AND/SUB/SBC/OR/XOR A,(SP+d16)
+     ADD/ADC/AND/OR/XOR A,(HL+IX/HL+IY/IX+IY)
+  * < and > no longer allowed in expressions, since they conflict with
+    Z280 syntax (use LT, LE, GT, GE and NE operators instead).
+  * added NV and V as synonyms for PO and PE condition codes respectively.
+  * added NS and S as synonyms for P and M condition codes respectively
+    (for compatibility with the Z280 docs).
+
+
+24/09/17
+
+- More work on ZSM:
+  * more Z280 instructions supported:
+     ADC IX/IY,rp
+     ADD HL/IX/IY,A
+     ADDW/SUBW/CPW HL,...
+     JP/CALL [cond,](HL)
+     JP/CALL [cond,]<addr>
+     INC/DEC ...
+     EPUF/EPUI
+  * optional argument:
+     CPL [A]
+
+
+24/09/17
+
+- More work on ZSM:
+  * more Z280 instructions supported:
+     INCW, DECW
+
+
+25/09/17
+
+- More work on ZSM:
+  * more Z280 instructions supported:
+     DIV, DIVU
+     DIVW, DIVUW
+     EX additional modes
+     IN additional modes
+
+
+28/09/17
+
+- More work on ZSM:
+  * expression mode check (right now limited only to segment types).
+  * output of code/data relative words to REL file.
+  * continuation lines in listing file when large amounts of object code
+    is generated.
+  * output to listing of segment-relative words is now done as 16-bit values
+    with segment type identifier.
+
+
+29/09/17
+
+- More work on ZSM:
+  * more Z280 instructions supported:
+     LDCTL
+     LDA
+     LDUD, LDUP
+     PUSH and POP additional modes
+     MULTW, MULTUW
+     MULT, MULTU
+  * EVAL* functions now return with A=(EVFLGS) and HL=(VAL); that saves
+    a lot of bytes and makes life easier for the calling routine.
+  * more code optimizations.
+  * END without argument now defaults to 0 and not to (PC).
+
+
+30/09/17
+
+- More work on ZSM:
+  * more Z280 instructions supported:
+     OUT additional modes
+  * new routine EVBRKT to evaluate ()-operands.
+
+
+01/10/17
+
+- More work on ZSM:
+  * the remaining Z280 instructions are now supported:
+     NEG and CPL additional modes
+     EXTS
+     INW, OUTW
+     DI, EI additional modes
+     all pending LD/LDW modes
+     SC
+     EPUM, MEPU
+  * extended EVBRKT routine to evaluate <>-operands as well.
+  * <>-relative addresses now correct?
+  * checked output of the assembler against a disassembler, fixed obvious
+    errors.
+
+
+02/10/17
+
+- Fixed a bug in MKT.
+
+- More work on ZSM:
+  * better label value checking in order to detect multiple-defined and
+    phase error conditions.
+
+
+03/10/17
+
+- More work on ZSM:
+  * 'External' bit is now checked during expression evaluation; result set
+    according to rules.
+  * fixed bugs in EXTRN and PUBLIC keyword implementations.
+  * addresses on continuation lines are now correct.
+  * writing of External chains to REL file (still to do: Ext+offset).
+  * generated REL file is basically correct at this point: the program
+    can compile itself and the executable binary matches the one generated
+    with M80.
+  * execution time comparison:
+       m80 =z.zsm/l          zsm4 z
+      --------------     --------------
+      real  0m4.211s     real  0m5.534s
+      user  0m4.204s     user  0m5.380s
+      sys   0m0.004s     sys   0m0.100s
+
+
+04/10/17
+
+- More work on ZSM:
+  * fixed ASEG bug: reloc counter was not being updated in REL file.
+  * fixed "db '''abc'" case.
+  * added 'dc' pseudo-op.
+
+
+05/10/17
+
+- More work on ZSM:
+  * External symbols can now be declared as 'label##'.
+  * added .EVEN pseudo-op.
+  * preliminary work on MACRO support.
+  * external references of type ext+offs now work.
+  * segment type char for EQU and END is now shown on listing.
+
+
+07/10/17
+
+- More work on ZSM:
+  * evaluation routine now handles operand precedence, brackets also
+    allowed.
+
+
+08/10/17
+
+- More work on ZSM:
+  * on close, write EOF chars up to the end of current record (was 255 bytes)
+  * files that end on record boundary are now read properly.
+  * implemented INCLUDE pseudo-op; nested files are possible, max 5 levels
+    (chosen arbitrarily, in principle all available memory could be used).
+  * fixed a bug in Z280 instructions: in (HL+disp) an explicit disp is
+    always 16 bits.
+  * fixed a bug that caused the page header to be output to the console
+    when the error (or summary) line coincided with the top of the page.
+
+
+09/10/17
+
+- More work on ZSM:
+  * do not allow IXH,IXL,IYH,IYL in Z180 mode.
+  * do not allow mixing of HL/IX/IY in the same LD r,r instruction.
+  * do not allow IXH,IXL,IYH,IYL in (HL) or (IX/IY) instructions.
+
+
+09/10/17
+
+- More work on ZSM:
+  * defined MACRO table format, further work on MACRO support routines.
+
+
+18/10/17
+
+- More work on ZSM:
+  * INCLUDE files now use the same buffer as the input file, thus reducing
+    dynamic storage requirements. The data pushed on the stack (FCB, recno,
+    char index) does not contain pointers, so it can be easily relocated
+    during garbage collection.
+
+
+19/10/17
+
+- More work on ZSM:
+  * REPT now works, and can be nested.
+  * parameterless macros now work, but things can still be broken if
+    garbage collection happens while the macro is executing.
+  * fixed a bug in MFREE.
+
+
+20/10/17
+
+- More work on ZSM:
+  * MACROs with parameters now work, although there are several quirks
+    and strings/<> are not yet supported.
+
+
+21/10/17
+
+- More work on ZSM:
+  * fixed remaining (hopefully!) bugs in character constant handling:
+     ld hl,'''a' and ld hl,'a''' - now produce correct code
+     ld a,''aa'                  - now gives an error
+     db 'a'+1                    - now produces correct code
+     etc.
+  * added listing of MACROs, they are output before symbol table.
+  * default input file extension is now MAC.
+  * reloc values (cseg, dseg, extrn, etc.) are now forced to 16-bit
+    quantities.
+  * more strict size/mode checking of 8-bit operands.
+  * inter-segment and/or external addresses not allowed as relative
+    jump destinations.
+
+
+22/10/17
+
+- More work on ZSM:
+  * implemented the (PC+nnnn) operand form for the relevant Z280
+    instructions.
+  * fixed a bug that affected Z280 instructions when the optional HL
+    first operand was missing.
+  * added .PRINTX, SUBTTL and IFT/IFF/IF1/IF2 pseudo-operators.
+  * implemented EXITM.
+  * equates are now in a separate ZSM.INC file.
+  * argument to DEFS cannot be reloc.
+  * fixed a small bug that caused the assembler to crash when the disk
+    was full.
+  * save/restore ix when calling BDOS.
+  * init r0,r1,r2 of CPMFCB on startup, as CCP does not init these fields?
+
+
+23/10/17
+
+- More work on ZSM:
+  * added .RADIX pseudo-op.
+  * default include file extension is LIB.
+
+
+24/10/17
+
+- More work on ZSM:
+  * implemented .PHASE and .DEPHASE pseudo-ops.
+  * implemented IFDEF and IFNDEF pseud-ops (note: unlike M80, register
+    names are not 'defined').
+  * added DEFM as synonym of DEFB.
+  * fixed a bug in MACRO dummy argument processing: blanks after comma
+    were not skipped.
+  * better handling of macro parameters (Z180.INC now works), but not
+    perfect yet.
+  * fixed a bug in Z280 instructions with <addr> operand form: relative
+    address was offset by 2 (and by 5 in ADDW, CPW, etc. instructions)
+
+
+25/10/17
+
+- More work on ZSM:
+  * fixed reloc mode of END operand (entry point).
+  * memory allocation routines now in a separate module.
+  * implemented IRPC macro.
+
+
+26/10/17
+
+- More work on ZSM:
+  * opcode search now does a binary search. Did not improve speed of Z80
+    assembly (even became a bit slower???), as in the old table entries were
+    already sorted by frequency, but Z280 assembly is now approx. 15%
+    faster.
+
+
+28/10/17
+
+- More work on ZSM:
+  * free-format allowed (hopefully correct now): labels no longer have to
+    start at column 1, and instructions do not need to be preceded by a
+    blank.
+  * fixed a bug in LIST pseudo-op (option bits not correctly set).
+  * fixed a bug in EQU pseudo-op that caused a 'P' or 'M' error to be
+    output for a label that was previously declared as PUBLIC.
+  * end of macro body is now marked with EOF, and not with a null char
+    to allow for empty lines.
+  * working on COMMON segment support.
+
+
+29/10/17
+
+- More work on ZSM:
+  * MACRO processing: null arguments are now processed correctly.
+  * implemented IRP.
+  * TITLE and SUBTTL argument may be optionally enclosed in quotes.
+
+
+30/10/17
+
+- More work on ZSM:
+  * fixed a bug in PUBLIC pseudo-op: if it appeared after a label was
+    defined, the label was not set to PUBLIC.
+  * COMMON block segment size is now output to REL file.
+  * COMMON block selection is now output to REL file when a new block
+    is defined.
+
+
+01/11/17
+
+- More work on ZSM:
+  * 'LIST 5' and/or 'LIST SORT+SYMBOLS' no longer allowed.
+  * changed symbol table format to accommodate COMMON segment info.
+  * HIGH, LOW, NOT - operand cannot be reloc.
+  * select the right COMMON when emitting a COMMON address ref to the
+    REL file.
+  * COMMON support more or less complete now (only certain cases of
+    expression evaluation involving COMMON segments might fail).
+  * implemented LOCAL variables.
+
+
+02/11/17
+
+- More work on ZSM:
+  * fixed nested MACROs.
+  * '%' now works in MACRO and IRP arguments.
+  * processing of '&' special char and quoted strings in MACRO text
+    hopefully now correct.
+  * comments starting with two semicolons are not stored in the MACRO.
+  * added ENTRY as synonym of PUBLIC.
+  * added DEFZ pseudo-op.
+
+
+03/11/17
+
+- More work on ZSM:
+  * added ASET (synonym of DEFL) and DEFC (synonym of DC) pseudo-ops.
+
+
+04/11/17
+
+- More work on ZSM:
+  * ensure enough available memory during MACRO build.
+  * redefining a MACRO now deletes the old one, space is recovered via
+    garbage collection when no macro is executing.
+  * check for REC buffer overflow during MACRO expansion.
+  * GLOBL pseudo-op renamed to GLOBAL.
+
+
+05/11/17
+
+- More work on ZSM:
+  * fixed a bug in the processing of unary operators HIGH, LOW and NOT.
+  * implemented IFB, IFNB, IFIDN, IFDIF.
+  * implemented .REQUEST/RQST, NAME and IDENT.
+  * strip parity bit when reading from a file.
+  * main routine is now in system-dependent file, which in turn calls
+    the Z80ASM main assembler routine.
+
+
+07/11/17
+
+- More work on ZSM:
+  * added .ODD and .COMMENT pseudo-ops.
+  * RSX180 version already works, but no support for TI: read/write.
+
+
+08/11/17
+
+- SYSFCP: fixed a bug in delete file function (only the first byte of the
+  dir entry was being cleared - carried from previous filesystem version).
+
+
+11/11/17
+
+- More work on ZSM:
+  * added EXT as a synonym of EXTRN.
+  * NAME, IDENT and .PRINTX now allow ('string') form.
+  * MACLIB now ignored on pass 2.
+  * RSX180 version: try extending task limits when running out of memory.
+  * RSX180 version: command line parsing is now correct.
+
+
+12/11/17
+
+- More work on TKB:
+  * create output file as contiguous file.
+  * process 'ident' extended REL item.
+
+- tskmgr: task version information added to TCB and TDB.
+
+- SYSFCP: fixed a bug in the file deletion routine: link count was not
+  being decremented for regular files!
+
+
+13/11/17
+
+- More work on ZSM:
+  * optimized the bubble sort routine: as the sort advances only a shorter
+    sub-list needs to be rescanned, not the complete list!
+
+- fsck180: fixed a bug in the bitmap allocation check routine that caused
+  a spurious error report and subsequent filesystem corruption when large
+  files (more than 1 alloc block) were present.
+
+
+14/11/17
+
+- More work on TKB:
+  * map file generation: right now contains the old console output (symbol
+    table and statistics).
+
+- More work on ZSM:
+  * symbol sort routine now checks available memory when building pointer
+    list, and extends task limits if necessary.
+
+
+20/11/17
+
+- Filesys: investigating a bug that causes sporadic inode corruption during
+  file deletion?
+
+
+23/11/17
+
+- More work on TKB:
+  * additional code optimizations.
+
+
+26/11/17
+
+- More work on TKB:
+  * additional code optimizations.
+
+
+27/11/17
+
+- More work on ZSM:
+  * fixed a bug in the expression evaluation routine: in an expression
+    involving at least two variables, if the first variable was External
+    then the chain address was set to the second (or last found) variable
+    instead, thus becoming also External and the external chain ended up
+    incorrect (discovered when trying to compile TKB).
+  * ignore errors in false conditional sections.
+  * fixed a small bug in MALLOC: INCMEM was being called with wrong value
+    in DE.
+  * fixed a regression bug in INC/DEC routines involving index registers:
+    the displacement was wrong!
+
+
+28/11/17
+
+- More work on ZSM:
+  * fixed a bug in MALLOC/INCMEM routines that caused symbol table
+    corruption.
+
+
+30/11/17
+
+- tskmgr: removed the 'disk I/O panic' break to debugger when an application
+  tried to access directly the disk. Now the system simply returns an error
+  code to the application.
+
+
+04/12/17
+
+- More work on ZSM:
+  * fixed a bug in 'LD IXH,IXH', etc. instructions: the prefix was generated
+    twice.
+  * fixed 'MEPU (HL)' instruction.
+
+
+10/12/17
+
+- More work on ZSM:
+  * suppress all code output for false conditionals (EQU was still getting
+    into listing)
+  * colons are now required after labels that are not followed by an opcode
+    (i.e. when the label is the only thing on a line); this was done in
+    order to detect errors like the following:
+	ld	a,5
+	stc		; before, 'stc' ended up being declared as label
+	ret		;  and not flagged as an error
+  * added .LIST and .XLIST pseudo-ops for compatibility with M80.
+
+
+11/12/17
+
+- More work on ZSM:
+  * listing routines are now in a separate file.
+
+
+17/12/17
+
+- More work on TKB:
+  * additional code optimizations.
+
+- More work on ZSM:
+  * apply subtraction reloc rules to <addr> operands.
+
+
+30/12/17
+
+- More work on TKB:
+  * fixed output of error messages that had a symbol name argument, etc.
+  * header is now output to map file and not to console.
+  * more code optimizations.
+
+
+06/01/18
+
+- Investigating a bug that causes inode corruption in DU2:
+
+- New floppy image for posting on sourceforge.
+
+
+07/01/18
+
+- DEVVT/DEVTT: fixed a bug in ^S handling that caused text output to be
+  lost in some cases.
+
+- DEVDU: implemented timeout, so the system will not hang during boot on
+  machines without GIDE adapter.
+
+
+11/01/18
+
+- TED: implementing soft-tab handling:
+  * STORE and EXPAND routines modified, tabs are now stored in the virtual
+    memory blocks.
+  * DISPLE routine modified, so display appears correctly.
+  * FPUTC1 routine modified, so file output does not contain soft-spaces.
+  * ruler now displays 2-digit numbers if > 10 (does not wrap back to 0).
+  * INSert mode now shown on status line.
+
+
+12/01/18
+
+- More work on TED:
+  * CR now splits line at cursor column.
+  * removed rather-useless commands ^A ^B ^O ^P.
+  * refresh screen keeps original cursor position.
+  * default mode is insert.
+  * removed WT command.
+  * inserting character now checks for smart tabs.
+
+
+13/01/18
+
+- More work on TED:
+  * insert/replace (soft) tab now works.
+  * delete char right working.
+
+
+14/01/18
+
+- More work on TED:
+  * scroll screen left/right when moving cursor beyond right/left edge.
+  * split/join now handle tabs correctly.
+  * delete char left working.
+  * CURX now represents character index in screen mode and not screen cursor
+    position, this optimizes somewhat character access (no need to add SCRX
+    every time)
+  * SETCUR now scrolls screen left/right so cursor always remain in window.
+  * JOIN now truncates resulting line if too long.
+  * better line overflow checks, but not perfect yet.
+
+- vol180: inherit source file dates when importing files.
+
+
+16/01/18
+
+- SYSLIB, PFN: $ is now a synonym for LB0:[SYSTEM], not just [SYSTEM].
+
+
+17/01/18
+
+- TED: source converted to Z80.
+
+
+21/01/18
+
+- More work on TED:
+  * revised/fixed SHRLN and SRLLN routines.
+  * optimized SHRLN8 and SHRLN8 routines.
+  * optimized tab insertion/deletion.
+  * soft-tab handling almost complete.
+  * P command now accepts a second argument (cursor column).
+  * RSX180 version now uses SYSLIB routines (not fully done yet).
+
+- MCR, SYS: set version ID for task of type XXXTnn from the corresponding
+  prototype task.
+
+
+22/01/18
+
+- Extended fileinfo structure to contain file timestamps.
+
+- SYSFCP: IO.RAT now returns the file timestamps, and IO.WAT can modify
+  file timestamps. Also, IO.WAT takes a flags field that specifies which
+  file attributes are to be modified.
+
+- PIP: implemented /CD (preserve creation date) switch for copy function.
+
+- MCR... now checks user privileges: BRK, REM, FIX and UNF are privileged
+  commands.
+
+- More work on TED:
+  * fixed end of line case when inserting chars.
+  * status line now always shows the cursor line (after a small delay).
+
+
+24/01/18
+
+- SYSFCP: implemented IO.CLN function, sets lock bit if file was modified
+  and closes the file.
+
+- tskmgr: scan LUN table on task exit and queue an IO.CLN packet for any
+  open files in order to prevent orphaned FCBs.
+
+- TED: track file modifications and issue a warning if the user tries to
+  exit or clear the buffer without saving.
+
+
+25/01/18
+
+- VDO: update status after a small delay if there are no chars waiting in
+  input queue. This improves display performance.
+
+
+27/01/18
+
+- SYSFCP: validate I/O buffer to ensure it is contained within task limits.
+
+- SYSLIB: MKDIR, RMDIR and CHDIR routines now require a FDB instead of a
+  pointer to string.
+
+
+28/01/18
+
+- DEVVT/TT/CT/LP: return E.ABOP status when the operation is aborted via
+  IOKILL call.
+
+
+31/01/18
+
+- MEMCPY: use alternate register set to pass src/dst banks instead of using
+  memory variables.
+
+
+01/02/18
+
+- SYSLIB: FOPEN, FCREAT, FDEL and FREN routines now always require a FDB
+  (call to FPN and .ALUN is now always done by the caller).
+
+
+02/02/18
+
+- To reduce pool usage, FDBs are now passed as pointers in file I/O packets
+  instead of being fully embedded in the packet. This also equalizes the
+  length of I/O packets, which could simplify memory allocation and handling
+  by kernel code.
+
+- Changed the QDB format to reflect the new changes. Updated kernel, device
+  drivers, and the corresponding SYSLIB routines.
+
+
+03/02/18
+
+- IO.KIL now removes all packets from unit's queue, returning E.ABOP to the
+  issuing task and aborts any current operation in progress by calling the
+  IOKILL entry point of the driver.
+
+- BRO: timeout after 20 seconds if message fails to reach destination.
+
+- SHUTUP: timeout after 10 seconds if a message fails to reach destination.
+
+- tskmgr: TINS now limits task priority to 50 if user is not privileged.
+
+- IO.MNT and IO.DSM now use the device assigned to the LUN.
+
+- PIP: preliminary implementation of rename command.
+
+
+04/02/18
+
+- More work on ICP:
+  * implementing file I/O.
+  * dynamic file buffer allocation.
+  * .OPENR, .CLOSE and .READ commands now work.
+
+- tskmgr: fixed a bug in QIOCLN routine (size field of packet was incorrect).
+
+
+05/02/18
+
+- More work on ICP:
+  * implemented ".TEST str substr" command.
+  * .OPEN and .DATA commands now work.
+  * statements following labels are now properly processed (before, they
+    were executed only if the label was jumped into).
+
+- Implemented 'SET /[NO]BRO' MCR command. BRO command now checks if the
+  user is accepting broadcast messages before sending a message to the
+  terminal.
+
+
+10/02/18
+
+- NL: and LP: devices no longer set the DV.TTY bit in the characteristics
+  word. Applications should use DV.DIR instead of DV.TTY when testing for
+  a filesystem-capable device.
+
+
+11/02/18
+
+- tskmgr: moving P112-dependent routines to a separate file. Also, the NVRAM
+  is read on startup and values buffered in memory for device drivers to
+  use.
+
+
+12/02/18
+
+- DEVTT, DEVVT: enable RTS/CTS hardware handshake on TT0: (Z182 ESCC A).
+
+- DEVNL: fixed IO.RLB/RVB bug - number of bytes read must be zero.
+
+- Problem: if IOREQ entry point of driver returns with CY set, the QIO
+  kernel routine will free the packet and return an error to the user (but
+  only if the packet is immediately dequeued). OTOH, the IOREQ entry point
+  of the driver typically calls ierr if a function is invalid, and ierr
+  calls IODONE that also frees the packet. Thus, there are certain cases
+  when POOL memory could end up corrupted by deallocating twice an I/O
+  packet. Possibilities:
+   1. Ignore the CY flag set in the call to IOREQ by the QIO routine?
+      (best solution since the packet is not always immediately processed)
+      or
+   2. Do not call ierr (and thus IODONE) if function is invalid?
+      (this may leave some orphaned packets!)
+  Right now we'll go for 1 above, but by not setting the CY flag in IOREQ.
+
+
+13/02/18
+
+- DEVDY: use NVRAM values (if valid) to setup floppy drive parameters.
+
+
+25/02/18
+
+- More work on ZSM:
+  * added signed LESS relational operator from ZSM 2.9.
+  * display date and time on listing (done for both RSX180 and CP/M 3).
+
+- vtcp: X key now toggles multiplexed mode on/off.
+
+
+26/02/18
+
+- Implementing file access permissions. Right now can't be used since task
+  user and group ID is not being set correctly by MCR, etc.
+
+
+01/03/18
+
+- tskmgr:
+  * the LOGIN function now expects a usr+grp id pair following the user
+    name argument.
+  * TRQST now properly sets user and group id from the session (or from
+    the calling task if no session found) if the corresponding values
+    were set to 0 (meaning use default) in the TDB.
+
+- INIT and HEL tasks updated according to the changes above.
+
+- Fixed the bug in MCR that caused the wrong user and group ID to be set
+  when spawning an installed task.
+
+- File access control (protection) seems to work OK now.
+
+- INI:
+  * default file prot for volume is now [RWED,RWED,RWED,R]
+  * process [RWED,...] argument form of /PR switch.
+
+
+03/03/18
+
+- SYSFCP:
+  * rewriting file access routines with better VBN to LBN computation.
+  * disk buffers no longer kept attached to the FCB between calls to the
+    filesystem functions, thus the number of files open simultaneously
+    is no longer limited by the amount of available buffers.
+
+- DEVDY, RMD, MCR: fixed a bug in the 16-by-8 divide routines (did not
+  really affect those applications because of the relatively small value
+  of the divisor, but affected the new SYSFCP code).
+
+
+04/03/18
+
+- SYSFCP: file access routines now working with new code. Performance seems
+  a bit slower (booting ~3 secs slower)?
+  !-> The following requires careful testing:
+      + accessing large files with several alloc blocks
+      + accessing 0-byte files
+      + file write (tested to end of disk, fsck did not found errors)
+      + file seek
+
+
+10/03/18
+
+- PFN now returns a flag (bit mask) if filespec contains wildcards. Also,
+  a negative number is allowed in version field (e.g. -1 means oldest
+  version of the file).
+
+- PIP: modified search routine to handle cases like '*.*' and '*.*;-1'
+  (newest and oldest version of file(s) respectively). Works rather slowly,
+  but correctly.
+
+
+11/03/18
+
+- PIP: implemented purge operation with an optional n parameter.
+
+- CCL: added PURGE command that translates into PIP <...>/PU
+
+
+13/03/18
+
+- PIP: optimized the file search routine. The master directory is now
+  searched only if the directory field of the search pattern contains
+  wildcards. Also, the individual processing routines (dir, copy, delete,
+  etc.) no longer have to search directories recursively, everything
+  is now done internally by the search routine itself in a single call.
+
+- SYSFCP: more work on new IO.RVB and IO.WVB functions.
+
+- Working on a new FCSLIB for file I/O (to be integrated with SYSLIB,
+  replacing current file I/O functions).
+
+
+14/03/18
+
+- SYSFCP: the new IO.RVB is working, files with 'holes' are now permitted,
+  but support is not finished yet. Reading an unallocated block now returns
+  an E.UNA error and not the ambiguous E.EOF.
+
+- DMP now uses new IO.RVB function.
+
+- DEVCT: return E.EOF if requested block number is > 0.
+
+- Optimized LDR QIO calls.
+
+
+15/03/18
+
+- SYSFCP: new IO.WVB partially working (still missing adding new alloc
+  blocks when required, and alloc block cleanup if the data block could
+  not be allocated). Writing to contiguous file not tested yet.
+
+- All file I/O functions now require a LUN.
+
+
+17/03/18
+
+- SYSFCP: new code to extend/truncate alloc map, used by the new IO.WVB
+  implementation (still untested).
+
+- TED now uses the new IO.RVB/WVB for work file I/O.
+
+
+18/03/18
+
+- MD5 and BASIC-11 now use IO.RVB/RWB for file I/O.
+
+- Working on new FCSLIB file I/O library.
+
+- Added RSX-style QIO macros to QIO.INC file.
+
+- Testing IO.WVB: random block write for both contiguous and non-contiguous
+  files seems OK.
+
+- SYSFCP:
+  * when deleting a non-contiguous file, do not free null blocks (i.e. holes
+    in the alloc map).
+  * fixed a bug in the contiguous file deletion routine: only the first
+    block was correctly released to the bitmap, for all the following blocks
+    the wrong block number was being released!
+
+
+19/03/18
+
+- PIP: the temp storage file now reads/writes a full block instead of just
+  one dir entry at a time. That increases performance for *.* and *.*;-1
+  searches by about an order of magnitude.
+
+
+20/03/18
+
+- ZSM: added MACROS, NOMACROS and XMACROS option to the LIST command, and
+  the M80-compatible shortcuts .LALL, .SALL and .XALL.
+
+- TED: ^Z at command prompt now exits the program, ^D replaces the old
+  ^Z function (reenter last command).
+
+
+21/03/18
+
+- ICP:
+  * try to extend automatically task limits when out of memory.
+  * Command file I/O now uses IO.RVB directly for best performance.
+  BUG: got string and variable memory corruption during task extend test.
+
+
+23/03/18
+
+- ICP: fixed a memory corruption bug that happened by not keeping a correct
+  backpointer on dynamic strings used by the .PARSE function. Since the
+  value of the pointers are changed during string search, and variables
+  allocated as strings are found, the garbage collector may be called by
+  ALLOC/SETSV which will move strings around, invalidating pointers. 
+  Because pointers are used to scan the search string, and therefore not
+  fixed, static strings must be used instead (use of indexes complicate too
+  much the code). Automatic task extension seems to be working correctly
+  now.
+
+
+24/03/18
+
+- ICP:
+  * implemented .OPENA and .ENABLE DATA commands.
+  * data I/O buffer size was increased to 512 bytes.
+  * do not re-read file block if it is already in buffer.
+
+- TED: file I/O functions now use IO.RVB/WVB.
+
+- DMP: do not exit when reading unallocated blocks, simply skip them.
+
+- VIEW:
+  * handle more command line options: /7 /8 /A /H.
+  * better handling of end-of-file condition in hex mode.
+  * do not scroll up further than the last screenful of text.
+  * better switching to/from hex mode (aligned address and lines), but
+    not perfect yet.
+  * addresses are now displayed as 32-bit values in hex mode.
+  * file read now via IO.RVB QIO.
+
+
+25/03/18
+
+- ICP: data file I/O now uses IO.RVB/WVB.
+
+- INIT: optimized I/O functions in order to reduce task size (most of QIO
+  block fields initialized statically).
+
+- INS, HEL: use IO.RVB for file read.
+
+- Example snake.plm: fixed cursor key handling; keys are no longer "lost".
+
+- CCL: system directory to search for unknown commands is LB:[SYSTEM] and
+  not SY:[SYSTEM].
+
+
+26/03/18
+
+- More work on FCSLIB: FOPEN, FCLOSE, FGETCH, FPUTCH, FPUTLN, FRDBLK and
+  FWRBLK routines.
+
+
+27/03/18
+
+- More work on FCSLIB: FCREATE and FGETLN routines; FCSTEST test program. 
+  Basic line, char and block I/O functions seem to be working OK; file,
+  device and terminal modes supported.
+
+
+28/03/18
+
+- More work on FCSLIB: FREAD and FWRITE routines (not yet tested).
+
+
+29/03/18
+
+- LBR: system-dependent routines now in separate files.
+
+- SYSLIB: added CVTBD, CVTBD2, CVTWD, CVTWH and CVTWO numeric conversion
+  routines.
+
+
+31/03/18
+
+- LBR:
+  * got the RSX180 version working with the new FCSLIB
+  * CP/M version also works
+  * length of COMMON blocks is now also displayed
+  * TODO:
+    - fix command file support (GCML has not been converted yet)
+    - check error handling, seems that files may remain open after an
+      error condition.
+    - output header with prog name, date & time, etc.
+    - module cross-ref table
+    - display unsatisfied references
+
+
+01/04/18
+
+- LBR:
+  * changed symbol table format in preparation for cross-ref capabilities.
+  * show requested libraries in module listing
+  * wider listing
+
+
+02/04/18
+
+- SYSFCP: use Q.P4 as block offset argument for IO.RVB and IO.WVB functions.
+
+- SYSLIB: GCML now uses IO.RVB partial block read capabilities for file I/O.
+
+- FCSLIB: FPOS and FSEEK routines.
+
+- MAC now uses FCSLIB for file I/O.
+
+- LBR:
+  * display header on top of listing.
+  * command file support working with new GCML.
+
+
+04/04/18
+
+- RMD: disk I/O to compute free space now uses IO.RVB function.
+
+
+05/04/18
+
+- VDO now uses IO.RVB/WVB for file I/O.
+
+
+06/04/18
+
+- VDO: display directory routine working again on both RSX180 and CP/M.
+
+- DEVTT/DEVVT: implemented unsolicited input timeout: a ^U is automatically
+  generated after 2 minutes of inactivity.
+
+
+07/04/18
+
+- DEVTT/DEVVT: free unsolicited input buffer after use. Buffer size is now a
+  compile-time constant.
+
+
+08/04/18
+
+- SYSFCP: fixed an obscure bug that affected the IO.RVB function: the cphlbc
+  routine was wrong!
+
+- FCSLIB: FC.CNT is now always set to the number of valid bytes in buffer
+  (read or written) and not changed by the read functions; only FC.CUR
+  is changed. Debugged FREAD and FWRITE routines.
+
+- MKT: file I/O now uses new FCSLIB.
+
+- MD5, DMP: switched to FCSLIB for file output. File/device input uses
+  direct QIO.
+
+
+09/04/18
+
+- HEL, INS, INI: all file I/O uses direct QIO (resulted in smaller task
+  size).
+
+- DEVTT/DEVVT: added support for slave mode. In that mode the terminal only
+  accepts input from a task, thus no unsolicited input and ^C does not call
+  the MCR prompt (useful to prevent aborting e.g.  SYSLOGIN.CMD by a user
+  during login).
+
+- Implemented MCR SET /[NO]SLAVE command.
+
+
+21/04/18
+
+- SYS: fixed a bug in the ASN command, which caused the unit number of the
+  physical device to be forced to 1 during assignment.
+
+
+22/04/18
+
+- CCL: pass command tail (if present) to last-resort RUN command.
+
+
+29/04/18
+
+- ICP:
+  * implemented <FILSPC> variable.
+  * fixed missing error processing in several places.
+  * bug fix: command after a label on the same line is now correctly executed.
+  * file I/O now uses direct QIO.
+
+- VIEW: last column of ASCII dump in hex mode was not being displayed.
+
+- TKB: started converting file I/O routines to use direct QIO.
+
+
+30/04/18
+
+- TKB: all file I/O routines now use direct QIO.
+
+
+01/05/18
+
+- PIP: file I/O routines to converted to use the new FCSLIB (copy, dir) and
+  direct QIO (search).
+
+- UFD: use direct QIO to create dir and set attributes.
+
+
+02/05/18
+
+- SYSFCP: removed IO.SEK, IO.POS and IO.FSZ; the same functionality is now
+  achieved on user space via FCSLIB. Also removed IO.RD and IO.WR; only
+  transfers available are now IO.RVB and IO.WVB. This is to decrease system
+  load and disk I/O bottlenecks.
+
+
+06/05/18
+
+- SYSFCP: removed the old FREAD, FWRITE, FSEEK, FPOS, and other IO.RD/WR-
+  related routines. Added RDDIR and WRDIR routines. Removed F.BYPTR,
+  F.CDLBN and F.CDVBN fields from FCB; F.CALBN and F.CAVBN were kept to
+  cache the last-used alloc map block. Number of buffers increased to 18.
+
+
+07/05/18
+
+- SYSFCP: removed the unused IO.RMD function, as IO.DEL can be used to
+  delete a directory. Number of buffers increased to 20.
+
+
+08/05/18
+
+- DEVVT: initialization of units 2..8 was incomplete (this could be the
+  cause of the sporadic ICP IO.RPR bug).
+
+
+09/05/18
+
+- CCL: removed SET, MOUNT and DEVICES command, since they are processed
+  directly by MCR (DEVICES is still accessible via SHOW DEVICES). Added
+  SHOW ACTIVE command (same as MCR ACT).
+
+
+10/05/18
+
+- DEVTT/DEVVT:
+  * ^C is no longer lost if terminal is busy in output mode; a flag is
+    now set and unsolicited input to MCR begins as soon as the output
+    is done (optionally, ^C can interrupt the output operation and
+    restore it afterwards by disabling the CCA compile-time option).
+  * added a 'characteristics' byte to support echo mode, scope mode,
+    binary mode, slave mode, etc. (slave mode is no longer a U.ST bit).
+
+- SYS: added ECHO and LOWER keywords to the SET command to support the
+  new terminal modes.
+
+
+11/05/18
+
+- DEVTT/DEVVT: implemented SF.GMC and SF.SMC functions to get and set
+  multiple characteristics respectively.
+
+- SYS: the SET command now uses the new SF.SMC function to change terminal
+  modes; this prevents changing mode in the middle of an I/O operation.
+  Checking of characteristics bits is still done by accessing the
+  corresponding UCB fields directly in order to prevent a busy terminal
+  from blocking the request.
+
+- Removed LS.BRO session status bit setting, replaced by TC.NBR terminal
+  characteristics bit.
+
+- BRO: fixed a bug in the error handling: the message buffer was used
+  for the error message, and thus the error message was displayed on
+  the subsequent terminals.
+
+- BYE: restore safe terminal settings on logout.
+
+
+12/05/18
+
+- ZSM: increased input buffer size to 160.
+
+- MURPHY, QUOTE, COOKIE: added automatic text wrapping at word boundary.
+
+- FCB.INC: removed the FA.HID (hidden) attrib bit (not used, and does
+  not belong to the index file, hidden files could be implemented e.g.
+  by setting the hi-bit of the first filename char in the directory
+  entry.)
+
+- MCR bug fix: command lines that started with '/', '=' or ',' did not
+  produce the expected syntax error message.
+
+- Added a GCML$ macro to GCML.INC for a more convenient way to generate
+  GCML data structures.
+
+- Removed the deprecated .GTMNT and .GTDEV system calls. A privileged
+  utility can access the necessary kernel tables directly in supervisor
+  mode.
+
+
+13/05/18
+
+- Renamed several system calls:
+    .TSTOP -> .STOP
+    .TRSUM -> .RESUM
+    .TINFO -> .GTSK
+    .TSUP  -> .SUPER
+    .CHKFL -> .RDFLG
+
+- The .RUN system call now schedules a task for execution in the future
+  (as in RSX-11M). To cancel a request, use the .CSRQ function.
+
+- MCR: RUN command now accept the form 'RUN tsknam dsched' (preliminary).
+
+
+14/05/18
+
+- Added U.CTL field to UCB structure. Right now only one bit can set
+  (UC.ATT) for drivers that want attach/detach notifications.
+
+- IO.ATA is now equivalent to IO.ATT with a TF.AST subfunction.
+
+- DEVTT/DEVVT now receive attach/detach notifications:
+  * on attach, the US.AST bit is set if TF.AST subfunction is specified.
+  * on detach, binary mode is disabled and ^O action canceled.
+
+
+15/05/18
+
+- MCR: added CAN command to cancel a scheduled task.
+
+- SYS: added CLQ command to displays the clock queue.
+
+
+19/05/18
+
+- SYSFCP:
+  * FMAKE no longer forces a new version if an explicit one was specified;
+    if a file with the same version exists an error is returned.
+  * the bitmap file now includes a 16-bite header with the volume size
+    in blocks stored in the first word (the rest is reserved).
+  * if a device cannot be mounted (e.g. not initialized), invalidate any
+    buffers read; else they will remain in memory. Since e.g. INI writes
+    directly to the device, SYSFCP will not be notified, and will try to
+    use again the old cached buffer when mounting the device again,
+    producing the same error.
+
+- Updated Linux vol180 and fsck180 utilities to support the new bitmap
+  file format.
+
+- Updated INI, PIP, RMD and boot loader to support the new bitmap file
+  format.
+
+- PIP:
+  * copy operation now keeps version number of source file unless /NV
+    switch is specified.
+  * wildcards in output filespec are now handled correctly.
+  * copy operation: on error, display name of file that generated the error.
+
+- Removed obsolete .FNDEV and .MINFO system calls.
+
+
+20/05/18
+
+- Removed obsoleted entries from SYSTEM.DAT file.
+
+- The TINS kernel routine no longer checks user privileges (that's the task
+  of the INS application); TINS now only checks the calling task privileges.
+
+- Removed IO.CHD filesystem QIO function; the .SDIR system call should be
+  used instead.
+
+
+21/05/18
+
+- PIP: display inode usage statistics in /FR command.
+
+- FCSLIB: do not re-read the same block in FSEEK if the block is valid.
+
+- TF.xxx terminal subfunctions are now bit masks and not bit values.
+
+- SYSFCP: removed the IO.MKD function. To create a directory, just use
+  IO.CRE function with SF.DIR subfunction.
+
+- ZSM: allow nested < > in MACRO arguments.
+
+- DEVTT/DEVVT: preliminary support of binary mode. ^S and ^Q in VDO now
+  work as intended and are no longer captured and 'eaten' by the terminal
+  driver.
+
+- Fixed an obscure bug in the timer interrupt handling routine: when an
+  interrupt happens while in system state, the TICKF function (which also
+  checks the clock queue) is normally not called to prevent possible kernel
+  data access conflict. But as a result, the call to the TICKF becomes
+  postponed until the next timer interrupt that (hopefully) happens while
+  in user state. As e.g. the idle task continuously calls a system function
+  in a loop to force scheduling, many TICKF calls were sporadically being
+  missed, with somewhat irregular dispatching of queued mark-time events
+  as result. Now, a flag is set in the timer interrupt routine and the
+  TICKF function called as soon as the kernel leaves system state.
+
+- TSKMGR bug fix: the TKILL function was returning a 'Task not found' error
+  for an existing inactive task instead of the expected 'Task not active'.
+
+
+22/05/18
+
+- Filesystem version is now defined as 'major.minor', current is 4.1.
+
+- SYSFCP: flush disk buffers when a file is closed (only if the file was
+  modified). This fixes a race condition that affects LDR when it tries
+  to load a task image file that was just created, as LDR accesses the
+  disk directly, bypassing SYSFCP.
+
+
+23/05/18
+
+- TED: use scroll region if supported by the terminal (VT100, etc.).
+
+- ZSM: PAGE statement now accepts an expression argument to set page length.
+
+
+24/05/18
+
+- ZSM: DEFL/EQU are now processed correctly; error cases now work as in M80.
+  MACLIB is now also processed during pass 2, until we figure out a way to
+  display missing file error from pass 1 on pass 2.
+
+- TKB: default to TSK output file format under RSX180.
+
+
+26/05/18
+
+- ICP: end commands sent to MCR always with ESC to prevent MCR... from
+  displaying prompt after error messages generated by internal commands,
+  e.g.:
+    >@LOGIN.CMD
+    >type welcome.txt
+    MCR -- Task not in system
+    >               <-- extra prompt was displayed after MCR error
+    >@ <EOF>
+
+
+27/05/18
+
+- SYSFCP: the rename operation now returns an error if the new filespec
+  has an explicit version that matches an existing file. If no version
+  is specified, the renamed file will have a version number one higher
+  that any existing file.
+
+- PIP:
+  * implemented /SU switch (supersede existing version) for the copy
+    operation.
+  * rename operation now properly handles the dest file version number.
+  * implemented /NV switch for the rename operation.
+
+- TED: old 8080 version updated to latest RSX180 file I/O and QIO specs.
+
+
+29/05/18
+
+- ZSM: the CP/M version now has a command line syntax and an interactive
+  mode similar to the RSX180 version (but no option switches implemented
+  yet).
+
+
+30/05/18
+
+- More work on ZSM:
+  * added /Sn option to set max length of symbols in REL file (n=5..8).
+  * added /Dsym=value to define a symbol via the command line.
+  * added /L option to force generation of listing file.
+  * the INT routine now properly decodes values with forced decimal base
+    (D suffix). [why wasn't it there???]
+  * reset LIST options before each pass.
+  * reset MACRO def level before 2nd pass if an unterminated MACRO is
+    detected.
+  * display a 'T' error also for unterminated conditionals.
+
+
+31/05/18
+
+- More work on ZSM:
+  * bug fix: don't send errors to PRN file if listing is suppressed.
+
+
+02/06/18
+
+- More work on ZSM:
+  * experimental /U option to treat all Undefined symbols as Externals.
+  * bug fix: if the label preceding ENDM ended with a colon, ENDM was not
+    processed.
+  * default extension for include files is now .MAC.
+  * bug fix: overflow to next listing line was not correct for DEFW.
+  * bug fix: EVBRKT routine now takes EVMODE into consideration when
+    deciding the operand width of Z280 (HL+d8/d16) operands. This fixes
+    a phase error when compiling kernel.280 of the CP/M 3 CPU280 distrib.
+    (command was 'ldw hl,(hl+dTbl)', during first pass dTbl was undefined
+    with a value of 0, which caused 'ldw hl,(hl)' to be generated instead).
+
+
+05/06/18
+
+- More work on ZSM:
+  * fixed a bug in /U option: an M error was being generated for implicit
+    external labels that were also referenced as explicit external## later
+    in the code.
+  * added /M switch to initialize DEFS block to zeros.
+
+
+06/06/18
+
+- ZSM bug fixes:
+  * some opcodes without and argument did not produce an error (e.g. ADD,
+    SUB, AND, INC).
+  * same for IF without argument (a bit trickier, since the error was
+    being generated, but suppressed as false conditional)
+  * same for EQU, DEFL and MACRO without a preceding label (this bug
+    could even crash the assembler)
+
+
+10/06/18
+
+- More work on ZSM:
+  * listing output to printer now correct (device code was wrong).
+  * nested <>s now allowed in IRPC.
+  * added /Zn switch to set initial CPU type.
+
+
+11/06/18
+
+- More work on ZSM:
+  * do not expand macros if conditional state is False (else recursive
+    macros will loop forever)
+  * fixed IFIDN/IFDIF string comparison.
+
+
+21/06/18
+
+- More work on ZSM:
+  * fixed 'ldw ix,(ix+d8)' and 'ldw (ix+d8),ix' type of instructions: the
+    d8 argument is promoted to d16 instead of producing an error.
+  * fixed addw, cpw, etc. instructions with optional hl argument: if no
+    second argument is specified, then hl is the argument (an error was
+    generated due to an early end-of-line test, bug introduced 06/06/18)
+  * added .SFCOND (same as LIST NOCOND) and .LFCOND (same as LIST COND).
+
+
+24/06/18
+
+- More work on ZSM:
+  * optimized LIST processing routine.
+
+
+26/06/18
+
+- More work on ZSM:
+  * fixed a minor bug in LIST processing (introduced 24/06/18).
+  * % in MACRO arguments can be followed by an expression, not just a variable
+    name.
+  * force true state of IF statement if ERRFLG is set.
+  * EXITM now restores conditional stack level.
+  * implemented NUL operator.
+
+
+28/06/18
+
+- More work on ZSM:
+  * fixed a bug in IRPC: if the argument was not enclosed in <>, the first
+    char of the sequence was forced to uppercase.
+  * do not process LOCAL if in a nested macro; store it in macro def struct
+    instead.
+  * MSTORE: treat symbols containing '&' as labels (i.e. do not test them
+    for opcodes)
+
+
+29/06/18
+
+- More work on ZSM:
+  * force output of label value to listing (current PC address) if the label
+    is the only thing on the line. The line also appears in .xall mode.
+
+
+06/07/18
+
+- More work on ZSM:
+  * fixed a bug in .PHASE: DEFS statements were setting the location counter
+    with Absolute address mode instead of the current segment mode.
+
+- Started porting device drivers to CPU280.
+
+
+08/07/18
+
+- More work on ZSM:
+  * fixed another bug in .PHASE: REL chain pointer of External references
+    statements were setting the location counter with Absolute address mode
+    instead of the current segment mode.
+  * fixed a bug in GNR: if the last line of an include file contained chars
+    but not a newline, the end-of-line marker was being written to the wrong
+    place since HL was not saved/restored before/after calling CLSLIB.
+
+- RSX180 kernel compiled with ZSM4 now produces the same system image as
+  with M80 except for one byte, the offending line being in p112.mac:
+
+   dw ((44237 / TCKSEC) * 50 + (44237 MOD TCKSEC) * 50 / TCKSEC) AND 7FFFh
+
+  M80 gives 5667h as result (seems to be rounding up the second division),
+  while ZSM4 gives the same result as when hand-computed.
+
+- Switched to ZSM4 to build the whole RSX180 source tree. Modified sources
+  where necessary:
+  * disabled Z180 macros in Z180.INC
+  * .Z80 changed to .Z180 in sources that use Z180 instructions
+  * 'YS', 'IT', etc. changed to 'SY', 'TI', etc., as ZSM4 does not swap
+    bytes like M80.
+  * instructions like 'and (...)' changed to 'and 0+(...)'
+  The new system was tested and it works correctly.
+
+
+27/07/18
+
+- Merged DEVTT and DEVVT into a single source file. The selection between
+  the plain and multiplexed versions of the driver is done via a TTMPX
+  option in the SYSCONF.INC file.
+
+- PIP: display last newline if in brief mode.
+
+
+30/07/18
+
+- TAS/ATL/TAL command bug fix: if the task name argument was TTn, and
+  exactly 3 chars long, a 'task not in system' error was returned even when
+  the task was present as the program searched for TTnTn and ...TTn but not
+  for the exact TTn form.
+
+
+31/07/18
+
+- MCR bug fix: tasks requested with name XXXTn (i.e. copies of ...XXX) had
+  wrong user and group ID.
+
+- PIP bug fix: when opening the index file, reset DSTFBK buffer pointer to
+  DSTBUF, as the copy operation may have changed it (in block mode both
+  SRCFBK and DSTFBK share the same SRCBUF buffer). The bug caused some
+  directory listing entries to be displayed incorrectly after a disk copy
+  operation.
+
+
+05/08/18
+
+- Removed unused FA.DEV and FA.SYS file attributes.
+
+- Removed unused E.SYSF and E.RODEV error codes; added E.FLCK.
+
+- INI: set 'deny delete' bit for the important system files.
+
+- SYSFCP:
+  * implemented IO.UNL function.
+  * file access denied if the lock bit is set.
+  * when opening a directory, ensure FA.DIR bit of inode attrib is set.
+
+- PIP: implemented /UN (unlock file) function.
+
+- RMD: added /S (snapshot) option.
+
+- tskmgr: removed the old TICKF function, the CHKWD and CHKCLQ routines are
+  now called directly from SYSXIT.
+
+
+08/08/18
+
+- PIP fixes:
+  * a bug in the /SU option caused contiguous files to be copied as
+    non-contiguous.
+  * the /PU option defaults to a *.* search pattern if none is specified
+    by the user (the SEARCH routine assumes *.*;* which slows down the 
+    operation by matching the same file multiple times)
+
+- Ported XONIX game. Performance is just OK on TT0: (38400 baud) and
+  quite acceptable on TT1:..TT8: (9600 baud).
+
+
+09/08/18
+
+- WHO now also displays active tasks on logged-in terminals.
+
+- tskmgr: CHKWD is now called at the correct rate (fix of 05/08/18 ended up
+  calling the function twice if an interrupt happened while in system mode).
+  This seems to fix the erratic floppy behavior, and motor off time is now
+  back to 5 seconds as expected.
+
+- Added some games: SNAKE (converted from PL/M) and PACMAN.
+
+
+11/08/18
+
+- Added TETRIS game.
+
+
+13/08/18
+
+- Working on memory partition support (to be used for the CPU280 version).
+
+
+19/08/18
+
+- vol180 utility: added detailed help for the different commands.
+
+- vtcp bug fix: serial speed defaults to 9600 if the -b option is not
+  specified.
+
+- ZSM4: syntax of RSX180 option switches now matches the CP/M version
+  (removed ':' separator for /D /Z and /S arguments.)
+
+
+23/08/18
+
+- SYSFCP:
+  * when checking file access permissions, all requested bits must be set
+    for the access to be granted.
+  * implemented read/write mode subfunctions (files no longer are open in
+    read+write mode); read and write operations now enforce correct mode.
+
+- MD5: optimized the old braindead LROT routine (now in a separate RLC32M
+  SYSLIB routine); the program is now about 30% faster.
+
+
+24/08/18
+
+- Optimized a bit the CRYPT routine of SYSLIB.
+
+
+25/08/18
+
+- CLK application: fixed the timing computation, so it works now for
+  different TCKSEC values.
+
+- Test: lowered TCKSEC to 50 (half) in order to reduce the impact of context
+  switching time, but that did not improved system performance appreciably
+  (application execution times remained roughly the same). Starting
+  applications from floppy disk seemed slower (sector interleave no longer
+  optimum?), while the bootstrap time was practically not affected.
+
+- Renamed .SINFO system call to .GIN
+
+
+02/09/18
+
+- tskmgr: TKILL routine now checks if task is active before attempting to
+  clean up resources (this should fix the system crash that happens when
+  trying to abort an inactive fixed task).
+
+
+06/09/18
+
+- Started porting MCE V4.28 (MCR Command Line Editor) from DECUS.
+
+
+11/09/18
+
+- ZSM4: do not output line to listing if false cond and list xmacros and
+  line contains a label (no code is generated, but labels were being forced).
+
+
+21/09/18
+
+- DEVCT, DEVLP, DEVNL, SYSFCP: use UPUTWB to store a word result instead
+  of calling UPUTBB twice.
+
+
+22/09/18
+
+- The status code returned by a QIO operation is now a word. The low byte
+  contains the completion code as before, while the high byte is reserved
+  for device-dependent codes.
+
+- All device drivers, relevant kernel modules, libraries and applications
+  were modified accordingly.
+
+- DEVTT: too long lines in unsolicited mode now cause an automatic ^U
+  instead of ignoring the extra chars.
+
+
+23/09/18
+
+- More work on MCE port:
+  * cursor movement functions
+  * insert/delete char
+  * delete word left/right
+  * move to next word
+  * clear line
+  * delete to start/end of line
+  * added memory alloc routines from kernel pool management
+  * save/recall commands to/from FIFO now works
+  * some internal commands already working: CLEA, CMSZ, ECHO, FISZ, INSE,
+    OVER, LIST, RING, STAT, PROM, PURG, SVIN, SVOL, TIMO, UPFI, USPR, VERS,
+    LOCK, FREE, EXIT
+
+
+24/09/18
+
+- Fixed typeahead bug in DEVTT: characters typed were lost if the driver was
+  in output mode. Characters were also lost between reads from an attached
+  task. That did not affect normal functionality, only the typeahead feature
+  was impaired.
+
+- More work on MCE port:
+  * recall command by key now works
+  * SVIN OFF command now works
+
+
+25/09/18
+
+- More work on MCE port:
+  * command definition via ":=" now working
+  * param substitution now works
+  * control char and function key redefinition now works
+
+
+26/09/18
+
+- DEVTT: end solicited input when buffer is full instead of waiting for
+  an explicit end of line. This will allow applications that read single
+  characters (e.g. VIEW, MCE, etc.) to simply use IO.RLB with buffer size 1
+  instead of having to use ASTs.
+
+- More work on MCE port:
+  * spawning CLI now works, first tests under RSX180 with the modified
+    DEVTT.
+
+
+27/09/18
+
+- More work on MCE port:
+  * fixed a bug in INTERN routine (wrong pointer when deleting 1st entry)
+  * some code optimizations
+  * MCEINI.CMD file can now be read and processed
+
+- FCSLIB: FGETLN function now returns the number of chars read in reg C.
+
+- DEVTT: skip control char processing if terminal is in binary mode.
+
+
+28/09/18
+
+- More work on MCE port:
+  * fixed a memory initialization problem: the shared GTKBUF was overwriting
+    some statically-initialized pointers
+  * fixed a bug in LDFIF routine (comparison of FIFCNT against MAXF was not
+    correct)
+
+
+29/09/18
+
+- More work on MCE port:
+  * VT2XX and VT4XX function keys now work
+  * compound statement now works, but with the same quirk as in the original:
+     dir := pip 'p1'/li
+     dir & help
+    the last command fails, as 'dir' gets expanded to 'pip &/li', which
+    then results in the two MCR commands 'pip' and '/li', none of which
+    is correct. That's because expansion of arguments happens *before*
+    splitting the compound command. Looks like that was done to allow
+    parameters in compound command definitions? E.g.:
+     dirs := pip 'p1'/li & pip 'p2'/li
+    then call as:
+     dirs [user] [help]
+    (not totally sure about that)
+
+
+30/09/18
+
+- More work on MCE port:
+  * EDT functions now work
+  * TDV2XX keys implemented (not tested)
+  * bug fix: IOMSG now resets selection (bug from original MCE)
+  * adapting MCEBLD.CMD
+
+- ICP:
+  * implemented the <CLI> special variable (right now always returns 'MCR')
+  * implemented the <SYSTEM> special variable (right now always returns
+    1 = RSX180)
+  * implemented the <LIBDIR> special variable (right now always returns
+    '[SYSTEM]')
+  * a default value can be now specified for .ASK (logical) operator; the
+    value cannot be a logical expression, only a logical variable including
+    <TRUE> and <FALSE>
+  * fixed a bug in EVAL routine: start of variable was determined only by
+    presence of A..Z, and not A..Z,$,_ as it should be.
+  * implemented the .TESTFILE command.
+
+- MCR: emit EX.SEV to connected tasks in case of errors, else emit EX.SUC.
+
+- PIP: implemented /NM (no message) switch to suppress 'file not found'
+  messages.
+
+
+01/10/18
+
+- HELP:
+  * subtopic name now can be up to 40 chars.
+  * removed the extra newline before and after the text block.
+  * section names can now have an asterisk to specify that the characters
+    that follow are optional (e.g. COM*MANDS). This allows partial subtopic
+    matches.
+  * comments inside the help file are now allowed as this: '\;comment'.
+
+- Help files changed to according to the above rules.
+
+- DEVTT: split the input queue into two subqueues: input and typeahead.
+  * the input queue is used by the receiver interrupt routine to store the
+    incoming chars.
+  * at fork level processing, chars are removed from the input queue
+    and the ones that require immediate processing (i.e. ^S, ^Q, etc.)
+    are processed even if an input operation is not in progress; any
+    other characters are moved to the typeahead queue where they stay
+    until claimed by a read operation.
+
+- MCE:
+  * set binary mode every time the terminal is attached.
+
+
+02/10/18
+
+- DEVTT:
+  * ^C and ^X now clears the typeahead queue.
+  * ^C in addition clears ^S state before outputting the MCR prompt.
+  * start of unsolicited input without ^C no longer clears ^S state.
+
+- ZSM4 bug fix: the RSX180 version did not restore properly file LUN
+  and mode in case of file open errors.
+
+- SYSFCP: fixed a stupid bug in EXTALC (block counter was not being
+  decremented!) that caused the routine to loop forever when appending
+  blocks to the file allocation map.
+
+- SYSLIB: added MALLOC module from MCE, which in turn was adapted from
+  the kernel pool memory management routines.
+
+- MCE: build script now works properly.
+
+
+03/10/18
+
+- DEVTT: fixed race condition that affected multiplexed terminals.
+
+
+05/10/18
+
+- MCE: fixed a bug in VALUE routine (limit value in BC was lost before
+  comparison).
+
+
+06/10/18
+
+- ICP now (finally) supports nested command files.
+
+- Kernel: fixed a bug in 'panic' routine in chktrap.inc that caused the
+  PC value of the trap location to be lost.
+
+
+07/10/18
+
+- FCSLIB: fix length returned by FGETLN (CR should not be counted, as it
+  is not stored in the buffer.)
+
+- DEVTT: fixed an obscure bug that caused rare kernel panics (UPUTBB in
+  'store' routine was not called with interrupts disabled!)
+
+- ZSM4 fixes:
+  * 'U' error code was not being output to listing for IF statements with
+    undefined arguments.
+  * SUBTTL no longer forces a page break.
+
+- PIP: implemented /ID switch.
+
+
+08/10/18
+
+- Added partition name and CPU type fields to the task header. MKT and
+  mktask modified to support the corresponding options.
+
+- TTDRV: working on ^O support.
+
+
+09/10/18
+
+- Kernel QIO processing: safety checks before queuing I/O packet are now
+  done outside the IOREQ routine. Thus, the packet is no longer is freed
+  if the driver's IOREQ routine returns error (a valid condition meaning
+  e.g. that the unit is busy). Packets remain queued until processed and
+  deallocated only by IODONE.
+
+- TTDRV:
+  * fixed a bug in SF.SMC processing (invalid TCB pointer, thus testing
+    for privileged bit and unit number gave the wrong result.)
+  * fixed a bug in ^C processing: if a task attached the terminal without
+    ASTs, and enabled binary mode, ^C started unsolicited input anyway if
+    no input operation was in progress.
+
+
+11/10/18
+
+- TTDRV:
+  * fixed (hopefully!) a race condition that caused premature end of input
+    operation in very rare cases of 1-char reads. The problem is that the
+    character counter could be decremented to zero by the incoming char
+    interrupt service before the code reached the safety zero-test in the
+    ttrlb routine. As result, two calls to IODONE were posted!
+  * An additional UM.OUT status bit for output operation was also added
+    (US.BSY + !UM.INP is not enough, since the same combination is used
+    during SF.GMC and SF.SMC processing).
+
+- MCE:
+  * implemented ^P (pause) and ^T (delay) commands.
+
+
+12/10/18
+
+- CCL: finished the RENAME command. Added COPY command.
+
+
+18/10/18
+
+- Re-arranged task header fields (swapped TH.PAR field with TH.STRT..TH.INC)
+
+- LDR, INS and INIT now also check version number field in task header.
+
+
+04/11/18
+
+- TED: fixed a stupid bug in the delete-line function of the screen mode
+  (LASTLN is a 16-bit value, but was used as 8-bit value in a comparison
+  operation!).
+
+
+05/11/18
+
+- Fixed a bug in the main kernel initialization routine: when loading a
+  device driver, timer interrupts must be enabled so timeouts will work!
+
+
+14/11/18
+
+- ZSM4: increased max identifier length to 15 chars.
+
+
+17/11/18
+
+- ZSM4: added IFZ80, IFZ180 and IFZ280 conditional operators.
+
+
+04/12/18
+
+- Fixed minor bug in CALendar command line processing.
+
+
+09/12/18
+
+- Linux mktask: implemented -asg option to setup initial LUN table. Same
+  syntax as MKT.
+
+
+02/02/19
+
+- Fixed a stupid bug in the 'CT:' driver that caused it to hang when no
+  DS1820 chip was present.
+
+
+08/02/19
+
+- Preparing for release: sources for all MCR utilities are now in the same
+  MCR directory; one Makefile used to build them all.
+
+
+11/02/19
+
+- MCE: fixed a race condition on exit (as shown by Michal's P112 emulator,
+  and present in the original RSX-11M version) that happened when BYE
+  managed to execute before MCE had time to exit cleanly: the status line
+  remained on the screen and an abort message was displayed. Now BYE is
+  spawned only after the status line is cleared and the terminal detached.
+
+
+12/02/19
+
+- Preparing for release: all Linux tools are now grouped in a separate
+  source tree branch.
+
+
+16/02/19
+
+- Working on user account file support: new ACNT utility.
+  Bug: fcslib does not work properly in r/w mode when extending a file?
+  Bug: if F.ATTR of FDB is not set when creating a file, SYSFCP opens the
+       current directory instead! (FOPEN problem? - bug/feature).
+       FMAKE should have returned an error.
+  Bug: MKD routine of UFD calls IO.ACC after IO.CRE, but the file must
+       be open: no error returned?
+
+
+17/02/19
+
+- More work on the ACNT utility:
+  * account file is created if it doesn't exist.
+  * records can be added, but not all options are there yet.
+  * records can be listed.
+  * sorting of account file by user name or UIC now works.
+
+
+24/02/19
+
+- SYSLIB: the GETLN/GETLNL function now accepts a flag in reg D to read
+  with no echo (e.g. for password entry).
+
+- SYSFCP now makes sure that a directory is empty before attempting to
+  delete it.
+
+- More work on the ACNT utility:
+  * UFD is automatically created when a new account is created.
+  * implemented delete operation, with optional deletion of UFD and user
+    files.
+
+
+02/03/19
+
+- Working on new screen-oriented ZAP utility to edit files at binary level:
+  * screen display done
+  * file I/O done
+  * cursor can be moved around, but no editing possible yet
+
+
+03/03/19
+
+- More work on ZAP utility:
+  * files can now be edited.
+  * command line interface now works.
+
+- The 'CT:' driver now uses the timeout services to wait for the DS1820
+  chip to become ready, since it can take up to 500ms.
+
+- Rearranged some system error codes.
+
+
+04/03/19
+
+- More work on ZAP utility:
+  * improved/optimized screen refreshing
+  * make use of scroll region if terminal supports it
+  * added help mode
+
+
+07/03/19
+
+- Added CRC16 computation routine to SYSLIB.
+
+
+10/03/19
+
+- Added BCD floating point library (from old 8080 port of the Atari 800XL
+  ROM, originally for the 6502).
+
+
+11/03/19
+
+- First steps towards large (>32Mb) partition support:
+  * block number field in QIO block (Q.BLK) and I/O packets is now 32-bits
+    wide.
+  * task starting block number in TCB (T.SBLK) is now 32-bits wide.
+  * updated TDB structures in applications that define them.
+  * LDR now uses the full 32 bits when loading a task.
+  * the kernel (tskmgr module) now initializes full 32-bits of T.SBLK
+    (simply a copy of TD.SBLK).
+  * SYS now uses the full 32 bits when reading a task header, and for the
+    TAS command display.
+  * INS zeroes the 2 high bytes of TD.SBLK.
+  * DEVDY accepts 32-bit block numbers, but rejects operation if blk# is
+    larger than 65535 (too large for floppy disks anyway).
+  * DEVDU accepts 32-bit block numbers, but ignores the 2 high bytes.
+  * SYSFCP ensures that the 2 high bytes of a block number are zeroed in
+    the device I/O call.
+  * FCSLIB ensures that the 2 high bytes of a block number are zeroed in
+    the QIO call (32Mb file size limit).
+  * MCR, ICP, PIP and BASIC ensure that the 2 high bytes of a block number are
+    zeroed in the QIO call.
+
+
+12/03/19
+
+- More work on large partition support:
+  * 32-bit block numbers in FCS structure.
+  * converted most FCSLIB routines.
+  * PIP copy command now operates with 32-bit block numbers. Directory
+    searches are limited to 16-bit block numbers (don't expect directories
+    becoming larger than 32Mb ;))
+
+
+13/03/19
+
+- Preparing for release: libraries are licensed under LPGL, kernel and
+  utilities under GPL.
+
+- DEVDU: full 32-bit block numbers now used for IO.RPB and IO.WPB functions.
+  Partition (and disk) size is still limited to 20 bits (512M) because of the
+  8K "UZI track" values stored in the partition table.
+
+- DEVDY, DEVDU:
+  * IO.SEC result is now stored in user buffer.
+  * implemented IO.RPB and IO.WPB functions.
+  * user buffer length is now validated before attempting data transfer.
+
+- PIP bug fix: the 'No such file(s)' warning is now followed by the correct
+  search filespec, and not by the last file found.
+
+
+16/03/19
+
+- More work on TKB: adding the missing command options.
+
+
+17/12/18
+
+- ZSM4: Fixed a bug in COMMON selection code: a 'select COMMON' item was
+  erroneously output for a null (unset) COMMON block during DS statement
+  processing.
+
+
+19/03/19
+
+- More work on TKB: code cleanup.
+
+
+21/03/19
+
+- Removed HEL-related error messages from SYSLIB's ERRSTR function.
+
+- Removed unused HEL-specific E.BADUN and E.BADPW error codes.
+
+
+27/03/19
+
+- Added T.IOC (standing I/O count field to TCB). The count is incremented
+  every time an I/O packet is queued and decremented when the operation
+  finishes.
+
+- MCR ATL command and RMD Task Header page now display the T.IOC value.
+
+- DU driver: fixed error code return.
+
+
+30/03/19
+
+- The kernel's IODONE routine now stores driver's error/return code and
+  transfer count in user space. This makes life easier for the device
+  drivers and avoids duplicated code.
+
+
+12/04/19
+
+- Small ZSM4 fixes:
+  * Reset RADIX to 10 before processing a (new) command line.
+  * The CP/M version now aborts a command if an invalid option switch is
+    specified.
+
+
+15/04/19
+
+- SYSLIB: the G.PRM field of the GCML structure is now a pointer to the
+  prompt string, and no longer the prompt string itself. This makes it
+  possible to specify an alternate prompt that is not limited to the
+  3-character default one.
+
+- ICP: display the command line tail after the error message if a command
+  file could not be opened.
+
+
+20/04/19
+
+- Working on a VMR program:
+  * system image file access routines.
+  * symbol table file access routines.
+  * system access symbols are now resolved from the symbol table.
+  * validation of the system image.
+
+
+28/04/19
+
+- BASIC-11: fixed a bug in the RLSBUF routine.
+
+
+29/04/19
+
+- Preparing for release:
+  * CP/M tools are now in the Tools/cpm directory.
+  * Likewise, all the Linux tools are in the Tools/linux directory.
+  * All the Makefiles now use a relative path when accessing the CP/M and
+    linux tools.
+  * Rewritten the top-level Makefile: targets are now better organized and
+    split into smaller sub-sections. The script to update the include files
+    is now embedded into the Makefile.
+
+
+01/05/19
+
+- First release (V6.04) on GitHub: https://github.com/hperaza/RSX180
+
+
+02/05/19
+
+- More work on VMR:
+  * virtual memory access routines.
+  * adapted kernel memory allocation routines to work with the virtual
+    memory system.
+  * when first loading a virgin system, initialize the kernel memory
+    allocator variables.
+
+
+03/05/19
+
+- ICP: removed unused mult and div routines from vars.mac (duplicated in
+  eval.mac)
+
+
+04/05/19
+
+- The boot loaders are now able to load a full 64K system image (or even
+  larger with a minor change).
+
+- The system image file now loads from address 0 and not 100h (execution
+  still starts at 100h), and has the system common already in place. That
+  makes life easier for a future VMR utility, and saves about 3.2K of pool
+  space.
+
+- The POOLSZ variable is now initialized to zero at compile time (TKB was
+  zeroing it anyway), so a future VMR utility could determine when a system
+  image is a virgin one.
+
+- More work on VMR:
+  * modified to work with the new system images that load at 0000h.
+
+
+05/05/19
+
+- BYE: disable task dispatching while traversing the STD to abort the active
+  tasks at the user terminal. This is to prevent ending up with a dangling
+  pointer if a task is started at the same or another terminal while the
+  operation is in progress.
+
+- HEL/HELP: attach terminal when outputting login/help file contents. This
+  prevents the output getting intermixed with the output of another task
+  that may be writing to the terminal at the same time, and also will ensure
+  correct operation of ^O (suspend output) once it gets supported by the
+  terminal driver.
+
+- Added the ACNT utility to the distribution. Still is missing some features
+  (e.g. 'Modify account'), but already can be used to create and delete
+  accounts.
+
+- HEL now uses the account file, so a password is now necessary to login.
+  Not all features are implemented: the user's home device still defaults
+  to LB0:, the last login timestamp is not updated in the account file, etc.
+
+
+08/05/19
+
+- DEVCT: the fork processing routine now checks if the I/O operation was
+  aborted (e.g by a previous call to iokill).
+
+
+10/05/19
+
+- Optimized kernel memory alloc/dealloc routines (the de-allocation routine
+  was very inefficient - still from the time when the free list was not kept
+  sorted by address).
+
+
+11/05/19
+
+- Preliminary support of memory (and future checkpoint) partitions:
+  * Partition Control Block structure fields defined.
+  * added kernel routines to create main partitions, allocate and free task
+    memory (they don't replace yet the old routines).
+  * added PAR command to MCR to list existing partitions.
+  * the startup code creates SYSPAR and GEN partitions (not yet used).
+
+
+12/05/19
+
+- More work on partition support:
+  * added T.PCB field to TCB.
+  * added TD.PAR field to TDB.
+  * added /PAR option to INS command to specify an alternate partition name
+    when installing a task.
+  * INS now refuses to install a task is the partition is not in system.
+  * MCR TAS, ATL and TAL commands now display the real partition name.
+  * RMD now displays the names of existing partitions in the Memory Display
+    page. The Task Header Display page also displays the correct partition
+    name for the task.
+
+
+13/05/19
+
+- More work on partition support:
+  * task memory allocation now done by allocating a subpartition within
+    the main partition. The alloc, free, and resize operations seem to be
+    working correctly.
+  * old task memory allocation routines removed.
+  * removed T.BANK and T.SIZE fields from TCB (use values from PCB instead).
+
+
+14/05/19
+
+- SYSLIB: fixed a bug in the MD5 routines (MD5END) that could lead to memory
+  corruption.
+
+
+15/05/19
+
+- When a task exits, remove the corresponding OCBs from offspring tasks.
+
+
+16/05/19
+
+- DEVTT/DEVVT: ^O can now be used to suppress output. The output is resumed
+  when another ^O is typed, before an input operation, on detach, after each
+  write operation if the terminal is not attached, and by special I/O command
+  (write with TF.CCO bit set).
+
+
+17/05/19
+
+- SYSLIB: added RCTRLO function to cancel the effect of ^O.
+
+- TED: set terminal to binary mode under RSX180.
+
+- PIP, DMP: attach to the terminal so ^O could be used to suppress the output.
+  Reset ^O state before displaying any error messages.
+
+
+19/05/19
+
+- Removed the idle task, since it no longer does anything useful. Replaced
+  by an idle loop in the dispatcher routine.
+
+- Grouped several scattered kernel initialization routines into a single
+  one.
+
+- Keep the main partition list sorted by address.
+
+- More work on VMR:
+  * command parsing.
+  * virtual memory access routines now in a separate source file.
+  * implemented PAR and TAS commands.
+
+
+23/05/19
+
+- Added SET /POOL command (report only, can't set the pool top address).
+
+
+24/05/19
+
+- Added U.ACP field to the UCB structure for future ACP support.
+
+- MOU now sets the U.ACP field when the unit is mounted, DMO clears it.
+
+- The kernel QIO code now uses the U.ACP field of the unit to determine
+  which task the ACP packets should be queued to. The TCB of the filesystem
+  task is therefore no longer cached by the kernel.
+
+
+25/05/19
+
+- FCSLIB: the FFLUSH module was not being included in the library!
+
+- Working on a console logging task.
+
+- SHUTUP: force logout of any remaining active users before dismounting the
+  system disk and stopping the system.
+
+- New TA.ACP task attribute bit to specify that the task is an ACP.
+  When set, the task will reject data sent by another tasks (will accept
+  only I/O packets queued by the QIO kernel routine).
+
+- MOU: new /ACP option to specify an alternate processor for the mounted
+  device.
+
+- INS: new /ACP option to specify that the installed task is an ACP.
+
+- MCR: display the ACP status of the task in the ATL command output.
+  Also, if the user is privileged, display the ACP name for mounted
+  devices in the DEV command output.
+
+
+01/06/19
+
+- HEL: update account file with last login information.
+
+
+02/06/19
+
+- The SYSLVL kernel variable now indicates one additional state (thus, 3
+  in total):
+    1 = user task
+    0 = privileged task accessing kernel database
+   -1 = system mode
+
+- PIP: attach terminal only during command processing.
+
+
+08/06/19
+
+- Kernel: FNDDEV now returns the UCB address and not the DCB (saves a call
+  to GETUCB in most situations.)
+
+
+09/06/19
+
+- The task LUN table block is now a 'context' block containing, in addition
+  to the LUN translation table, the task's protection UIC, the task's
+  current directory name, and the flag wait mask during AST execution. The
+  corresponding fields were removed from the TCB structure, reducing the
+  Task Directory memory footprint.
+
+- Added sub-function codes to the .GDIR and .SDIR system functions so
+  the task and terminal default directories could be set separately.
+
+- Added U.LCB field to UCB. Avoids having to do a reverse-lookup of the LCB
+  list when searching for the Login Control Block assigned to a terminal.
+
+- LCBs are no longer pre-allocated by the initialization task, but created
+  dynamically by the HEL task when the user logs in and deleted by BYE when
+  the user logs out. Since LCBs now exist only when a terminal is logged in,
+  the LS.LOG bit became superfluous and was therefore removed.
+
+- LCBs are no longer kept in a linked list, since now they can be accessed
+  easily via the U.LCB field of the UCB.
+
+
+10/06/19
+
+- SYSFCP: GETDIR no longer searches the device table, the UCB stored in the
+  task's LUN table is used instead.
+
+- UFD bug fix: assign LUN before creating the directory.
+
+- Logical-to-physical device assignment table restructured and routines
+  rewritten. The table is now kept sorted by type, then by name. In
+  addition, the UCB address of the physical device is stored instead of
+  the physical device name.
+
+- Local logical device assignments are now automatically deleted on logout.
+
+
+11/06/19
+
+- HEL: assign the SY0: logical device to the value stored in the account
+  file.
+
+- MCR ASN command: implemented /GBL, /LOGIN and /TERM options.
+
+- Updated the help text for the MCR ASN command.
+
+- Removed the unused MCR CHD command (same as SET /DIR or CCL's CD).
+
+
+15/06/19
+
+- vol180: adding VMR-style commands, so an existing system image file could
+  be configured.
+
+- Added T.TI field to TCB to keep the UCB address of the current terminal
+  (will eventually replace T.CON which contains the terminal device name).
+
+- RMD, Active Task Display page: removed redundant redraw.
+
+- LCB: the L.CON field is no longer used and was therefore removed.
+
+
+16/06/19
+
+- vol180 utility:
+  * new 'copy' command.
+  * filespecs can now contain a directory specification in order to allow
+    operations on directories other than the current one.
+  * open_file(): fixed a bug affecting the file version handling.
+
+
+17/06/19
+
+- vol180 utility: got the basic VMR commands working. Now the system can
+  be configured and tasks installed on the system image file. The loader
+  no longer runs in the kernel partition, and the initialization task is
+  considerably reduced, which results in larger pool space.
+
+
+19/06/19
+
+- More work on VMR:
+  * added routines to transfer complete blocks of data to/from the system
+    image, should make working with system structures faster/easier.
+  * implementing SET commands.
+
+
+21/06/19
+
+- INS: code cleanup.
+
+
+22/06/19
+
+- Moved VMR to the main development tree. Merged Changelog files.
+
+
+22/06/19
+
+- VMR: implemented INS command.
+
+
+23/06/19
+
+- vol180 utility: the VMR INS command now accepts the same option switches
+  as the native version.
+
+- VMR: implemented FIX command. Fixed a couple of bugs in the virtual memory
+  access routines.
+
+- Added T.LD field to TCB to keep the UCB address of the load device (will
+  eventually replace T.LIB which contains the load device name).
+
+- The SYSCOPY.CMD command file now calls VMR to reconfigure the system after
+  copying it to a new disk.
+
+- Booting from hard disk takes now only 1.5 secs. :)
+
+
+24/06/19
+
+- Resize GEN partition at startup time according to the available RAM.
+
+
+26/06/19
+
+- VMR: implemented DEV command, and several SET commands (ECHO, LOWER, BRO,
+  SLAVE, LOGON, POOL, HOST).
+
+
+27/06/19
+
+- vol180:
+  * added VMR DEV command
+  * added more VMR SET commands (same as in the RSX180 VMR version).
+
+- The default host name is now set via VMR, and no longer via the sysconf.inc
+  file.
+
+- Simplified the initialization task even further: removed the old code used
+  to mount the system disk; instead, MOU is invoked directly as it has been
+  made available at boot time by VMR. The only chicken-and-egg problem that
+  remains is the initial LB: assignment - MCR cannot be called to perform
+  the action because LB: is not yet defined.
+
+
+28/06/19
+
+- If a task is loaded into a 'task'-type partition, allocate the whole
+  partition to the task.
+
+- The filesystem task runs now in a separate partition, and no longer in
+  the kernel area. Filesystem buffers are still located in the kernel
+  space.
+
+- The filesystem ACP is now started by the MOU task, and no longer by the
+  initialization routine.
+
+
+02/07/19
+
+- More work on the console logging:
+  * new CO: (pseudo)device driver, dispatches IO.WLB packets to the ACP
+    task.
+  * the console logger task now processes the IO.WLB packets, and writes
+    time-stamped messages to the LB:[SYSLOG]CONSOLE.LOG file.
+  * messages written to CO: are now getting into the CONSOLE.LOG file.
+
+
+19/07/19
+
+- The kernel now queues (on request) ASTs to CLI on command arrival.
+
+
+21/07/19
+
+- Removed the unused T.PRV field of TCB.
+
+- Removed the no-longer-used TD.BANK, TD.SIZE and TD.SP fields of TDB.
+
+- Clear T.IOC when starting a new task.
+
+- Moved the kernel TSTART routine to the startup code (the only one that
+  uses it).
+
+- When starting a copy of a task under the name XXXTn, MCR and SYS now simply
+  create a copy of the TCB in kernel memory under the new name. This saves a
+  call to the TINS kernel function, which will be removed.
+
+
+22/07/19
+
+- To prevent name clashes in privileged tasks, all (most) symbols exported
+  by the kernel now start with a dollar sign '$' (I believe that's why
+  RSX-11M did the same thing).
+
+- Removed the kernel TINS routine (entering a task into the STD is done by
+  the INS task).
+
+- Removed the TDB fields that were used only by the startup routine.
+
+
+24/07/19
+
+- Kernel: rewritten URQST and URPOI routines.
+
+
+28/07/19
+
+- When passing a command to MCR, tasks are no longer required to reserve
+  space for the terminal name and OCB pointer.
+
+
+31/07/19
+
+- MCR now returns EX.SEV status if the command failed for whatever reason.
+
+
+01/08/19
+
+- The console driver no longer redirects the I/O packets to the receive
+  queue of the console logger task. The last simply takes the current
+  packet from the unit it is associated to.
+
+- Filesystem: update the index file entry on each file write. This will
+  allow another task to access the same file in shared mode to read the
+  freshly-written data without the first task having to close the file.
+
+
+15/08/19
+
+- Commands to MCR are now sent using the TD.CMD field of the TDB (as it
+  should be) and no longer via TD.SDAT.
+
+- More work on the console logger:
+  * MCR can activate the console logger and send commands using the CLI
+    mechanism (for that the TA.CLI attribute has to be set for the console
+    logger task, in addition to TA.ACP)
+  * COT can now process several command line options (/COLOG[=ON|OFF],
+    /COTERM[=ttn:], /LOGFILE=filespec - this last one is not fully
+    implemented).
+  * COT now exits automatically when console logging is disabled.
+
+
+16/08/19
+
+- HEL and BYE now send login/logout messages to the console device.
+
+- SHUTUP now stops the console logger, if active, as part of the shutdown
+  procedure.
+
+
+17/08/19
+
+- SHUTUP now echoes internal MCR commands on the console.
+
+- SHUTUP now executes LB:[SYSTEM]SHUTUP.CMD, if exists, before dismounting
+  disks.
+
+- vol180: preserve creation date when exporting files.
+
+
+18/08/19
+
+- HEL, BYE bugfix: the terminal name sent to the console logger was not
+  correct.
+
+- Bug fix: removing a fixed task corrupted the STD (bug introduced 13/05/19
+  after switch to partition-based task memory allocation due to differences
+  in register usage).
+
+
+24/08/19
+
+- HEL bug fix: a spurious record was being added to the account file if
+  an invalid user name was specified.
+
+- HEL now times out if the user does not respond to the username or password
+  prompt within 20 seconds.
+
+
+25/08/19
+
+- SHUTUP: log shutdown message on system console.
+
+- The length of the round-robin interval is now variable and can be set
+  with the MCR (or VMR) 'SET /RNDC=nn' command.
+
+
+26/08/19
+
+- VMR: use multiple disk buffers in a LRU list to improve performance.
+
+- Added TC.ANS (ANSI) terminal characteristics bit. Right now is used only
+  as a hint for applications (i.e. it is not processed by the terminal
+  driver). The mode can be set/clear with the MCR 'SET /[NO]ANSI=ttn:'
+  command.
+
+- RMD now uses the TC.ANS bit to switch between VT100 and VT52 escape
+  sequences.
+
+- RMD: display the correct I/O count value in Active Task Display page.
+
+
+27/08/19
+
+- VMR: implemented UNFix and REMove commands.
+
+
+31/08/19
+
+- DEVDY: return standard error code in case of disk I/O errors. This fixes
+  the 'Unknown error' displayed by MOU and other programs when e.g. trying
+  to access a drive with no disk in it.
+
+
+04/09/19
+
+- BASIC-11, CAT command:
+  * default to *.*;* if only directory name is specified.
+  * display device and directory name at the top of the directory listing.
+
+
+08/10/19
+
+- Kernel: the GETSIZ routine now returns the requested task size in pages,
+  and not bytes.
+
+
+28/11/19
+
+- Added new T.ACTL field to TCB structure to chain TCBs in the active list.
+  The old T.LNK is now used as utility link field for e.g. loader list, 
+  partition wait queue, etc.
+
+- TCBs are now queued directly to loader's receive list and not via QCB
+  (reduces pool usage). The loader task dequeues the TCB directly, as
+  .RECV cannot be called.
+
+
+29/11/19
+
+- New TCB status bit TS.CKP (task checkpointed) and attribute bit TA.CKD
+  (task checkpointing disabled), intended for future task swap to disk
+  support.
+
+- MCR and RMD now process the new TCB status bits (MCR: TAL, ATD and TAS
+  commands, RMD: Active Task Display and Task Header pages).
+
+
+30/11/19
+
+- Partition management: fixed a bug in FNDGAP.
+
+
+06/12/19
+
+- T.ST field of TCB is now 2-bytes wide. Added extra status bits to support
+  future task checkpointing.
+
+
+07/12/19
+
+- System calls now preserve all registers, except AF. The very few functions
+  that relied on registers to return certain values now do so via memory
+  locations.
+
+- Task's zero-page vectors are now (re)set when the task is requested, and
+  only after it has finished loading, not when partition memory is first
+  allocated before loading the task.
+
+
+09/12/19
+
+- Kernel: when a task is requested, TRQST no longer returns an error code
+  if there is not enough contiguous memory available within the partition
+  for the task. Instead, the task is now queued to the partition wait list.
+  Once memory becomes available, the task is loaded and executed.
+
+- RMD: skip task display if T2.OUT is still set.
+
+- VMR 'SET /PAR' command now accepts wildcards (asterisk) for the base and/or
+  size parameters:
+  * if base is a wildcard, VMR sets the base to the lowest address possible
+    for a partition of the specified size.
+  * if size is a wildcard, VMR creates the largest partition possible starting
+    at the specified base address.
+  * if both base and size are wildcards, VMR creates a partition that
+    completely fills the first gap in the existing partition layout.
+
+- VMR: implemented 'SET /NOPAR' command.
+
+- INI: create CORIMG.SYS file on new volume.
+
+
+10/12/19
+
+- Added T.CPCB (pointer to checkpoint PCB) field to TCB.
+
+- Loader: added code to support future checkpoint file read/write.
+
+- Added $FEAT (feature bits) variable to the system data area (not used yet).
+
+- New ACS utility to manage checkpoint space. The necessary support for
+  truncating/extending files is still missing from the filesystem control
+  task.
+
+
+11/12/19
+
+- INI: fixed a bug that caused it to output garbage instead of an error
+  message when trying to initialize a volume larger than 32Mb.
+
+- Kernel code cleanup: removed no-longer-used DSPFLG variable and CTSK?
+  routine.
+
+- Aborted or exiting tasks are removed from memory only after the I/O
+  rundown counter reaches zero; this prevents the partition being assigned
+  to another task and the code being overwritten by a previous disk I/O
+  transfer (note that console I/O can be killed when the task is aborted,
+  but disk I/O transfers are allowed to complete since they are fast).
+
+- INI: create the CORIMG.SYS file using index file entry 5.
+
+- VMR: fixed a bug in the INS command that allowed duplicate task names
+  in STD.
+
+- Fixed a stupid bug in the WHO utility.
+
+
+12/12/19
+
+- The filesystem task no longer needs to validate the TCB of the requesting
+  task every time, as the task will not be removed from memory until all I/O
+  operations are properly terminated.
+
+- When checking for file access permissions, the filesystem task now uses
+  system protection bits if the user's session is privileged.
+
+- INI: only privileged users can initialize a volume.
+
+- ICP:
+  * fixed a bug in error handling of expression evaluation.
+  * added .TESTDEVICE and .TESTPARTITION directives.
+  * .ASK directive: implemented timeout and value range options.
+
+- Kernel: fixed a bug in the TKILL routine: the T2.ABO bit was being set
+  at the wrong T.ST byte offset.
+
+
+15/12/19
+
+- The filesystem task now uses a LRU algorithm to cache disk buffers
+  (previously, free buffers were recycled in a circular fashion).
+
+
+17/12/19
+
+- Filesystem task: when creating or renaming a file, ensure filename is
+  valid (legal chars, no embedded spaces, etc.)
+
+- Console logger:
+  * all command line options are now implemented.
+  * non-privileged users can now only use the SET /COLOG command to display
+    the current console and logfile assignments, all control commands are
+    privileged.
+
+
+18/12/19
+
+- QIO:
+  * added IO.EXT (extend file) and IO.TRN (truncate file) function codes.
+  * added SF.FID (open by file ID) subfunction code to the IO.ACC function
+    (not implemented yet).
+
+- Filesystem: preliminary implementation of the IO.EXT and IO.TRN functions
+  for contiguous files (enough to support the operation of the ACS utility).
+
+- ACS: use the new IO.TRN and IO.EXT functions to manage the checkpoint
+  file space.
+
+
+19/12/19
+
+- Linux tools: fixed a bug in fsck180 that caused it to truncate a contiguous
+  file extending up to the last block of the disk.
+
+- ACS:
+  * ensure user is privileged.
+  * create a checkpoint PCB for every active checkpoint file (not yet used
+    by the kernel.)
+
+- PIP: fixed minor bug in /LI summary display.
+
+- MCR: the terminal output routine now times out after a few seconds to
+  prevent system lockup if e.g. the prompt cannot be output to a terminal
+  for whatever reason.
+
+
+20/12/19
+
+- DEVTT: implemented delete option by echoing chars.
+
+- MCR, VMR: added 'SET /[NO]CRT' command.
+
+- ACNT:
+  * implemented 'Modify account' command.
+  * fixed a bug in the date display routine.
+  * allow non-privileged users to change their passwords.
+
+
+21/12/19
+
+- SHUTUP: call ACS to deallocate any active checkpoint files.
+
+- Kernel: preliminary checkpoint subpartition management routines.
+
+- LDR: checkpoint file read/write is now working.
+
+
+22/12/19
+
+- Kernel:
+  * added code to initiate checkpointing of a task (not used yet by the
+    kernel).
+  * do not load a checkpointed task back into memory if it is not runnable
+    (i.e. stopped, waiting for data or for event flag).
+  * the task abort procedure now has to deal with many more task states
+    (loaded, checkpointed, in partition wait list, in loader queue, being
+    processed by the loader, etc.) Not all cases have been debugged yet!
+  * defer dispatching of ASTs until a checkpointed task is loaded back
+    into memory.
+  * if the AST queue is not empty after exiting from an AST routine, do
+    not leave AST mode.
+  * disable further ASTs for a task when it exits or is aborted.
+
+
+23/12/19
+
+- DMO:
+  * refuse to dismount a disk if a checkpoint file is still active on it.
+  * warn about installed tasks from device unless /DEV switch is specified.
+
+- Kernel:
+  * do not refuse checkpointing of a task with outstanding I/O; instead,
+    set the TS.CKR flag and checkpoint the task as soon as the I/O completes.
+  * added a priority range for round-robin scheduling; outside that range
+    a task will get CPU time only if no other task of the same (or higher)
+    priority is running.
+  * added T.SPRI (swap priority) field to TCB.
+  * added a swap interval counter; the swap priority of all active tasks
+    in memory is decremented at each swapping interval.
+  * fixed the round-robin interval counter, it was decremented at the
+    wrong place.
+
+- MCR, VMR: added 'SET /RNDH' and 'SET /RNDL' commands.
+
+- RMD: display current task swap priority in Task Header Display page.
+
+
+25/12/19
+
+- Filesystem task:
+  * added cache hit and miss counters.
+  * fixed a bug in the invalidate-buffers routine: only the first buffer
+    for the specified device was invalidated (bug introduced 15/12/19).
+
+- DCU: display cache hits/misses.
+
+
+26/12/19
+
+- Kernel:
+  * a task can now get checkpointed if a task of higher effective priority
+    is competing for the partition; the checkpointed task is placed back
+    on the partition waiting list.
+
+- INS: added '/CKP=NO' option to disable checkpointing of a task.
+
+- VMR: added '/CKP=NO' option to INS command to disable checkpointing of
+  an installed task.
+
+- MCR, VMR: added 'SET /SWPC' and 'SET /SWPR' commands.
+
+
+27/12/19
+
+- MCR now checks user privileges for ABO, STP and UNS commands. Non-privileged
+  users can use these commands to abort, stop or unstop only the tasks started
+  from their own terminals.
+
+- Kernel: if a parent task is checkpointed when an offspring exits or emits
+  status, postpone storing the status code until the parent is loaded back
+  into memory. Rather than using a separate queue, we record the event using
+  a special AST block.
+
+
+28/12/19
+
+- Now that checkpointing is working, we need a shuffler :)
+  * started with a simple implementation that tries to move tasks to the
+    bottom of the main partition to compress any possible empty gaps.
+  * the shuffler is requested automatically by the kernel when memory cannot
+    be allocated for a task queued to the wait list of a system-controlled
+    partition.
+
+- ACNT: when invoked using the task name "PWD", allow changing only the
+  password even if the user is privileged (a privileged user can always
+  use the "RUN $ACNT" command to manage accounts).
+
+- SYSFCP: fixed a bug in IO.UNL, IO.DEL and IO.REN that caused erratic
+  behavior in e.g PIP /SU option (the current LUN assignment was ignored
+  and the one from a previous call was being used instead.)
+
+- VMR bug fix: the value set by the 'SET /RNDC ...etc' commands was not
+  correct (the Linux utility was not affected).
+
+
+29/12/19
+
+- Fixed a bug in the Task Header Display page of RMD: file names displayed
+  on the right half of the LUN table remained on the screen after the file
+  was closed.
+
+- Linux vol180 utility: default file protection is now [RWED,RWED,RWED,R],
+  like the INI program does.
+
+- SYSFCP bug fix: when checking file access rights, use 'owner' bits if
+  both uid and gid match.
+
+- Updates to the rarely-used VDO editor:
+  * directory names are 9 chars long and not 8.
+  * block numbers in QIO blocks are now 32-bit wide.
+  * I/O buffer must be contained within the task space (enforced by SYSFCP).
+  * the 'Log Disk' function now works.
+  * display file version number on the status line.
+
+
+02/01/20
+
+- TKB:
+  * implemented option switches to set output task attributes:
+      /TASK=xxxxxx    /ID=xxxxxx      /PRI=nn         /PAR=xxxxxx
+      /[NO]PRIV       /[NO]ACP        /[NO]CKP        /[NO]CLI
+      /ASG=...        etc.
+  * symbol and map file names can now be specified on the left side of
+    the equal sign of the command line.
+  * include .LIB type in library file search.
+
+- Added help file for TKB command line syntax and options (some of the
+  options listed are planned and not yet implemented).
+
+- Removed the MKT task since it is now obsolete.
+
+
+03/01/20
+
+- Renamed the TH.PRV (privileged bit) field of the task header to TH.ATTR
+  (task attributes).
+
+
+04/01/20
+
+- VDO:
+  * display selected block in reverse video.
+  * do not clear block markers when inserting and/or deleting chars, and/or
+    when inserting a file; adjust instead the block limits.
+  * when moving or copying a block, set the block markers at the new block
+    location.
+  * preserve the original column when moving the cursor up and down a number
+    of lines; this makes navigation through a file much more comfortable.
+  * fixed a bug in the CP/M filename parsing routine.
+  * VT220 Home and End keys now move the cursor to begin and end of line
+    respectively.
+
+
+08/01/20
+
+- HEL: allow login using UIC as well.
+
+
+11/01/20
+
+- DEVTT: convert form-feed chars to four line-feeds unless in binary mode.
+
+
+15/01/20
+
+- Leave mark-time packet in clock queue if delivery failed due to a low pool
+  condition.
+
+
+17/01/20
+
+- DEVTT: fork blocks are now allocated as part of the SCB and therefore are
+  easier to access by the main code. This eliminates duplicate routines and
+  a couple the extended UCB fields.
+
+- Kernel: optimized register usage of the fork queue and dispatch routines.
+
+
+19/01/20
+
+- Rewriting the whole AST processing:
+  * the T.SAST field of the TCB structure is now a pointer to a list of
+    specified ASTs and no longer a bitmap of enabled AST types.
+  * the .ASTDF function now takes a routine address and an AST type as
+    argument.
+  * the .ASTCT function now enables/disables task's global AST recognition;
+    when disabled, ASTs still can be queued but they are not processed
+    until AST recognition is enabled again. To disable a specific AST type,
+    use the .ASTDF function with a null routine address.
+  * different routines can be specified for different AST sources; that
+    simplifies the individual routines and makes processing at task level
+    cleaner and faster.
+  * AST arguments are now pushed on the task's stack.
+  * removed the T.AST and T.ASTP field of the TCB structure, as they are
+    no longer used.
+  * removed TX.PC from the task context structure, as the old PC value is
+    now kept on the task's stack.
+  * changed the order of saved registers on timer interrupt and upon
+    entering the executive: the alternate register set is now saved last.
+    This simplifies keeping the old PC and AF on stack when calling
+    an AST service routine, since they are adjacent.
+  * AST routines no longer have to save/restore AF; this simplifies the
+    code, especially at the stack cleanup phase. Any other used registers
+    used by the AST handler must be saved/restored.
+
+- Added Q.AST field to the QDB structure (not yet used).
+
+- Fixed a bug in the DMP utility: the /NH option switch was not properly
+  processed.
+
+
+21/01/20
+
+- We need support for pseudo-devices: the T.LIB field of the TCB right now
+  contains the full device name of the load device, meaning a lookup is
+  required everytime a task is loaded. If we switch to a UCB pointer, no
+  lookup will be necessary. In order to be able to locate tasks when booting
+  from a different drive the logical device LB: is used, which doesn't have
+  a UCB address since it ASN-ed. Thus, we need a true pseudo-device with a
+  UCB address and that could be redirected like in RSX-11M to a physical
+  device.
+
+- Kernel pseudo-device support:
+  * added U.RED (redirect) pointer to UCB so one device could be redirected
+    to another; null pointer marks the end of a redirect chain.
+  * added US.PSE (redirectable) device-characteristics bit.
+
+- Added LB: pseudo-device.
+
+- LB: redirected to boot device on startup.
+
+- MCR:
+  * added REDirect command.
+  * DEV command now shows redirected devices.
+
+- QIO now follows the U.RED links and redirects I/O packets to the correct
+  target device.
+
+
+22/01/20
+
+- MCR: REDirect command now detects potential circular redirects that would
+  result in infinite loops in the QIO code.
+
+- .GTLUN system call now follows redirect links (note that .STLUN does not!).
+
+- Mounted volume table now contains an UCB pointer to the mounted unit and
+  not a device name. Improves file I/O performance by avoiding a lookup.
+
+- New F.UCB field of FCB (shared with F.DEV). The filesystem task now stores
+  there the UCB address of the device containing the file. This also avoids
+  a name lookup everytime the file is accessed.
+
+- Added SY: pseudo-device.
+
+- Removed 'SET /LOGON' command from the init sequence (now set by VMR).
+
+
+23/01/20
+
+- Removed T.LIB field (load device name and unit) from TCB and replaced
+  with T.LDEV (UCB address of load device).
+
+- Added TI: pseudo-device, but not yet used.
+
+
+24/01/20
+
+- The .GTSK system call now returns a subset of the TCB and not the whole
+  structure.
+
+
+25/01/20
+
+- Kernel: changed register usage for UCBNAM function, renamed to $UCBDN.
+
+- INS, VMR: default to LB: and not to SY: when installing a task.
+
+- Removed T.CON field of TCB (obsoleted by the T.TI UCB pointer).
+
+- Kernel: clear the partition busy bit when memory is freed.
+
+
+26/01/20
+
+- Removed the $FCBS variable. FCBs are now linked to the M.FCBL list of
+  the corresponding mounted VCB.
+
+- Do not dismount a volume if files are still open on it. Instead, set the
+  UCB US.DMO bit and dismount the volume after the last file is closed.
+
+- DMO: warn about files open on volume, but initiate dismount.
+
+- MOU: allow re-mounting a volume being dismounted.
+
+- MCR: updated DEV command display to show 'dismount in progress' status.
+
+- SHUTUP: do not finish operation until all volumes are dismounted. Display
+  warning for devices that are taking too long to dismount.
+
+
+27/01/20
+
+- The unsolicited char AST routine address is now specified as part of
+  the IO.ATA QIO request via parameter Q.P1 as it should be; this allows
+  different AST routines to be specified when attaching to multiple terminals.
+  The previous specification via the .ASTDF syscall is no longer supported.
+
+- DEVDY, DEVDU: if the requesting task is privileged, is in kernel mode and
+  the I/O buffer is in kernel space (as is the case for SYSFCP), then the
+  I/O should be done from/to kernel space and not from/to task space.
+
+
+29/01/20
+
+- Added C.AST and C.RSI fields to the clock queue packet.
+
+- The .RUN system call now accepts a reschedule interval value in addition
+  to the relative schedule time, but the corresponding functionality is not
+  yet implemented. The values are passed to the kernel via memory locations
+  following the TDB structure.
+
+- MCR: added '/RSI=rsi' option to the 'RUN task dtime' command. Not working
+  yet due to lack of kernel support.
+
+
+30/01/20
+
+- Kernel: the IOCLN routine must follow the redirect pointers before queuing
+  the IO.CLN packet to the device.
+
+
+01/02/20
+
+- INS: do not default to LB0: when installing a task (thus undoing the change
+  from 25/01/20.) OTOH, VMR now enforces LB0:
+
+- Kernel: fix processing of tasks aborted by the loader.
+
+
+02/02/20
+
+- The time interval specification for the .MRKT system call now takes the
+  form of a magnitude and unit pair. In addition, an optional AST routine
+  address can be specified. The event flag number is now also optional.
+
+- The .CMKT system call now removes mark-time events that match a specific
+  event flag number or an AST routine address. If none specified, all the
+  events queued by the requesting task are removed.
+
+- The SYSLIB SLEEP routine now takes the same magnitude + unit arguments as
+  the .MRKT system call.
+
+- The .RUN system call now processes the reschedule interval. The parameters
+  to the function are now specified via magnitude + unit pair, just like the
+  .MRKT call.
+
+
+03/02/20
+
+- INI: fixed computation of the size of the storage allocation bitmap for
+  device sizes of 65529..65535 blocks.
+
+- Started writing a Volume Verification Utility (VFY). Right now it only
+  does a basic consistency check (verifies the index file information against
+  the storage allocation bitmap).
+
+
+04/02/20
+
+- Filesystem task: cache the first free index file entry for faster file
+  creation, especially when the disk contains a considerable number of files.
+
+
+05/02/20
+
+- DY driver: implemented IO.FMT command (right now limited to 3.5" 1.44M
+  disks).
+
+- Added preliminary FMT utility, can already format 3.5" 1.44M floppies.
+  No verify option yet.
+
+
+06/02/20
+
+- DY driver: implemented IO.FMT verify track subfunction.
+
+- FMT utility: implemented /VERIFY option (enabled by default).
+
+- Fixed a bug in QIO processing for units that share the same controller and
+  therefore the SCB and the I/O packet queue: the GETPKT routine must return
+  the UCB address specified in the I/O packet and not the UCB address passed
+  as argument. Now concurrent operations work as expected (e.g. accessing
+  files on DY0: from one terminal while e.g. formatting a disk on DY1: from
+  another terminal - slow, but works).
+
+
+07/02/20
+
+- Filesystem version 4.2: added BADBLK.SYS system file. The MOU utility can
+  still mount the version 4.1.
+
+- Added a BAD block file locator utility, but is not yet fully functional.
+
+
+08/02/20
+
+- DU driver: added IO.IDN function code, returns the IDE ident information.
+
+- Ported the FDISK utility from CP/M & UZI180.
+
+
+09/02/20
+
+- ICP: implemented <UIC>, <LOGUIC>, <DIR>, <LOGDIR> and <SYSVER> special
+  variables.
+
+
+23/02/20
+
+- FDISK: fixed a bug in command-line parsing.
+
+- Kernel: do not initiate checkpoint of a task that is already out of memory.
+
+- Shuffler: if defragmenting memory does not free enough contiguous space
+  for a waiting task, try checkpointing idling tasks.
+
+
+24/02/20
+
+- Kernel: renamed a few system calls to match RSX-11M names (CLRFL->CLEF,
+  SETFL->SETF, RDFLG->RDEF, WTFLG->WTSE).
+
+- Kernel: added .EXIF system call (exit if event flag not set).
+
+- Kernel: added .STSE system call (stop for single event flag). Unlike .WTSE
+  (wait for single event flag), .STSE drops the task priority to zero while
+  waiting for a flag, allowing the task to be checkpointed by a lower priority
+  one.
+
+- MCE, MCR, ICP, CCL and other system tasks now call .STSE to wait for
+  offspring tasks.
+
+- The system now boots cleanly on systems with only 128K of RAM, assuming a
+  large-enough checkpoint file is allocated on startup.
+
+
+25/02/20
+
+- Kernel: added .WTLO (wait for logical OR of event flags) and .STLO (stop
+  for logical OR of event flags) system calls.
+
+- Shuffler: commented out the new second pass added on 23/02/20, since the
+  new .STSE system call renders it practically unnecessary.
+
+
+26/02/20
+
+- MCR and VMR INS commands: task image size is now computed from the task
+  address limits and not from the file size. This is to prevent allocating
+  memory for any extra stuff present in the file such as loadable overlays.
+
+- Kernel: the QIO routine now sets the initial status code of the I/O
+  operation to E.PEND (request pending).
+
+
+29/02/20
+
+- Modified the vol180 Linux utility in preparation for large filesystem
+  size support (greater than 32Mb): better separation between file-level
+  and block-level access routines.
+
+
+01/03/20
+
+- vol180: fixed a bug in the file creation routines that caused the file
+  ID sequence number to be set to a random value (the ID seq. number is not
+  being used in this version anyway).
+
+
+05/03/20
+
+- MCR: do not process command if packet length is invalid.
+
+- Filesystem task: fixed a bug in the NEWINO routine that could potentially
+  return a non-free index file entry (bug introduced 04/02/20).
+
+
+07/03/20
+
+- Filesystem version 5.0 introduces 24-bit block pointers and a cluster
+  factor. Using a cluster size larger than 1 block helps to keep the size
+  of the BITMAP.SYS file (and thus the speed of the block search routine)
+  within reasonable limits. The size of the index file entry has been doubled
+  so it can contain the larger pointers, additional file attributes such as
+  the original file name (idea inspired by ODS-1, mostly useful when e.g.
+  checking filesystem consistency and recovering lost files) and a set of 5
+  extra pointers (reduces the disk footprint of small files). The disk or
+  partition size can now be as large as 549Gb, but for practical purposes it
+  will be limited to 4Gb :).
+
+- Writing a new version of the linux vol180 utility to support filesystem
+  V5.0.
+
+
+08/03/20
+
+- Found a bug in the vol180 utility: the master directory is kept normally
+  open so user directories can be located, but for write operations (e.g.
+  when creating a new directory) a new copy of the FCB is created. This
+  can cause certain FCB fields to go out of sync with the primamry copy,
+  which could potentially cause files to be lost (never ran into that issue,
+  though??). Now shared files share the main part of the FCB, and that
+  automatically solves the sync problem.
+
+- The new vol180 utility is now working: disk images can be created, files
+  can be imported/exported, etc. Cluster size selection is done automatically
+  according to the volume size.
+
+- Ported the fsck180 utility as well.
+
+
+10/03/20
+
+- Added new fields to the FCB and VCB structures to support filesystem 5.0.
+
+- Porting SYSFCP to filesystem version 5.0:
+  * block I/O routines now use 24-bit block numbers.
+  * buffer structure and buffer routines modified to support 24-bit block
+    numbers.
+  * allocation storage bitmap routines rewritten in order to support bitmap
+    files larger than 64K, and further optimized the bit search loop.
+  * adapted the mount/dismount routines to the new volume label block
+    format.
+
+- Linux vol180 utility: the /c switch of the import and copy commands now
+  accepts an argument in the form /c:nnn where nnn is the number of blocks
+  to allocate to a contiguous file. If nnn is not specified, the number of
+  blocks allocated to the output file is calculated from the size of the
+  input file as before.
+
+
+12/03/20
+
+- More work on SYSFCP V5.0:
+  * mount/dismount functions are working.
+  * file open/close is working.
+  * file read operation is working.
+
+
+14/03/20
+
+- More work on SYSFCP V5.0:
+  * file create routine now works, contiguous file size is now a 24-bit
+    value.
+  * file write operation is partially working.
+  * file delete operation is working.
+
+- PIP directory routines changed to support the new index file format.
+  No support for cluster factor > 0 yet.
+
+- FCSLIB.INC: fixed a bug in FSR$ macro (still was using 16-bit block
+  numbers).
+
+- The system now boots and most file I/O operations seem to be working.
+  Still needs extensive testing.
+
+
+15/03/20
+
+- Kernel: include UCB address in IO.CLN packet (I.UCB field was added on
+  06/02/20)
+
+- More work on SYSFCP V5.0:
+  * testing and debugging file read/write/delete routines.
+
+- The INI program now creates a filesystem V5.0 structure.
+
+
+17/03/20
+
+- The 'mount' command of the Linux vol180 utility now accepts an offset
+  argument to allow mounting e.g. specific partitions of a hard disk image.
+  The offset is specified in blocks or +bytes. The fsck180 utility accepts
+  a similar argument after the file name.
+
+
+19/03/20
+
+- More work on SYSFCP V5.0:
+  * got the read/write routines working correctly for cluster factors > 1.
+  * using the index file bitmap to allocate/free inodes.
+
+- PIP:
+  * take into account the cluster factor when computing disk free space.
+  * bug fix: display the correct error message on bitmap file read failure.
+  * use the index file bitmap to compute used/free entries (PIP /FR is
+    now much faster).
+  * added /BL:nnn switch to preallocate the specified number of blocks to
+    a contiguous file.
+
+
+20/03/20
+
+- More work on SYSFCP V5.0:
+  * file truncate/extend routines.
+
+- Kernel QIO processor, hard disk driver: allow processing of IO.IDN, IO.RPB
+  and IO.WPB packets even if the unit is online, else the FDISK program will
+  not be able to partition a virgin disk.
+
+- FDISK:
+  * bug fix: when adding a new partition, the stored size value was wrong if
+    specified as +size; +sizeK, +sizeM and cylinders worked correctly.
+  * the 'w' command now also exits the program.
+
+- VFY:
+  * adapted to filesystem 5.0.
+  * implemented /LI command.
+  * file ID is now displayed as 'inode number,seq number'.
+
+
+21/03/20
+
+- FCSLIB: the contiguous file size argument to the FCREAT function is now a
+  24-bit value.
+
+- PIP:
+  * display correct file sizes for files larger than 32Mb.
+  * fixed copy of files larger than 32Mb (24-bit block numbers).
+
+
+22/03/20
+
+- More work on SYSFCP V5.0:
+  * testing and bug fixing.
+
+
+23/03/20
+
+- More work on SYSFCP V5.0:
+  * testing and bug fixing, is close to release now.
+
+- INI: the default behavior now is *not* to ask for confirmation before
+  initializing a volume (RSX-11M doesn't ask either). The SYSCOPY.CMD file
+  included in the distribution nevertheless adds the /CF switch to the INI
+  command to ask for confirmation as before.
+
+
+24/03/20
+
+- SYSFCP now maintains a cached copy of the free cluster count in the VCB
+  structure. This makes it easier/faster for tasks like RMD to display the
+  disk free space without having to rescan the whole bitmap.
+
+- RMD free disk space display: switch to Mbytes if free space > 64Mb.
+
+- DMP, MD5: use 24-bit block numbers.
+
+
+08/04/20
+
+- Linux vol180 utility: fixed a bug that caused the inode bitmap not to be
+  updated after deleting a file.
+

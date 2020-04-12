@@ -1,0 +1,91 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	cseg
+
+	public	MATCH
+
+;-----------------------------------------------------------------------
+
+; Match string in DE against pattern in HL. Both are zero-terminated.
+; Returns Z if string matches pattern.
+
+MATCH:	ld	c,1		; star flag: 0 if star seen, 1 otherwise
+
+start:	ld	(str),de
+	ld	(pat),hl
+
+loop:	ld	a,(de)
+	or	a
+	jr	z,eloop
+
+	ld	a,(hl)
+	cp	'%'		; % matches a single character
+	jr	z,next
+
+	cp	'*'		; * matches zero or more characters
+	jr	nz,other
+
+	ld	c,0		; star = 0
+
+	inc	hl
+
+	ld	a,(hl)
+	or	a
+	ret	z		; match
+
+	jr	start
+
+other:	ld	a,(de)		; any other character matches literally
+	cp	(hl)
+	jr	z,next
+
+	ld	a,c
+	or	a		; no star?
+	ret	nz		; no match
+
+	ld	hl,(str)
+	inc	hl
+	ld	(str),hl
+	ex	de,hl		; old ++str in DE
+	ld	hl,(pat)	; old pat in HL
+	jr	loop
+
+next:	inc	de
+	inc	hl
+	jr	loop
+
+eloop:	ld	a,(hl)
+	cp	'*'
+	jr	nz,s1
+	inc	hl
+	ld	a,(hl)
+s1:	or	a
+	ret			; match if end of pattern
+
+	dseg
+
+str:	ds	2
+pat:	ds	2
+
+	end

@@ -1,0 +1,283 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	include	DCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	SYSFN.INC
+
+	include	SYSCONF.INC
+
+	extrn	SYSSTK,MMUINI,INITKM,ININT,SETVEC,INTON,INTOFF
+	extrn	TMRINT,$ASGN,SYSENT,SYSLVL,$PHYDV,$FNPAR,$ALLOC
+	extrn	CLRMEM,UPTIME,NVREAD,LDRTCB,TRQST,$POLSZ,GO
+
+	extrn	INIT_S,INIT_E
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; This is the main System Startup routine.
+; Initializes everything and starts a few essential tasks before
+; passing control to the dispatcher.
+
+START::	di
+	ld	sp,SYSSTK	; use SYSSTK in common memory
+
+	call	MMUINI		; init MMU
+
+	ld	hl,($POLSZ)
+	ld	a,h
+	or	l
+	jp	z,uncfg
+
+	ld	hl,0
+	ld	bc,128
+	call	CLRMEM		; clear RST vector area
+
+	ld	a,-1
+	ld	(SYSLVL),a	; we are in system state
+
+	call	NVREAD		; read machine-specific settings
+	call	INITKM		; init task manager
+	call	ININT		; init interrupt system
+	call	INTOFF		; make sure interrupts are off
+
+	ld	hl,UPTIME
+	ld	bc,5
+	call	CLRMEM		; init uptime
+
+	ld	bc,GENPAR
+	call	$FNPAR
+	jr	c,nopar
+	push	hl
+	pop	ix
+  if 0
+	in0	a,(RAMUBR)
+	inc	a
+  else
+	xor	a		; 1M -- TODO: fix!
+  endif
+	sub	a,(ix+P.BASE)
+	ld	(ix+P.SIZE),a	; resize GEN partition to fit in available RAM
+
+nopar:	; initialize physical devices
+
+	call	INTON		; enable timer interrupts to service
+	ei			;  any possible device timeouts
+
+	ld	hl,$PHYDV
+inidev:	ldw	de,(hl)		; get DCB address into DE
+	inc	hl
+	inc	hl
+	ld	a,d
+	or	e		; end of list?
+	jr	z,done		; exit loop if yes
+	push	de
+	ld	hl,D.EPT
+	add	hl,de
+	ldw	hl,(hl)		; get address of dispatch table
+	call	(hl)		; call the driver's initialization entry point
+	pop	hl
+	jr	inidev
+
+done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
+
+  IF 0
+	ld	de,'TT'
+	ld	c,0		; 'TT0:' DE-C = physical
+	ld	hl,'CO'
+	ld	b,0		; 'CO0:' HL-B = logical (system console device)
+	ld	a,N.GBL
+	ld	ix,0
+	call	$ASGN
+  ENDIF
+
+  IF 1
+	ld	de,(0081h)	; get load device
+	ld	a,(0083h)
+	ld	c,a
+	call	$FNDEV##
+;;	jp	c,...
+	push	hl
+	ld	hl,(DEVLB##+3)
+	ld	de,U.RED
+	add	hl,de
+	pop	de
+	ldw	(hl),de
+  ENDIF
+
+	ld	a,0C3h
+	ld	(0),a
+	ld	hl,$DBTRP##
+	ld	(1),hl
+
+	ld	hl,0
+	ld	(MCRTCB##),hl
+
+	; start loader task - should have been installed and fixed in memory
+	; by VMR
+
+	ld	hl,LDRTDB
+	call	TRQST		; request loader
+	jp	c,noldr
+	ld	(LDRTCB),ix
+
+	; start initialization task
+
+	ld	bc,SYSPAR
+	call	$FNPAR##	; find system partition
+	jp	c,uncfg		; error if not found
+	ld	(INITCB+T.PCB),hl ; set pointer to partition in TCB
+	ld	de,'TT'
+	ld	c,0
+	ld	ix,INITCB
+	call	$FNDEV##	; get UCB for console device
+	jp	c,uncfg
+	ld	(INITCB+T.TI),hl
+	ld	bc,TCBSZ
+	call	$ALLOC		; allocate new TCB for initialization task
+	jp	c,uncfg
+	push	hl
+	pop	ix		; get TCB address into IX
+	ex	de,hl
+	ld	hl,INITCB
+	ld	bc,TCBSZ
+	ldir			; copy TCB
+	ldw	hl,(ix+T.END)
+	ldw	de,(ix+T.STRT)
+	or	a
+	sbc	hl,de
+	ld	de,4095
+	add	hl,de
+	ld	a,h
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh		; number of pages
+	ldw	de,(ix+T.PCB)	; get PCB address
+	ld	hl,P.SIZE
+	add	hl,de
+	ld	(hl),a		; (assumes user-controlled partition!)
+				; (but this routine will be removed soon anyway)
+	ldw	de,(ix+T.END)	; get initial top of stack into DE
+;;	inc	de
+	ldw	(ix+T.SP),hl	; set SP value in TCB
+	call	NEWCTX##	; alloc and link context block, ignore errors
+	ldw	de,(ix+T.CTX)
+	ld	hl,TX.UID
+	add	hl,de
+	ld	(hl),1		; set user ID
+	inc	hl
+	ld	(hl),1		; set group ID
+	ld	hl,TX.DIR
+	add	hl,de
+	ld	bc,9
+	call	CLRMEM		; clear current dir
+	ld	hl,TX.REGS+24
+	add	hl,de
+	ldw	bc,(ix+T.EPT)	; get entry point into BC
+	ldw	(hl),bc		; set PC on stack frame
+	dec	hl
+	dec	hl
+;;	ld	bc,407Fh	; user mode, enable all ints
+	ld	bc,507Fh	; user mode, bpt on halt, enable all ints
+	ldw	(hl),bc		; set MSR on stack frame
+	ld	iy,$RLIST##
+	ld	bc,T.ACTL
+	call	$LKTCB##	; insert TCB in ready list
+	ld	iy,$TLIST##
+	ld	bc,T.TCBL
+	call	$LKTCB##	; add TCB to the task directory
+
+	; start dispatcher
+
+	jp	GO
+
+uncfg:	call	$DMTRP##
+	db	'RSX280 -- System not configured, stopping',0
+	di
+	halt
+
+noldr:	call	$DMTRP##
+	db	'RSX280 -- Loader not installed, stopping',0
+	di
+	halt
+
+GENPAR:	db	'GEN   '
+SYSPAR:	db	'SYSPAR'
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+	public	IDDTBL
+
+IDDTBL:	GENDEV			; device-driver table from SYSCONF.INC
+	dw	DEVTI##		; pseudo-device TI:
+	dw	DEVLB##		; pseudo-device LB:
+	dw	DEVSY##		; pseudo-device SY:
+	dw	0		; end of table marker
+
+LDRTDB:	db	'LDR...'	; task name
+	dw	0,0		; addr and length of command line (not used)
+	db	0,0,0		; attr, user, grp (not used)
+	db	'CO',0		; terminal device
+	dw	0,0		; addr and size of data blk to send (not used)
+
+INITCB:	dw	0		; T.LNK
+	dw	0		; T.TCBL
+	dw	0		; T.ACTL
+	db	(1 SHL TA.PRV) OR (1 SHL TA.REM) OR (1 SHL TA.CKD) ; T.ATTR
+	db	(1 SHL TS.ACT)	; T.ST
+	db	0		; T.ST+1
+	db	200		; T.DPRI
+	db	200		; T.PRI
+	db	0		; T.SPRI
+	db	'INIT  '	; T.NAME
+	db	'V6.03 '	; T.VID
+	dw	0		; T.CMD
+	db	0		; T.IOC
+	dw	0		; T.RCVL
+	dw	0		; T.OCBL
+	dw	0		; T.SAST
+	dw	0		; T.ASTL
+	dw	0		; T.SVST
+	db	0,0,0,0		; T.FLGS
+	db	0,0,0,0		; T.WAIT
+	dw	0		; T.CTX
+	dw	0		; T.TI
+	dw	0		; T.LDEV
+	dw	0,0		; T.SBLK
+	dw	0		; T.NBLK
+	dw	0		; T.PCB
+	dw	0		; T.CPCB
+	dw	INIT_S		; T.STRT
+	dw	INIT_E		; T.DEND
+	dw	INIT_E		; T.END
+	dw	INIT_S		; T.SPT
+	dw	0		; T.SP
+
+	end	START

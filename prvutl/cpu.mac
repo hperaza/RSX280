@@ -1,0 +1,356 @@
+	TITLE	CPU.MAC
+
+	.Z80
+
+	ident	'V.2'
+
+	include	SYSFN.INC
+	include	AST.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+;  CPU is a program that measures instantaneous CPU utilization.
+;  Based on a similar RSX-11M utility fom DECUS tapes.
+
+; TODO:
+; - calibrate at max pri? or use timer reload value [cpu freq] to
+;   compute inner loop counter from instr clocks?
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+CTRLC	equ	03h
+CTRLZ	equ	1Ah
+
+	extrn	ATTACH,HLDEC,AHEX,PUTCH,PUTSTR,TTFLSH
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+CPU:	ld	sp,stack
+
+	ld	a,0FFh
+	ld	(USGPRV),a
+
+	ld	hl,TCKSEC
+	ld	c,I.TCKS
+	SC	.GIN		; get ticks per second
+
+	ld	c,1
+	SC	.SUPER
+
+	ld	de,'TI'
+	ld	c,0
+	ld	b,5
+	SC	.ALUN		; LUN 5 is terminal I/O
+
+	ld	de,IOAST	; unsolicited char AST routine address
+	ld	c,5
+	call	ATTACH		; attach to terminal, with ASTs
+
+INIT:	ld	hl,INITMG	; print init message
+	call	PUTSTR
+	call	TTFLSH
+
+	ld	hl,0
+	ld	(COUNT),hl	; number of iterations = 0 to start
+
+	ld	hl,1		; timeout = 1 second
+	ld	d,2
+	ld	e,8		; event flag number
+	ld	bc,MKAST
+	SC	.MRKT		; send control to AST in specified time
+
+	ld	hl,(TICCNT)	; get absolute tick
+	ld	(PREVTK),hl
+
+	ld	hl,0
+	ld	e,1		; set priority to 1 so this task will only run
+	ld	d,0		;  when no other tasks are using the CPU
+	SC	.ALTPR
+
+LP0:	ld	bc,515		; inner loop counter
+LP1:	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,LP1		; chew up some time
+
+	ld	hl,(COUNT)
+	inc	hl		; approx 1000/sec with no CPU load
+	ld	(COUNT),hl
+	jr	LP0
+
+;-----------------------------------------------------------------------
+
+; Mark time AST service routine
+
+MKAST:	push	hl
+	push	de
+	push	bc
+
+	ld	hl,0
+	ld	e,0		; bump priority back to default
+	ld	d,0		
+	SC	.ALTPR
+
+	ld	a,(FLAG)
+	or	a		; any key entered?
+	jr	z,NOKEY		; branch if not
+
+	; space pressed - refresh screen
+
+	ld	hl,INITMG	; print init message
+	call	PUTSTR
+	call	TTFLSH
+
+	ld	hl,0
+	ld	(COUNT),hl	; number of iterations = 0 to start
+
+	xor	a
+	ld	(FLAG),a
+
+	ld	hl,1		; timeout = 1 second
+	ld	d,2
+	ld	e,8		; event flag number
+	ld	bc,MKAST
+	SC	.MRKT		; send control to AST in specified time
+
+	ld	hl,0
+	ld	e,1		; reduce priority to 1
+	ld	d,0
+	SC	.ALTPR
+
+	jp	ast1		; exit AST
+
+NOKEY:	ld	hl,TIMBUF
+	SC	.GDAT		; get current time
+
+	ld	hl,TIMXY	; print current time
+	call	PUTSTR
+	ld	hl,TIMBUF
+	call	PRTIM
+
+	; 0..100 = count(0..1000) / 10 * TCKSEC / ticks
+
+	ld	hl,(TICCNT)
+	ld	de,(PREVTK)
+	or	a
+	sbc	hl,de		; get ticks since last pass
+	add	hl,hl		; *2
+	ld	e,l
+	ld	d,h
+	add	hl,hl		; *4
+	add	hl,hl		; *8
+	add	hl,de		; *10
+	push	hl
+	ld	hl,(COUNT)	; get value (0..1000)
+	ld	bc,(TCKSEC)
+	call	MUL32		; *TCKSEC
+	pop	bc
+	call	DIV32		; /(10*ticks)
+
+	ld	a,100
+	sub	l		; value of the counter to be converted
+	jr	nc,OUTV		; just in case
+	xor	a		; zero negative value
+
+OUTV:	ld	(USGCPU),a	; save 0-100 value
+
+	ld	hl,USGPRV
+	cp	(hl)		; compare with previous saved value
+	jr	z,LP5		; jump if same (no refresh needed)
+	ld	(hl),a
+
+	ld	hl,NUMXY	; position of output number
+	call	PUTSTR
+	ld	a,(USGCPU)
+	ld	l,a
+	ld	h,0
+	ld	a,' '		; filler
+	call	HLDEC		; display the value of counter
+	ld	c,'%'
+	call	PUTCH
+
+	ld	hl,GRAPH
+	call	PUTSTR		; enter graphics mode
+
+	ld	b,50
+	ld	a,(USGCPU)	; get percent utilization
+	srl	a		; divide to make 0-50
+	jr	z,LP3
+	ld	e,a
+	ld	c,'a'
+LP2:	call	PUTCH		; output bar
+	dec	e
+	jr	z,LP3		; if 100%
+	djnz	LP2
+	jr	LP5
+LP3:	ld	c,' '		; fill the rest with blanks
+LP4:	call	PUTCH
+	djnz	LP4
+
+LP5:	ld	hl,ENDG
+	call	PUTSTR		; exit graphics mode
+
+	ld	hl,0
+	ld	(COUNT),hl	; set counter back to zero
+
+	xor	a
+	ld	(FLAG),a
+
+	ld	hl,0
+	ld	e,1		; reduce priority to 1
+	ld	d,0
+	SC	.ALTPR
+
+	ld	hl,(TICCNT)
+	ld	(PREVTK),hl
+
+	ld	hl,1		; timeout = 1 second
+	ld	d,2
+	ld	e,8		; event flag number
+	ld	bc,MKAST
+	SC	.MRKT		; send control to AST in specified time
+
+ast1:	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX		; exit the AST service routine
+
+; Unsolicited character AST service routine
+
+IOAST:	ex	(sp),hl		; fetch char
+	ld	a,l
+	cp	CTRLZ		; did he press Ctrl-Z ?
+	jr	z,EXT		; yes - go exit
+	cp	CTRLC		; no - how about Ctrl-C ?
+	jr	nz,CLS		; no - go see if he wants screen refreshed
+
+EXT:	ld	hl,ENDMG	; print end message
+	call	PUTSTR
+	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit the task
+
+CLS:	cp	' '		; did he press space (screen refresh)
+	jr	nz,ast2		; no - go back
+
+	ld	a,1
+	ld	(FLAG),a	; yes - set flag to show cls intended
+
+ast2:	pop	hl
+	SC	.ASTX		; exit the AST service routine
+
+PRTIM:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; hour
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; min
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; sec
+	call	AHEX
+	pop	hl
+	ret
+
+INITMG:	db	ESC,'[?2l',ESC,'H',ESC,'J'
+	db	LF,TAB,TAB,TAB,'Instantaneous CPU utilization'
+	db	ESC,'Y',32+7,32+13,'|'
+	db	ESC,'Y',32+8,32+13
+	db	'+----+----+----+----+----+----+----+----+----+----+'
+	db	ESC,'Y',32+9,32+13
+	db	'0    10   20   30   40   50   60   70   80   90  100%'
+	db	ESC,'Y',32+5,32+21,'Time:'
+	db	ESC,'Y',32+5,32+38,'Utilization: '
+	db	0
+
+ENDMG:	db	ESC,'Y',32+11,32,ESC,'<',0
+
+TIMXY:	db	ESC,'Y',32+5,32+27,0
+
+NUMXY:	db	ESC,'Y',32+5,32+50,0
+
+GRAPH:	db	ESC,'Y',32+7,32+14,ESC,'F',0
+ENDG:	db	ESC,'G',ESC,'H',CR,0
+
+; HLDE = HL * BC
+
+MUL32:	xor	a
+	ld	d,a
+	ld	e,a
+dmu:	add	hl,hl
+	rra
+	ex	de,hl
+	add	hl,hl
+	jr	nc,m1
+	inc	de
+m1:	rla
+	jr	nc,m2
+	add	hl,bc
+	jr	nc,m2
+	inc	de
+m2:	ex	de,hl
+	add	a,10h
+	jr	nc,dmu
+	ret
+
+; HL = HLDE / BC, remainder in HL
+
+DIV32:	ld	a,c
+	cpl
+	ld	c,a
+	ld	a,b
+	cpl
+	ld	b,a
+	inc	bc
+	ld	a,16
+dv2:	push	af
+	add	hl,hl
+	rra
+	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	nc,dv3
+	inc	hl
+dv3:	rla
+	jr	c,dv4
+	ld	a,l
+	add	a,c
+	ld	a,h
+	adc	a,b
+	jr	nc,dv5
+dv4:	add	hl,bc
+	inc	de
+dv5:	pop	af
+	dec	a
+	jr	nz,dv2
+	ex	de,hl
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+COUNT:	dw	0
+FLAG:	db	0
+PREVTK:	ds	2
+USGCPU:	ds	1
+USGPRV:	ds	1
+TCKSEC:	ds	2
+TIMBUF:	ds	8
+
+	ds	256
+stack	equ	$
+
+	end	CPU

@@ -1,0 +1,981 @@
+
+  Help is available for all the BASIC-11 commands, statements and functions.
+
+  Type HELP BASIC COMMANDS for a list of BASIC-11 commands.
+  Type HELP BASIC STATEMENTS for a list of BASIC-11 statements.
+  Type HELP BASIC FUNCTIONS for a list of BASIC-11 functions.
+  Type HELP BASIC OPERATORS for a list of BASIC-11 operators.
+
+  Type HELP BASIC keyword for detailed help on a specific keyword.
+
+\COM*MANDS
+
+  Help is available for the following BASIC-11 commands:
+
+    APPEND    BYE       CAT       CLEAR     COMPILE   DEL       LENGTH
+    LIST      LISTNH    NEW       OLD       RENAME    REPLACE   RESEQ
+    RUN       RUNNH     SAVE      SCR       SUB       UNSAVE
+
+  Type HELP BASIC command-name for more information on each command.
+
+\ST*ATEMENTS
+
+  Help is available for the following BASIC-11 statements:
+
+    \         CALL      CHAIN     CLOSE     COMMON    DATA      DEF
+    DIM       DIM#      END       FOR       GOSUB     GO TO     IF-THEN
+    IF-END    INPUT     KILL      LET       LINPUT    NAME      NEXT
+    ON        ON-GOTO   ON-GOSUB  OPEN      OVERLAY   PRINT     READ
+    RANDOMIZE REM       RESET     RESTORE   RETURN    STOP
+
+  Type HELP BASIC statement-name for more information.
+
+\FUN*CTIONS
+
+  Help is available for the following BASIC-11 functions:
+
+    ABORT     ABS       ASC       ATN       BIN       CHR$      CLK$
+    COS       CTRLC     DAT$      EXP       INT       LEN       LOG
+    LOG10     OCT       POS       PI        RCTRLC    RCTRLO    RND
+    SEG$      SGN       SIN       SQR       STR$      SYS       TAB
+    TRM$      TTYSET    VAL
+
+  Type HELP BASIC function-name for more information on each function.
+
+\OP*ERATORS
+
+  Assignment: =
+  Arithmetic: unary -, + - * / ^
+  String concatenation: + or &
+  Comparison: = < <= > >= <> (=< => and >< also allowed)
+
+\VAR*IABLES
+
+  % integer variables
+  $ strings
+  arrays
+
+\;---- commands
+\APPEND
+
+  Syntax:
+
+    APPEND filespec
+
+  The APPEND command is used to include contents of a previously saved
+  source program in the current program.
+
+\BYE
+
+  Syntax:
+
+    BYE
+
+  Exits the BASIC interpreter to the operating system. Any unsaved programs
+  and data are lost.
+
+\CAT
+
+  Syntax:
+
+    CAT [filespec]
+
+  The CAT (catalog) command displays your file directory.  The optional
+  filespec argument can be used to display a directory other than the
+  current user's UIC, or a device other than SY:.
+
+\CLEAR
+
+  Syntax:
+
+    CLEAR
+
+  Erases all variables (scalars, strings and arrays).
+
+\COMPILE
+
+  Syntax:
+
+    COMPILE [filespec]
+
+  The COMPILE command allows you to store a compiled version of your
+  BASIC program.  The file is stored on disk with the current name and
+  the extension .BAC.  Or, you can specify a new file name and extension.
+
+\DEL
+
+  Syntax:
+
+    DEL n1[,n2,...]
+    DEL n1-[n2,...]
+    DEL [n1]-n2
+
+  The DEL (delete) command allows you to remove one or more lines from the
+  program currently in memory.  Following the word DEL, type the line number
+  of the single line to be deleted or two line numbers separated by a dash
+  (-) indicating the first and last line of the section of code to be
+  removed.  Several single lines or line sections can be indicated by
+  separating the line numbers, or line number pairs, with a comma.
+
+\LENGTH
+
+  Syntax:
+
+    LENGTH
+
+  The LENGTH command returns the length of the current program in memory,
+  and the amount of remaining free memory, in bytes.
+
+\LIST
+
+  Syntax:
+
+    LIST
+    LIST line_number
+    LIST -line_number
+    LIST line_number-[END]
+    LIST line_number-line_number
+    LIST line_number, line_number, ...
+ 
+    or any combination of the above.
+
+  The LIST command allows you to obtain printed listing at the terminal of
+  the program currently in memory, or one or more lines of that program. 
+  Typing the word LIST by itself will cause the listing of the entire
+  program.  LIST followed by one line number will list that line; and LIST
+  followed by two line numbers separated by a dash (-) will list the lines
+  between and including the lines indicated.  Several single lines or line
+  sections can be indicated by separating the line numbers, or line number
+  pairs, with a comma.
+
+\LISTNH
+
+  The LISTNH command is the same as LIST, but does not print the
+  header containing the program name and current date.
+
+\NEW
+
+  Syntax:
+
+    NEW [filename]
+
+  The NEW command clears all the variables and the program in memory and
+  allows you to input a new program from the terminal.  A program name can
+  be indicated following the word NEW or when the system requests it.
+
+\OLD
+
+  Syntax:
+
+    OLD [filename]
+
+  The OLD command clears all the variables and the program in memory and
+  allows you to recall a saved program from a storage device.  You can
+  indicate a program name following the word OLD or when the system requests
+  it.  If no device name is given, the file is assumed to be on the system
+  disk.  A device specification without a filename will cause a program to
+  be read from an input-only device (such as a high speed reader, or card
+  reader).
+
+\RENAME
+
+  Syntax:
+
+    RENAME [filename]
+
+  The RENAME command causes the name of the program currently in memory to
+  be changed to the name specified after the word RENAME.
+
+\REPLACE
+
+  Syntax:
+
+    REPLACE [filename]
+
+  The REPLACE command is the same as SAVE, but allows you to substitute a
+  new program with the same name for an old program, erasing the old
+  program.
+
+\RESEQ
+
+  Syntax:
+
+    RESEQ [start value],[starting line],[step]
+
+  Renumbers program lines. The default values for the parameters are
+  10, first line of program, and 10.
+
+\RUN
+
+  Syntax:
+
+    RUN [filename]
+
+  The RUN command causes execution of the program currently in memory.
+  If a filename is specified, the corresponding program is loaded, replacing
+  the one currently in memory and executed.
+
+\RUNNH
+
+  The RUNNH command is the same as RUN, but does not print the header
+  containing the program name and current date.
+
+\SAVE
+
+  Syntax:
+
+    SAVE [filename]
+
+  The SAVE command causes the program currently in memory to be saved on the
+  system disk under its current filename with the extension .BAS.  Where the
+  word SAVE is followed by a filename or a device and a filename, the
+  program in memory is saved under the name given and on the device
+  specified.  A device specification without a filename will cause the
+  program to be output to an output-only device (line printer, high-speed
+  punch).
+
+\SCR
+
+  Syntax:
+
+    SCR[ATCH]
+
+  Erases the entire storage area (program, variables and default file name).
+
+\SUB
+
+  Syntax:
+
+    SUB line number /old string1/new string/[n]
+
+  Used for program edition.  Allows to substitute the n-th occurrence
+  (default is 1) of the first string in the specified program line for the
+  second string.  Delimiters other than '/' can be used if any of the
+  strings contain slashes.
+
+  Examples:
+
+    SUB 20 @LED@LET@
+    SUB 125 "!="<>"
+    SUB 50 /50/25/2
+
+\UNSAVE
+
+  Syntax:
+
+    UNSAVE filename
+
+  The word UNSAVE is followed by the filename and, optionally, the extension
+  of the file to be removed.  The UNSAVE command cannot remove files without
+  an extension.  If no extension is specified, the source (.BAS) file is
+  deleted.  If no device is specified, the system disk is assumed.
+
+\;---- functions
+\ABS
+
+  Y=ABS(X)
+
+  Returns the absolute value of X
+
+\ATN
+
+  Y=ATN(X)
+
+  Returns the arc-tangent of X as an angle in radians in the range + or -
+  pi/2.
+
+\BIN
+
+  Y=BIN(X$)
+
+  Computes the integer value of a string of blanks (ignored), 1's and 0's.
+
+\COS
+
+  Y=COS(X)
+
+  Returns the cosine of X radians.
+
+\EXP
+
+  Y=EXP(X)
+
+  Returns the value of e^X, where e=2.71828.
+
+\INT
+
+  Y=INT(X)
+
+  Returns the greatest integer less than or equal to X.
+
+\LOG
+
+  Y=LOG(X)
+
+  Returns the natural logarithm of X.
+
+\LOG10
+
+  Y=LOG10(X)
+
+  Returns the common logarithm of X.
+
+\OCT
+
+  Y=OCT(X$)
+
+  Computes an integer value from a string of blanks (ignored) and digits
+  from 0 to 7.
+
+\PI
+
+  Y=PI
+
+  Returns the constant value = 3.14159.
+
+\RND
+
+  Y=RND
+  Y=RND(X)
+
+  Returns a random number between 0 and 1. The argument X is ignored.
+
+\SGN
+
+  Y=SGN(X)
+
+  Returns a value indicating the sign of X (-1, 0, or 1).
+
+\SIN
+
+  Y=SIN(X)
+
+  Returns the sine of X radians.
+
+\SQR
+
+  Y=SQR(X)
+
+  Returns the square root of X.
+
+\TAB
+
+  Syntax:
+
+    PRINT TAB(X);
+
+  Move head to position X% in current print record; ignored if current
+  position is beyond X% (1st position counted as 0). The TAB function
+  can be used only in a PRINT statement.
+
+\ASC
+
+  Y%=ASC(X$)
+
+  Returns as a decimal number the ASCII value for the one-character string
+  X$.
+
+\CHR$
+
+  Y$=CHR$(X%)
+
+  Returns a one-character string having the ASCII value of X.
+
+\CLK$
+
+  Y$=CLK$
+
+  Returns a string corresponding to the current time.
+
+\DAT$
+
+  Y$=DAT$
+
+  Returns the current date in DD-MMM-YYYY format.
+
+\SEG$
+
+  Y$=SEG$(X$,Y,Z)
+
+  Returns the substring of characters in positions Y through Z in X$.
+
+\LEN
+
+  Y%=LEN(X$)
+
+  Returns the number of characters in the string X$, including blanks.
+
+\POS
+
+  Y%=POS(X$,Y$,Z)
+
+  Searches for and returns the position of the first occurrence of Y$
+  in X$ starting with the Z-th position.
+
+\STR$
+
+  Y$=STR$(X)
+
+  Returns the string which represents the numeric value of X.
+
+\VAL
+
+  Y=VAL(X$)
+
+  Returns the number represented by the string X$.
+
+\TRM$
+
+  Y$=TRM$(X$)
+
+  Returns X$ without trailing blanks.
+
+\SYS
+
+  Y=SYS(1)
+
+  Waits for a keystroke and returns a decimal value corresponding to the
+  key pressed.
+
+  Y=SYS(4)
+
+  Exits the BASIC interpreter, like the BYE command.
+
+  Y=SYS(6)
+
+  If CTRL-C break has been disabled (see RCTRLC), then the function
+  returns 1 if CTRL-C has been pressed since the last call to the function,
+  zero otherwise.
+
+  Y=SYS(7,0)
+
+  Enables terminal lowercase input.
+
+  Y=SYS(7,1)
+
+  Disables terminal lowercase input. All the terminal input will be
+  converted to uppercase.
+
+\RCTRLO
+
+  Y=RCTRLO
+
+  Cancels the CTRL-O action. Resumes the output to the terminal.
+
+\ABORT
+
+  Y=ABORT(0)
+
+  Aborts the program execution and closes all open files. Unlike the STOP
+  statement, no message is displayed.
+
+  Y=ABORT(1)
+
+  Same as above, but in addition the program and variables are erased from
+  memory.
+
+\TTYSET
+
+  Y=TTYSET(255,n)
+
+  Sets the terminal line width to n-1 characters.
+
+\CTRLC
+
+  Y=CTRLC
+
+  Resets the action of RCTRLC, enables CTRL-C break. After calling the
+  function the program execution can be stopped with CTRL-C. See also
+  RCTRLC.
+
+\RCTRLC
+
+  Y=RCTRLC
+
+  Disables CTRL-C break. After calling this function the program execution
+  can no longer be stopped with CTRL-C. See also CTRLC.
+
+\;---- statements
+\SEP*ARATOR|BACK*SLASH|\
+
+  The backslash character '\' is used to separate multiple statements in
+  a single program line.
+
+  Examples:
+
+    10 PRINT "Filename"; \ INPUT F$
+    60 IF END #1 THEN CLOSE #1 \ STOP
+
+\CALL
+
+  Syntax:
+
+    CALL "function name" [(argument list)]
+
+  Used to call assembly language user functions from a BASIC program.
+
+\CHAIN
+
+  Syntax:
+
+    CHAIN "filedesc" [LINE number]
+
+  Terminates execution of user program, loads and executes the specified
+  program starting at the line number, if included. All variables are
+  erased prior the execution of the new program, except those listed in
+  a COMMON statement.
+
+  Examples:
+
+    375 CHAIN "PROG2"
+    500 CHAIN "PROG3" LINE 75
+    600 CHAIN A$ LINE 32000
+
+\CLOSE
+
+  Syntax:
+
+    CLOSE [[#]variable [, ...]]
+
+  Closes the logical file(s) specified. If no file is specified, closes
+  all files that are currently open.
+
+  Examples:
+
+    100 CLOSE #2
+    250 CLOSE 10,4,N1
+
+\COMMON
+
+  Syntax:
+
+    COMMON list
+
+  Defines a list of common variables to be available to CHAINed programs.
+  See also CHAIN.
+
+  Examples:
+
+    10 COMMON A,B,C$
+
+\DATA
+
+  Syntax:
+
+    DATA list of values
+
+  Used in conjunction with READ to input data into an executing program.
+
+  Example:
+
+    300 DATA 4.3, "STRING",85,49,75,04,10
+
+\DEF
+
+  Syntax:
+
+    DEF FNletter(argument)=expression
+
+  Defines a user function to be used in the program (letter is any
+  alphabetic letter).
+
+  Example:
+
+    20 DEF FNA(X,Y,Z)=SQR(X^2+Y^2+Z^2)
+
+\DIM|DIM#
+
+  Syntax:
+
+    DIM variable(n),variable(n,m), ...
+    DIM #constant,variable(n),variable$(m)=length, ...
+
+  The first form reserves space for lists and tables according to subscripts
+  specified after variable name.
+
+  The second form defines the mapping of virtual memory variables onto a
+  file.  Virtual memory arrays have their values stored on a disk file,
+  allowing to manipulate large amounts of data that otherwise would not fit
+  in physical memory.  The constant value following the # sign is the
+  logical number of the file used to store the values, the file itself must
+  be opened via a OPEN statement.  Several DIM # statements may be used to
+  define several mappings onto the same file.
+
+  Examples:
+
+    20 DIM A(20),B$(5,10),C%(45)
+    75 DIM #4,A$(100)=32,B(50,50)
+
+\END
+
+  Syntax:
+
+    END
+
+  Placed at the physical end of the program to terminate program execution.
+
+  Example:
+
+    32767 END
+
+\FOR
+
+  Syntax:
+
+    FOR variable=expression1 TO expression2 [STEP expression3]
+
+  Sets up a loop to be executed the specified number of times. See also
+  NEXT.
+
+  Examples:
+
+    20 FOR I=2 TO 40 STEP 2
+    55 FOR N=A TO A+R
+
+\GOSUB
+
+  Syntax:
+
+    GOSUB line number
+
+  Used to transfer control to a specified line of a subroutine. See also
+  RETURN.
+
+  Example:
+
+    90 GOSUB 200
+
+\GOTO
+
+  Syntax:
+
+    GO TO line number
+
+  Used to unconditionally transfer control to other than the next
+  sequential line in the program.
+
+  Example:
+
+    100 GO TO 50
+
+\IF|IF-THEN
+
+  Syntax:
+
+    IF condition THEN {statement | line number}
+    IF condition GO TO line number
+
+  Used to conditionally transfer control to the specified line of program.
+  See also IF END #.
+
+  Examples:
+
+    55 IF A>B THEN PRINT "NO"
+    60 IF FNA(R)=B THEN 250
+    95 IF L<>0 GO TO 345
+
+\IF-END|END#
+
+  Syntax:
+
+    IF END #n THEN {statement | line number}
+    IF END #n GO TO line number
+
+  Used to test for end of file on sequential input file #n.
+
+  Example:
+
+    100 IF END #1 THEN STOP
+
+\INPUT
+
+  Syntax:
+
+    INPUT list
+    INPUT #expression:list
+    INPUT #expression,list
+
+  The first form is used to input data from the terminal keyboard or paper
+  tape reader.  The other two forms are used to input data from a sequential
+  file or particular device.
+
+  Examples:
+
+    25 INPUT A$
+    55 INPUT #8,A,N,B$
+
+\LINPUT
+
+  Syntax:
+
+    LINPUT string variable
+    LINPUT #expression:string variable
+    LINPUT #expression,string variable
+
+  Same as INPUT, but stores the complete input string, including leading
+  and trailing spaces as well as delimiters into the specified string
+  variable.  See also INPUT.
+
+  Examples:
+
+    40 LINPUT R$
+    75 LINPUT #1,E$
+
+\LET
+
+  Syntax:
+    [LET] variable=expression
+
+  Used to assign a value to the specified variable.
+
+  Examples:
+
+    55 LET A=40
+    60 A=4.2
+
+\NEXT
+
+  Syntax:
+
+    NEXT variable
+
+  Placed at the end of a FOR loop to return control to the FOR statement.
+
+  Examples:
+
+    25 NEXT I
+    30 NEXT J
+
+\KILL
+
+  Syntax:
+
+    KILL string
+
+  Deletes the specified file.
+
+  Example:
+
+    45 KILL "NONAME.BAS"
+
+\NAME-TO
+
+  Syntax:
+
+    NAME old filename TO new filename
+
+  Used to rename a file.
+
+  Examples:
+
+    455 NAME F$ TO "NOSUCH.FIL"
+    270 NAME "MATRIX.OLD" TO "MATRIX.NEW"
+
+\ON|ON-GOTO
+
+  Syntax:
+
+    ON expression GO TO list of line numbers
+
+  The expression is evaluated and then truncated to get an integer value.
+  The resulting value N is then used to transfer control to the N-th line
+  number in the list. If the value does not correspond to a line number
+  in the list, a error is generated.
+
+  Example:
+
+    75 ON X GO TO 95,150,45,200
+
+\ON-GOSUB
+
+  Syntax:
+
+    ON expression GOSUB list of line numbers
+
+  The expression is evaluated and then truncated to get an integer value. 
+  The resulting value N is then used to transfer control to the N-th
+  subroutine line number in the list. If the value does not correspond to
+  a line number in the list, a error is generated.
+
+  Example:
+
+    85 ON FNA(M) GOSUB 200,250,400,375
+
+\OPEN
+
+  Syntax:
+
+    OPEN string [FOR {INPUT | OUTPUT}] AS FILE [#]n [DOUBLE BUF]
+      [[,] RECORDSIZE expression] [[,] FILESIZE expression]
+      [[,] MODE expression]
+
+  Opens a sequential file for input and/or output as specified. If
+  specified, DOUBLE BUF reserves two I/O buffers for the file resulting
+  in a performance improvement at expense of extra memory, since the
+  data transfer can be done in the background using one buffer while
+  the application program processes data in the second buffer. FILESIZE
+  specifies the initial number of blocks to allocate on file creation,
+  a negative value can be used to allocate contiguous space. RECORDSIZE
+  is not currently supported under RSX180. MODE specifies the file
+  access or protection mode when the file is created.
+
+  Examples:
+
+    10 OPEN "LP:" FOR OUTPUT AS FILE B1%
+    20 OPEN "FOO" AS FILE 3%
+    30 OPEN "DU2:DATA.TR" FOR INPUT AS FILE #5
+
+\OVERLAY
+
+  Syntax:
+
+    OVERLAY string
+
+  Used to overlay or merge the program currently in memory with a specified
+  file, and continue execution.
+
+  Example:
+
+    100 OVERLAY "PROGRAM2"
+
+\PRINT
+
+  Syntax:
+
+    PRINT list
+    PRINT #expression,list
+
+  Used to output data to the terminal (first form), to a sequential file
+  or particular device (second form, see the OPEN command). The list can
+  contain expressions or text strings. See also PRINT-USING.
+
+  Examples:
+
+    25 PRINT  \ REM GENERATES CR/LF
+    75 PRINT "BEGINNING OF OUTPUT";I,A*I
+    45 PRINT #4,"OUTPUT TO DEVICE";FNM(A);B;A
+
+\USING|PRINT-USING
+
+  Syntax:
+
+    PRINT [#expression,] USING string,list
+
+  Used to output formatted data according to the template string specified
+  after the USING keyword. See also PRINT.
+
+  Examples:
+
+    54 PRINT USING "##.##",A
+    56 PRINT #7, USING B$,A,B,C
+
+\TEMP*LATES
+
+  Numeric:
+    # = digit placeholder
+    . = decimal point position
+    ^ = exponent output
+    , = output comma to separate thousands groups
+    * = filler
+    $ = floating dollar sign
+    - = leading or trailing minus
+  String, preceded by a single-quote ('):
+    L = left-justify
+    R = right-justify
+    C = center
+    E = extend, do not truncate
+
+\RANDOMIZE
+
+  Syntax:
+
+    RANDOMIZE
+
+  Causes the random number generator to calculate different random numbers
+  every time the program is run.
+
+  Example:
+
+    55 RANDOMIZE
+
+\READ
+
+  Syntax:
+
+    READ variable list
+
+  Used to assign the values listed in a DATA statement to the specified
+  variables.
+
+  Example:
+
+    25 READ A,B$,C%,F1,R2,B(25)
+
+\REM
+
+  Syntax:
+
+    REM comment
+
+  Used to insert explanatory comments into a BASIC program.
+
+  Example:
+
+    10 REM THIS IS A COMMENT
+
+\RESTORE
+
+  Syntax:
+
+    RESTORE
+    RESTORE #n
+
+  The first form is used to reset DATA block pointer so the same data can
+  be used again.  The second form is used to rewind the input sequential
+  file #n to the beginning.
+
+  Example:
+
+    125 RESTORE
+
+\RESET
+
+  Syntax:
+
+    RESET
+    RESET #n
+
+  The first form is used to reset DATA block pointer so the same data can
+  be used again.  The second form is used to rewind the input sequential
+  file #n to the beginning. RESET is a synonym for RESTORE.
+
+  Example:
+
+    125 RESET #1
+
+\RETURN
+
+  Syntax:
+
+    RETURN
+
+  Used to return program control to the statement following the last GOSUB
+  statement.
+
+  Example:
+
+    375 RETURN
+
+\STOP
+
+  Syntax:
+
+    STOP
+
+  Used at the logical end of the program to terminate execution.
+
+  Example:
+
+    75 STOP
+
+\;---- end

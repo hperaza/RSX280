@@ -1,0 +1,481 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command UFD for RSX180.                               ;
+;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.00'
+
+	cseg
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	extrn	PFN,PERROR,CRLF,UCASE,PUTCH,PUTSTR,TTFLSH,GCCL
+
+; UFD ddn:<volume-label>[dirname]{/ALLOC=n}{/OWN=[u,g]}{/PRO=[...]}
+
+; TODO: check user privileges:
+; - Non-privileged users can only create directories on private (allocated)
+;   devices.
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	call	GCCL		; get MCR command line
+	ex	de,hl
+	call	skpnam
+	ex	de,hl
+	ld	(lnptr),hl
+	call	UFD
+	ld	l,EX.SUC
+	jr	nc,exit
+	ld	l,EX.ERR
+exit:	ld	h,0
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'UFD -- message'
+
+CMDERR:	ld	hl,snerr
+	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'UFD -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get task name (9 chars) into cmdnam, padding with blanks if neccessary.
+
+getn9:	call	getcmd
+	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+isblnk:	call	iseol
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getns:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getns
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	jr	z,getns		; return via getns
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	call	iseol
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Read a decimal number from input line into HL
+; Returns CY if the number contains invalid chars or on overflow.
+
+GETDEC:	ld	de,(lnptr)
+	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	jr	z,endnum	; note no CY
+	sub	'0'
+	jr	c,endnum	; note CY
+	cp	10
+	ccf
+	jr	c,endnum	; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+endnum:	ld	(lnptr),de
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+fndcmd:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+UFD:	ld	hl,0
+	ld	(nalloc),hl	; no pre-allocated entries
+	ld	hl,0FFF8h
+	ld	(prbits),hl	; set default protection bits
+	xor	a
+	ld	(usrid),a	; clear user ID [TODO: use current user ID]
+	ld	(grpid),a
+	ld	hl,(lnptr)
+	ld	ix,fdb
+	call	PFN		; parse filename
+	ld	(lnptr),hl
+	jp	c,CMDERR
+
+;;	ld	a,(fdb+F.ATTR)
+;;	ld	c,a
+;;	and	FN.NAME		; file name specified?
+;;	jp	z,CMDERR	; error if not
+;;	ld	a,c
+;;	and	FN.DIR		; directory name specified?
+;;	jp	z,CMDERR
+
+ckopt:	ld	de,(lnptr)	; check remainder of command line
+	call	getns		; skip any spaces
+	call	iseol		; end of command?
+	jp	z,MKD		; then go create directory
+	cp	'/'		; else check for switch char
+	jp	nz,CMDERR	; error if not
+	inc	de		; skip switch char
+	ld	(lnptr),de	; save command pointer
+	call	getcmd		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; not allowed
+	ld	hl,optbl
+	call	fndcmd		; else search for switch in option table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,CMDERR	; error if no match
+	ld	c,a		; save switch in reg C
+	call	chkeq		; '=' required for all options
+	jp	nz,CMDERR
+	dec	c
+	jp	z,alloc		; allocate specified number of entries
+	dec	c
+	jp	z,prot		; set protection bits
+	dec	c
+	jp	z,owner		; set directory owner
+	jp	CMDERR
+
+chkeq:	ld	hl,(lnptr)
+	ld	a,(hl)
+	cp	'='
+	ret	nz
+	inc	hl
+	ld	(lnptr),hl
+	ret
+
+optbl:	db	'ALLOC',0
+	db	'PROT',0
+	db	'OWNER',0
+null:	db	0
+
+; process ALLOC switch
+
+alloc:	call	GETDEC
+	jp	c,CMDERR
+	ld	(nalloc),hl	; TODO: check against max
+	jp	ckopt
+
+; process PROT switch
+
+prot:	; ...
+	scf
+	jp	c,CMDERR
+	jp	ckopt
+
+; process OWNER switch
+
+owner:	ex	de,hl
+	call	getns
+	cp	'['
+	jp	nz,CMDERR
+	inc	de
+	ld	(lnptr),de
+	call	GETDEC
+	ld	a,h
+	or	a
+	jp	nz,CMDERR
+	ld	a,l
+	ld	(grpid),a
+	ld	a,(de)
+	cp	','
+	jp	nz,CMDERR
+	inc	de
+	ld	(lnptr),de
+	call	GETDEC
+	ld	a,h
+	or	a
+	jp	nz,CMDERR
+	ld	a,l
+	ld	(usrid),a
+	ld	a,(de)
+	cp	']'
+	jp	nz,CMDERR
+	inc	de
+	ld	(lnptr),de
+	jp	ckopt
+
+; finally, create the directory
+
+MKD:	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	b,1
+	SC	.ALUN		; assign LUN
+	jp	c,SYSERR
+
+	ld	hl,qmkdir
+	SC	.QIO		; create the directory
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,qopen
+	SC	.QIO		; open the directory
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,qrdatt
+	SC	.QIO		; read file attributes
+	jp	c,mderr
+	ld	a,(iosb)
+	or	a
+	jp	nz,mderr
+
+	; set owner
+
+	ld	a,(grpid)
+	ld	(finfo+F.GROUP),a
+	ld	a,(usrid)
+	ld	(finfo+F.USER),a
+
+	; ... set protection bits
+
+	ld	hl,(prbits)
+	ld	(finfo+F.PROT),hl
+
+	; ... pre-allocate entries?
+
+	ld	a,FA.USER OR FA.GRP OR FA.PROT
+	ld	(finfo+F.WAT),a
+	ld	hl,qwratt
+	SC	.QIO		; write file attributes
+	jp	c,mderr
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,qclose
+	SC	.QIO		; close the directory
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ret
+
+mderr:	push	af
+	ld	hl,qclose
+	SC	.QIO		; close the directory
+	pop	af
+	jp	SYSERR
+
+dirext:	db	'DIR'
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qmkdir:	QIOW$	<<IO.CRE OR (SF.DIR SHL 8)>>,1,9,iosb,,<fdb>
+qopen:	QIOW$	<<IO.ACC OR (SF.ACR OR SF.SHR) SHL 8>>,1,9,iosb,,<fdb,0>
+qclose:	QIOW$	IO.DEA,1,9,iosb
+qrdatt:	QIOW$	IO.RAT,1,9,iosb,,<finfo,FINFSZ>
+qwratt:	QIOW$	IO.WAT,1,9,iosb,,<finfo,FINFSZ>
+iosb:	ds	4
+
+lnptr:	ds	2
+cmdnam:	ds	9
+fdb:	ds	FNSZ
+
+finfo:	ds	FINFSZ
+
+nalloc:	ds	2
+prbits:	ds	2
+usrid:	ds	1
+grpid:	ds	1
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

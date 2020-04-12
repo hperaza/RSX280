@@ -1,0 +1,616 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Task Header Display
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	FCB.INC
+	include	DCB.INC
+
+	public	THDRPG
+
+	extrn	VPUTC,VPUTS,VPUTN,VXY,VGETXY,VAHEX,VHLHEX
+	extrn	VADEC,VHLDEC,VCLEOL,VCLEOS,VRPAD,HEADER
+	extrn	SKIPBL,STRCMP,UCASE
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+THDRPG:	dw	dproc		; address of display procedure
+	dw	setup		; address of setup procedure
+	dw	hlptxt		; address of help text
+
+; This is the task header display procedure. It is called with a code
+; in register A:
+;   0 means redraw everything
+;   1 means draw only what has changed from the previous call
+
+dproc:	push	af
+	call	HEADER
+	pop	af
+
+	or	a		; check redraw flag
+	jr	nz,m0
+
+	call	thdr
+m0:	call	updtsk		; update task display
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process setup command @DE
+
+setup:	call	SKIPBL
+	ld	hl,hlptxt
+	ld	b,4
+	call	STRCMP		; is it TASK?
+	scf
+	ret	nz		; return if not
+	call	SKIPBL
+	ld	a,(de)
+	cp	'='		; '=' must follow
+	scf
+	ret	nz
+	inc	de
+	ld	hl,tsknam
+	ld	b,6
+s0:	ld	a,(de)
+	call	UCASE
+	cp	' '
+	jr	c,s1
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	s0
+	ret
+s1:	ld	(hl),' '
+	inc	hl
+	djnz	s1
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Help text to add to the setup command page
+
+hlptxt:	db	"TASK=t      display task header for task 't'",CR,LF
+	db	0
+
+;-----------------------------------------------------------------------
+
+; Display heading
+
+thdr:	ld	hl,hdr
+	;jp	hloop
+th1:	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	inc	de
+	ld	a,d
+	or	e
+	ret	z
+	dec	de
+	ex	de,hl
+	call	VXY
+	ex	de,hl
+	call	VPUTS
+	inc	hl
+	jr	th1
+
+hdr:	db	0,3,'Task:',0
+	db	14,3,'Partition:',0
+	db	33,3,'Status:',0
+
+	db	1,4,'Own:',0
+	db	14,4,'I/O:',0
+	db	25,4,'Dpri:',0
+	db	36,4,'Pri:',0
+	db	46,4,'Spri:',0
+	db	57,4,'Eflg:',0
+
+	db	0,6,'AF = ',0
+	db	11,6,'BC = ',0
+	db	22,6,'DE = ',0
+	db	33,6,'HL = ',0
+	db	44,6,'IX = ',0
+	db	55,6,'IY = ',0
+
+	db	0,7,'AF''= ',0
+	db	11,7,'BC''= ',0
+	db	22,7,'DE''= ',0
+	db	33,7,'HL''= ',0
+	db	44,7,'PC = ',0
+	db	55,7,'SP = ',0
+
+	db	0,9,'LUN',0
+	db	0,10,'---',0
+
+	db	4,9,'File',0
+	db	4,10,'----',0
+
+	db	33,9,'LUN',0
+	db	33,10,'---',0
+
+	db	37,9,'File',0
+	db	37,10,'----',0
+
+	dw	0FFFFh
+
+stxy:	db	25,3,6
+	db	6,4,6
+	db	19,4,5
+	db	31,4,4
+	db	41,4,4
+	db	52,4,4
+	db	63,4,8
+
+regxy:	db	5,6
+	db	16,6
+	db	27,6
+	db	38,6
+	db	49,6
+	db	60,6
+
+	db	5,7
+	db	16,7
+	db	27,7
+	db	38,7
+	db	49,7
+	db	60,7
+
+lunxy:	db	0,11
+	db	0,12
+	db	0,13
+	db	0,14
+	db	0,15
+	db	0,16
+	db	0,17
+	db	0,18
+
+	db	33,11	; 40,...
+	db	33,12
+	db	33,13
+	db	33,14
+	db	33,15
+	db	33,16
+	db	33,17
+	db	33,18
+
+;-----------------------------------------------------------------------
+
+; Update task display
+
+updtsk:	ld	a,(tsknam)
+	cp	' '
+	ld	hl,ntsmsg
+	jr	z,upd2
+
+	VGTOXY	6,3
+
+	ld	hl,tsknam
+	ld	b,6
+	call	VPUTN		; show task name
+
+	ld	hl,($TLIST)
+
+upd1:	ld	a,h
+	or	l
+	jr	z,upd21		; end of list, task not found
+
+	push	hl
+	call	cmpnam		; compare task name with user-given name
+	pop	ix
+	jr	z,found
+
+	ldw	hl,(ix+T.TCBL)	; next task in list
+	jr	upd1		; loop
+
+found:	; Task found
+
+	bit	TS.ACT,(ix+T.ST)   ; task active?
+	ld	hl,timsg
+	jr	z,upd2		   ; skip it if not
+
+	bit	T2.OUT,(ix+T.ST+1) ; task in memory?
+	ld	hl,timsg
+	jr	nz,upd2		   ; skip it if not
+
+	; Task active and in memory
+
+	call	shwtsk		; else show task details
+	ld	hl,nulmsg
+	jr	upd6
+
+upd21:	; Task not found
+
+	ld	hl,tnfmsg
+upd2:	push	hl
+	ld	hl,regxy
+	ld	b,12
+upd3:	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	ex	de,hl
+	call	VXY
+	ex	de,hl
+	ld	c,' '		; clear register fields
+	call	VPUTC
+	call	VPUTC
+	call	VPUTC
+	call	VPUTC
+	djnz	upd3
+
+	ld	hl,stxy
+	ld	b,6
+upd31:	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	ex	de,hl
+	call	VXY
+	ex	de,hl
+	push	bc
+	ld	c,' '		; clear fields
+	ld	b,(hl)
+	inc	hl
+upd32:	call	VPUTC
+	djnz	upd32
+	pop	bc
+	djnz	upd31
+	VGTOXY	41,3
+	call	VCLEOL		; clear status field
+
+	VGTOXY	0,11
+	call	VCLEOS
+
+	pop	hl
+
+upd6:	push	hl
+	VGTOXY	0,1
+	pop	hl
+	call	VPUTS
+	call	VCLEOL
+	ret
+
+ntsmsg:	db	'No task specified',0
+tnfmsg:	db	'Task not in system',0
+timsg:	db	'Task inactive or out of memory'
+nulmsg:	db	0
+
+; Compare task names
+
+cmpnam:	ld	de,T.NAME
+	add	hl,de
+	ld	de,tsknam
+	ld	b,6
+tcmp:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	tcmp
+	ret
+
+; Show task info
+
+shwtsk:	VGTOXY	25,3
+
+	ldw	hl,(ix+T.PCB)
+	ldw	hl,(hl+P.MAIN)
+	ld	de,P.NAME
+	add	hl,de
+	ld	b,6
+	call	VPUTN		; display partition name
+
+	VGTOXY	41,3
+	ld	d,(ix+T.ST)
+	ld	hl,stat
+	bit	TS.ACT,d
+	push	af
+	call	nz,tbits	; display status bits
+	ld	d,(ix+T.ST+1)
+	ld	hl,stat2
+	pop	af
+	call	nz,tbits
+	ld	d,(ix+T.ATTR)
+	ld	hl,attr
+	call	tbits		; display attrib bits
+	call	VCLEOL
+
+	VGTOXY	6,4
+	ldw	de,(ix+T.TI)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e
+	call	VPUTC
+	ld	c,d
+	call	VPUTC
+	ld	d,8		; starting X coord in D
+	ld	a,b
+	call	VADEC
+	ld	c,':'
+	call	VPUTC
+	ld	e,6		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	19,4
+	ld	d,19		; starting X coord in D
+	ld	a,(ix+T.IOC)
+	call	VADEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	41,4
+	ld	d,41		; starting X coord in D
+	ld	a,(ix+T.PRI)
+	call	VADEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	31,4
+	ld	d,31		; starting X coord in D
+	ld	a,(ix+T.DPRI)
+	call	VADEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	52,4
+	ld	a,(ix+T.SPRI)
+	exts	a		; sign extend to HL
+	ld	e,(ix+T.PRI)
+	ld	d,0
+	or	a
+	adc	hl,de
+	jp	p,p1
+	ld	hl,0
+p1:	ld	d,52		; starting X coord in D
+	xor	a
+	call	VHLDEC
+	ld	e,5		; field size
+	call	VRPAD		; pad with spaces
+
+	VGTOXY	63,4
+	ld	a,(ix+T.FLGS)
+	call	VAHEX
+	ld	a,(ix+T.FLGS+1)
+	call	VAHEX
+	ld	a,(ix+T.FLGS+2)
+	call	VAHEX
+	ld	a,(ix+T.FLGS+3)
+	call	VAHEX
+
+	call	regs
+	call	luns
+
+	xor	a
+	ret
+
+tbits:	ld	b,8		; bit counter
+	ld	e,01h		; bit mask
+t1:	ld	a,d
+	and	e		; bit set?
+	jr	z,t2		; skip if not
+	ld	a,(hl)
+	inc	hl
+	or	a		; got a name for it?
+	jr	z,t3		; skip if not
+	dec	hl
+	push	bc
+	ld	b,3
+	call	VPUTN		; else display name
+	pop	bc
+	ld	c,' '
+	call	VPUTC		; followed by separator
+	call	VPUTC
+	jr	t3
+t2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	inc	hl
+	inc	hl
+t3:	rl	e
+	djnz	t1
+	ret
+
+luns:	ld	b,0
+lun1:	ldw	hl,(ix+T.CTX)	; get address of context block
+	ld	de,TX.LUT
+	add	hl,de		; HL = start of LUN table
+	ld	e,b
+	ld	d,0
+	add	hl,de		; index into LUN table
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	ldw	de,(hl)		; get UCB into DE
+	inc	hl
+	inc	hl
+	ldw	hl,(hl)		; get FCB into HL
+	call	lunfil		; display LUN info
+	inc	b
+	ld	a,b
+	cp	16
+	jr	nz,lun1
+	ret
+
+lunfil:	ld	a,d		; LUN assigned?
+	or	e
+	jp	z,lf2		; return if not
+	push	hl
+	push	de
+	ld	hl,lunxy
+	ld	e,b
+	ld	d,0
+	add	hl,de
+	add	hl,de
+	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	ex	de,hl
+	call	VXY		; position cursor
+	ex	de,hl
+	ld	a,b
+	inc	a
+	call	VADEC		; display LUN number
+	ld	e,4		; field size, old X still in D
+	call	VRPAD		; pad with spaces
+	pop	de
+	pop	hl
+	ld	a,h
+	or	l		; file open on LUN?
+	jr	z,lf1		; jump if not
+
+	push	hl
+	pop	iy
+	ldw	de,(iy+F.DEV)
+	ld	c,(iy+F.UNIT)
+	call	dname		; display device name and unit
+	ld	c,'['
+	call	VPUTC
+	ex	de,hl
+	ld	hl,F.DIR
+	add	hl,de
+	push	bc
+	ld	b,9
+	call	fname		; display directory name
+	ld	c,']'
+	call	VPUTC
+	ld	hl,F.NAME
+	add	hl,de
+	ld	b,9
+	call	fname		; display file name
+	ld	c,'.'
+	call	VPUTC
+	ld	hl,F.EXT
+	add	hl,de
+	ld	b,3
+	call	fname		; display file version
+	pop	bc
+	ld	c,';'
+	call	VPUTC
+	ldw	hl,(iy+F.VER)
+	xor	a
+	call	VHLDEC		; display file version number
+	jr	lf2
+
+lf1:	KCALL	$UCBDN
+	call	dname		; display device name and unit
+lf2:	ld	hl,lunxy
+	ld	e,b
+	ld	d,0
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)		; X
+	add	a,33
+	ld	e,a
+	ld	d,0
+	call	VRPAD
+	ret
+
+dname:	ld	a,c
+	push	af
+	ld	c,e		; display device name
+	call	VPUTC
+	ld	c,d
+	call	VPUTC
+	pop	af
+	call	VADEC		; display unit number
+	ld	c,':'
+	call	VPUTC
+	ret
+
+fname:	ld	a,(hl)
+	cp	' '
+	ret	z
+	ld	c,a
+	call	VPUTC
+	inc	hl
+	djnz	fname
+	ret
+
+regs:	xor	a
+	ld	(SYSLVL),a	; critical section
+	ld	hl,regbuf
+	ldw	de,(ix+T.SP)
+	ldw	(hl),de		; store SP first
+	inc	hl
+	inc	hl
+	ex	de,hl		; DE = dst
+	ldw	hl,(ix+T.CTX)
+	ld	bc,TX.REGS
+	add	hl,bc		; HL = pointer to saved register frame
+	ld	bc,10*2		; copy the 10 general-purpose registers
+	ldir
+	inc	hl		; skip reason code
+	inc	hl
+	inc	hl		; skip MSR
+	inc	hl
+	ld	bc,2
+	ldir			; copy PC value
+	inc	a
+	ld	(SYSLVL),a
+
+	push	ix
+	ld	ix,regofs
+	ld	hl,regxy
+	ld	b,12
+r1:	ld	e,(ix)		; get offset to value in buffer
+	ld	d,0
+	ld	iy,regbuf
+	add	iy,de
+	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ex	de,hl
+	call	VXY
+	ldw	hl,(iy)		; get reg pair value
+	call	VHLHEX
+	ex	de,hl
+	inc	ix
+	djnz	r1
+	pop	ix
+	ret
+
+stat:	db	0,'AST','SUP','CKR',0,0,0,0
+stat2	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
+attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+tsknam:	db	'...RMD'
+
+regbuf:	ds	24
+regofs:	db	20,18,16,14,4,2
+	db	12,10,8,6,22,0
+
+	end

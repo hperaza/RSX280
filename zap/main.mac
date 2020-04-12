@@ -1,0 +1,1309 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ZAP - an hexadecimal file editor for RSX180.  ;
+;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'V1.1'
+
+CR	equ	0Dh
+LF	equ	0Ah
+EOF	equ	1Ah
+ESC	equ	1Bh
+
+	extrn	INIT,EXIT,SETCUR,PUTSTR,UCASE,GETCH,PUTCH,CPHLDE
+	extrn	GETCMD,MKFCB,PRFCB,OPENF,CLOSEF,READF,WRITEF
+	extrn	CLS,HOME,CLREOL,HASSRG,SCRLRG,FWDIDX,REVIDX
+	extrn	HLDEC,ERRMSG,TTMODE,TTFLSH
+
+; Screen-oriented Hexadecimal File Editor.
+;
+; TODO:
+; ~ command line options, e.g.:
+;    ZAP filename
+;    ZAP filename/BL:nnnn/OF:nnnn
+;    ZAP filename/SE:"search string"
+;    ZAP filename/SE:search_bytes  e.g. /SE:05844F3D
+; - delayed update of offset value in status line
+; - device mode?
+; - "continuous" mode? (i.e. not by block - use double-buf)
+; - read/only mode?  /RO
+; - undo option? (LIFO list of modified blk+addr+origbyte)
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START::	ld	sp,STACK
+	call	INIT
+LOOP:	call	GETCMD		; get command line
+	call	LOAD		; parse filename and open file
+	jr	c,LOOP
+	ld	a,1
+	call	TTMODE		; put terminal in binary mode
+	call	CLS		; clear screen
+	call	STATUS		; display status line
+	call	DUMP		; display first segment of the file
+	call	EDIT		; enter editor
+	xor	a
+	call	TTMODE		; reset terminal
+	jr	LOOP		; loop
+
+; Open file and load first block
+
+LOAD:	call	MKFCB
+	call	OPENF		; open file and get size in blocks
+	jr	c,NOFILE
+	ld	(NBLKS),hl
+	ld	hl,0
+	ld	(BLKNO),hl	; reset file pointers
+	ld	(OFFSET),hl
+	ld	(OFFTOP),hl
+	xor	a
+	ld	(MODFLG),a
+	dec	a
+	ld	(OPNFLG),a
+	call	RDBLK		; read first block
+	or	a
+	ret
+
+NOFILE:	ld	hl,NFMSG
+	jp	ERRMSG
+
+NFMSG:	db	'Failed to open file',0
+
+ERROR:	push	hl
+	call	CMDPOS		; position cursor on command area
+	pop	hl
+	call	PUTSTR		; display error message
+	call	GETCH		; wait for keypress
+	call	CLRCMD		; clear message
+	scf
+	ret
+
+; Display prompt and get response
+
+PROMPT:	push	hl
+	call	CMDPOS
+	pop	hl
+	call	PUTSTR
+	jp	GETSTR
+
+; Display message at the bottom line
+
+MESSGE:	push	hl
+	call	CLRCMD
+	call	CMDPOS
+	pop	hl
+	call	PUTSTR
+	jp	TTFLSH		; flush output to force immediate display
+
+; Discard changes and reload current block
+
+RELOAD:	ld	a,(MODFLG)
+	or	a
+	ret	z		; block not modified, nothing to do
+	ld	hl,CLRCMD
+	push	hl
+	ld	hl,rmsg
+	call	PROMPT		; ask for confirmation
+	ld	de,LNBUF
+	call	SKIPBL
+	call	UCASE
+	cp	'Y'		; require explicit 'Y'
+	ret	nz
+	call	RDBLK
+	call	DUMP
+	ret
+
+rmsg:	db	'Discard changes? [Y/N]: ',0
+
+; Quit command mode
+
+QUIT:	ld	hl,qmsg
+	call	PROMPT		; display prompt and get user response
+	ld	de,LNBUF
+	call	SKIPBL
+	call	UCASE
+	cp	'Y'		; require explicit 'Y'
+	jp	nz,CLRCMD
+	call	CLOSE		; close file
+	call	HASSRG		; terminal supports scroll region?
+	ld	hl,0FFFFh
+	call	nz,SCRLRG	; reset region if yes
+	call	HOME		; home cursor
+	call	CLS		;  and clear screen
+	pop	hl		; purge return address
+	ret			; return to main loop
+
+qmsg:	db	'Quit? [Y/N]: ',0
+
+; Position cursor to the start of command area
+
+CMDPOS:	ld	hl,(Y0)
+	ld	a,(NLINES)
+	add	a,l
+	inc	a
+	ld	l,a		; X0, Y0+NLINES+1
+	jp	SETCUR
+
+; Clear command area
+
+CLRCMD:	call	CMDPOS
+	ld	b,50
+	ld	c,' '
+cl1:	call	PUTCH
+	djnz	cl1
+	ret
+
+; Display status line
+
+STATUS:	ld	hl,(Y0)
+	ld	l,0		; X0, 0
+	call	SETCUR
+	call	CLREOL
+	ld	hl,hdr1
+	call	PUTSTR
+	ld	a,(OPNFLG)
+	or	a
+	call	nz,PRFCB	; display current file name
+	call	STOFS		; display offset within block
+	call	STBLK		; display block number
+	ld	hl,(Y0)
+	ld	a,(NLINES)
+	add	a,l
+	ld	l,a
+	ld	a,6+16*3+1+16-len4
+	add	a,h
+	ld	h,a
+	inc	l		; X0+6+16*3+1+16-len4, Y0+NLINES+1
+	call	SETCUR
+	ld	hl,hdr4
+	call	PUTSTR
+	call	HLPMSG
+	ret
+
+STOFS:	ld	hl,(Y0)
+	ld	a,41
+	add	a,h
+	ld	h,a
+	ld	l,0		; X0+41, 0
+	call	SETCUR
+	ld	hl,hdr2
+	call	PUTSTR
+	ld	hl,(OFFSET)
+	jp	HLHEX
+
+STOFS1:	push	hl
+	push	de
+	push	bc
+	ld	hl,(Y0)
+	ld	a,41+len2
+	add	a,h
+	ld	h,a
+	ld	l,0		; X0+41+len2, 0
+	call	SETCUR
+	ld	hl,(OFFSET)
+	call	HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+STBLK:	ld	hl,(Y0)
+	ld	a,59
+	add	a,h
+	ld	h,a
+	ld	l,0		; X0+59, 0
+	call	SETCUR
+	ld	hl,hdr3
+	call	PUTSTR
+	ld	hl,(BLKNO)
+	ld	a,'0'
+	jp	HLDEC
+
+hdr1:	db	'File: ',0
+hdr2:	db	'Offset: ',0
+len2	equ	$-hdr2-1
+hdr3:	db	'Block: ',0
+hdr4:	db	'^J = Help',0
+len4	equ	$-hdr4-1
+
+; Edit mode
+
+EDIT:	call	SETREG
+	xor	a
+	ld	(NBLPOS),a	; clear nibble position
+	ld	(MODE),a	; default to hex mode
+EDRTS:	ld	hl,EDRTS
+	push	hl		; push return address
+	call	POSCUR
+	call	GETCH		; get char
+	cp	1Ah		; ^Z exits edit mode
+	jp	z,QUIT
+	cp	11h		; ^Q quits edit mode
+	jp	z,QUIT
+	cp	05h		; ^E moves cursor up
+	jp	z,UP
+	cp	'A'+80h
+	jp	z,UP
+	cp	18h		; ^X moves cursor down
+	jp	z,DOWN
+	cp	'B'+80h
+	jp	z,DOWN
+	cp	04h		; ^D moves cursor right
+	jp	z,RIGHT
+	cp	'C'+80h
+	jp	z,RIGHT
+	cp	13h		; ^S moves cursor left
+	jp	z,LEFT
+	cp	'D'+80h
+	jp	z,LEFT
+;;	cp	03h		; ^C
+;;	jp	z,NEXTBL
+;;	cp	12h		; ^R
+;;	jp	z,PREVBL
+	cp	09h		; TAB switches mode
+	jp	z,SWMODE
+	cp	02h		; ^B selects block
+	jp	z,LDBLK
+	cp	0Fh		; ^O goto offset
+	jp	z,SETOFS
+	cp	19h		; ^Y discards changes (reloads block)
+	jp	z,RELOAD
+	cp	15h		; ^U updates block
+	jp	z,WRBLK
+	cp	0Ah		; ^J displays help
+	jp	z,HELP
+	cp	0Ch		; ^L refreshes display
+	jp	z,REFRSH
+	ld	c,a
+	ld	hl,(OFFSET)
+	ld	de,BUF
+	add	hl,de		; index into buffer
+	ld	a,(MODE)
+	or	a		; check mode
+	jr	z,EDB		; branch if hex mode
+	ld	(hl),c		; else store char in buffer directly
+	jr	EDR		; jump to update display
+EDB:	ld	a,c
+	call	TOHEX		; ensure valid hex digit
+	ret	c
+	ld	c,a
+	ld	a,(NBLPOS)	; test current nibble position
+	or	a		; hi nibble?
+	jr	nz,edlo		; branch if yes
+	ld	a,c
+	rlca			; else get bits into position
+	rlca
+	rlca
+	rlca
+	ld	c,a
+	ld	a,(hl)		; get value from memory
+	and	0Fh		; clear old hi nibble
+	or	c		; merge with entered value
+	ld	c,a		; save for display
+	ld	(hl),a		; update memory
+	jr	EDR		; jump to update display
+edlo:	ld	a,(hl)		; get value from memory
+	and	0F0h		; clear old lo nibble
+	or	c		; merge with new value
+	ld	c,a		; save for display
+	ld	(hl),a		; store value back
+EDR:	ld	hl,MODE
+	ld	a,(hl)		; save current mode
+	ld	(hl),0		; force hex mode
+	push	af
+	push	hl
+	ld	hl,NBLPOS
+	ld	a,(hl)		; remember old nibble position
+	ld	(hl),0		; force hi nibble
+	push	af
+	push	hl
+	push	bc
+	call	POSCUR		; position cursor
+	pop	bc
+	ld	a,c
+	call	AHEX		; display 2-digit hex value
+	pop	hl
+	pop	af
+	ld	(hl),a		; restore old nibble position
+	pop	hl
+	ld	(hl),1		; now force ASCII mode
+	push	hl
+	push	bc
+	call	POSCUR		; position cursor
+	pop	bc
+	ld	a,c
+	call	ASCCHR		; display ASCII value
+	pop	hl
+	pop	af
+	ld	(hl),a		; restore previous mode
+	ld	a,1
+	ld	(MODFLG),a	; set modified flag
+	jp	RIGHT		; and advance to next location
+
+; Toggle HEX <-> ASCII mode
+
+SWMODE:	ld	a,(MODE)
+	xor	1		; toggle mode
+	ld	(MODE),a
+	ret
+
+; Set scroll region, if terminal supports it
+
+SETREG:	call	HASSRG		; terminal supports scroll region?
+	ret	z		; return if not
+	ld	a,(Y0)
+	ld	l,a
+	ld	a,(NLINES)
+	dec	a
+	add	a,l
+	ld	h,a
+	jp	SCRLRG		; set scroll region and return
+
+; Refresh display
+
+REFRSH:	call	CLS
+	call	STATUS
+	jp	DUMP
+
+; Load block command
+
+LDBLK:	ld	a,(OPNFLG)
+	or	a
+	ret	z		; return if file not open
+	ld	hl,CLRCMD
+	push	hl		; return via CLRCMD
+	ld	hl,bmsg
+	call	PROMPT		; display prompt and get user reponse
+	ret	c
+	ld	de,LNBUF
+	call	GETDEC		; parse value
+	ret	c
+	ex	de,hl
+	ld	hl,(NBLKS)
+	call	CPHLDE
+	ret	nc		; TODO: display error
+	push	de
+	call	WRBLK		; save current block, if modified
+	pop	hl
+	ld	(BLKNO),hl	; set new block number
+	ld	hl,0
+	ld	(OFFTOP),hl	; reset top line
+	ld	(OFFSET),hl	; and block index
+	call	STOFS1		; update status line
+	xor	a
+	ld	(NBLPOS),a
+	call	RDBLK		; read file block
+	call	STBLK
+	call	DUMP		; refresh screen
+	ret
+
+bmsg:	db	'Block number [D]: ',0
+
+; Goto offset command
+
+SETOFS:	ld	a,(OPNFLG)
+	or	a
+	ret	z		; return if file not open
+	ld	hl,CLRCMD
+	push	hl		; return via CLRCMD
+	ld	hl,omsg
+	call	PROMPT		; display prompt and get user reponse
+	ret	c
+	ld	de,LNBUF
+	call	GETHEX		; parse value
+	ret	c
+	ex	de,hl
+	ld	hl,(BLKSZ)
+	call	CPHLDE
+	ret	nc		; TODO: display error
+	ld	(OFFSET),de	; set new offset
+	push	de
+	call	STOFS1		; update status line
+	pop	de
+	xor	a
+	ld	(NBLPOS),a
+
+	; ensure cursor is visible, adjust window if necessary
+
+	ld	hl,(OFFTOP)
+	call	CPHLDE		; offset < top line?
+	jr	nc,so2		; branch if not
+
+	ld	a,e		; else we need to scroll down
+	and	0F0h		; this also clears carry
+	ld	e,a
+	ld	(OFFTOP),de	; new top line = offset line
+	call	HASSRG		; terminal supports scroll region?
+	jp	z,DUMP		; refresh everything if not
+	push	hl		; save org top line for scroll routine below
+	sbc	hl,de		; compute distance from top line
+	ld	de,7*16
+	call	CPHLDE		; distance > 7 lines?
+	pop	de
+	jp	c,DUMP		; refresh everything if yes
+
+	ld	a,l		; else scroll down the difference
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	b,a		; number of lines to scroll
+so1:	push	bc
+	ld	hl,-16
+	add	hl,de
+	ex	de,hl
+	push	de
+	call	sd00		; scroll down
+	pop	de
+	pop	bc
+	djnz	so1
+	ret			; and we're done
+
+so2:	push	de		; remember offset
+	ex	de,hl
+	ld	hl,(NLINES)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	c,l
+	ld	b,h
+	add	hl,de
+	pop	de
+	call	CPHLDE		; offset > bottom line?
+	ret	c		; return if not, offset is within window
+
+	ld	a,e
+	and	0F0h		; also clears carry
+	ld	e,a
+	ex	de,hl
+	sbc	hl,bc
+	ld	bc,16
+	add	hl,bc
+	ld	de,(OFFTOP)
+	ld	(OFFTOP),hl	; set new top line
+	call	HASSRG		; terminal supports scroll region?
+	jp	z,DUMP		; refresh everything if not
+	or	a
+	sbc	hl,de		; compute distance (note CY is clear)
+	push	de		; save orig top line for scroll routine below
+	ld	de,7*16
+	call	CPHLDE		; distance > 7 lines?
+	pop	de
+	jp	c,DUMP		; refresh everything if yes
+
+	ld	a,l		; else scroll up the difference
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	b,a		; number of lines to scroll
+so3:	push	bc
+	call	su00		; scroll up
+	ld	hl,16
+	add	hl,de
+	ex	de,hl
+	pop	bc
+	djnz	so3
+	ret			; and we're done
+
+omsg:	db	'Offset within block [H]: ',0
+
+; Position cursor on top of current byte and/or nibble.
+
+POSCUR:	ld	hl,(OFFSET)	; get current block index
+	ld	de,(OFFTOP)
+	or	a
+	sbc	hl,de		; subtract offset of first displayed line
+	ex	de,hl		; difference now in DE
+	ld	a,(MODE)
+	or	a		; check mode
+	jr	nz,PCUR1	; branch if ASCII mode
+	ld	a,e
+	and	0Fh		; get column index
+	ld	h,a
+	add	a,a
+	add	a,h		; *3 = byte field width: "XX "
+	ld	h,a
+	ld	a,(X0)
+	add	a,h		; add left screen coordinate
+	add	a,6		; add address field width: "XXXX: "
+	ld	h,a
+	ld	a,(NBLPOS)
+	add	a,h		; add nibble position
+	ld	h,a		; and we have cursor column
+CUR.Y:	ld	a,e
+	sra	d		; divide index by 16
+	rra
+	sra	d
+	rra
+	sra	d
+	rra
+	sra	d
+	rra
+	ld	l,a
+	ld	a,(Y0)
+	add	a,l		; add top screen coordinate
+	ld	l,a		; and we have cursor row
+	jp	SETCUR		; position cursor and return
+
+PCUR1:	ld	a,e
+	and	0Fh		; get column index
+	ld	h,a
+	ld	a,(X0)
+	add	a,h
+	add	a,6		; add address field width: "XXXX: "
+	add	a,16*3+1	; add width of all hex bytes
+	ld	h,a		; and we have cursor column
+	jr	CUR.Y		; continue via common code
+
+; Move cursor up one row
+
+UP:	ld	bc,10h		; one screen row = 16 bytes
+up0:	ld	hl,(OFFSET)
+	or	a
+	sbc	hl,bc		; subtract from current block index
+	ld	(OFFSET),hl
+	call	STOFS1		; update offset value on status line
+	ld	de,(OFFTOP)
+	or	a		; check if crossed top line
+	sbc	hl,de
+	ret	p		; nope, return
+up1:	call	SCRLDN		; else scroll screen down
+	ret	nc
+	ld	hl,(OFFSET)	; reached start of file
+	add	hl,bc		; reset old block index
+	ld	(OFFSET),hl
+	call	STOFS1
+	dec	bc		; kludge to avoid cursor jumping from
+	ld	a,b		;  nibble to nibble when pressing the left
+	or	c		;   arrow on the first byte of first block
+	ret	nz
+	ld	(NBLPOS),a	; reset nibble position
+	ret
+
+; Move cursor down one row
+
+DOWN:	ld	bc,10h		; one screen row = 16 bytes
+dn0:	ld	hl,(OFFSET)
+	add	hl,bc		; add to current block index
+	ld	(OFFSET),hl
+	call	STOFS1		; update status line
+	push	hl
+	ld	hl,(OFFTOP)
+	ld	de,(NLINES)
+	ld	d,0
+	ex	de,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; NLINES*16
+	add	hl,de		; check if crossed bottom line
+	pop	de
+	call	CPHLDE		; cursor off screen?
+	ret	c		; return if not
+	push	bc
+	call	SCRLUP		; else scroll screen up
+	pop	bc
+	ret	nc
+	ld	hl,(OFFSET)	; reached end of file
+	or	a
+	sbc	hl,bc
+	ld	(OFFSET),hl	; restore orig block index
+	call	STOFS1
+	ret
+
+; Move cursor one byte right
+
+RIGHT:	ld	a,(MODE)
+	or	a		; check mode
+	jr	nz,rg3		; branch if ASCII
+	ld	a,(NBLPOS)
+	or	a		; else check nibble position
+	jr	nz,rg1		; branch if lo nibble
+	inc	a
+	ld	(NBLPOS),a	; else move to lo nibble
+	ret
+rg1:	xor	a
+	ld	(NBLPOS),a	; set hi nibble
+rg3:	ld	bc,1		; and advance one byte
+	jp	dn0
+
+; Move cursor one byte left
+
+LEFT:	ld	a,(MODE)
+	or	a		; check mode
+	jr	nz,lf3		; branch if ASCII
+	ld	a,(NBLPOS)
+	or	a		; else check nibble position
+	jr	z,lf1		; branch if hi nibble
+	xor	a
+	ld	(NBLPOS),a	; else move to hi nibble
+	ret
+lf1:	inc	a
+	ld	(NBLPOS),a	; set lo nibble
+lf3:	ld	bc,1		; and backup one byte
+	jp	up0
+
+; Scroll screen down
+
+SCRLDN:	ld	hl,(OFFTOP)
+	ld	a,h
+	or	l		; top of block reached?
+	jr	z,PRVBL		; branch if yes, load prev block
+
+	call	HASSRG		; terminal supports scroll region?
+	jr	z,sd0		; branch if not
+
+	ld	hl,-16		; else scroll one line down
+	add	hl,de
+	ld	(OFFTOP),hl	; set new top line
+	ex	de,hl
+sd00:	ld	hl,(Y0)
+	call	SETCUR		; set cursor at the top of the window
+	call	REVIDX		; scroll down
+	ex	de,hl
+	call	DMPLN		; display the new top line
+	ret
+
+sd0:	ex	de,hl		; if no scroll region is supported by
+	ld	hl,(SCRLN)	;  the terminal, then is more efficient
+	ld	h,0		;   to shift the screen by several lines
+	add	hl,hl		;    than by just one
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; SCRLN*16
+	ex	de,hl		; amount to scroll
+	or	a
+	sbc	hl,de		; compute new top line address
+	jp	p,sd1
+	ld	hl,0		; trim if necessary
+sd1:	ld	(OFFTOP),hl	; set new top of screen
+	call	DUMP		; refresh screen
+	or	a
+	ret
+
+; Load previous block
+
+PRVBL:	call	WRBLK		; write current block, if modified
+	ld	hl,(BLKNO)
+	ld	a,h
+	or	l		; at first block?
+	scf
+	ret	z		; return error if yes
+	dec	hl
+	ld	(BLKNO),hl	; set new block number
+	ld	hl,(NLINES)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	ld	hl,512
+	or	a
+	sbc	hl,de		; 512-NLINES*16
+	ld	(OFFTOP),hl	; set top line to display last part of block
+	ld	hl,(OFFSET)
+	ld	de,512
+	add	hl,de
+	ld	(OFFSET),hl	; fix offset
+	call	STOFS1		; update status line
+	call	RDBLK		; read file block
+	call	STBLK
+	call	DUMP		; refresh screen
+	or	a
+	ret
+
+; Scroll screen up
+
+SCRLUP:	ld	hl,(NLINES)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	ld	hl,512
+	or	a
+	sbc	hl,de		; 512-NLINES*16
+	ld	c,l
+	ld	b,h
+	ld	de,(OFFTOP)
+	call	CPHLDE		; end of block reached?
+	jr	nc,NXTBL	; branch if yes, load next block
+
+	call	HASSRG		; terminal supports scroll region?
+	jr	z,su0		; branch if not
+
+	ld	hl,16		; else scroll one line up
+	add	hl,de
+	ld	(OFFTOP),hl	; set new top line
+su00:	ld	hl,(Y0)
+	ld	a,(NLINES)
+	dec	a
+	add	a,l
+	ld	l,a
+	call	SETCUR		; set cursor at the bottom of the window
+	call	FWDIDX		; scroll up
+	ld	hl,(NLINES)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,de
+	call	DMPLN		; display the new bottom line
+	ret
+
+su0:	ld	hl,(SCRLN)	; if no scroll region is supported by
+	ld	h,0		;  the terminal, then is more efficient
+	add	hl,hl		;   to shift the screen by several lines
+	add	hl,hl		;    than by just one
+	add	hl,hl
+	add	hl,hl		; amount to scroll = SCRLN*16
+	add	hl,de
+	ld	e,c		; 512-NLINES*16
+	ld	d,b
+	call	CPHLDE
+	jr	nc,su1
+	ex	de,hl		; trim if necessary
+su1:	ld	(OFFTOP),hl	; set new top of screen
+	call	DUMP		; refresh screen
+	or	a
+	ret
+
+NXTBL:	call	WRBLK		; write current block, if modified
+	ld	hl,(NBLKS)
+	ld	a,h
+	or	l		; file empty?
+	scf
+	ret	z		; return error if yes
+	dec	hl
+	ld	de,(BLKNO)
+	call	CPHLDE		; at last block?
+	ccf
+	ret	c		; return error if yes
+	inc	de
+	ld	(BLKNO),de	; set new block number
+	ld	hl,0
+	ld	(OFFTOP),hl	; set top line to start of block
+	ld	hl,(OFFSET)
+	ld	de,-512
+	add	hl,de
+	ld	(OFFSET),hl	; fix offset
+	call	STOFS1		; update status line
+	call	RDBLK		; read file block
+	call	STBLK
+	call	DUMP		; refresh screen
+	or	a
+	ret
+
+; Dump block segment
+
+DUMP:	ld	a,(NLINES)
+DUMPN:	ld	hl,(OFFTOP)	; index of top line
+	ld	de,(Y0)		; X0, Y0
+	ld	b,a		; number of lines to display
+dmp1:	ex	de,hl
+	call	SETCUR		; position cursor
+	ex	de,hl
+	call	DMPLN		; dump single line
+	inc	e
+	djnz	dmp1		; loop until done
+	ret
+
+; Dump single line, called with HL = line offset into block buffer.
+
+DMPLN:	push	de
+	push	bc
+	call	HLHEX		; display 16-bit address
+	ld	c,':'
+	call	PUTCH		; follow with a colon
+	ld	c,' '
+	call	PUTCH		; and a space
+	push	hl		; save offset
+	ld	de,BUF
+	push	de		; save buffer address
+	ex	de,hl
+	add	hl,de		; index into buffer
+dmp2:	ld	a,(hl)
+	call	AHEX		; display hex bytes
+	ld	c,' '
+	call	PUTCH		; follow with a space
+	inc	de
+	inc	hl
+	ld	a,e
+	and	0Fh
+	jr	nz,dmp2
+	ld	c,' '
+	call	PUTCH		; display separator
+	pop	hl		; restore buffer address
+	pop	de		; restore offset
+	add	hl,de		; index into buffer
+dmp3:	ld	a,(hl)
+	call	ASCCHR		; display ASCII values
+	inc	de
+	inc	hl
+	ld	a,e
+	and	0Fh
+	jr	nz,dmp3
+	ex	de,hl		; return updated offset in HL
+	pop	bc
+	pop	de
+	ret
+
+ASCCHR:	cp	80h		; test for printable char
+	jr	nc,a1
+	cp	20h
+	jr	nc,a2
+a1:	ld	a,'.'		; output a dot if not printable
+a2:	jp	AOUT
+
+; Read block
+
+RDBLK:	ld	a,(OPNFLG)
+	or	a
+	ret	z		; return if file not open
+	ld	hl,RDMSG
+	call	MESSGE
+	ld	hl,(BLKNO)
+	ld	de,BUF
+	call	READF
+	jr	c,RDERR
+	push	hl
+	call	CLRCMD
+	pop	hl
+	ld	(BLKSZ),hl	; remember number of bytes read
+	xor	a
+	ld	(MODFLG),a	; clear modified flag
+	ex	de,hl
+	ld	hl,512
+	or	a
+	sbc	hl,de		; full block read?
+	ret	z		; return if yes
+	ld	c,l
+	ld	b,h
+	ld	hl,BUF
+	add	hl,de
+	ld	(hl),EOF	; else fill remaining of buffer with EOF chars
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	a,b
+	or	c
+	ret	z
+	ldir
+	ret
+
+RDERR:	ld	hl,REMSG
+	jp	ERROR
+
+RDMSG:	db	'Loading...',0
+REMSG:	db	'File read error ',0
+
+; Write block, if modified
+
+WRBLK:	ld	a,(OPNFLG)
+	or	a
+	ret	z		; return if file not open
+	ld	a,(MODFLG)
+	or	a
+	ret	z		; return if block has not been modified
+	ld	hl,WRMSG
+	call	MESSGE
+	ld	hl,(BLKNO)
+	ld	de,BUF
+	ld	bc,(BLKSZ)
+	call	WRITEF
+	jr	c,WRERR
+	call	CLRCMD
+	xor	a
+	ld	(MODFLG),a	; clear modified flag
+	ret
+
+WRERR:	ld	hl,WEMSG
+	jp	ERROR
+
+WRMSG:	db	'Saving...',0
+WEMSG:	db	'File write error ',0
+
+; Close file
+
+CLOSE:	ld	a,(OPNFLG)
+	or	a
+	ret	z
+	call	WRBLK		; update current block, if changed
+	call	CLOSEF
+	jr	c,CLSERR
+	xor	a
+	ld	(OPNFLG),a
+	ret
+
+CLSERR:	ld	hl,CLSMSG
+	jp	ERROR
+
+CLSMSG:	db	'File close error ',0
+
+; Display HL as hexadecimal word
+
+HLHEX:	ld	a,h
+	call	AHEX
+	ld	a,l
+AHEX:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	NIBL
+	pop	af
+NIBL:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+AOUT:	push	bc
+	ld	c,a
+	call	PUTCH
+	pop	bc
+	ret
+
+; Get string from terminal
+
+GETSTR:	ld	hl,LNBUF
+	ld	c,0
+GET:	call	GETCH		; get char
+	cp	8
+	jr	z,DEL		; backspace erases char
+	cp	7Fh
+	jr	z,DEL		; so does delete
+	cp	EOF
+	scf
+	ret	z		; ^Z aborts input
+	cp	3
+	scf
+	ret	z		; do does ^C
+	cp	CR
+	jr	z,EOL		; CR ends input
+	ld	b,a
+	ld	a,20
+	cp	c		; maximum length reached?
+	jr	z,GET		; ignore char if yes
+	ld	a,b
+	call	AOUT		; else echo char
+	ld	(hl),b		; and store in buffer
+	inc	hl		; advance pointer
+	inc	c
+	jr	GET		; loop
+
+DEL:	ld	a,c
+	or	a		; at start of buffer?
+	jr	z,GET		; then ignore delete
+	ld	a,8
+	call	AOUT
+	ld	a,' '
+	call	AOUT		; erase char from the screen
+	ld	a,8
+	call	AOUT
+	dec	hl
+	dec	c
+	jr	GET		; loop
+
+EOL:	xor	a
+	ld	(hl),a		; end with a trailing null
+	ret
+
+; Skip blanks
+
+SKIPBL:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '+1		; any control char is also a "blank"
+	ret	nc
+	inc	de
+	jr	SKIPBL
+
+; Parse hex word from string
+
+GETHEX:	ld	hl,0
+	call	SKIPBL		; skip blanks and get first char
+gth1:	call	TOHEX		; test for HEX digit
+	ret	c		; on error return
+	inc	de
+	ld	c,a
+	ld	b,0
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,hl		; *16
+	ret	c
+	add	hl,bc		; add digit
+	ret	c
+	ld	a,(de)		; get next char
+	or	a		; test for delimiter
+	ret	z
+	cp	' '
+	ret	z
+	jr	gth1		; loop
+
+; Parse decimal word from string
+
+GETDEC:	ld	hl,0
+	call	SKIPBL		; skip blanks and get first char
+gdc1:	sub	'0'		; test for decimal digit
+	ret	c		; on error return
+	cp	9+1
+	ccf
+	ret	c
+	inc	de
+	add	hl,hl		; *2
+	ret	c
+	ld	c,l
+	ld	b,h
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,bc		; *10
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; add digit
+	ret	c
+	ld	a,(de)		; get next char
+	or	a		; test for delimiter
+	ret	z
+	cp	' '
+	ret	z
+	jr	gdc1		; loop
+
+; Convert char to 4-bit hex value
+
+TOHEX:	call	UCASE
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	nc
+	cp	11h
+	ret	c
+	cp	17h
+	ccf
+	ret	c
+	sub	7
+	ret
+
+; Toggle help
+
+HELPLN	equ	3		; help message lines, including separator
+
+HELP:	ld	a,(HLPFLG)
+	xor	1
+	ld	(HLPFLG),a
+	jr	z,hoff
+
+	; help on
+
+	ld	hl,(OFFSET)	; see if we need to adjust contents
+	ld	de,(OFFTOP)
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE = cursor row (relative to top of window)
+	ld	hl,HELPLN*16
+	call	CPHLDE		; below help message?
+	jr	nc,h2		; yes, only need to change OFFTOP
+
+	ld	hl,(OFFSET)	; else we need to shift the window down
+	ld	a,l
+	and	0F0h
+	ld	l,a
+	ld	(OFFTOP),hl	; new top line is the current cursor line
+	call	HASSRG		; terminal supports scroll region?
+	ld	a,1		; flag = redraw everything
+	jr	z,h3		; branch if not
+
+	ld	a,e
+	rrca
+	rrca
+	rrca
+	rrca			; amount to scroll down is
+	and	0Fh		;  message lines - cursor row
+	ld	b,a
+	ld	a,HELPLN
+	sub	b
+	ld	b,a
+	ld	hl,(Y0)
+	call	SETCUR
+h1:	call	REVIDX		; scroll down
+	djnz	h1
+	xor	a		; flag = no need to redraw
+	jr	h3
+
+h2:	ld	de,(OFFTOP)	; cursor is below new top line
+	add	hl,de
+	ld	(OFFTOP),hl	; shift OFFTOP down, no scroll needed
+	xor	a		; and no redraw necessary
+h3:	push	af		; save flag
+	call	HLPMSG		; display help
+
+	ld	hl,0+(4 SHL 8) OR (2+HELPLN)
+	ld	a,20-HELPLN
+	call	SETWIN		; shrink window
+
+	pop	af
+	or	a
+	call	nz,DUMP		; redraw if necessary
+	ret
+
+hoff:	; help off
+
+	ld	hl,0+(4 SHL 8) OR 2
+	ld	a,20
+	call	SETWIN		; restore full window
+
+	ld	de,(OFFTOP)	; see how much we need to update
+	ld	hl,HELPLN*16
+	call	CPHLDE		; current top above 3rd row of block?
+	jr	nc,h5		; branch if not to restore the 3 top lines
+
+	ld	hl,0		; else we need to shift the window up
+	ld	(OFFTOP),hl	; new top line is first line of block
+	call	HASSRG		; terminal supports scroll region?
+	ld	a,-1		; flag = redraw everything
+	jr	z,h6		; branch if not
+
+	ld	a,e
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	c,a		; number of lines to restore after scroll
+	ld	a,HELPLN
+	sub	c		; amount to scroll up is
+	ld	b,a		;  message lines - old top line
+	ld	a,e
+	and	0F0h
+	ld	e,a
+	ld	hl,-HELPLN*16
+	add	hl,de
+	ex	de,hl
+h4:	push	bc
+	call	su00		; scroll up and restore bottom line
+	ld	hl,16
+	add	hl,de
+	ex	de,hl
+	pop	bc
+	djnz	h4
+	ld	a,c		; redraw this many lines
+	jr	h6
+
+h5:	ex	de,hl
+	sbc	hl,de		; note CY clear
+	ld	(OFFTOP),hl	; shift OFFTOP 3 rows up, no scroll is needed
+	ld	a,HELPLN	; redraw only the uncovered rows
+h6:	or	a		; test flag
+	ret	z		; no redraw necessary
+	jp	m,DUMP		; redraw everything
+	call	DUMPN		; else just the necessary lines
+	ret
+
+; Display the help message
+
+HLPMSG:	ld	a,(HLPFLG)
+	or	a
+	ret	z
+	ld	hl,(Y0)
+	ld	l,2		; X0, 2
+	ld	de,hmsg
+hm1:	call	SETCUR		; position cursor
+	ex	de,hl
+	call	PUTSTR		; display help
+	call	CLREOL
+	ex	de,hl
+	inc	l		; row down
+	inc	de
+	ld	a,(de)		; end of help message?
+	or	a
+	jr	nz,hm1		; loop if not
+	call	SETCUR
+	call	CLREOL		; output an empty separating line below
+	ret
+
+  IF 0
+hmsg:	db	'^E cursor up    ^D cursor right  ^I toggle mode     '
+	db	'^U update   ^Z exit',0
+	db	'^X cursor down  ^S cursor left   ^F find  ^B block  '
+	db	'^Y reload   ^Q quit',0
+	db	0
+  ELSE
+hmsg:	db	'^E up    ^D right  ^R page up    ^I mode  ^O offset  '
+	db	'^U update  ^Z exit',0
+	db	'^X down  ^S left   ^C page down  ^F find  ^B block   '
+	db	'^Y reload  ^Q quit',0
+	db	0
+  ENDIF
+
+; Set file display window
+
+SETWIN:	ld	(Y0),hl
+	ld	(NLINES),a
+	ld	c,a
+	ld	a,32
+	sub	a,c
+	ld	(SCRLN),a
+	jp	SETREG
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+	ds	256		; stack space
+STACK	equ	$
+
+Y0:	db	2		; left-top coordinates  !   do not     !
+X0:	db	4		;  of the edit window   ! change order !
+NLINES:	db	20		; number of displayed lines
+SCRLN:	db	12		; lines to scroll, normally 32-NLINES
+HLPFLG:	db	0		; help on flag
+
+NBLKS:	ds	2		; file size in 512-byte blocks
+BLKNO:	ds	2		; current block number
+BLKSZ:	ds	2		; block size, normally 512 unless last
+OFFTOP:	ds	2		; offset to top of displayed block
+OFFSET:	ds	2		; current offset within block
+MODFLG:	ds	1		; block modified flag
+OPNFLG:	ds	1		; file open flag
+NBLPOS:	ds	1		; cursor nibble position
+MODE:	ds	1		; 0=HEX, 1=ASCII
+
+LNBUF:	ds	22
+BUF:	ds	512
+
+	end	START

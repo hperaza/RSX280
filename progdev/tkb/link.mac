@@ -1,0 +1,4885 @@
+	title	TKB - Task Builder for RSX180 and CP/M
+	name	('TKB')
+
+; Based on DR's LINK disassembly by W. Cirsovius
+; Modifications by H. Peraza
+
+	.Z80
+
+	include	LINK.INC
+
+	ident	'2.01'
+
+	extrn	GetTop,IOBuf,IrlBuf
+	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
+	extrn	StrBuf,StrCpy,ErrMsg,ErrFN,Abort
+
+	extrn	X$ABS$FIB,X$PRG$FIB,X$DAT$FIB,X$COM$FIB
+	extrn	Y$ABS$FIB,Y$PRG$FIB,Y$DAT$FIB,Y$COM$FIB
+	extrn	OpenF,CreateF,CloseF,SeekF,DiskRd,DiskWr,$OPNER
+	extrn	FCB,DeleteF,FExist,SetName,SetExt,AddExt,CopyFN
+	extrn	ChkExt,SetLibDir,ModFCB,MainFCB,SavMain,$REL,$IRL
+	extrn	$LIB,SymFCB,MapFCB
+
+	public	LINK,InitSegs,Compare,DivRec,MulRec
+
+	public	OVflg,Linking,$HEAD,$EXT.Tab
+	public	ReadFile,SolveLBRQ,StOVL0,Del$XX,Del$YY
+	public	Finish,PutOVL,B.opt,IrlMax
+	public	StOVLY,PrgOrig,DatOrig,LoadAddr
+	public	O.opt,O.sav,LAdr.sav,NextOVL
+	public	RemOVL,OVlvl,S.opt,A.opt,Q.opt,Y.opt
+	public	P.opt,D.opt,G.opt,MemSize,optGlabel,optGlen
+	public	symflg,mapflg,objflg,ovlflg
+	public	LUNtbl,TSKnam,TSKpar,TSKid,TSKpri,TSKattr
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; %%%%%%%%%%%%%%%%%%%%%
+; %% MAIN PROCESSING %%
+; %%%%%%%%%%%%%%%%%%%%%
+
+LINK:	xor	a
+	ld	(OVflg),a	; clear overlay flag
+	ld	(OVlvl),a	;  and overlay nesting level
+;;	xor	a		; scan only
+	call	ProcessCommand	; scan command line, get global options
+	ld	a,(O.opt)	; overlay allowed only for .COM output
+	cp	.OC
+	jr	z,OvlOK
+	ld	a,(OVflg)
+	or	a
+	jp	nz,CmdError
+OvlOK:	call	DefaultOpt	; setup default options
+	call	SetMem		; set up memory space
+	call	GetTop		; get top of available memory
+	ld	(MemTop),hl	; set top of memory
+	ld	(YTop),hl
+  IF 1 ;new (check!)
+	call	InitSegs	; init segment tables
+	xor	a
+	ld	(ABSLoc),a
+	ld	(OffSgn),a
+	ld	(JmpFlg),a
+	ld	de,HashTab
+	ld	bc,2*HashLen
+	call	ZeroMem		; clear hash table
+	ld	hl,0
+	ld	(Y$Ptr),hl
+	ld	(ModTop),hl	; clear module top
+  ENDIF
+	ld	hl,(X$COM$FIB+X$.buf)
+	ld	de,(Dsk$COM)
+	add	hl,de
+	ld	(SymTop),hl	; init symbol table, follows disk buffers
+	ld	(SymBeg),hl
+	ex	de,hl
+	ld	hl,(YTop)
+	or	a
+	sbc	hl,de		; check if enough memory
+	ld	de,$INSUF
+	jp	c,Abort		; not enough, abort
+	ld	(FreeMem),hl	; save amount of free memory
+	ld	a,TRUE
+	call	ProcessCommand	; scan command line and process files
+	call	SetMTop		; set module top and $MEMRY variable
+	ld	a,(OVflg)	; any overlays?
+	or	a
+	ret	z		; return if not, end of LINK session
+	ld	de,StrBuf	; else output module top:
+	call	WrtBuf		; .. newline
+	ld	hl,$TOP
+	call	StrCpy		; .. copy message
+	ld	a,13
+	call	PosCurs
+	ld	hl,(ModTop)
+	call	CnvHexWord	; .. convert module top to hex
+	jp	WrtBuf		; .. output message and return
+
+$TOP:	db	'Module Top',0
+$INSUF:	db	'Insufficient memory',0
+
+; Set up disk buffers.
+
+SetMem:	ld	hl,(CmdPtr)
+	inc	hl		; disk buffers start after command line buf
+
+	ld	a,(A.opt)	; check for additional memory option
+	or	a
+	jr	z,sm1		; branch if not specified (Y buffers in memory)
+
+	ld	(Y$ABS$FIB+Y$.buf),hl	; else setup Y disk buffers
+	ld	de,(Y$ABS$FIB+Y$.len)
+
+	add	hl,de
+	ld	(Y$PRG$FIB+Y$.buf),hl
+	ld	de,(Y$PRG$FIB+Y$.len)
+
+	add	hl,de
+	ld	(Y$DAT$FIB+Y$.buf),hl
+	ld	de,(Y$DAT$FIB+Y$.len)
+
+	add	hl,de
+	ld	(Y$COM$FIB+Y$.buf),hl
+	ld	de,(Y$COM$FIB+Y$.len)
+
+	add	hl,de
+
+sm1:	ld	(X$ABS$FIB+X$.buf),hl	; place buffer for Absolute seg first
+	ex	de,hl
+	ld	hl,(Dsk$ABS)
+	ld	(X$ABS$FIB+X$.len),hl	; setup length
+	dec	hl
+	ld	(X$ABS$FIB+X$.max),hl	; and limit
+	inc	hl
+
+	add	hl,de
+	ld	(X$PRG$FIB+X$.buf),hl	; program segment follows
+	ex	de,hl
+	ld	hl,(Dsk$PRG)
+	ld	(X$PRG$FIB+X$.len),hl
+	dec	hl
+	ld	(X$PRG$FIB+X$.max),hl
+	inc	hl
+
+	add	hl,de
+	ld	(X$DAT$FIB+X$.buf),hl	; then data segment
+	ex	de,hl
+	ld	hl,(Dsk$DAT)
+	ld	(X$DAT$FIB+X$.len),hl
+	dec	hl
+	ld	(X$DAT$FIB+X$.max),hl
+	inc	hl
+
+	add	hl,de
+	ld	(X$COM$FIB+X$.buf),hl	; COMMON segment is last
+	ld	hl,(Dsk$COM)
+	ld	(X$COM$FIB+X$.len),hl
+	dec	hl
+	ld	(X$COM$FIB+X$.max),hl
+
+	ret
+
+; Setup default options
+
+DefaultOpt:
+	xor	a		; reset ..
+	ld	hl,P.opt
+	ld	(hl),a		; .. /CSEG option - program orgs at 0
+	inc	hl
+	ld	(hl),a		; .. /DSEG option - data orgs at 0
+	inc	hl
+	ld	(hl),a		; .. /EPT option - no start address
+	ld	(symflg),a	; don't create symbol file by default
+	ld	(mapflg),a	; don't create map file by default
+	ld	(TSKattr),a	; clear task attributes
+	ld	a,50
+	ld	(TSKpri),a	; default task priority
+	ld	de,LUNtbl
+	ld	bc,16*4
+	call	ZeroMem		; init the LUN table
+	ld	hl,'SY'
+	ld	(LUNtbl),hl
+	ld	(LUNtbl+4),hl
+	ld	(LUNtbl+8),hl
+	ld	(LUNtbl+12),hl
+	ld	hl,'TI'
+	ld	(LUNtbl+16),hl
+	ld	hl,'CL'
+	ld	(LUNtbl+20),hl
+	ld	de,TSKnam
+	ld	bc,6*3
+	ld	a,' '
+	call	FillMem		; clear TSKnam, TSKid and TSKpar
+	ld	hl,DefPar
+	ld	de,TSKpar
+	ld	bc,3
+	ldir			; set default partition name
+	ld	a,TRUE
+	ld	(objflg),a	; create output file by default
+	ld	(Q.opt),a	; set quiet mode (do not display ?-labels)
+	ld	hl,TPA
+	ld	(LoadAddr),hl	; set default load address to CP/M TPA
+	ld	hl,0
+	ld	(MemSize),hl	; no additional MP/M PRL memory requirements
+	ld	hl,BFlen3	; setup segment buffers
+	ld	(Dsk$ABS),hl
+	ld	hl,BFlen5
+	ld	(Dsk$PRG),hl
+	ld	hl,BFlen4
+	ld	(Dsk$DAT),hl
+	ld	hl,BFlen2
+	ld	(Dsk$COM),hl
+	ld	a,(A.opt)	; check for additional memory option
+	or	a
+	ret	z		; return if not specified
+	ld	hl,BFlen3	; else make segment buffers smaller
+	ld	(Dsk$PRG),hl
+	ld	(Dsk$DAT),hl
+	ld	hl,BFlen1
+	ld	(Dsk$ABS),hl
+	ld	(Dsk$COM),hl
+	ret
+
+DefPar:	db	'GEN'		; default partition name
+
+; Init segment tables
+
+InitSegs:
+	ld	hl,-1		; clear
+	ld	(ABS.beg),hl	; .. start of Absolute segment
+	ld	(MinYTop),hl	; .. min Y top
+
+	inc	hl		; -->> ZERO
+
+	ld	(SegLoc+IASEG),hl	; .. Absolute location
+	ld	(SegLoc+ICSEG),hl	; .. Code location
+	ld	(SegLoc+IDSEG),hl	; .. Data location
+	ld	(SegLoc+ICOMN),hl	; .. COMMON location
+
+	ld	(TotalLenTab+IASEG),hl	; .. Absolute length
+	ld	(TotalLenTab+ICSEG),hl	; .. Code length
+	ld	(TotalLenTab+IDSEG),hl	; .. Data length
+	ld	(TotalLenTab+ICOMN),hl	; .. COMMON length
+
+	ld	(SngLenTab+IASEG),hl	; .. module Absolute length
+	ld	(SngLenTab+ICSEG),hl	; .. module Code length
+	ld	(SngLenTab+IDSEG),hl	; .. module Data length
+	ld	(SngLenTab+ICOMN),hl	; .. module COMMON length
+
+	ld	(StrtTab+IASEG),hl	; .. Absolute start
+	ld	(StrtTab+ICSEG),hl	; .. Code start
+	ld	(StrtTab+IDSEG),hl	; .. Data start
+	ld	(StrtTab+ICOMN),hl	; .. COMMON start
+
+	ld	(YTable+IASEG),hl	; .. Absolute symbols
+	ld	(YTable+ICSEG),hl	; .. Code symbols
+	ld	(YTable+IDSEG),hl	; .. Data symbols
+	ld	(YTable+ICOMN),hl	; .. COMMON symbols
+
+	ld	(X$ABS$FIB+X$.low),hl	; .. low limits
+	ld	(X$PRG$FIB+X$.low),hl
+	ld	(X$DAT$FIB+X$.low),hl
+	ld	(X$COM$FIB+X$.low),hl
+
+	ld	(ABS.end),hl		; .. end of Absolute segment
+
+	ld	(Y$ABS$FIB+Y$.cur),hl	; .. and Y temp pointer
+	ld	(Y$PRG$FIB+Y$.cur),hl
+	ld	(Y$DAT$FIB+Y$.cur),hl
+	ld	(Y$COM$FIB+Y$.cur),hl
+
+	ld	(X$ABS$FIB+X$.cur),hl
+	ld	(X$PRG$FIB+X$.cur),hl
+	ld	(X$DAT$FIB+X$.cur),hl
+	ld	(X$COM$FIB+X$.cur),hl
+
+	inc	hl		; -->> ONE
+
+	ld	(X$ABS$FIB+X$.high),hl
+	ld	(X$PRG$FIB+X$.high),hl
+	ld	(X$DAT$FIB+X$.high),hl
+	ld	(X$COM$FIB+X$.high),hl
+
+	xor	a		; reset ..
+	ld	hl,P.opt
+	ld	(hl),a		; .. /CSEG option
+	inc	hl
+	ld	(hl),a		; .. /DSEG option
+	inc	hl
+	ld	(hl),a		; .. /EPT option
+
+	ld	(Y.opt),a	; .. /Y option
+
+	ld	(XFerFlg),a	; clear transfer address flag
+
+	ld	hl,SegOrder
+	ld	(hl),@aseg	; normal segment order
+	inc	hl
+	ld	(hl),@cseg
+	inc	hl
+	ld	(hl),@dseg
+	inc	hl
+	ld	(hl),@comn
+
+	ld	hl,(MemTop)
+	ld	(YTop),hl	; .. set back top
+
+IF 1	;;done in SetMem -- without this overlay with /XM option fails?
+	ld	hl,(Dsk$ABS)	; reset max length
+	dec	hl
+	ld	(X$ABS$FIB+X$.max),hl
+	ld	hl,(Dsk$PRG)
+	dec	hl
+	ld	(X$PRG$FIB+X$.max),hl
+	ld	hl,(Dsk$DAT)
+	dec	hl
+	ld	(X$DAT$FIB+X$.max),hl
+	ld	hl,(Dsk$COM)
+	dec	hl
+	ld	(X$COM$FIB+X$.max),hl
+ENDIF
+	; initialize segment buffers
+
+	ld	b,NumSegs	; number of segments
+	ld	c,0		; segment index
+clrx:	ld	a,c
+	push	bc
+	call	Sel$X		; select XX file
+	call	Clr$X$Buf	; zero buffer
+	pop	bc
+	inc	c		; next segment
+	djnz	clrx
+	ret
+
+; Set overlay base.
+; Mark where this overlay symbol table and load address are.
+
+PutOVL:	ld	hl,(CurAdr)	; get current load address
+	ld	de,RecLen-1
+	add	hl,de
+	ld	a,RecLen
+	and	l
+	ld	l,a
+	ld	(LoadAddr),hl	; overlay starts on a record boundary
+	ex	de,hl
+	ld	hl,(OVlvl)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl		; *4
+	ld	bc,OVLTab
+	add	hl,bc
+	ld	(hl),e		; store overlay load address
+	inc	hl		;  in first word of table
+	ld	(hl),d
+	inc	hl
+	ld	de,(SymTop)
+	ld	(hl),e		; store current top of symbol table
+	inc	hl		;  in second word
+	ld	(hl),d
+	ret
+
+; Allocated next overlay. Increment overlay nesting level.
+
+NextOVL:
+	ld	a,(OVlvl)
+	cp	MaxOVL		; maximum level reached?
+	jp	nc,CmdError	; error if yes
+	inc	a		; increment overlay nesting level
+	ld	(OVlvl),a
+	ret
+
+; Done with current overlay level. Remove symbols defined by this overlay
+; group from the symbol table, since they cannot be accessed from another
+; overlay. Overlay symbols referenced by the root module have been already
+; resolved.
+
+RemOVL:	ld	a,(OVlvl)
+	or	a		; at root level?
+	jp	z,CmdError	; error if yes
+	dec	a		; else decrement overlay nesting count
+	ld	(OVlvl),a
+	ld	l,a
+	ld	h,0
+	ld	a,(Linking)	; test linking flag
+	or	a
+	ret	z		; return if syntax check only
+	add	hl,hl		; overlay nesting level * 4
+	add	hl,hl
+	ld	bc,OVLTab
+	add	hl,bc		; index into table
+	ld	e,(hl)		; get previous load address
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(LoadAddr),de	; store it back in variable
+	ld	c,(hl)		; get old symbol top
+	inc	hl
+	ld	b,(hl)
+	ld	(SymTop),bc	; trim symbol table
+
+	ld	hl,HashTab	; now adjust hash table accordingly
+	ld	e,HashLen	; E = number of buckets
+htrim1:	push	de
+	push	hl		; remember table address
+	ld	e,(hl)		; get symbol address into DE
+	inc	hl
+	ld	d,(hl)
+htrim2:	ld	l,e		; copy to HL for comparison below
+	ld	h,d
+	or	a
+	sbc	hl,bc		; compare with pointer (new start of symbols)
+	jr	c,htrim3	; exit loop if below
+	ex	de,hl
+	ld	e,(hl)		; else advance to next symbol
+	inc	hl
+	ld	d,(hl)
+	jr	htrim2		; and loop
+htrim3:	pop	hl
+	ld	(hl),e		; store new end in hash table
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	pop	de
+	dec	e
+	jr	nz,htrim1	; loop until all hash table buckets trimmed
+	ret
+
+;-----------------------------------------------------------------------
+
+; Seek IRL file
+; ENTRY	Reg BC contains absolute record number
+
+SeekIRL:
+	ld	hl,(IRC.rc)	; get current position
+	or	a
+	sbc	hl,bc		; compare
+	ret	z		; return if already there
+	ld	l,c
+	ld	h,b
+Seek.I:	ld	de,FCB
+	ld	c,0
+	push	de
+	call	SeekF		; else seek to position
+	pop	hl
+	ret	nc
+	ld	de,$IDXER	; .. file error
+	jp	ErrFN
+
+$IDXER:	db	'Index error',0
+
+; Read a byte from index file
+; EXIT	Accu holds byte read
+
+Rd.IRL.Byte:
+	ld	hl,(IrlPtr)
+	inc	hl		; advance pointer
+	ld	(IrlPtr),hl
+	ld	de,(IrlMax)
+	or	a
+	sbc	hl,de		; end of buffer reached?
+	jr	c,rdi1		; branch if not
+	ld	bc,(IRX.rc)	; get saved index position
+	call	SeekIRL		; seek to position
+	ld	hl,0
+	ld	(IrlPtr),hl	; clear pointer
+	ld	hl,(IrlBuf)	; get buffer address
+	ld	bc,(IrlMax)	; get number of bytes to read
+	ld	de,FCB
+	call	DiskRd		; read next index segment from disk
+	ld	de,(IRX.rc)	; get old index position
+	add	hl,de		; add number of records read
+	ld	(IRX.rc),hl	; store for next call
+	ld	(IRC.rc),hl	; set as current IRL position as well
+rdi1:	ld	hl,(IrlPtr)
+	ld	bc,(IrlBuf)
+	add	hl,bc		; index into IRL index buffer
+	ld	a,(hl)		; get byte
+	ret
+
+; Read entry from index file: symbol name and module start position
+
+IRL.entry:
+	call	Rd.IRL.Byte	; read first index byte (extent)
+	ld	l,a
+	ld	h,0
+	call	MulRec		; convert extent to records
+	push	hl
+	call	Rd.IRL.Byte	; read second index byte (record)
+	pop	de
+	or	e
+	ld	e,a
+	ld	hl,(IRS.rc)
+	add	hl,de		; add to record of REL section start
+	ld	(IRM.rc),hl	; set record number of module start
+	call	Rd.IRL.Byte	; read third index byte
+	ld	(IRM.bp),a	; set byte offset of module start
+	ld	hl,BF.Name
+	ld	c,0		; clear char count
+ixloop:	push	hl
+	push	bc
+	call	Rd.IRL.Byte	; get symbol name char from index
+	pop	bc
+	pop	hl
+	cp	IDXend		; end of item?
+	jr	nc,ixret	; return if yes
+	ld	(hl),a		; store char
+	inc	hl		; advance pointer
+	inc	c		; count chars
+	ld	a,c
+	cp	MaxChIx		; above max allowed name length?
+	jr	c,ixloop	; loop if not
+	ld	de,$IDXER	; else is error
+	jp	Abort
+ixret:	ld	a,c
+	ld	(BF.Len),a	; set name length
+	ret
+
+; Position within .IRL file
+
+PosIRL:	ld	hl,(IRM.rc)	; get absolute record number of module start
+	ld	e,l		; save in DE
+	ld	d,h
+	ld	bc,(LoRec)	; check if in window
+	or	a
+	sbc	hl,bc		; .. check bottom
+	jr	c,posnew	; out of window
+	push	de
+	push	bc
+	ld	bc,(REL.rc)	; get saved REL position
+	push	bc
+	call	SeekIRL		; seek to position
+	pop	hl
+	ld	(IRC.rc),hl	; save current position
+	pop	bc
+	pop	de
+	ld	hl,(HiRec)	; .. and top
+	or	a
+	sbc	hl,de
+	jr	c,posnew	; out of window
+	ex	de,hl		; get current record back into HL
+	or	a		;  (LoRec still in BC)
+	sbc	hl,bc		; get offset from LoRec
+	call	MulRec		; .. in bytes
+	ld	bc,(IRM.bp)
+	ld	b,0
+	add	hl,bc		; add byte offset
+	dec	hl
+	ld	(InPtr),hl	; set as input pointer
+	ret
+
+posnew:	ld	hl,(IRM.rc)	; get record number of module start
+	ld	(REL.rc),hl	; set as current REL position
+	ld	(IRC.rc),hl	; and current IRL position
+	ld	de,FCB
+	ld	c,0
+	call	SeekF		; seek to module position
+	ld	de,$IDXER	; .. error
+	jp	c,Abort
+	call	RdRec		; read records
+	ld	hl,(IRM.bp)	; get byte offset
+	ld	h,0
+	dec	hl
+	ld	(InPtr),hl	; set as input pointer
+	ret
+
+; Search .IRL library file
+
+LoadIRLfile:
+	ld	hl,(IrlMax)	; init buffer pointer to force read
+	ld	(IrlPtr),hl
+lxloop:	call	IRL.entry	; get symbol and set module position
+	ld	a,(BF.Len)	; check length
+	or	a
+	ret	z		; return if zero (end of index)
+	xor	a
+	ld	(ExtFlg),a
+	call	LNK.0		; find label
+	ld	a,(ExtFlg)	; matches any of our externals?
+	or	a
+	jr	z,lxloop	; no, skip
+	call	PosIRL		; else seek to module start
+	ld	hl,BitCnt	;  and load the module
+	ld	(hl),1		; set bit count, force read of new byte
+lxread:	call	Item		; get items
+	cp	.ModEnd		;  until end of module found
+	jr	nz,lxread
+	jr	lxloop		; loop for more
+
+@@VERB	equ	0
+IF	@@VERB
+V.opt:	db	TRUE
+
+; Print name of module
+
+PrMod:	ld	a,(V.opt)	; Test verbose enabled
+	or	a
+	ret	z		; .. nope
+ld hl,(@@IO)
+push hl
+ld hl,PrChar
+ld (@@IO),hl
+	ld	de,StrBuf
+;	ld	a,(BF.Len)
+ld a,(ModLen)
+	or	a
+	jr	z,PrMod1
+	ld	c,a
+	ld	b,0
+;	ld	hl,BF.Name
+ld hl,ModName
+	ldir			; output module name
+PrMod1:
+
+; Print load address(es)
+
+  IF 1
+	ld	a,10
+	call	PosCurs
+	ld	hl,(SngLenTab+ICSEG)
+	ld	a,h
+	or	l
+	ld	hl,(TotalLenTab+ICSEG)
+	call	nz,CnvHexWord	; output code length
+	ld	a,15
+	call	PosCurs
+	ld	hl,(SngLenTab+IDSEG)
+	ld	a,h
+	or	l
+	ld	hl,(TotalLenTab+IDSEG)
+	call	nz,CnvHexWord	; output data length
+				; - what about absolute and COMMON sizes?
+				; - display load address
+  ENDIF
+
+; Print current file name
+
+	ld	a,20
+	call	PosCurs
+	ld	hl,FCB
+	call	StrFN##		; .. print file name
+	xor	a
+	ld	(de),a
+;
+	call	WrtBuf
+pop hl
+ld (@@IO),hl
+	ret
+ENDIF	;@@VERB
+
+;-----------------------------------------------------------------------
+
+; Write word to Y temp file
+; ENTRY	Reg DE holds word
+; Preserves HL and DE
+
+Wr$Y$word:
+	ld	a,e
+	call	Wr$Y$byte	; write LO byte
+	ld	a,d
+	; continue below	; write HI byte
+
+; Write byte to Y temp file
+; ENTRY	Accu holds byte
+; Preserves HL
+
+Wr$Y$byte:
+	push	hl
+	push	de
+	ld	e,(iy+Y$.cur)	; get current buffer position
+	ld	d,(iy+Y$.cur+1)
+	ld	l,(iy+Y$.buf)
+	ld	h,(iy+Y$.buf+1)
+	add	hl,de		; index into buffer
+	ld	(hl),a		; save byte
+	inc	de		; advance pointer
+	ld	(iy+Y$.cur),e
+	ld	(iy+Y$.cur+1),d
+	ex	de,hl
+	ld	c,(iy+Y$.len)	; get length into BC
+	ld	b,(iy+Y$.len+1)
+	or	a
+	sbc	hl,bc		; buffer full?
+	jr	c,wby2		; return if not
+	ld	a,(iy+Y$.WR)	; else check if file created
+	rra
+	jr	c,wby1		; .. skip if file exists
+	push	bc
+	ld	hl,(Y.FCB)	; get FCB
+	ld	de,0
+	call	CreateF		; create file
+	ld	(iy+Y$.WR),TRUE	; set file created flag
+	pop	bc
+wby1:	ld	l,(iy+Y$.buf)	; get buffer address into HL
+	ld	h,(iy+Y$.buf+1)
+	ld	de,(Y.FCB)	; get FCB into DE, length still in BC
+	call	DiskWr		; .. write buffer to temp Y file
+	xor	a
+	ld	(iy+Y$.cur),a	; reset buffer pointer
+	ld	(iy+Y$.cur+1),a
+wby2:	pop	de
+	pop	hl
+	ret
+
+; Read byte from Y temp file
+; EXIT	Accu holds byte
+
+Rd$Y$byte:
+	ld	l,(iy+Y$.cur)	; get current buffer position
+	ld	h,(iy+Y$.cur+1)
+	inc	hl		; advance pointer
+	ld	(iy+Y$.cur),l
+	ld	(iy+Y$.cur+1),h
+	ld	c,(iy+Y$.len)
+	ld	b,(iy+Y$.len+1)
+	or	a
+	sbc	hl,bc		; beyond end of buffer?
+	jr	c,rby1		; branch if not
+	ld	l,(iy+Y$.buf)	; get buffer address into HL
+	ld	h,(iy+Y$.buf+1)
+	ld	de,(Y.FCB)	; get FCB into DE, length still in BC
+	call	DiskRd		; read record from Y temp file
+	xor	a
+	ld	(iy+Y$.cur),a	; reset buffer pointer
+	ld	(iy+Y$.cur+1),a
+rby1:	ld	c,(iy+Y$.cur)	; get current buffer position
+	ld	b,(iy+Y$.cur+1)
+	ld	l,(iy+Y$.buf)
+	ld	h,(iy+Y$.buf+1)
+	add	hl,bc		; index into buffer
+	ld	a,(hl)		; fetch character
+	ret
+
+; Read word from Y temp file
+; EXIT	Reg HL holds word
+
+Rd$Y$word:
+	call	Rd$Y$byte	; read LO byte
+	ld	l,a
+	push	hl
+	call	Rd$Y$byte	; read HI byte
+	pop	hl
+	ld	h,a
+	ret
+
+; Select YY file for the given segment
+; ENTRY	Accu holds segment index
+; EXIT	Reg IY points to YY structure
+
+Sel$Y:	ld	l,a
+	ld	h,0
+	ld	bc,Y$TAB
+	add	hl,hl
+	add	hl,bc		; index into table
+	ld	e,(hl)		; get address of YY structure
+	inc	hl
+	ld	d,(hl)
+	push	de
+	pop	iy		;  into IY
+	ld	hl,Y$.FCB
+	add	hl,de
+	ld	(Y.FCB),hl	; save pointer to FCB
+	ret
+
+; Write end of file marker to temp file and rewind it
+
+Cls$Y:	ld	a,Y.eof		; write special marker
+	call	Wr$Y$byte
+	ld	bc,-1
+	ld	a,(iy+Y$.WR)	; file created?
+	or	a
+	jr	z,clsnf		; branch if not, set buf ptr to invalid value
+clsy1:	ld	a,(iy+Y$.cur)
+	or	(iy+Y$.cur+1)	; else check for buffer empty
+	jr	z,clsy2		; branch if yes
+	ld	a,EOF		; if not, pad the rest with EOF
+	call	Wr$Y$byte
+	jr	clsy1
+clsy2:	ld	de,(Y.FCB)	; get FCB
+	ld	hl,0		; file position = 0
+	ld	c,1		; write mode
+	call	SeekF		; rewind file
+	ld	c,(iy+Y$.len)	; set pointer to end of buffer to force a read
+	ld	b,(iy+Y$.len+1)
+clsnf:	ld	(iy+Y$.cur),c	; store buffer pointer
+	ld	(iy+Y$.cur+1),b
+	ret
+
+; Get linkage from temporary table
+; EXIT	Reg HL holds chain
+
+Get$Y$Lnk:
+	ld	hl,(Y$Ptr)	; get base
+	ld	bc,.Y$Lnk
+	add	hl,bc		; point to link field
+	ld	a,(hl)		; get contents
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ret
+
+; Store linkage in temporary table
+; ENTRY	Reg BC holds chain
+
+Put$Y$Lnk:
+	ld	hl,(Y$Ptr)	; get base
+	ld	de,.Y$Lnk
+	add	hl,de		; point to link field
+	ld	(hl),c		; store value
+	inc	hl
+	ld	(hl),b
+	ret
+
+; Store value in temporary table
+; ENTRY	Reg BC holds value
+
+Put$Y$Val:
+	ld	hl,(Y$Ptr)	; get base
+	ld	de,.Y$Val
+	add	hl,de		; point to value field
+	ld	(hl),c		; store value
+	inc	hl
+	ld	(hl),b
+	ret
+
+; Set state of bit b2 to temporary status -> Solve chain
+; ENTRY	Accu holds flag
+
+Put$Y$Solv:
+	ld	hl,(Y$Ptr)
+	res	Y$$type,(hl)	; clear status bit
+	or	a		; check flag
+	ret	z		; return if zero, bit already cleared
+	set	Y$$type,(hl)	; else set it
+	ret
+
+; Set bits b1 and b0 of temporary status
+; ENTRY	Accu holds the bits
+
+Put$Y$Mode:
+	and	Y@@mod		; mask bits
+	ld	b,a
+	ld	hl,(Y$Ptr)
+	ld	a,(hl)
+	and	NOT Y@@mod	; clear bit field
+	or	b		; merge bits
+	ld	(hl),a		; store value back
+	ret
+
+; Set offset to temporary table
+; ENTRY	Reg BC holds word
+
+Put$Y$Off:
+	ld	hl,(Y$Ptr)	; get base
+	ld	de,.Y$Off
+	add	hl,de		; point to offset field
+	ld	(hl),c		; store value
+	inc	hl
+	ld	(hl),b
+	ret
+
+; Count number of chain addresses
+; ENTRY	Reg HL holds address
+;	Accu   holds address mode
+; EXIT	Carry set if addresses are the same (address was found)
+;	AdrCnt holds count
+;	SavY$Ptr has pointer to chain for Build$Y$Rec
+
+Get$Y$AdrCnt:
+	ld	(ChnAdr),hl
+	ld	hl,0
+	ld	(AdrCnt),hl	; clear address count
+	ld	l,a		; get mode (segment)
+	ld	bc,YTable
+	add	hl,hl
+	add	hl,bc		; index into table
+	ld	a,(hl)		; fetch pointer from table
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+gta1:	ld	(Y$Ptr),hl	; set pointer to chain
+	ld	a,h		; end of chain?
+	or	l
+	ret	z		; return with CY clear if yes
+	inc	hl
+	ld	e,(hl)		; else get address from entry into DE
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(ChnAdr)
+	or	a
+	sbc	hl,de		; limit reached?
+	jr	nc,gta2		; exit loop if yes
+	ld	hl,(AdrCnt)
+	inc	hl		; count addresses
+	ld	(AdrCnt),hl
+	ld	hl,(Y$Ptr)
+	ld	(SavY$Ptr),hl	; save old pointer
+	call	Get$Y$Lnk	; get link to next element
+	jr	gta1		; and loop
+gta2:	ld	a,h
+	or	l		; same?
+	ret	nz		; return with CY clear if not
+	scf
+	ret			; else return with CY set
+
+; Build temporary address record
+; ENTRY	Reg BC  holds offset if to be defined
+;	Reg A   holds offset flag
+;	B$R.cnt  holds mode
+;	B$R.mode holds mode + solve chain bit + offset bit
+;	Reg DE  holds word - chain or value
+;	Reg HL  holds word - address or chain
+
+Build$Y$Rec:
+	ld	(B$R.off),a
+	ld	(B$R.offVal),bc
+	ld	(B$R.val),de
+	ld	(B$R.adr),hl
+	ld	a,(B$R.cnt)	; test zero index
+	or	h		; test zero address
+	or	l
+	ret	z		; return if both zero
+	ld	a,(B$R.ctrl)
+	and	Y@@off		; test offset flag
+	ld	a,.Y$Off	; entry length
+	jr	z,bldy1		; branch if no offset
+	ld	a,.Y$Off+2	; else extra bytes required
+bldy1:	ld	hl,(YTop)
+	ld	e,a
+	ld	d,0
+	or	a
+	sbc	hl,de		; alloc space
+	ld	(YTop),hl
+	ld	de,(SymTop)
+	or	a
+	sbc	hl,de		; enough space?
+	jp	c,MemOvf	; error if not
+	ld	a,(B$R.off)
+	or	a		; test offset
+	ld	hl,(B$R.adr)
+	ld	a,(B$R.cnt)	; index
+	call	nz,Get$Y$AdrCnt	; find address
+	ld	hl,(YTop)	; get address of allocated entry
+	ld	(Y$Ptr),hl	; set as pointer
+	ld	a,(B$R.ctrl)	; get control bits
+	ld	c,a
+	ld	a,(OffSgn)
+	and	Y@@sign
+	or	c		; add offset sign bit
+	ld	(hl),a		; store control byte
+	inc	hl
+	ld	bc,(B$R.adr)	; get address
+	ld	(hl),c		; store value
+	inc	hl
+	ld	(hl),b
+	ld	hl,(AdrCnt)
+	ld	a,h		; zero count?
+	or	l
+	jr	nz,bldy2	; branch if not
+	ld	hl,(B$R.cnt)	; get index
+	ld	h,0
+	ld	bc,YTable
+	add	hl,hl
+	add	hl,bc
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	jr	bldy3
+bldy2:	ld	hl,(SavY$Ptr)	; get old base
+	ld	bc,.Y$Lnk
+	add	hl,bc
+	ld	c,(hl)		; get value into BC
+	inc	hl
+	ld	b,(hl)
+bldy3:	call	Put$Y$Lnk	; .. save
+	ld	bc,(B$R.val)	; get address
+	call	Put$Y$Val	; .. save it
+	ld	a,(B$R.ctrl)
+	and	Y@@off		; test offset flag
+	ld	bc,(B$R.offVal)	; get offset
+	call	nz,Put$Y$Off	; .. store value if offset flag set
+	ld	de,(YTop)	; get address of record just built
+	ld	hl,(AdrCnt)
+	ld	a,h		; zero count?
+	or	l
+	jr	nz,bldy4	; branch if not
+	ld	hl,(B$R.cnt)	; get index
+	ld	h,0
+	ld	bc,YTable
+	add	hl,hl
+	add	hl,bc		; index into table
+	ld	(hl),e		; add new record
+	inc	hl
+	ld	(hl),d
+	ret
+bldy4:	ld	hl,(SavY$Ptr)	; get old base
+	ld	bc,.Y$Lnk
+	add	hl,bc		; index into chain field
+	ld	(hl),e		; add new record
+	inc	hl
+	ld	(hl),d
+	ret
+
+; Reverse Y chain order
+
+Reverse$Y:
+	ld	b,NumSegs	; loop thru all segments
+	ld	hl,YTable
+revc1:	push	bc
+	push	hl		; save table address
+	ld	a,(hl)		; get chain pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	bc,0		; zero is end of chain
+revc2:	ld	(Y$Ptr),hl	; set pointer
+	ld	a,h		; end of chain?
+	or	l
+	jr	z,revc3		; exit loop if yes
+	push	bc
+	call	Get$Y$Lnk	; get link to next element
+	pop	bc		; pop prev
+	push	hl		; save next
+	call	Put$Y$Lnk	; swap next pointer with prev (BC)
+	ld	bc,(Y$Ptr)	; Y$Ptr is now prev pointer
+	pop	hl		; get link to next
+	jr	revc2		; and loop
+revc3:	pop	hl		; pop table address
+	ld	(hl),c		; store address of last element (now first)
+	inc	hl
+	ld	(hl),b
+	inc	hl		; point to next YTable entry
+	pop	bc
+	djnz	revc1		; loop to process next segment
+	ret
+
+; Reverse YTable chains and write temp record
+
+Wr$Y$Data:
+	call	Reverse$Y	; reverse chain order of all segments
+	ld	b,NumSegs	; loop thru all segments
+	ld	c,0		; init segment index
+	ld	hl,YTable
+wry1:	push	hl		; save table address
+	ld	a,(hl)		; get value
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(Y$Ptr),hl	; .. save
+	ld	a,c		; get index
+	push	bc
+	call	Sel$Y		; select
+	ld	hl,(Y$Ptr)
+wry2:	ld	a,h		; end of chain?
+	or	l
+	jr	z,wry4		; exit loop if yes
+	ld	a,(hl)		; get status
+	push	af
+	call	Wr$Y$byte	; write to temp
+	inc	hl
+	ld	e,(hl)		; .. get address
+	inc	hl
+	ld	d,(hl)
+	call	Wr$Y$word	; .. to temp
+	inc	hl
+	ld	e,(hl)		; .. get value
+	inc	hl
+	ld	d,(hl)
+	call	Wr$Y$word	; .. to temp
+	inc	hl
+	pop	af		; get status back
+	bit	Y$$off,a	; offset bit set?
+	jr	z,wry3		; branch if not
+	push	hl
+	inc	hl
+	inc	hl
+	ld	e,(hl)		; else get offset value
+	inc	hl
+	ld	d,(hl)
+	call	Wr$Y$word	; .. to temp
+	pop	hl
+wry3:	ld	a,(hl)		; get address of next element
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(Y$Ptr),hl	; set pointer
+	jr	wry2		; and loop
+wry4:	pop	bc
+	pop	hl
+	xor	a
+	ld	(hl),a		; clear table
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	inc	c		; next segment
+	djnz	wry1		; loop until all processed
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get start of symbols for current overlay nesting level
+; EXIT	Reg HL holds base of current symbol table
+;	SymPtr set accordingly
+; Preserves DE.
+
+GetSymBeg:
+	ld	a,(OVlvl)	; get overlay nesting level
+	or	a
+	ld	hl,(SymBeg)	; return start of symbol table if at zero level
+	jr	z,gets1
+	dec	a
+	ld	l,a
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	ld	bc,OVLTab	; get overlay table address into BC
+	add	hl,bc		; index into table
+	inc	hl
+	inc	hl		; point to symbol table field
+	ld	a,(hl)		; return value
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+gets1:	ld	(SymPtr),hl	; set pointer
+	ret
+
+; Get length of current symbol
+; EXIT	Accu holds length
+;	Reg  HL points to name field
+; Preserves DE
+
+GetSymLen:
+	ld	hl,(SymPtr)
+	ld	bc,.SymCtr
+	add	hl,bc		; point to name length field
+	ld	a,(hl)
+	and	.SymLen		; mask bits
+	inc	hl		; point to start of name field
+	ret
+
+; Get length of item
+; EXIT	Accu holds length
+; Preserves DE
+
+GetItmLen:
+	ld	hl,(SymPtr)	; get address of current symbol
+	inc	hl
+	inc	hl		; point to entry length field
+	ld	a,(hl)
+	and	.ItmLen		; mask bits
+	ret
+
+; Advance pointer to next symbol in table
+; Preserves DE
+
+NextSym:
+	call	GetItmLen
+	ld	c,a
+	ld	b,0
+	dec	hl
+	dec	hl
+	add	hl,bc		; point to next entry
+	ld	(SymPtr),hl	; set pointer
+	ret
+
+; Get symbol fixed flag
+; EXIT	Accu holds FALSE if not set
+;	Accu holds TRUE  if set
+
+GetFix:	ld	hl,(SymPtr)
+	inc	hl
+	inc	hl
+	xor	a
+	bit	X$$fix,(hl)	; bit set?
+	ret	z		; return FALSE if not
+	dec	a		; else return TRUE
+	ret
+
+; Set symbol fixed flag
+
+SetFix:	ld	hl,(SymPtr)
+	inc	hl
+	inc	hl
+	set	X$$fix,(hl)	; set bit
+	ret
+
+; Check LIB REQUEST
+; EXIT	Z flag CLEAR if symbol is a LIB request
+; Preserves BC and DE
+
+GetRQST:
+	ld	hl,(SymPtr)
+	inc	hl
+	inc	hl
+	bit	X$$LIB,(hl)	; return bit state
+	ret
+
+; Get ENTRY state of symbol
+; EXIT	Accu holds FALSE if not set
+;	Accu holds TRUE  if set
+;	Preserves DE
+
+GetENT:	ld	hl,(SymPtr)
+	ld	bc,.SymCtr
+	add	hl,bc
+	xor	a
+	bit	$$ENT,(hl)	; bit set?
+	ret	z		; return FALSE if not
+	dec	a		; else return TRUE
+	ret
+
+; Get length of COMMON
+; EXIT	Reg HL holds length of COMMON area
+
+GetCOMlen:
+	call	GetItmLen
+	ld	e,a
+	ld	d,0
+	ld	hl,(SymPtr)
+	add	hl,de		; point to end of entry
+	dec	hl		; backup to length of COMMON field
+	ld	d,(hl)		; get length
+	dec	hl
+	ld	e,(hl)
+	ex	de,hl
+	ret
+
+; Get value from current symbol
+; EXIT	Reg HL holds offset
+;	Preserves DE
+
+GetVAL:	ld	hl,(SymPtr)
+	ld	bc,.SymOff
+	add	hl,bc		; point to value field
+	ld	a,(hl)		; fetch it
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ret
+
+; Set value and address mode of current symbol
+; ENTRY	Reg  HL holds offset
+;	Accu holds mode bits
+
+SetVAL:	ex	de,hl		; get offset into DE
+	ld	hl,(SymPtr)
+	ld	bc,.SymOff
+	add	hl,bc		; point to offset
+	ld	(hl),e		; .. set offset
+	inc	hl
+	ld	(hl),d
+	inc	hl		; point to symbol length field
+	and	X@@mod		; .. mask mode bits
+	rrca			; shift into right place
+	rrca
+	rrca
+	ld	c,a
+	ld	a,(hl)		; get old bits
+	and	.ItmBit		; .. mask
+	or	c		; .. insert
+	ld	(hl),a
+	ret
+
+; Fetch symbol address control bits xBBx.xxxx
+; EXIT	Accu holds bits
+;	Preserves DE
+
+GetADRmod:
+	ld	hl,(SymPtr)
+	ld	bc,.SymCtr
+	add	hl,bc		; point to length field
+	ld	a,(hl)
+	rlca
+	rlca
+	rlca
+	and	X@@mod		; mask segment type bits
+	ret
+
+; Compute hash and get pointer to hash table bucket
+; ENTRY	Accu   holds length of symbol
+;	Reg HL points to symbol
+; EXIT	Reg HL hold address into hash table
+
+getIdx:	or	a
+	jr	z,hash2
+	ld	b,a		; set length
+	xor	a
+hash1:	add	a,(hl)		; compute checksum
+	inc	hl
+	djnz	hash1
+hash2:	and	HashLen-1	; hash = sum % HashLen
+	ld	l,a
+	ld	h,0
+	ld	bc,HashTab
+	add	hl,hl
+	add	hl,bc		; return pointer
+	ret
+
+; Search symbol table for the specified library request
+; ENTRY	Accu   holds name length
+;	Reg HL holds pointer to name
+; EXIT	Carry set if found
+
+LibFind:
+	ld	e,a		; get length into E
+	ld	(SFptr),hl
+	call	GetSymBeg	; get symbol base into SymPtr
+lfloop:	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; more?
+	ret	nc		; no, return not found
+	call	GetRQST		; LIB request?
+	jr	z,lfnext	; skip if not
+	call	GetSymLen	; get name length
+	cp	e		; same?
+	jr	nz,lfnext	; skip if not
+	ld	b,a		; get length into B
+	push	de
+	ld	de,(SFptr)
+	call	Compare		; compare names
+	pop	de
+	ret	z		; return if match
+lfnext:	call	NextSym		; else point to next entry
+	jr	lfloop		; and loop
+
+; Symbol lookup in table
+; ENTRY	Reg E  FALSE if no COMMON search
+;	Reg E  TRUE  if    COMMON search
+; EXIT	Carry flag set if symbol found
+
+SrcName:
+	ld	hl,BF.Name	; load default values (B-field of REL item)
+	ld	a,(BF.Len)
+
+; Lookup symbol in table
+; ENTRY	Reg A  holds length of symbol
+;	Reg E  FALSE if no COMMON search
+;	Reg E  TRUE  if    COMMON search
+;	Reg HL holds pointer to symbol
+; EXIT	Carry flag set if symbol found
+
+SrcSym:	ld	c,a
+	ld	a,e
+	ld	(SSmod),a	; .. save COMMON flag
+	ld	a,c
+	ld	(SSlen),a	; .. and length
+	ld	(SSptr),hl	; .. and pointer
+	call	getIdx		; get hash index
+	ld	e,(hl)		; .. get head of list
+	inc	hl
+	ld	d,(hl)
+	ld	(SymPtr),de	; set as symbol pointer
+sloop:	ld	hl,(SymPtr)
+	ld	a,h		; empty entry?
+	or	l
+	ret	z		; return, not found
+	call	GetSymLen	; get symbol length
+	ex	de,hl		; DE = pointer to name field
+	ld	hl,SSlen
+	cp	(hl)		; compare with reference
+	jr	nz,snext	; jump if not equal
+	ld	hl,(SSptr)
+	ld	b,a		; get length into B
+	call	Compare		; compare names
+	jr	nz,snext	; branch if not same
+	call	GetADRmod	; get segment
+	sub	@comn		; COMMON?
+	sub	1
+	sbc	a,a
+	ld	hl,SSmod
+	xor	(hl)		; compare entry
+	rra
+	ccf
+	ret	c		; .. got it
+snext:	ld	hl,(SymPtr)
+	ld	a,(hl)		; follow link to get next symbol
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(SymPtr),hl
+	jr	sloop
+
+; Insert symbol into table
+; ENTRY	Reg DE  holds size in case of COMMON
+;	Reg HL  holds value
+;	Reg B   holds address control bits xBBx.xxxx
+;	Reg C   holds TRUE for COMMON select
+;	Reg A   holds ENTRY control bit
+;	Reg C'  holds length of symbol name
+;	Reg HL' holds pointer to symbol name
+
+InsSym:	ld	(IS.val),hl
+	ld	(IS.COM),de	; save arguments
+	ld	(IS.MSB),a
+	ld	a,b
+	ld	(IS.adr),a
+	ld	a,c
+	ld	(IS.sel),a
+	exx
+	ld	a,c
+	ld	(IS.len),a
+	ld	(IS.nam),hl
+	exx
+	ld	a,(IS.sel)	; COMMON selected?
+	rra
+	ld	a,(IS.len)
+	jr	nc,ins1		; branch if not
+	inc	a		; else two extra bytes are required
+	inc	a
+ins1:	add	a,.SymHdr	; add header size for complete entry length
+	ld	hl,(SymTop)	; get top
+	ld	(SymPtr),hl	; .. for new item
+	ld	c,a		; get length into BC
+	ld	b,0
+	add	hl,bc		; new top
+	ld	(SymTop),hl
+	ex	de,hl
+	ld	hl,(YTop)
+	or	a
+	sbc	hl,de		; enough room?
+	jp	c,MemOvf	; .. nope
+	push	af		; save entry length
+	ld	hl,(IS.nam)	; get address of symbol name
+	ld	a,(IS.len)	; .. and its length
+	call	getIdx		; get pointer to hash table entry
+	push	hl
+	ld	c,(hl)		; get symbol chain address into BC
+	inc	hl
+	ld	b,(hl)
+	ld	hl,(SymPtr)	; get address of current symbol
+	ld	(hl),c		; store chain address
+	inc	hl
+	ld	(hl),b
+	dec	hl
+	ex	de,hl		; DE = SymPtr
+	pop	hl
+	ld	(hl),e		; chain symbol to head of hash table
+	inc	hl
+	ld	(hl),d
+	ex	de,hl		; SymPtr back in HL
+	inc	hl
+	inc	hl		; point to length field
+	pop	af		; pop entry length
+	ld	(hl),a		; store length
+	ld	de,(IS.val)
+	inc	hl
+	ld	(hl),e		; set value
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,(IS.MSB)
+	add	a,-1
+	sbc	a,a
+	and	1 SHL $$ENT	; bit set if IS.MSB NE 0
+	ld	c,a
+	ld	a,(IS.len)
+	or	c		; OR with length
+	ld	c,a		; set length
+	ld	a,(IS.adr)
+	and	X@@mod		; .. isolate bits
+	rrca			; shift bits into place
+	rrca
+	rrca
+	or	c
+	ld	(hl),a		; set lenght + code
+	inc	hl		; point to name field
+	ld	bc,(IS.len)	; get name length
+	ld	b,0
+	ex	de,hl		; dest in DE
+	ld	hl,(IS.nam)	; src in HL
+	ldir			; copy symbol name
+	ld	a,(IS.sel)	; test for COMMON
+	rra
+	jr	nc,ins2
+	ld	hl,(IS.COM)
+	ex	de,hl
+	ld	(hl),e		; set COMMON length
+	inc	hl
+	ld	(hl),d
+ins2:
+IF	NOT	@@HASH
+	ld	bc,.SymHdr
+	ld	hl,(SymPtr)
+	add	hl,bc		; point to symbol
+	ld	a,(hl)
+	cp	SpcChar		; test for special
+	ret	nz
+	ld	hl,SpecSym
+	ld	(hl),TRUE	; .. set flag
+ENDIF	;NOT @@HASH
+	ret
+
+;-----------------------------------------------------------------------
+
+; Close and delete additional YY temp files
+
+Del$YY:	ld	b,NumSegs	; init count
+	ld	hl,Y$TAB	; point to table
+dyloop:	push	bc
+	ld	e,(hl)		; .. get pointer
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl
+	ld	hl,Y$.WR
+	add	hl,de
+	ld	a,(hl)
+	or	a		; file active?
+	jr	z,dynof		; branch if not
+	ld	(hl),FALSE	; else clear file flag
+	ld	hl,Y$.FCB
+	add	hl,de		; get FCB address
+	push	hl
+	call	CloseF		; close file
+	pop	de
+	call	DeleteF		; then delete it
+dynof:	pop	hl
+	pop	bc
+	djnz	dyloop		; loop until all deleted
+	ret
+
+; Close and delete XX temp files
+
+Del$XX:	ld	b,NumSegs	; init count
+	ld	hl,X$TAB	; point to table
+dxloop:	push	bc
+	ld	e,(hl)		; .. get pointer
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl
+	ld	hl,X$.WR
+	add	hl,de
+	ld	a,(hl)
+	or	a		; file active?
+	jr	z,dxnof		; branch if not
+	ld	(hl),FALSE	; else clear file flag
+	ld	hl,X$.FCB
+	add	hl,de		; get FCB address
+	push	hl
+	call	CloseF		; close file
+	pop	de
+	call	DeleteF		; then delete it
+dxnof:	pop	hl
+	pop	bc
+	djnz	dxloop		; loop until all deleted
+	ret
+
+;-----------------------------------------------------------------------
+
+; Determine if we need a jump vector to the entry point of code.
+
+CheckLoad:
+	ld	de,(LoadAddr)	; get load address into DE
+	inc	de		; .. +3 (jump to entry point vector?)
+	inc	de
+	inc	de
+	ld	hl,(DatOrig)
+	or	a
+	sbc	hl,de		; above Data origin?
+	sbc	a,a
+	ld	hl,D.opt	; and /DSEG option set?
+	and	(hl)
+	rra
+	jr	c,nojmp		; then no jump vector required
+	ld	hl,(PrgOrig)
+	or	a
+	sbc	hl,de		; above Prog origin?
+	sbc	a,a
+	ld	hl,P.opt	; and /CSEG option set?
+	and	(hl)
+	rra
+	jr	c,nojmp		; then no jump vector required
+	ld	hl,(ABS.beg)
+	or	a
+	sbc	hl,de		; above Absolute origin?
+	jr	c,nojmp		; then no jump vector required
+	ld	a,(XFerFlg)	; test transfer flag
+	rra
+	jr	nc,noxfer	; branch if not set
+	ld	hl,(XFerAddr)
+	ld	a,h
+	or	l		; zero (relative = start of seg) entry point?
+	jr	nz,yesjmp	; we need a jump vector if not
+	ld	a,(XFerMode)
+	cp	@cseg		; address is zero, CODE (first) segment?
+	jr	nz,yesjmp	; we need a jump vector if not
+	ld	a,(P.opt)	; check /CSEG option
+	or	a		; set?
+	jr	z,nojmp		; if not, no jump vector required
+yesjmp:	ld	a,TRUE		; else set jump vector flag
+	ld	(JmpFlg),a
+	ret
+
+noxfer:	ld	a,(G.opt)	; no transfer address:
+	ld	hl,P.opt
+	or	(hl)		; /CSEG or /EPT option?
+	jr	nz,yesjmp	; if yes, jump vector required
+nojmp:	xor	a		; no jump vector, clear flag
+	ld	(JmpFlg),a
+	ret
+
+; Locate segments
+
+LocateSegs:
+
+	; place code segment first
+
+	ld	hl,(PrgOrig)
+	ld	a,(P.opt)	; /CSEG option specified?
+	rra
+	jr	c,loc1		; if yes, use PrgOrig as start of code segment
+	ld	hl,(LoadAddr)
+	ld	a,(JmpFlg)	; else test jump vector flag
+	rra
+	jr	nc,loc1		; if not set, use LoadAddr
+	inc	hl		; else leave space for jump instruction
+	inc	hl
+	inc	hl
+loc1:	ld	(StrtTab+ICSEG),hl	; set start of code segment
+
+	; place COMMON segment after code segment
+
+	ld	a,(D.opt)	; /DSEG option specified?
+	rra
+	jr	nc,loc2		; branch if not
+	ld	hl,(DatOrig)
+	ld	(StrtTab+ICOMN),hl	; else place seg at specif. data origin
+	jr	loc3
+loc2:	ld	de,(TotalLenTab+ICSEG)	; Get code length
+	ld	hl,(StrtTab+ICSEG)	; .. add to start
+	add	hl,de
+	ld	(StrtTab+ICOMN),hl	; set start of COMMON segment
+	ld	a,(B.opt)	; RSP:B option specified?
+	rra
+	jr	nc,loc3		; branch if not
+	ld	de,PageLen-1
+	add	hl,de
+	ld	l,0		; else align segment to page boundary
+	ld	(StrtTab+ICOMN),hl
+
+loc3:	; place data segment after COMMON
+
+	ld	de,(TotalLenTab+ICOMN)	; HL still has StrtTab+ICOMN
+	add	hl,de			; add COMMON length to start address
+	ld	(StrtTab+IDSEG),hl	; set start of data segment
+
+	; set absolute segment length
+
+	ld	hl,(ABS.beg)
+	ld	bc,(ABS.end)
+	or	a
+	sbc	hl,bc		; compare ASEG limits
+	ld	hl,0		; just in case
+	jr	nc,loc4		; branch if segment empty
+	ld	hl,(ABS.end)
+	ld	bc,(ABS.beg)
+	or	a
+	sbc	hl,bc			; get difference
+	inc	hl			; +1
+loc4:	ld	(SegLoc+IASEG),hl	; set current ASEG location
+	ret
+
+; Reorder segments if necessary
+
+ReorderSegs:
+	xor	a
+	ld	(ValidSegs),a	; init count of valid segments
+	ld	hl,(ABS.beg)
+	ld	(StrtTab+IASEG),hl	; set Absolute start
+	ld	de,0		; clear segment index
+	;TODO: simply loop over SegLoc contents (no need to index everytime)
+FAO.loop:
+	ld	hl,SegLoc	; get segment pointer
+	add	hl,de
+	add	hl,de		; index into table
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; zero length?
+	push	de
+	call	nz,OrderSeg	; reorder segment if not
+	pop	de
+	inc	e		; bump index
+	ld	a,NumSegs
+	cp	e
+	jr	nz,FAO.loop	; loop until all segments processed
+	ld	hl,0
+	ld	(StrtTab+IASEG),hl	; clear Absolute
+	ret
+
+; Reorder segment table if necessary, E contains current segment index
+
+OrderSeg:
+	ld	d,e		; keep segment index in reg D
+	ld	e,0		; clear loop index
+	ld	a,(ValidSegs)	; iterate over valid segments so far
+fixt1:	or	a		; all fixed?
+	jr	z,fixt3		; exit loop if yes
+	dec	a		; decrement counter
+	push	af
+	push	de		; save loop and segment index
+	ld	a,d		; seg index now in A
+	ld	d,0
+	ld	hl,SegOrder
+	add	hl,de		; index into segment table
+	push	hl		; remember table address
+	ld	l,(hl)		; get index
+	ld	h,0
+	add	hl,hl		; make word offset
+	ld	bc,StrtTab
+	add	hl,bc
+	ld	e,(hl)		; get address into DE
+	inc	hl
+	ld	d,(hl)
+	ld	l,a		; get seg index into HL
+	ld	h,0
+	add	hl,hl		; make word offset
+	add	hl,bc		; StrtTab address still in BC
+	ld	a,(hl)		; get start address into HL
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	a
+	sbc	hl,de		; compare ranges
+	pop	hl		; pop segment table address
+	pop	de		; pop loop and segment index
+	jr	nc,fixt2	; .. nothing to fix
+	ld	a,(hl)
+	ld	(hl),d		; swap seg index and SegOrder[i]
+	ld	d,a
+fixt2:	inc	e
+	pop	af
+	jr	fixt1
+
+fixt3:	ld	a,d		; save segment index
+	ld	d,0
+	ld	hl,SegOrder
+	add	hl,de
+	ld	(hl),a		; store segment index in table
+	ld	hl,ValidSegs
+	inc	(hl)		; another valid segment found
+	ret
+
+; Fix symbols for proper value
+; Symbols will be fixed if either ENTRY symbol or overlay mode
+
+FixSymbols:
+	ld	hl,(SymBeg)
+	ld	(SymPtr),hl	; set pointer to start of symbol table
+fixs1:	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of symbol table?
+	ret	nc		; return if yes, done
+	call	GetFix		; already fixed?
+	cpl
+	push	af
+	call	GetENT		; ENTRY?
+	ld	hl,OVflg
+	or	(hl)
+	pop	bc
+	and	b
+	rra
+	jr	nc,fixs2	; special set, no ENTRY, no OVL
+	call	GetVAL		; get value
+	push	hl
+	call	GetADRmod	; get address mode
+	ld	c,a
+	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc
+	add	hl,bc		; index into segment start address
+	ld	e,(hl)		; get start address
+	inc	hl
+	ld	d,(hl)
+	pop	hl
+	add	hl,de		; add values, obtain effective address
+	call	SetVAL		; set value and mode (note mode did not change)
+	call	SetFix		; mark symbol fixed
+fixs2:	call	NextSym		; point to next symbol
+	jr	fixs1		; and loop
+
+; Fix all references
+
+Clean$Y:
+	ld	hl,X$Seg
+	xor	a
+	ld	(hl),a		; init segment count
+cloop:	call	Sel$X		; select XX file (note: A has seg index from
+				;  above and from loop test)
+	ld	a,(A.opt)	; using additional memory?
+	rra
+	ld	a,(X$Seg)
+	jr	nc,cln3		; branch if not
+
+	; file-buffered tables
+
+	call	Sel$Y		; select YY file
+	call	Cls$Y		; write end of file
+cln1:	call	Rd$Y$byte	; get status
+	ld	(Y$Cl.Sta),a	; store it
+	cp	Y.eof		; end of file?
+	jr	z,clnext	; exit loop if yes
+	call	Rd$Y$word	; get address
+	ld	(Y$Cl.Adr),hl
+	call	Rd$Y$word
+	ld	(Y$Cl.Val),hl	;  and value
+	ld	a,(Y$Cl.Sta)	; get status back
+	and	Y@@off		; offset bit set?
+	jr	z,cln2		; branch if not
+	call	Rd$Y$word	; else read offset
+	ld	(Y$Cl.Off),hl
+cln2:	call	Fix$Y$Path	; fix entry
+	jr	cln1		; and loop
+
+cln3:	; tables in memory
+
+	ld	l,a
+	ld	h,0
+	ld	bc,YTable
+	add	hl,hl
+	add	hl,bc
+cln4:	ld	a,(hl)		; get YY structure address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(Y$Ptr),hl	; set as base
+	ld	a,h
+	or	l		; end of table?
+	jr	z,clnext	; exit loop if yes
+	ld	a,(hl)		; get status
+	ld	(Y$Cl.Sta),a	; .. store it
+	inc	hl
+	ld	e,(hl)		; get address
+	inc	hl
+	ld	d,(hl)
+	ld	(Y$Cl.Adr),de
+	inc	hl
+	ld	e,(hl)		; .. value
+	inc	hl
+	ld	d,(hl)
+	ld	(Y$Cl.Val),de
+	bit	Y$$off,a	; offset bit set?
+	inc	hl
+	push	hl
+	jr	z,cln5		; branch if not
+	inc	hl
+	inc	hl
+	ld	e,(hl)		; else get offset
+	inc	hl
+	ld	d,(hl)
+	ld	(Y$Cl.Off),de
+cln5:	call	Fix$Y$Path	; fix entry
+	pop	hl
+	jr	cln4		; and loop
+
+clnext:	ld	hl,X$Seg
+	ld	a,(hl)
+	inc	a		; next segment
+	ld	(hl),a
+	cp	NumSegs		; done?
+	jp	nz,cloop	; loop if not
+	ret
+
+; Fix up a single chain entry
+
+Fix$Y$Path:
+	ld	a,(Y$Cl.Sta)	; get control
+	ld	b,a
+	and	Y@@mod		; .. mask segment bits
+	ld	c,a		; .. save in C for table index below
+	ld	a,b
+	and	Y@@type		; check type of chain
+	jr	z,fixp1		; branch if CHAIN ADDRESS
+	ld	hl,(Y$Cl.Val)	; get value (pointer to symbol entry)
+	ld	(SymPtr),hl	; set pointer
+	call	GetVAL		; get symbol value (address) from table
+	jr	fixp2
+
+fixp1:	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc		; index into table
+	add	hl,bc
+	ld	e,(hl)		; get segment start address
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(Y$Cl.Val)	; get value
+	add	hl,de		; obtain effective address
+fixp2:	ld	a,(Y$Cl.Sta)	; get control
+	ld	c,a
+	and	Y@@off		; external+offset reference?
+	jr	z,fixp4		; skip if not
+	ld	de,(Y$Cl.Off)	; get offset
+	ld	a,c
+	and	Y@@sign		; test sign flag
+	jr	z,fixp3		; branch if +offset
+	or	a
+	sbc	hl,de		; .. subtract offset from effective address
+	push	hl
+	call	GetADRmod	; get address mode
+	ld	c,a
+	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc
+	add	hl,bc		; get start of segment
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	pop	hl
+	or	a
+	sbc	hl,de		; .. fix
+	jr	fixp4
+
+fixp3:	add	hl,de		; .. add offset to effective address
+fixp4:	ex	de,hl		; get resolved address into DE
+	ld	hl,(Y$Cl.Adr)	; get temp address
+
+	; store resolved address into file
+
+	push	de
+	push	hl
+	ld	a,e
+	call	ST.Seg		; store lower part
+	pop	hl
+	inc	hl		; .. next address
+	pop	af
+	jp	ST.Seg		; .. then high part
+
+;-----------------------------------------------------------------------
+
+; Output symbol table to map file
+
+WriteSymMap:
+	xor	a
+	ld	(WrtSymCol),a	; clear symbol (column) counter
+	call	GetSymBeg	; get symbol base into SymPtr
+	ld	de,StrBuf
+	ld	hl,$HEAD
+	call	StrCpy
+	call	WrtBuf		; output header
+
+wmap1:	; print all resolved globals
+
+	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of symbol table reached?
+	jp	nc,wmap5	; exit loop if yes
+	call	GetENT		; ENTRY (global)?
+	push	af
+	call	TstSym		; valid symbol?
+	pop	bc
+	and	b
+	rra
+	jr	nc,wmap4	; .. not valid
+	ld	a,(WrtSymCol)
+	and	ColMask
+	call	z,WrtBuf	; output buffer to file if at end
+	call	GetADRmod	; get segment type
+	cp	@comn		; COMMON?
+	push	af
+	call	z,WrCom		; .. indicate it
+	call	PrSymbol	; print symbol name
+	pop	af
+	call	z,WrCom		; .. indicate it
+	ld	a,(WrtSymCol)
+	and	ColMask
+	ld	c,a		; get column
+	ld	b,0
+	push	de
+	ld	de,9+2+4+3	; '/XXXXXXX/ = nnnn   '
+	call	MUL.BC
+	ld	de,9
+	add	hl,de		; obtain cursor position
+	pop	de
+	ld	a,l
+	call	PosCurs		; tab to position
+	ld	a,'='
+	ld	(de),a
+	inc	de
+	ld	a,' '
+	ld	(de),a
+	inc	de
+	call	GetRQST		; LIB request?
+	jr	z,wmap2		; branch if not
+	ld	hl,$RQST
+	call	StrCpy		; else tell is LIB request
+	jr	wmap3
+wmap2:	call	GetVAL		; get value
+	call	CnvHexWord	; output it
+wmap3:	ld	a,' '
+	rept	LabDel
+	ld	(de),a		; output delimiter
+	inc	de
+	endm
+	ld	a,(WrtSymCol)
+	inc	a		; next columnt
+	or	80h
+	ld	(WrtSymCol),a
+wmap4:	call	NextSym		; point to next symbol
+	jp	wmap1		; and loop
+
+WrCom:	ld	a,'/'
+	ld	(de),a
+	inc	de
+	ret
+
+wmap5:	; print undefined symbols
+
+	ld	a,(WrtSymCol)
+	or	a		; was anything output above?
+	call	nz,WrtBuf	; output buffer if yes
+	ld	hl,0
+	ld	(WrtSymCol),hl	; clear symbol (column) counter
+	call	GetSymBeg	; get symbol base into SymPtr
+wmap6:	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of symbol table reached?
+	jr	nc,wmap9	; exit loop if yes
+	call	GetENT		; ENTRY (global)?
+	rra
+	jr	c,wmap8		; branch if yes
+	ld	hl,(WrtSymCol)
+	ld	a,h
+	or	l		; first time?
+	jr	nz,wmap7	; branch if not
+	call	WrtBuf		; else display newline
+	ld	hl,$UNDFS
+	call	StrCpy
+	inc	hl
+	call	StrCpy
+	call	WrtBuf		; and header
+wmap7:	ld	a,(WrtSymCol)
+	and	UnkMask		; get column
+	call	z,WrtBuf	; output buffer if at end
+	call	PrSymbol	; print symbol
+	ld	hl,(WrtSymCol)
+	inc	hl		; next column/symbol
+	ld	(WrtSymCol),hl
+	ld	a,l
+	and	UnkMask
+	ld	c,a
+	add	a,a		; .. * 9
+	add	a,a
+	add	a,a
+	add	a,c
+	call	PosCurs		; tab to position
+wmap8:	call	NextSym		; point to next symbol
+	jr	wmap6		; and loop
+
+wmap9:	ld	a,(WrtSymCol)
+	or	a		; check column
+	call	nz,WrtBuf	; output buffer if not last
+	call	WrtBuf		; output final newline and return
+	ld	hl,(WrtSymCol)
+	ld	a,h
+	or	l
+	ret	z
+	push	de
+;;	call	CVTWD
+	ld	hl,$UNDFS
+	call	StrCpy
+	pop	de
+	jp	ErrMsg		; warn about undefined symbols on console
+
+$HEAD:	db	FF,'TKB '
+	LINKver
+	db	0
+
+$RQST:	db	'RQST',0
+$UNDFS:	db	'Undefined symbols',0,':',0
+
+; Test valid symbol
+; EXIT	Accu holds xxxx.xxx1 if symbol doesn't start with '?'
+;	or it starts with '?' and /Q mode is enabled
+;	Accu holds xxxx.xxx0 if symbol starts with '?'
+;	and /Q mode is disabled
+;	If symbol starts with 00 (null or erased name), Accu
+;	returns always xxxx.xxx0
+;	Preserves DE
+
+TstSym:	ld	bc,.SymLab
+	ld	hl,(SymPtr)
+	add	hl,bc		; point to symbol
+	ld	a,(hl)
+	or	a
+	ret	z
+	cp	'?'		; check if PL/I library symbol
+	ld	a,TRUE
+	ret	nz
+	ld	a,(Q.opt)	; check Q option
+	cpl			; return TRUE if Q.opt is NOT SET
+	ret
+
+; Output string buffer, returns buffer address in DE
+
+WrtBuf:	xor	a
+	ld	(de),a
+	ld	de,StrBuf
+	push	de
+	call	WrtString	; output buffer
+	ld	a,CR
+	call	WrtIO		; follow with a newline
+	ld	a,LF
+	call	WrtIO
+	pop	de
+	ret
+
+; Output string.
+; ENTRY	Reg DE points to null-delimited string
+
+WrtString:
+	ld	a,(de)
+	or	a
+	ret	z
+	push	de
+	call	WrtIO
+	pop	de
+	inc	de
+	jr	WrtString
+
+; Print character
+; ENTRY	Accu holds character
+
+WrtIO:	push	hl
+	ld	hl,(@@IO)	; get output routine address
+	ex	(sp),hl
+	ret			; output char and return to caller
+
+; Tab to specified position of StrBuf
+; ENTRY	Reg A holds column to move to
+;	Reg DE points to current StrBuf position
+
+PosCurs:
+	ld	hl,StrBuf
+	or	a
+	sbc	hl,de		; HL = -(current pos)
+	add	a,l
+	ret	z
+	ret	nc
+	ld	b,a
+	ld	a,' '
+Pos1:	ld	(de),a
+	inc	de
+	djnz	Pos1
+	ret
+
+; Copy current symbol name to string buffer
+; ENTRY	Reg DE points to string buffer
+
+PrSymbol:
+	call	GetSymLen	; get symbol length
+	or	a
+	ret	z		; return if zero
+	ld	c,a		; setup char counter
+	ld	b,0
+	ldir			; copy name
+	ret
+
+; Determine transfer address
+
+GetXferAdr:
+	ld	a,(G.opt)	; user specified transfer address (/EPT option)?
+	rra
+	jr	nc,gxf1		; branch if not
+	ld	hl,optGlabel
+	ld	a,(optGlen)
+	ld	e,.noCOMM
+	call	SrcSym		; else search G.o label name
+	jr	nc,gxf5		; error if not found
+	call	GetVAL		; else get value
+	jr	gxf4		; store transfer address and return
+
+gxf1:	ld	a,(XFerFlg)	; transfer address flag set?
+	rra
+	jr	nc,gxf2		; branch if not
+	ld	hl,(XFerMode)	; get segment index
+	ld	h,0
+	ld	bc,StrtTab
+	add	hl,hl
+	add	hl,bc		; index into start address table
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(XFerAddr)
+	add	hl,de		; add relative value, obtain absolute
+	jr	gxf4		; store transfer address and return
+
+gxf2:	ld	hl,(SegLoc+ICSEG)
+	ld	a,h
+	or	l		; zero code start?
+	jr	z,gxf3		; branch if yes
+	ld	hl,(StrtTab+ICSEG)	; default to code start
+	jr	gxf4
+
+gxf3:	ld	hl,(ABS.beg)
+	inc	hl		; Test no Absolute
+	ld	a,h
+	or	l
+	ret	z		; return if -1
+	dec	hl		; else use value for XFerStrt
+gxf4:	ld	(XFerStrt),hl	; set start address
+	ret
+
+gxf5:	ld	hl,0
+	ld	(XFerStrt),hl	; clear start address
+	ld	de,StrBuf
+	push	de
+	ld	hl,$USTRT	; error - undefined start symbol
+	call	StrCpy		; output message
+	ld	a,(optGlen)
+	or	a		; check label lenght
+	jr	z,gxf6		; skip if zero
+	ld	hl,optGlabel	; point to start of label name
+	ld	c,a		; set counter
+	ld	b,0
+	ldir			; copy name
+gxf6:	xor	a
+	ld	(de),a
+	pop	de
+	jp	ErrMsg
+
+$USTRT:	db	'Undefined start symbol: ',0
+
+; Output segment sizes
+
+Statistics:
+	ld	hl,(ABS.end)
+	ld	bc,(ABS.beg)
+	or	a
+	sbc	hl,bc		; .. compare Absolute segment limits
+	ex	de,hl		; save difference (length) in DE
+	ld	hl,0		; set limits to zero for none
+	ld	bc,0
+	jr	c,stat1		; .. none
+	inc	de
+	ld	b,d	
+	ld	c,e
+	ld	hl,(ABS.beg)	; get start of Absolute segment
+stat1:	ld	de,$ABS
+	call	PrVAL		; .. print range
+	ld	de,$CSEG
+	ld	bc,(TotalLenTab+ICSEG)	; get length
+	ld	hl,(StrtTab+ICSEG)	; get start address
+	call	PrVAL.1		; display code segment limits
+	ld	de,$COMMN
+	ld	bc,(TotalLenTab+ICOMN)
+	ld	hl,(StrtTab+ICOMN)
+	call	PrVAL		; display common size
+	ld	de,$DSEG
+	ld	bc,(TotalLenTab+IDSEG)
+	ld	hl,(StrtTab+IDSEG)
+	call	PrVAL.1		; display data segment limits
+	ld	de,StrBuf
+	ld	hl,$USE
+	call	StrCpy		; display use factor
+	ld	a,15
+	call	PosCurs
+	push	de
+	ld	hl,(MinYTop)
+	ld	de,(SymTop)
+	or	a
+	sbc	hl,de		; get difference
+	ex	de,hl
+	ld	hl,(FreeMem)
+	ld	c,h		; get page into C
+	or	a
+	sbc	hl,de		; get amount of free memory
+	ex	de,hl
+	inc	c
+	ld	b,0
+	call	DIV.BC		; .. divide by pages
+	ld	a,e
+	pop	de
+	call	CnvHexByte	; .. print
+	jp	WrtBuf
+
+$ABS:	db	'Absolute',0
+$CSEG:	db	'Code size',0
+$DSEG:	db	'Data size',0
+$COMMN:	db	'COMMON size',0
+$USE:	db	'Use factor',0
+
+; Print hex values
+; ENTRY	Reg HL holds start  of segment
+;	Reg BC holds length of segment
+;	Reg DE holds message to be printed before
+
+PrVAL:	ld	a,c
+	or	b
+	ret	z		; .. skip if segment empty
+PrVAL.1:
+	push	hl		; save start
+	push	bc		; save length
+	ex	de,hl
+	ld	de,StrBuf
+	call	StrCpy		; output message
+	ld	a,13
+	call	PosCurs
+	pop	hl		; restore length
+	push	hl
+	call	CnvHexWord	; .. print
+	pop	bc		; length
+	pop	hl		; start
+	ld	a,b
+	or	c		; zero length?
+	jp	z,WrtBuf	; skip range if yes
+	push	bc		; length
+	push	hl		; start
+	ld	a,' '
+	ld	(de),a
+	inc	de
+	ld	a,'('
+	ld	(de),a		; display range
+	inc	de
+	pop	hl		; start
+	push	hl
+	call	CnvHexWord	; .. print start
+	ld	a,'-'
+	ld	(de),a
+	inc	de
+	pop	hl		; get back start
+	pop	bc		; and length
+	add	hl,bc
+	dec	hl		; obtain end
+	call	CnvHexWord	; .. print
+	ld	a,')'
+	ld	(de),a
+	inc	de
+	jp	WrtBuf
+
+; Finish current section (root or overlay)
+
+Finish:	call	CheckLoad	; check load addresses
+	call	LocateSegs	; locate segments
+	call	ReorderSegs	; reorder segments if necessary
+	call	FixSymbols	; fix symbols
+	call	GetXferAdr	; determine transfer address
+	call	Reverse$Y	; reverse Y chains
+	call	Clean$Y		; fix all paths
+	ld	hl,WrChar
+	ld	(@@IO),hl
+	call	WriteMap	; write map file
+	call	WriteOutput	; write output file
+	ld	a,(A.opt)	; test optional memory
+	rra
+	call	c,Del$YY	; delete additional temp files
+	ld	hl,WrChar
+	ld	(@@IO),hl	; set file device
+	call	WrtSym		; write symbol file
+	ld	hl,PrChar
+	ld	(@@IO),hl	; reset console device
+	jp	Del$XX		; delete temp files and return
+
+; Write map file, if specified
+
+WriteMap:
+	ld	a,(mapflg)
+	or	a
+	ret	z
+	ld	hl,MapFCB
+	ld	de,FCB		; copy file name and extension,
+	call	CopyFN		;  use current module name
+	ld	de,$MAP
+	ld	hl,FCB
+	call	AddExt		; set .MAP extension
+	ld	hl,FCB
+	ld	de,0
+	call	CreateF		; create .MAP file
+	ld	hl,0
+	ld	(OutPtr),hl	; clear pointer
+	call	WriteSymMap
+	call	Statistics
+	jp	CloseOut	; close map file and return
+
+; Copy symbol name to output string
+; ENTRY	Reg DE points to output buffer
+
+PrSym:	ld	a,(BF.Len)
+	or	a		; check length
+	ret	z		; return if zero
+	ld	c,a		; setup counter
+	ld	b,0
+	ld	hl,BF.Name
+	ldir			; copy name
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read records from file
+
+RdRec:	ld	hl,(REL.rc)	; get current REL position
+	ld	(LoRec),hl	; set as start record
+	ld	hl,(IOBuf)	; get buffer address
+	ld	bc,(InMax)	; get number of bytes to read
+	ld	de,FCB
+	call	DiskRd		; .. read
+	ex	de,hl
+	ld	hl,(REL.rc)	; get old position
+	add	hl,de		; add number of records read
+	ld	(REL.rc),hl	; save as new REL position
+	ld	(IRC.rc),hl	; and as IRL file position
+	ld	hl,(LoRec)
+	add	hl,de		; add number of records read
+	dec	hl		; subtract one to get number of last record
+	ld	(HiRec),hl	; set last record
+	ret
+
+; Store constant byte in segment
+; ENTRY	Accu holds byte to be stored
+
+ST.B:	ld	e,a		; save byte
+	ld	a,(X$Seg)
+	ld	c,a
+	cp	@comn		; COMMON segment?
+	jr	nz,stb0		; branch if not
+	ld	a,(COMctr)	; .. test selected
+	rra
+	ret	c		; return if X$Seg == @comn && COMctr set
+stb0:	ld	b,0
+	ld	hl,SegLoc
+	add	hl,bc
+	add	hl,bc		; index into table
+	ld	a,(hl)		; get address into HL
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,e		; get byte
+	call	ST.Seg		; store in segment
+	ld	a,(X$Seg)
+	cp	@aseg		; Absolute segment?
+	jr	nz,stb2		; branch if not
+	ld	hl,(ABS.end)	; get end of Absolute segment
+	ld	bc,(SegLoc+IASEG)
+	or	a
+	sbc	hl,bc		; compare
+	jr	nc,stb1
+	ld	(ABS.end),bc	; update end
+stb1:	ld	hl,(SegLoc+IASEG)
+	push	hl
+	ld	bc,(ABS.beg)	; get start of Absolute segment
+	or	a
+	sbc	hl,bc		; compare
+	pop	hl
+	jr	nc,stb2
+	ld	(ABS.beg),hl	; update start
+stb2:	ld	hl,(X$Seg)
+	ld	h,0
+	ld	bc,SegLoc	; get address pointer
+	add	hl,hl
+	add	hl,bc
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	inc	bc		; .. bump
+	ld	(hl),b		; .. and store back
+	dec	hl
+	ld	(hl),c
+	ret
+
+; Store 16 bit value in segment
+; ENTRY	Reg HL holds value
+;	Accu   holds address mode
+
+ST.W:	ld	(STWmod),a	; Save entry
+	ld	(STWval),hl
+	cp	@comn		; COMMON segment?
+	jr	nz,stw1		; branch if not
+	ld	de,(COMval)	; else get current COMMON address
+	add	hl,de		; add to get effective address
+	ld	(STWval),hl
+	ld	a,(COMctr)	; Get control
+	rra
+	jr	nc,stw2		; .. not set
+	ld	hl,STWmod
+	ld	(hl),@aseg	; force absolute mode
+	jr	stw2
+
+stw1:	ld	l,a
+	ld	h,0
+	ld	bc,TotalLenTab
+	add	hl,hl
+	add	hl,bc		; get pointer to total length
+	ld	e,(hl)		; fetch total length in DE
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(STWval)	; get value into HL
+	add	hl,de		; add total length (base address)
+	ld	(STWval),hl	; store as module-relative offset
+stw2:	ld	hl,(X$Seg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl
+	add	hl,bc
+	ld	a,(hl)		; fetch current address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,(X$Seg)	; .. and mode
+	call	Get$Y$AdrCnt	; find address
+	jr	nc,stw3		; .. not same
+	ld	bc,(STWval)
+	call	Put$Y$Val	; .. save value
+	ld	a,(STWmod)
+	call	Put$Y$Mode	; .. save mode
+	jr	ST.W.0		; .. store zero word as placeholder
+
+stw3:	ld	hl,(X$Seg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl		; get segment address table
+	add	hl,bc
+	ld	a,(hl)		; .. get value
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,(STWmod)
+	and	Y@@mod		; solve bit = 0, offset bit = 0
+	ld	(B$R.ctrl),a
+	ld	a,(X$Seg)
+	ld	(B$R.cnt),a
+	ld	de,(STWval)
+	ld	bc,0
+	xor	a
+	call	Build$Y$Rec	; build temp record
+ST.W.0:	xor	a
+	call	ST.B		; placeholder for address
+	xor	a
+	jp	ST.B
+
+; Store chain references for solving afterwards
+; ENTRY	Reg HL holds symbol table pointer
+;	Accu   holds flag:
+;		FALSE on CHAIN ADDRESS  - Link Item C
+;		TRUE  on CHAIN EXTERNAL - Link Item 6
+
+StoreChain:
+	ld	(SC.flag),a	; save flag
+	ld	(SC.Chn),hl
+	ld	a,(AF.mode)
+	ld	(SC.mode),a	; save address mode
+	ld	c,a
+	ld	b,0
+	ld	hl,TotalLenTab
+	add	hl,bc
+	add	hl,bc
+	ld	e,(hl)		; get base of segment
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(AF.val)
+	add	hl,de		; add value
+	ld	(SC.CurAdr),hl	; .. save effective address
+stchn1:	ld	hl,(SC.CurAdr)	; get current address
+	ld	a,(SC.mode)	; .. and mode
+	call	Get$Y$AdrCnt	; find address
+	jr	nc,stchn2	; .. not same
+	ld	hl,(Y$Ptr)
+	ld	a,(hl)		; get mode
+	and	Y@@mod
+	ld	(SC.mode),a	; .. set it
+	inc	hl
+	inc	hl		; skip address field
+	inc	hl
+	ld	e,(hl)		; get value
+	inc	hl
+	ld	d,(hl)
+	ld	(SC.adr),de	; .. save it
+	sub	@aseg		; Absolute segment?
+	or	d		; and zero address?
+	or	e		; call LD.W below on ASEG *and* zero address
+	ex	de,hl		; get value into HL
+	call	z,LD.W		; get word from X temp file
+	ld	(SC.CurAdr),hl	; .. set new one
+	ld	bc,(SC.Chn)	; Get chain
+	call	Put$Y$Val	; .. save
+	ld	a,(SC.flag)	; Get flag
+	call	Put$Y$Solv	; .. save
+	ld	a,(SC.flag)
+	or	a		; CHAIN ADDRESS or CHAIN EXTERNAL?
+	ld	a,(X$Seg)
+	call	z,Put$Y$Mode	; .. save mode if CHAIN ADDRESS
+	jr	stchn1		; loop
+
+stchn2:	ld	a,(X$Seg)	; get current current segment
+	and	Y@@mod		; clear offset bit
+	ld	c,a
+	ld	a,(SC.flag)
+	and	Y@@type
+	or	c		; add chain type bit
+	ld	(B$R.ctrl),a
+	ld	a,(SC.mode)	; get mode
+	ld	(B$R.cnt),a
+	ld	hl,(SC.CurAdr)	; get current address
+	ld	de,(SC.Chn)	; get chain address
+	ld	bc,0
+	xor	a
+	call	Build$Y$Rec	; build temp record
+	ld	a,(ABSLoc)	; Test Absolute location set
+	rra
+	ret	nc		; return if not
+	call	LD.W		; get address from X temp file
+	ld	(SC.adr),hl	; .. save
+	ld	a,h
+	or	l		; zero?
+	ret	z		; return if yes
+	ld	(SC.CurAdr),hl	; set new address
+	ld	a,@aseg
+	ld	(SC.mode),a	; .. force Absolute mode
+	jp	stchn1
+
+; Load word from segment
+; EXIT	Reg HL holds word
+
+LD.W:	ld	a,(X$Seg)
+	push	af		; save old address mode
+	ld	a,(SC.mode)	; get current mode
+	call	Set$X		; .. change mode
+	ld	hl,(SC.CurAdr)	; get current address
+	push	hl
+	call	LD.Seg		; get LOW byte
+	pop	hl		; get address back
+	push	af
+	inc	hl		; .. address + 1
+	call	LD.Seg		; get HI byte
+	ld	h,a
+	pop	af
+	ld	l,a
+	pop	af		; get back old mode
+	push	hl		; .. save word
+	call	Set$X		; .. restore previous mode
+	pop	hl		; get result
+	ret
+
+IF	NOT	@@HASH
+; Clear special language symbols ('#')
+
+VerifySym:
+	ld	hl,(SymBeg)	; get start of symbol table
+	ld	(SymPtr),hl	; .. set it
+VS.loop:
+	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of symbol table?
+	jr	nc,VS.ex	; .. return if yes
+	ld	hl,(SymPtr)
+	ld	bc,.SymHdr
+	add	hl,bc		; point to name
+	ld	a,(hl)
+	cp	SpcChar		; test for special char
+	jr	nz,VS.skp	; .. nope
+	ld	(hl),0		; .. clear it
+VS.skp:
+	call	NextSym		; point to next symbol
+	jr	VS.loop
+VS.ex:
+	ld	hl,SpecSym
+	ld	(hl),FALSE	; reset flag
+	ret
+ENDIF	;NOT @@HASH
+
+;-----------------------------------------------------------------------
+
+; Read link item
+; ENTRY	Accu holds special link item
+
+RdItem:	ld	c,a		; save item
+	cp	.COMMON
+	push	bc
+	call	nc,AField	; get address and mode
+	pop	bc
+	ld	a,.EntPnt
+	cp	c
+	push	bc
+	call	nc,BField	; get name
+	pop	bc
+	ld	a,c		; check item type
+	cp	.ENTRY
+	jp	z,LNK.0		; 0 - entry symbol
+	cp	.ModNam
+	jp	z,LNK.2		; 2 - module name
+	cp	.ModEnd
+	jp	z,LNK.E		; E - end of module
+	ld	a,(ExtFlg)
+	or	a		; External mode?
+	ret	z		; return if not
+	dec	c
+	ld	b,0
+	ld	hl,LNK.tab
+	add	hl,bc		; index into table
+	add	hl,bc
+	ld	a,(hl)		; get routine address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; process item
+
+; Link item table
+
+LNK.tab:
+	dw	LNK.1		; 1 - select COMMON block
+	dw	LNK.2		; 2 - module name
+	dw	LNK.3		; 3 - request library search
+	dw	LNK.4		; 4 - extension item
+	dw	LNK.5		; 5 - define COMMON size
+	dw	LNK.6		; 6 - chain external
+	dw	LNK.7		; 7 - define entry point
+	dw	LNK.8		; 8 - external + offset
+	dw	LNK.9		; 9 - external - offset
+	dw	LNK.A		; A - define DSEG size
+	dw	LNK.B		; B - set location counter
+	dw	LNK.C		; C - chain address
+	dw	LNK.D		; D - define CSEG size
+
+; Link item 0 -->> ENTRY symbol
+; (Also used by LIBRARY solver)
+
+LNK.0:	ld	e,.noCOMM
+	call	SrcName		; search label
+	ret	nc		; .. not found
+	call	GetENT		; ENTRY (global)?
+	rra
+	ret	c		; return if yes
+	ld	hl,ExtFlg
+	ld	(hl),TRUE	; else set EXTERNAL flag (link this module in)
+	ret
+
+; Link item 1 -->> Select COMMON block
+
+LNK.1:	ld	e,.COMM
+	call	SrcName		; find COMMON
+	ld	de,$COMER
+	jp	nc,Abort	; error if not found
+	call	GetVAL		; else get base address
+	ld	(COMval),hl	; .. save
+	call	GetFix		; get fixed state
+	ld	(COMctr),a	; .. save it
+	ret
+
+$COMER:	db	'COMMON error',0
+
+; Link Item 2 -->> Name of module
+
+LNK.2:	ld	de,ModLen	; set dest buffer
+	ld	hl,BF.Len	; source is B-field
+	ld	c,(hl)		; .. get length
+	ld	b,0
+	inc	bc		; .. fix for length field
+	ldir			; copy
+	ret
+
+; Link item 3 -->> Request library search
+
+LNK.3:	ld	a,(BF.Len)
+	ld	hl,BF.Name
+	call	LibFind		; find LIB in table
+	rra
+	ret	c		; return if found, do not add it again
+	exx
+	ld	hl,BF.Name
+	ld	a,(BF.Len)
+	ld	c,a
+	exx
+	ld	hl,0		; value = 0
+	ld	de,0
+	ld	b,0
+	ld	c,.noCOMM
+	ld	a,.ENT
+	call	InsSym		; insert new symbol
+	ld	hl,(SymPtr)
+	inc	hl
+	inc	hl
+	set	X$$LIB,(hl)	; set LIB Request bit
+	ret
+
+; Link item 4 -->> Special LINK item (only ZSM4 IDENT supported)
+
+LNK.4:	ld	a,(BF.Len)
+	or	08h		; length zero means 8
+	dec	a		; name field has length-1 bytes
+	and	07h
+	ld	c,a
+	ld	hl,BF.Name
+	ld	a,(hl)		; check special item code
+	cp	'I'		; 'I' = ident?
+	jr	nz,lnk42	; branch if not
+	ld	de,TSKid
+	ld	a,(de)
+	or	a		; task ident already set?
+	ret	m		; return if yes, ignore
+	inc	hl		;!!!TODO: add as symbol to symbol table?
+	ld	a,c		;   then we could track main module ID
+	cp	6+1
+	jr	c,lnk41
+	ld	c,6		; trim length if necessary
+lnk41:	ld	b,0
+	push	de
+	ldir
+	pop	hl
+	set	7,(hl)
+	ret
+lnk42:	ld	de,$UNREC
+	jp	ErrMsg		; error - unrecognized item
+
+$UNREC:	db	'Unrecognized item',CR,LF,0
+
+; Link item 5 -->> Define COMMON size
+
+LNK.5:	ld	e,.COMM
+	call	SrcName		; find COMMON
+	jr	nc,lnk51	; branch if not found (new COMMON)
+	call	GetCOMlen	; get length of 1st
+	ld	de,(AF.val)
+	or	a
+	sbc	hl,de		; compare with new
+	ret	nc		; return if less or equal
+	ld	de,StrBuf	; else is error - first must be largest
+	push	de
+	ld	hl,$CMNL
+	call	StrCpy
+	push	hl
+	call	PrSym		; output name of COMMON
+	pop	hl
+	inc	hl
+	call	StrCpy		; output error message
+	pop	de
+	jp	ErrMsg
+
+lnk51:	; new COMMON
+
+	exx
+	ld	hl,BF.Name
+	ld	a,(BF.Len)
+	ld	c,a
+	exx
+	ld	hl,(TotalLenTab+ICOMN)	; get total COMMON length
+	ld	de,(SngLenTab+ICOMN)	; get single length
+	add	hl,de			; add to get value
+	ld	de,(AF.val)	; get new COMMON length
+	ld	b,@comn
+	ld	c,.COMM
+	ld	a,.ENT
+	call	InsSym		; insert symbol
+	ld	de,(AF.val)
+	ld	hl,(SngLenTab+ICOMN)
+	add	hl,de
+	ld	(SngLenTab+ICOMN),hl	; update length
+	ret
+
+$CMNL:	db	'/',0,'/ First COMMON not largest',0
+
+; Link item 6 -->> Chain external
+
+LNK.6:	ld	e,.noCOMM
+	call	SrcName		; find symbol
+	jr	c,lnk61		; branch if found
+	exx
+	ld	hl,BF.Name
+	ld	a,(BF.Len)
+	ld	c,a
+	exx
+	ld	hl,0		; value = 0
+	ld	de,0
+	ld	b,0
+	ld	c,.noCOMM
+	ld	a,.noENT
+	call	InsSym		; insert symbol
+lnk61:	ld	hl,(SymPtr)
+	ld	a,TRUE
+	jp	StoreChain	; add record
+
+; Link item 7 -->> Define entry point
+
+LNK.7:	ld	hl,(AF.mode)	; get symbol mode (segment)
+	ld	h,0
+	add	hl,hl
+	ld	bc,TotalLenTab
+	add	hl,bc		; index into table
+	ld	e,(hl)		; fetch value (segment base address)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(AF.val)
+	add	hl,de		; add to segment-rel. to get object-relative
+	push	hl		; remember result
+	ld	e,.noCOMM
+	call	SrcName		; find symbol
+	jr	nc,lnk72	; branch if not found
+	call	GetENT		; test ENTRY
+	pop	hl		; restore saved symbol address
+	rra
+	jr	nc,lnk71	; branch if not ENTRY
+	ld	de,StrBuf
+	push	de
+	ld	hl,$MLTDF
+	call	StrCpy
+	call	PrSym		; else error - multiple defined global
+	pop	de
+	jp	ErrMsg
+
+lnk71:	; symbol exists as external reference, promote to ENTRY
+
+	ld	a,(AF.mode)
+	call	SetVAL		; set symbol value and mode
+	set	$$ENT,(hl)	; set ENTRY bit in symbol length field
+	ret
+
+lnk72:	; symbol does not exist, add it
+
+	exx
+	ld	hl,BF.Name	; get parameters
+	ld	a,(BF.Len)
+	ld	c,a
+	exx
+	pop	hl		; restore saved symbol address
+	ld	de,0
+	ld	a,(AF.mode)
+	ld	b,a
+	ld	c,.noCOMM
+	ld	a,.ENT
+	jp	InsSym 		; insert new ENTRY and return
+
+$MLTDF:	db	'Multiple definition: ',0
+
+; Link item 8 -->> External - offset
+
+LNK.8:	ld	a,TRUE		; set - sign
+	ld	(OffSgn),a
+	call	LNK.9		; do via external + offset
+	xor	a		; reset + sign
+	ld	(OffSgn),a
+	ret
+
+; Link item 9 -->> External + offset
+
+LNK.9:	ld	hl,(X$Seg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl
+	add	hl,bc
+	ld	a,(hl)		; get current segment address into HL
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,0 or Y@@off
+	ld	(B$R.ctrl),a	; solve bit = 0, offset bit = 1
+	ld	a,(X$Seg)
+	ld	(B$R.cnt),a
+	ld	de,0
+	ld	bc,(AF.val)	; get offset value
+	ld	a,TRUE
+	jp	Build$Y$Rec	; build temp record
+
+; Link item A -->> Define DSEG size
+
+LNK.A:	ld	hl,(AF.val)
+	ld	(SngLenTab+IDSEG),hl	; copy length
+	ret
+
+; Link item B -->> Set location counter
+
+LNK.B:	ld	a,(AF.mode)	; get address mode bits
+	call	Set$X		; select the corresponding XX file
+	ld	a,(X$Seg)
+	cp	@comn		; COMMON?
+	jr	nz,lnkb1	; branch if not
+	ld	de,(COMval)	; else get value
+	ld	hl,(AF.val)
+	add	hl,de
+	ld	(SegLoc+ICOMN),hl	; .. set it
+	ret
+
+lnkb1:	ld	c,a
+	ld	b,0
+	ld	hl,TotalLenTab
+	add	hl,bc		; index into table
+	add	hl,bc
+	ld	e,(hl)		; fetch value (segment base address)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(AF.val)
+	add	hl,de		; add to get object-relative value
+	ex	de,hl
+	ld	hl,SegLoc
+	add	hl,bc
+	add	hl,bc
+	ld	(hl),e		; store result
+	inc	hl
+	ld	(hl),d
+	cp	@aseg		; Absolute segment? (A still contains X$Seg)
+	ret	nz		; return if not
+	ld	hl,ABSLoc
+	ld	(hl),TRUE	; else set flag
+	ret
+
+; Link item C -->> Chain address
+
+LNK.C:	ld	hl,(X$Seg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl
+	add	hl,bc
+	ld	e,(hl)		; get segment address
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	xor	a
+	jp	StoreChain
+
+; Link item D -->> Define CSEG size
+
+LNK.D:	ld	hl,(AF.val)
+	ld	(SngLenTab+ICSEG),hl	; set length
+	ret
+
+; Link item E -->> End of module
+
+LNK.E:
+IF	@@VERB
+	ld	a,(ExtFlg)
+	or	a
+	call	nz,PrMod	; print module and file name
+ENDIF	;@@VERB
+	ld	a,(AF.mode)
+	sub	@aseg		; mode = 0 and address = 0 means no xfer addr
+	ld	hl,(AF.val)
+	or	h
+	or	l		; 0 if mode = 0 and AF.val = 0
+	jr	z,lnke1		; branch if no transfer address
+	ld	a,(XFerFlg)	; else check if transfer address has been
+	rra			;  already set
+	ld	de,$MMERR
+	jp	c,Abort		; abort if yes - main module error
+	ld	a,(AF.mode)
+	ld	(XFerMode),a	; save address mode
+	ld	c,a
+	ld	b,0
+	ld	hl,TotalLenTab
+	add	hl,bc
+	add	hl,bc
+	ld	e,(hl)		; get current segment start
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(AF.val)
+	add	hl,de		; add to segment-relative transfer address
+	ld	(XFerAddr),hl	; result is start address in object code space
+	ld	hl,XFerFlg
+	ld	(hl),TRUE	; and set transfer flag
+lnke1:	ld	a,(BitCnt)
+	dec	a		; at byte boundary (BitCnt = 1)?
+	jr	z,lnke2		; branch if yes
+	ld	b,1
+	call	RdBits		; else skip bits
+	jr	lnke1
+
+lnke2:	ld	c,1		; init segment count, skip ASEG
+lnke3:	ld	b,0
+	ld	hl,TotalLenTab
+	add	hl,bc
+	add	hl,bc		; get table address
+	push	hl		; push table address
+	ld	e,(hl)		; get length into DE
+	inc	hl
+	ld	d,(hl)
+	push	de		; push length
+	ld	hl,SngLenTab
+	add	hl,bc
+	add	hl,bc		; same for single
+	ld	e,(hl)		; get single length
+	ld	(hl),b		;  and clear old value
+	inc	hl
+	ld	d,(hl)
+	ld	(hl),b
+	pop	hl		; pop length
+	add	hl,de		; compute total length
+	ex	de,hl
+	pop	hl		; restore TotalLenTab table address
+	ld	(hl),e		; store total length
+	inc	hl
+	ld	(hl),d
+	ld	hl,SegLoc
+	add	hl,bc
+	add	hl,bc
+	ld	(hl),e		; set segment location pointer
+	inc	hl
+	ld	(hl),d
+	inc	c		; next segment
+	ld	a,NumSegs
+	cp	c		; done?
+	jr	nz,lnke3	; loop if not
+
+	ld	hl,(YTop)
+	ld	bc,(MinYTop)
+	or	a
+	sbc	hl,bc		; check values
+	jr	nc,lnke5	; branch if YTop >= MinYTop
+	ld	hl,(YTop)
+	ld	(MinYTop),hl	; track min YTop for usage factor
+lnke5:	ld	a,(A.opt)	; test /XM option
+	rra
+	jr	nc,lnke6	; branch if not set
+	call	Wr$Y$Data	; else fix temp chain and save to file
+	ld	hl,(MemTop)	; delete Y data in high memory
+	ld	(YTop),hl
+lnke6:	ld	a,@cseg
+	call	Set$X		; select code segment file
+	ld	a,(S.opt)
+	cpl
+	ld	(ExtFlg),a	; set flag if no /LB option (include always)
+IF	NOT	@@HASH
+	ld	a,(SpecSym)	; test special symbol
+	rra
+	ret	nc		; .. nope
+	call	VerifySym	; .. set it up
+ENDIF	;NOT @@HASH
+	ret
+
+$MMERR:	db	'Main module error',0
+
+; Read item
+; EXIT	Accu holds special link item
+;	(16 on constant or address field)
+
+Item:	ld	b,1
+	call	RdBits		; get bit
+	or	a		; Test control
+	jr	nz,ictrl
+	call	RdByte		; get constant
+	ld	c,a
+	ld	a,(ExtFlg)	; test flag
+	rra
+	ld	a,c
+	call	c,ST.B		; store byte
+	ld	a,.EndFil+1	; return dummy item
+	ret
+
+ictrl:	ld	b,2
+	call	RdBits		; get next two bits
+	or	a		; link item?
+	jr	nz,ival16
+	ld	b,4
+	call	RdBits		; get link item
+	cp	.EndFil		; end of file?
+	ret	nc		; return if yes
+	push	af
+	call	RdItem		; else read control item
+	pop	af
+	ret
+
+ival16:	ld	e,a
+	push	de		; save mode
+	call	RdWord		; get 16 bit value
+	ld	a,(ExtFlg)	; test flag
+	rra
+	pop	de		; restore mode
+	ld	a,e
+	call	c,ST.W		; .. store word
+	ld	a,.EndFil+1	; return dummy item
+	ret
+
+; Get A-field of REL item (address mode and value)
+
+AField:	ld	b,2
+	call	RdBits		; get address type
+	ld	(AF.mode),a
+	call	RdWord		; .. and value
+	ld	(AF.val),hl
+	ret
+
+; Get B-field of REL item (name and its length)
+
+BField:	ld	b,3		; get length
+	call	RdBits
+	or	a		; zero?
+	jr	nz,bf1
+	ld	a,8
+bf1:	ld	(BF.Len),a	; .. save length
+	ld	b,a		; set counter
+	ld	hl,BF.Name	; .. and buffer
+bf2:	push	bc
+	push	hl
+	call	RdByte		; read character
+	and	NoMSB
+	pop	hl
+	pop	bc
+	ld	(hl),a		; store in buffer
+	inc	hl		; advance pointer
+	djnz	bf2		; and loop
+	ret
+
+; Read REL or IRL file
+
+ReadREL:
+	ld	hl,BitCnt
+	ld	(hl),1		; force byte read
+	ld	hl,BFlen3
+	ld	(InPtr),hl	; force disk read
+	ld	(InMax),hl	; set max pointer
+	ld	a,(IRLflag)	; reading .IRL file?
+	or	a
+	jr	z,RD.noIRL	; branch if not
+	ld	hl,BFlen3
+	ld	de,(IrlMax)
+	or	a
+	sbc	hl,de
+	ld	(InPtr),hl	; set input pointer
+	ld	(InMax),hl	; .. and max pointer
+	call	RdByte		; read byte (extent number of REL sect start)
+	ld	l,a
+	ld	h,0
+	call	MulRec		; convert extent to records
+	push	hl
+	call	RdByte		; read byte (record number of REL sect start)
+	pop	hl
+	or	l
+	ld	l,a
+	ld	(IRS.rc),hl	; store record number of start of REL section
+	ld	(REL.rc),hl	; set also as current REL file position
+	ld	(IRC.rc),hl	; and as current IRL position
+	call	Seek.I		; position IRL file
+	ld	hl,1		; set 2nd record for start of IRL index
+	ld	(IRX.rc),hl
+	ld	hl,(InMax)	; Get max
+	ld	(InPtr),hl	; Set pointer
+	ld	hl,0
+	ld	(LoRec),hl	; clear records
+	ld	(HiRec),hl
+RD.noIRL:
+	ld	a,@cseg
+	call	Set$X		; select code segment file
+	ld	hl,S.opt
+	ld	a,(hl)
+	cpl
+	ld	(ExtFlg),a
+	ld	a,(IRLflag)	; Test .IRL flag selected
+	and	(hl)		; .. and /LB option
+	rra
+	jp	c,LoadIRLfile	; load from .IRL file
+LoadRELfile:			; else Load from .REL file
+	call	Item		; get items
+	cp	.EndFil		; .. till end of file
+	jr	nz,LoadRELfile
+	ret
+
+; Read relocatable file
+
+ReadFile:
+	ld	hl,FCB
+	ld	de,$REL
+	push	hl
+	call	AddExt		; set .REL extension if none present
+	pop	hl
+	call	FExist		; try to open file
+	jr	nc,rf1		; .. jump if found
+	ld	a,(S.opt)	; Library search?
+	or	a
+	jr	z,rf2		; .. no, leave as it is
+	ld	hl,FCB
+	ld	de,$IRL
+	push	hl
+	call	SetExt		; else set .IRL extension
+	pop	hl
+	call	FExist		; file exists?
+	jr	nc,rf1		; .. yes
+	ld	hl,FCB
+	ld	de,$LIB
+	call	SetExt		; else try .LIB extension
+rf2:	ld	hl,FCB
+	ld	c,0		; open for read
+	call	OpenF		; .. open file
+rf1:	ld	hl,FCB
+	ld	de,$IRL
+	call	ChkExt		; test .IRL extensiom
+	ld	a,0
+	jr	nz,rf3
+	dec	a
+rf3:	ld	(IRLflag),a	; .. remember
+	call	ReadREL		; .. read it
+	ld	hl,FCB
+	jp	CloseF
+
+; Read 16-bit value (word) from REL bit stream
+
+RdWord:	call	RdByte		; get LO byte
+	ld	l,a
+	push	hl
+	call	RdByte		; get HI byte
+	pop	hl
+	ld	h,a
+	ret
+
+; Read 8-bit value (byte) from REL bit stream
+; EXIT	Accu hold bits read
+
+RdByte:	ld	b,8
+	; continue below
+
+; Read a number of bits from REL file
+; ENTRY	Reg B holds number of bits to read
+; EXIT	Accu hold bits read
+
+RdBits:	xor	a		; clear bit value
+rbloop:	ld	hl,BitCnt
+	dec	(hl)		; test bit count
+	jr	nz,rbit
+	ld	(hl),8		; reset bit count
+	push	af
+	ld	hl,(InPtr)
+	inc	hl		; advance pointer
+	ld	(InPtr),hl
+	ld	de,(InMax)
+	or	a
+	sbc	hl,de		; end of buffer reached?
+	jr	c,rbyte		; branch if not
+	ld	hl,0		; else reset pointer
+	ld	(InPtr),hl
+	push	bc
+	call	RdRec		; and read records
+	pop	bc
+rbyte:	ld	de,(InPtr)	; get pointer
+	ld	hl,(IOBuf)
+	add	hl,de		; add to disk buffer
+	ld	a,(hl)		; get byte
+	ld	(BitVal),a	; .. as new value
+	pop	af
+rbit:	ld	hl,BitVal	; point to byte
+	rlc	(hl)		; .. rotate it
+	rla			; .. shift into result
+	djnz	rbloop		; .. loop on
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set ?OVLAY External reference
+
+StOVLY:
+Set$OVLAY:
+	ld	hl,$OVLAY
+	ld	a,OVLlen
+	ld	e,.noCOMM
+	call	SrcSym		; find symbol
+	ret	c		; .. already set
+	exx
+	ld	hl,$OVLAY
+	ld	c,OVLlen
+	exx
+	ld	hl,0		; value = 0
+	ld	de,0
+	ld	b,@cseg
+	ld	c,.noCOMM
+	ld	a,.noENT
+	jp	InsSym		; insert symbol
+
+; Set ?OVLA0 External reference
+;
+; Any remaining unresolved external symbols at this point will be
+; converted to overlay file name references.
+
+StOVL0:
+Set$OVLA0:
+	ld	a,OVLlen
+	ld	(BF.Len),a	; set length
+	ld	hl,$OVLA0
+	ld	de,BF.Name
+	ld	c,a
+	ld	b,0
+	ldir			; copy name
+	ld	a,@cseg
+	ld	(AF.mode),a	; set PROGRAM RELATIVE
+	call	Set$X		; select code segment file (note A=@cseg)
+	call	GetSymBeg	; get symbol base into SymPtr
+s0loop:	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; all scanned?
+	ret	nc		; exit loop if yes
+	call	GetENT		; ENTRY symbol?
+	rra
+	jp	c,s0skip	; skip it if yes
+	ld	hl,(SegLoc+ICSEG) ; set value of external to the current loc
+	ld	a,@cseg		; of code segment (code stub to call overlay)
+	call	SetVAL		; set value and mode
+	ld	a,.LD.BC	; emit "LD BC,$+6"
+	call	ST.B		; store value
+	ld	a,@cseg
+	ld	hl,6
+	call	ST.W		; store program relative address
+	ld	a,.JP		; emit "JP ?OVLA0"
+	call	ST.B		; save JP opcode
+	ld	hl,4		; head of address chain = JP argument = $+4
+	ld	(AF.val),hl
+	call	ST.W.0		; store zero word as placeholder for dest addr
+	ld	hl,(SymPtr)
+	push	hl		; save pointer
+	call	LNK.6		; execute CHAIN EXTERNAL - link to ?OVLA0
+	pop	hl
+	ld	(SymPtr),hl	; restore pointer
+	call	GetSymLen	; get length of symbol
+	ld	b,a		;  into B
+	ld	c,1		; init counter
+s0setn:	ld	a,@nam
+	cp	c		; name filled?
+	jr	c,s0next	; exit loop if yes
+	ld	a,b
+	cp	c		; label chars exhausted?
+	ld	a,' '		; then pad with spaces
+	jr	c,s0padn
+	ld	a,(hl)
+	inc	hl
+s0padn:	push	hl
+	push	bc
+	call	ST.B		; store character (overlay file name)
+	pop	bc
+	pop	hl
+	inc	c		; count chars
+	jr	s0setn		; and loop
+s0next:	ld	hl,(TotalLenTab+ICSEG)
+	ld	de,@nam+3+3
+	add	hl,de		; adjust code length for extra code
+	ld	(TotalLenTab+ICSEG),hl
+	ld	a,(A.opt)	; Test /XM option
+	or	a
+	jr	z,s0skip	; .. nope
+	call	Wr$Y$Data	; fix temp chain and save
+	ld	hl,(MemTop)	; set back top, delete Y data
+	ld	(YTop),hl
+s0skip:	call	NextSym		; point to next symbol
+	jp	s0loop		; .. loop
+
+$OVLAY:	db	'?OVLAY'
+$OVLA0:	db	'?OVLA0'
+OVLlen	equ	$-$OVLA0
+
+; Process LIB Requests
+
+SolveLBRQ:
+	call	GetSymBeg	; get symbol base into SymPtr
+nxtlib:	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of table?
+	ret	nc		; return if yes
+	call	GetRQST		; LIB request?
+	jr	z,nolib		; branch if not
+	call	GetSymLen	; get symbol length into A
+	ex	de,hl		; src name in DE
+	ld	hl,FCB		; dst FCB in HL
+	call	SetName		; set file name
+	ld	hl,FCB
+	call	SetLibDir
+	ld	hl,IRLflag	; try first .IRL
+	ld	(hl),TRUE
+	ld	hl,FCB
+	ld	de,$IRL
+	call	SetExt		; set .IRL extension
+	ld	hl,FCB
+	call	FExist		; try to open file
+	jr	nc,lfound	; jump if file found
+	ld	hl,IRLflag	; else clear .IRL flag
+	ld	(hl),FALSE
+	ld	hl,FCB
+	ld	de,$REL
+	call	SetExt		; and try .REL
+	ld	hl,FCB
+	ld	c,0		; open for read
+	call	OpenF		; open file
+lfound:	ld	hl,(SymPtr)
+	push	hl		; save current pointer
+	ld	hl,S.opt
+	ld	(hl),TRUE	; set /LB option
+	call	ReadREL		; search library and solve externals
+	pop	hl
+	ld	(SymPtr),hl	; restore pointer
+	ld	hl,FCB
+	call	CloseF		; close library file
+nolib:	call	NextSym		; point to next symbol
+	jr	nxtlib		; .. try next
+
+;-----------------------------------------------------------------------
+
+$EXT.Tab:
+	db	'COM',0
+	db	'PRL',0
+	db	'RSP',0
+	db	'SPR',0
+	db	'OVL',0
+	db	'RSX',0
+	db	'TSK',0
+	db	0
+
+$SYM:	db	'SYM'
+$MAP:	db	'MAP'
+
+; Write zero byte to file
+
+WrByte.0:
+	xor	a		; zero
+
+; Write byte to file
+; ENTRY	Accu holds byte to be written
+
+WrByte:	ld	hl,(CurAdr)
+	inc	hl		; bump address
+	ld	(CurAdr),hl
+
+; Write character to file
+; ENTRY	Accu holds character
+
+WrChar:	ld	hl,(OutPtr)
+	inc	hl
+	ld	(OutPtr),hl
+	push	hl
+	dec	hl
+	ld	bc,(IOBuf)
+	add	hl,bc		; point to buffer
+	ld	(hl),a		; .. store value
+	pop	hl
+	ld	de,(OutMax)
+	or	a
+	sbc	hl,de		; buffer full?
+	ret	c
+	ld	hl,(IOBuf)	; get buffer
+	ld	bc,(OutMax)	; get length
+	ld	de,FCB
+	call	DiskWr		; .. write
+	ld	hl,0
+	ld	(OutPtr),hl	; clear pointer
+	ret
+
+; Write bit to file, used by the relocation bitmap build routines.
+; ENTRY	Reg C holds bit state
+
+WrBit:	ld	a,(MapByte)	; get old byte
+	add	a,a		; .. shift left
+	or	c		; .. insert new bit
+	ld	(MapByte),a
+	ld	e,a		; save for eventual call to WrChar
+	ld	hl,(CurAdr)
+	inc	hl		; advance address
+	ld	(CurAdr),hl
+	ld	a,(MapCnt)
+	inc	a		; increase bit count
+	ld	(MapCnt),a
+	cp	8		; full byte completed?
+	ret	nz		; return if not
+	ld	a,e
+	call	WrChar		; else write byte
+	xor	a
+	ld	(MapCnt),a	; .. clear count
+	ld	(MapByte),a	; .. clear for next
+	ret
+
+; Write zero word to file
+
+WrWord.0:
+	ld	hl,0		; zero
+	; continue below
+
+; Write word to file
+; ENTRY	Reg HL holds word to be written
+
+WrWord:	push	hl
+	ld	a,l
+	call	WrByte		; .. write LO byte
+	pop	hl
+	ld	a,h		; .. then HI byte
+	jp	WrByte
+
+;-----------------------------------------------------------------------
+
+; Build output file from all four segments
+
+BuildOutput:
+	ld	a,(ValidSegs)
+	or	a		; any valid segments?
+	ret	z		; no, return
+	ld	a,(O.opt)
+	cp	.OC		; .COM file output?
+	call	nz,BuildHeader	; output header if not
+	ld	hl,(LoadAddr)
+	ld	(CurAdr),hl	; set load address base
+	ld	a,(JmpFlg)	; jump vector to entry point required?
+	rra
+	jr	nc,bld1		; branch if not
+	ld	a,.JP
+	call	WrByte		; else emit JP opcode
+	ld	hl,(XFerStrt)
+	call	WrWord		; .. followed by start address
+bld1:	ld	hl,(ABS.beg)	; get start of Absolute segment
+	ld	(StrtTab+IASEG),hl	; .. set it
+	ld	c,0		; .. init count
+bloop:	push	bc
+	ld	b,0
+	ld	hl,SegOrder
+	add	hl,bc
+	ld	c,(hl)		; fetch byte as index
+	ld	e,c		; save it in E
+	ld	hl,StrtTab
+	add	hl,bc		; B is still zero
+	add	hl,bc		; index into start table
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	bc,(LoadAddr)
+	or	a
+	sbc	hl,bc		; check address
+	ld	c,e		; get mode back in C
+	call	nc,WrtSegment	; .. write segment
+	pop	bc
+	inc	c		; bump count
+	ld	a,(ValidSegs)
+	cp	c
+	jr	nz,bloop	; iterate over valid segments
+	ld	a,(O.opt)
+	cp	.OC		; .COM file output?
+	ret	z		; return if yes
+	cp	.OT		; .TSK file output?
+	ret	z		; return if yes
+	cp	.OY		; .. or .OVL?
+	ret	z		; return as well
+	jp	BuildBitMap	; else build page relocation bitmap
+
+; Write code segment
+; ENTRY	Reg C holds address mode
+
+WrtSegment:
+	ld	a,c
+	ld	(CurSeg),a
+	cp	@aseg		; test Absolute
+	ld	hl,(ABS.beg)	; get start of Absolute segment
+	jr	z,wrseg1	; branch if Absolute
+	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc
+	add	hl,bc
+	ld	a,(hl)		; else get start address from seg table
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+wrseg1:	push	hl		; remember segment start
+	ld	bc,(CurAdr)
+	or	a
+	sbc	hl,bc		; check segments
+	pop	bc		; segment start now in BC
+	ld	de,$OVRLP	; .. overlapping segments
+	jp	c,Abort
+wrseg2:	ld	hl,(CurAdr)
+	or	a
+	sbc	hl,bc
+	jr	nc,wrseg3
+	push	bc
+	call	WrByte.0	; fill space between segments with zeroes
+	pop	bc
+	jr	wrseg2
+wrseg3:	ld	a,(CurSeg)
+	call	Sel$X		; select segment
+	ld	hl,(CurSeg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl
+	add	hl,bc		; point to segment address
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; .. test zero
+	jr	z,wrseg5
+	ld	a,(CurSeg)
+	cp	@aseg		; Test Absolute
+	ld	hl,0
+	jr	nz,wrseg4
+	ld	hl,(ABS.beg)	; get start of Absolute segment
+wrseg4:	call	OutSeg		; output segment
+wrseg5:	ld	hl,(ModTop)
+	ld	bc,(CurAdr)
+	or	a
+	sbc	hl,bc		; check module top
+	ret	nc		; return if higher than current address
+	ld	(ModTop),bc	; else set new top
+	ret
+
+$OVRLP:	db	'Overlapping segments',0
+
+; Output segment
+; Reg HL holds offset
+
+OutSeg:	ex	de,hl		; get offset into DE
+	ld	hl,(CurSeg)
+	ld	h,0
+	ld	bc,SegLoc
+	add	hl,hl
+	add	hl,bc
+	ld	a,(hl)		; get current location of current segment
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; add offset
+	dec	hl
+osloop:	push	hl
+	or	a
+	sbc	hl,de		; in range?
+	pop	hl
+	ret	c		; .. nope
+	push	hl
+	push	de
+	ex	de,hl		; get address into HL
+	call	LD.Seg		; get byte from segment
+	call	WrByte		; .. and write
+	pop	de
+	pop	hl
+	inc	de
+	jr	osloop
+
+; Save output file
+
+WriteOutput:
+	ld	a,(objflg)	; output file wanted?
+	or	a
+	ret	z		; return if not
+	ld	hl,ModFCB
+	ld	de,FCB		; copy file name and extension,
+	call	CopyFN		;  use current module name
+	ld	hl,(O.opt)	; get output file type from /OFMT option
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	ld	bc,$EXT.Tab
+	add	hl,bc		; point to selected extension
+	ex	de,hl
+	ld	hl,FCB
+	call	AddExt		; set extension if FCB has none
+	ld	hl,(TotalLenTab+ICSEG)
+	ld	de,(TotalLenTab+IDSEG)
+	add	hl,de
+	ld	de,(TotalLenTab+ICOMN)
+	add	hl,de
+	ld	a,(O.opt)
+	cp	.OC		; COM file?
+	jr	z,WO.com	; branch if not
+	ld	de,256
+	add	hl,de		; else add header size
+WO.com:	ex	de,hl		; DE = requested file size in bytes
+	ld	hl,FCB
+	call	CreateF		; create file
+	call	SavMain		; save main FCB if not yet saved
+	ld	hl,0
+	ld	(OutPtr),hl	; clear pointer
+	xor	a
+	ld	(MapByte),a	; .. and map byte
+	ld	(MapCnt),a	; .. and map count
+	call	BuildOutput	; build the output file
+	; continue below	; close output file
+
+; Close output file
+
+CloseOut:
+	ld	a,(OutPtr)	; get buffer index
+	and	RecLen-1	; .. test buffer full
+	jr	z,cls1		; .. yeap
+	ld	a,EOF
+	call	WrChar		; pad with EOF
+	jr	CloseOut
+cls1:	ld	hl,(IOBuf)	; get buffer
+	ld	bc,(OutPtr)	; get length
+	ld	de,FCB
+	push	de
+	call	DiskWr		; flush buffer
+	pop	hl
+	jp	CloseF		; and close file
+
+; Display memory overflow message
+
+MemOvf:	ld	de,$MOVFL
+	ld	a,(A.opt)	; additional memory in use?
+	rra
+	jp	c,Abort		; abort if yes, no can do
+	ex	de,hl
+	ld	de,StrBuf
+	push	de
+	call	StrCpy
+	ld	hl,$USE.A
+	call	StrCpy
+	pop	de
+	jp	Abort		; else abort and suggest using A switch
+
+$MOVFL:	db	'Memory overflow',0
+$USE.A:	db	', try /XM switch',0
+
+;-----------------------------------------------------------------------
+
+; Build header page for PRL, SPR, RSX, RSP and OVL files
+
+BuildHeader:
+	cp	.OT
+	jp	z,TSKheader	; TSK is handled separatedly
+	ld	a,(ValidSegs)	; get number of valid segments
+	dec	a
+	ld	c,a
+	ld	b,0
+	ld	hl,SegOrder
+	add	hl,bc		; index into segment table
+	ld	c,(hl)		; get index for StrtTab
+	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc
+	add	hl,bc
+	ld	e,(hl)		; get table value into DE
+	inc	hl
+	ld	d,(hl)
+	ld	hl,SegLoc
+	add	hl,bc
+	add	hl,bc		; get from segment address table
+	ld	a,(hl)		; get table value into HL
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; add them to obtain new start address
+	ld	de,(LoadAddr)
+	or	a
+	sbc	hl,de		; get difference
+	ld	(CodeLen),hl	; .. save length
+	call	WrByte.0	; first byte is a zero
+	ld	hl,(CodeLen)
+	call	WrWord		; length follows at byte offset 1
+	call	WrByte.0
+	ld	a,(O.opt)
+	cp	.OY		; overlay?
+	jr	nz,bpr1		; .. nope
+
+	call	WrWord.0	; output overlay data
+	call	WrByte.0
+	ld	hl,(LoadAddr)
+	call	WrWord		; overlay load address is at byte offset 7
+	jr	bpr2
+
+bpr1:	ld	hl,(MemSize)
+	call	WrWord		; other formats have memory size @offset 4
+	call	WrByte.0
+	call	WrWord.0
+
+bpr2:	call	WrByte.0
+	ld	a,(B.opt)	; BIOS option?
+	rra
+	jr	nc,bpr3		; .. nope
+	ld	hl,(TotalLenTab+ICSEG)	; get code length
+	call	WrWord		; RSP:B has dseg start address @offset 10
+	jr	bpr4
+
+bpr3:	call	WrWord.0	; else write zero
+bpr4:	ld	b,PageLen-HeadLen
+Bpr.Fill:
+	push	bc
+	call	WrByte.0	; fill the rest of the page with zeros
+	pop	bc
+	djnz	BPr.Fill
+	ret
+
+; Output TSK header
+
+TSKheader:
+	ld	hl,TSKsig
+	call	WrNam		; signature
+	ld	hl,1*256+2
+	call	WrWord		; version
+	ld	b,6
+	call	Bpr.Fill
+	ld	hl,TSKnam
+	call	WrNam		; task name
+	ld	hl,TSKid
+	res	7,(hl)
+	call	WrNam		; task ID
+	ld	hl,TSKpar
+	call	WrNam		; task partition
+	ld	hl,(LoadAddr)	;;(StrtTab+ICSEG)
+	call	WrWord		; start address
+	ld	hl,(StrtTab+ICSEG)
+	ld	de,(TotalLenTab+ICSEG)
+	add	hl,de
+	ld	de,(TotalLenTab+IDSEG)
+	add	hl,de
+	ld	de,(TotalLenTab+ICOMN)
+	add	hl,de
+	dec	hl
+	call	WrWord		; end address
+	ld	hl,(XFerStrt)
+	call	WrWord		; entry point
+	ld	hl,(MemSize)
+	call	WrWord		; additional memory
+	ld	a,(TSKpri)
+	call	WrByte		; priority
+	ld	a,(TSKattr)
+	call	WrByte		; attributes
+	ld	b,14
+	call	Bpr.Fill
+	ld	hl,LUNtbl
+	ld	b,16*4
+	call	WrStr
+	ld	b,PageLen-80h
+	jp	Bpr.Fill	; fill the rest of the page with zeros
+
+WrNam:	ld	b,6
+	call	WrStr
+	ld	b,2
+	jp	Bpr.Fill
+
+WrStr:	ld	a,(hl)
+	push	hl
+	push	bc
+	call	WrByte
+	pop	bc
+	pop	hl
+	inc	hl
+	djnz	WrStr
+	ret
+
+TSKsig:	db	'TSK180'
+
+; Build relocation bitmap for PRL, SPR, RSX and RSP files
+
+BuildBitMap:
+	ld	hl,(LoadAddr)
+	ld	(CurAdr),hl	; set load address base
+	ld	a,(JmpFlg)	; jump vector to entry point required?
+	rra
+	jr	nc,bbm1		; branch if not
+	ld	c,0
+	call	WrBit		; else write two zeros
+	ld	c,0
+	call	WrBit		;  for JP <lo> <hi> -> 0 0 1
+	ld	c,1
+	call	WrBit		;   hi-byte of address is relocatable
+bbm1:	ld	c,0		; init count
+
+bbm2:	push	bc
+	ld	b,0
+	ld	hl,SegOrder
+	add	hl,bc
+	ld	a,(hl)		; get segment index from table
+	ld	(MapSeg),a	; .. save it
+	cp	@aseg		; check mode
+	jr	z,bbm6		; .. skip Absolute segment
+	ld	c,a		; get index
+	ld	b,0
+	ld	hl,StrtTab
+	add	hl,bc
+	add	hl,bc
+	ld	e,(hl)		; get start address
+	inc	hl
+	ld	d,(hl)
+bbm3:	ld	hl,(CurAdr)
+	or	a
+	sbc	hl,de		; compare address
+	jr	nc,bbm4		; .. exit loop when current >= start
+	push	de
+	ld	c,0
+	call	WrBit		; else write zeros until seg starts
+	pop	de
+	jr	bbm3
+
+bbm4:	ld	a,(A.opt)	; Test option /XM
+	rra
+	jr	nc,bbm5		; .. nope
+	call	BuildMapAopt	; .. do it for /XM
+	jr	bbm6
+bbm5:	call	BuildMapNorm	; .. do it for no /XM
+bbm6:	pop	bc
+	inc	c		; next segment
+	ld	a,(ValidSegs)
+	cp	c
+	jr	nz,bbm2		; iterate over valid segments
+
+bbm7:	ld	de,(LoadAddr)	; Get load address
+	ld	hl,(CodeLen)
+	add	hl,de		; .. obtain end address
+	ex	de,hl
+	ld	hl,(CurAdr)
+	or	a
+	sbc	hl,de
+	jr	nc,bbm8		; .. done
+	ld	c,0
+	call	WrBit		; .. fill zeroes
+	jr	bbm7
+
+bbm8:	ld	a,(MapCnt)	; get count
+	or	a		; .. test boundary
+	ret	z		; .. return when done
+	ld	c,0
+	call	WrBit		; .. fill with zeroes
+	jr	bbm8
+
+; Write zero relocation bits until target address in HL is reached,
+; then write a one bit.
+
+WrMapToAdr:
+	push	hl		; save address
+	ld	bc,(CurAdr)
+	or	a
+	sbc	hl,bc		; target address reached?
+	jr	c,wmta1		; exit loop if yes
+	ld	c,0
+	call	WrBit		; else write a zero for non-relocatble
+	pop	hl		; restore address
+	jr	WrMapToAdr	; and loop
+wmta1:	pop	hl
+	ld	c,1
+	jp	WrBit		; write one for relocatable and return
+
+; Build reloc bitmap for file generated with no /XM option
+
+BuildMapNorm:
+	ld	hl,(MapSeg)	; get segment index
+	ld	h,0
+	ld	bc,YTable
+	add	hl,hl
+	add	hl,bc
+	ld	e,(hl)		; fetch table address
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+bmn1:	ld	(Y$Ptr),hl	; store base
+	ld	a,h		; null address?
+	or	l
+	ret	z		; if yes, we're done
+	inc	hl		; skip control byte
+	ld	e,(hl)		; get address into DE
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(MapSeg)	; get segment index
+	ld	h,0
+	ld	bc,StrtTab
+	add	hl,hl
+	add	hl,bc		; index into table
+	ld	a,(hl)		; fetch value
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; .. add them to obtain target address
+	call	WrMapToAdr	; write bits
+	call	Get$Y$Lnk	; get next linkage
+	jr	bmn1
+
+; Build reloc bitmap for file generated with /XM option
+
+BuildMapAopt:
+	ld	a,(MapSeg)	; get segment index
+	call	Sel$Y		; select YY file
+	ld	bc,-1
+	ld	a,(iy+Y$.WR)	; YY file created?
+	rra
+	jr	nc,bma1		; .. nope
+	ld	hl,(Y.FCB)	; get FCB
+	ld	c,1		; read/write mode
+	call	OpenF		; .. open file
+	ld	c,(iy+Y$.len)	; get length
+	ld	b,(iy+Y$.len+1)
+bma1:	ld	(iy+Y$.cur),c	; set value
+	ld	(iy+Y$.cur+1),b
+bma2:	call	Rd$Y$byte	; read byte
+	cp	Y.eof		; test for EOF
+	ret	z		; .. yeap
+	push	af		; save byte
+	call	Rd$Y$word	; get word
+	ex	de,hl		; .. save
+	ld	hl,(MapSeg)	; get segment index
+	ld	h,0
+	ld	bc,StrtTab
+	add	hl,hl
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de
+	push	hl		; save new start address
+	call	Rd$Y$word	; skip word
+	pop	hl
+	pop	af		; restore byte
+	and	Y@@off		; test offset
+	push	hl
+	call	nz,Rd$Y$word	; .. skip it
+	pop	hl		; restore address
+	call	WrMapToAdr	; write bits
+	jr	bma2
+
+;-----------------------------------------------------------------------
+
+; Generate symbol file
+
+WrtSym:	ld	a,(symflg)	; symbol file wanted?
+	or	a
+	ret	z		; .. nope
+	ld	hl,SymFCB
+	ld	de,FCB
+	call	CopyFN		; copy name of file, use current module name
+	ld	hl,FCB
+	ld	de,$SYM
+	call	AddExt		; set .SYM extension
+	ld	hl,FCB
+	ld	de,0
+	call	CreateF		; create .SYM file
+	ld	hl,0
+	ld	(OutPtr),hl	; reset pointer
+	xor	a
+	ld	(WrtSymCol),a	;  and column
+	call	GetSymBeg	; get current symbol base into SymPtr
+	ld	de,StrBuf
+
+wrts1:	ld	hl,(SymPtr)
+	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of table reached?
+	jr	nc,wrts5	; exit loop if yes
+	call	GetRQST		; LIB Request?
+	jr	nz,wrts4	; skip if yes
+?QABC::
+	call	TstSym		; symbol printable?
+	rra
+	jr	nc,wrts4	; skip if not
+	call	GetVAL		; else get value
+	call	CnvHexWord	; .. print
+	ld	a,' '
+	ld	(de),a
+	inc	de
+	call	PrSymbol	; output symbol name
+	ld	a,(WrtSymCol)
+	inc	a		; next column
+	ld	(WrtSymCol),a
+	and	ColMask
+	jr	z,wrts3
+	ld	a,TAB
+	ld	(de),a		; output delimiter
+	inc	de
+	jr	wrts4
+wrts3:	call	WrtBuf		; output buffer to file, reset string ptr
+wrts4:	call	NextSym		; point to next symbol
+	jr	wrts1
+
+wrts5:	ld	a,(WrtSymCol)
+	and	ColMask
+	call	nz,WrtBuf	; write buffer if not first column
+	jp	CloseOut	; close file
+
+;-----------------------------------------------------------------------
+
+; Seek file to ?MEMRY or $MEMRY location
+
+PosMEM:	ld	hl,(MEM$val)
+	call	DivRec		; divide by 128 for record
+	ld	de,FCB
+	ld	c,0
+	call	SeekF		; position file
+	ret	nc
+	ld	hl,FCB
+	ld	de,$OPNER
+	jp	ErrFN		; abort on error
+
+; Process $MEMRY or ?MEMRY label
+
+Set$MEM:
+	call	GetVAL		; get value
+	ld	de,(LAdr.sav)
+	or	a
+	sbc	hl,de		; subtract load address
+	ld	(MEM$val),hl
+	ld	hl,MainFCB
+	ld	de,FCB
+	call	CopyFN		; get back name of main file into FCB
+	ld	a,(O.sav)	; check output file type
+	cp	.OC		; COM format?
+	jr	z,setm1		; branch if yes
+	ld	hl,(MEM$val)
+	ld	de,HDR.sz	; offset by header size if not COM file
+	add	hl,de		; fix location of $MEMRY in file
+	ld	(MEM$val),hl
+setm1:	ld	hl,FCB
+	ld	c,1		; read/write mode
+	call	OpenF		; open output file
+	call	PosMEM		; position for reading it
+	ld	hl,(IOBuf)
+	ld	de,FCB
+	ld	bc,BFlen1
+	call	DiskRd		; read one page
+	push	hl		; save actual number of records read
+	ld	hl,(MEM$val)
+	call	DivRec		; divide by 128, use remainder
+	ld	hl,(IOBuf)
+	add	hl,de		;  for buffer position
+	ld	de,(ModTop)	; get module top address
+	ld	(hl),e		; store value into $MEMRY location
+	inc	hl
+	ld	(hl),d
+	call	PosMEM		; position file for writing the changes back
+	pop	hl
+	ld	h,0
+	call	MulRec
+	ld	b,h		; get real length
+	ld	c,l
+	ld	de,FCB
+	ld	hl,(IOBuf)
+	push	de
+	call	DiskWr		; write changes back
+	pop	hl
+	jp	CloseF		; and close the file
+
+; Set module top if overlay and fix $MEMRY variable.
+
+SetMTop:
+	ld	a,(OVflg)	; overlay?
+	rra
+	jr	nc,skipmt	; branch if not
+	ld	de,RecLen-1
+	ld	hl,(ModTop)
+	add	hl,de
+	ld	a,l
+	and	RecLen
+	ld	l,a
+	ld	(ModTop),hl	; else set module top to next record boundary
+skipmt:	ld	a,(ovlflg)
+	or	a		; output suppressed?
+	ret	z		; return if yes
+	ld	hl,MEMRY?
+	call	FixMEM		; else fix ?MEMRY
+	ret	c		; done if found
+	ld	hl,MEMRY$	; else try $MEMRY
+FixMEM:	ld	a,MEMlen
+	ld	e,.noCOMM
+	call	SrcSym		; find symbol
+	push	af
+	call	c,Set$MEM	; set value if found
+	pop	af
+	ret
+
+MEMRY?:	db	'?MEMRY'
+MEMRY$:	db	'$MEMRY'
+MEMlen	equ	$-MEMRY$
+
+;-----------------------------------------------------------------------
+
+; Clear temporary X buffer
+
+Clr$X$Buf:
+	ld	c,(ix+X$.len)	; .. fetch length
+	ld	b,(ix+X$.len+1)
+	ld	e,(ix+X$.buf)	; fetch buffer address
+	ld	d,(ix+X$.buf+1)
+	call	ZeroMem		; .. zero buffer
+	ld	(ix+X$.RD),FALSE
+	ret
+
+; Position record within X temp file
+
+Pos$X:	ld	l,(ix+X$.cur)	; get file position
+	ld	h,(ix+X$.cur+1)
+	call	DivRec		; divide by record length (128)
+	ld	de,(X.FCB)
+	ld	c,1		; write mode
+	jp	SeekF		; seek to specified position
+
+; Write records to X temp file
+
+Wr$X$rec:
+	ld	c,(ix+X$.high)
+	ld	b,(ix+X$.high+1)
+	ld	l,(ix+X$.low)
+	ld	h,(ix+X$.low+1)
+	or	a
+	sbc	hl,bc		; compare
+	jr	nc,wrec1	; jump if low >= high [init: 0,1]
+	ld	(ix+X$.low),c	; else set low := high
+	ld	(ix+X$.low+1),b
+wrec1:	ld	a,(ix+X$.WR)	; file already created?
+	rra
+	jr	c,wrec2		; jump if yes
+	ld	hl,(X.FCB)	; else get FCB
+	ld	de,0
+	call	CreateF		; and create file
+	ld	(ix+X$.WR),TRUE	; set file created flag
+wrec2:	call	Pos$X		; position file
+	ld	l,(ix+X$.buf)
+	ld	h,(ix+X$.buf+1)	; get buffer address
+	ld	c,(ix+X$.len)	; .. length
+	ld	b,(ix+X$.len+1)
+	ld	de,(X.FCB)	; .. FCB
+	call	DiskWr		; write
+	jp	Clr$X$Buf	; clear buffer and return
+
+; Setup buffer pointers for X temp file
+; ENTRY	Reg DE holds length
+
+X$SetBuf:
+	ld	c,(ix+X$.len)	; get length into BC
+	ld	b,(ix+X$.len+1)
+	push	bc
+	call	DIV.BC		; divide entry by length
+	call	MUL.BC		; .. and multiply
+	ld	(ix+X$.cur),l	; set position
+	ld	(ix+X$.cur+1),h
+	ld	e,l		; save result in DE for divide below
+	ld	d,h
+	pop	bc
+	add	hl,bc		; add total
+	dec	hl
+	ld	(ix+X$.max),l	; set max length
+	ld	(ix+X$.max+1),h
+	call	DIV.BC		; get remainder, BC has orig len, DE pos
+	inc	de
+	ld	(ix+X$.high),e	; .. store it
+	ld	(ix+X$.high+1),d
+	ret
+
+; Read or write within window
+; ENTRY	Reg HL holds address
+;	Accu   holds TRUE for write and FALSE for read
+
+$X$Window:
+	push	hl		; save address
+	ld	e,(ix+X$.cur)
+	ld	d,(ix+X$.cur+1)
+	or	a
+	sbc	hl,de		; compare values
+	jr	nc,X$W.gtBf	; entry > buffer
+	ld	a,(ix+X$.RD)	; read enabled?
+	rra
+	call	c,Wr$X$rec	; write records to temp
+	pop	de		; get address
+	call	X$SetBuf	; set up buffers
+X$W.read:
+	ld	c,(ix+X$.high)	; get high
+	ld	b,(ix+X$.high+1)
+	ld	l,(ix+X$.low)	; .. and low
+	ld	h,(ix+X$.low+1)
+	or	a
+	sbc	hl,bc		; buffer full?
+	ret	c		; .. nope
+	call	Pos$X		; position file
+	ld	l,(ix+X$.buf)	; get buffer
+	ld	h,(ix+X$.buf+1)
+	ld	c,(ix+X$.len)	; .. length
+	ld	b,(ix+X$.len+1)
+	ld	de,(X.FCB)	; .. FCB
+	jp	DiskRd		; read data from temp X file and return
+
+X$W.gtBf:
+	ld	l,(ix+X$.max)	; get top
+	ld	h,(ix+X$.max+1)
+	pop	bc		; get address
+	or	a
+	sbc	hl,bc		; compare
+	ret	nc		; .. out of window
+	push	af		; save R/W flag
+	push	bc		; save address
+	ld	a,(ix+X$.RD)	; read enabled?
+	rra
+	call	c,Wr$X$rec	; write records to temp
+	pop	de		; get address
+	call	X$SetBuf	; set up buffers
+	ld	c,(ix+X$.high)
+	ld	b,(ix+X$.high+1)
+	ld	l,(ix+X$.low)
+	ld	h,(ix+X$.low+1)
+	pop	af		; test R/W flag
+	or	a
+	jr	nz,X$W.write	; .. write
+	sbc	hl,bc		; check window frame (note CY clear from above)
+	jr	nc,X$W.read
+	jp	Clr$X$Buf	; clear buffer and return
+
+X$W.write:
+	inc	hl		; HL = high+1
+	sbc	hl,bc		; check window frame (note CY clear from above)
+	jr	nc,X$W.read
+	ld	e,c		; get next (high) into DE
+	ld	d,b
+	dec	de		; -1
+	ld	c,(ix+X$.low)	; get count into BC
+	ld	b,(ix+X$.low+1)
+	inc	bc		; +1
+X$Wd.loop:
+	ld	l,e		; HL = high-1
+	ld	h,d
+	or	a
+	sbc	hl,bc		; compare
+	jr	c,X$Wd.ex	; .. that's all
+	push	de
+	push	bc
+	dec	bc
+	ld	e,(ix+X$.len)	; get length
+	ld	d,(ix+X$.len+1)
+	call	MUL.BC		; get count
+	ex	de,hl
+	call	X$SetBuf	; set up buffers
+	call	Wr$X$rec	; write records to temp
+	pop	bc
+	pop	de
+	inc	bc		; .. bump
+	jr	X$Wd.loop
+X$Wd.ex:
+	ld	c,(ix+X$.len)	; get length (DE still has high-1)
+	ld	b,(ix+X$.len+1)
+	call	MUL.BC		; get count
+	ex	de,hl
+	jp	X$SetBuf	; .. set up buffers for last state and return
+
+; Prepare XX temp file
+; ENTRY	Accu holds file index
+
+Set$X:
+	ld	(X$Seg),a	; set index
+	; continue below
+
+; Select XX file for the given segment
+; ENTRY	Accu holds segment index
+; EXIT	Reg IX points to XX structure
+
+Sel$X:	ld	l,a		; expand index
+	ld	h,0
+	ld	bc,X$TAB	; get temp file table
+	add	hl,hl
+	add	hl,bc		; point to block
+	ld	e,(hl)		; .. get it
+	inc	hl
+	ld	d,(hl)
+	push	de		; .. copy address
+	pop	ix		; into IX
+	ld	hl,X$.FCB
+	add	hl,de		; point to FCB
+	ld	(X.FCB),hl	; .. save
+	ret
+
+; Store byte into segment
+; ENTRY	Accu   holds byte to be stored
+;	Reg HL holds address
+
+ST.Seg:	push	af
+	ld	a,TRUE		; set write flag
+	call	X$SegPtr	; get segment pointer
+	pop	af
+	ld	(hl),a		; .. store byte
+	ld	(ix+X$.RD),TRUE	; set read enabled
+	ret
+
+; Load byte from segment
+; ENTRY	Reg HL holds address
+; EXIT	Accu holds byte
+
+LD.Seg:	xor	a		; write flag = FALSE
+	call	X$SegPtr	; get segment pointer
+	ld	a,(hl)		; .. get byte
+	ret
+
+; Get segment pointer
+; ENTRY	Reg HL holds address
+;	Accu   holds read or write flag - FALSE or TRUE
+; EXIT	Reg HL holds pointer
+
+X$SegPtr:
+	push	hl
+	call	$X$Window	; .. read or write from window
+	ld	c,(ix+X$.len)	; get length
+	ld	b,(ix+X$.len+1)
+	pop	de
+	call	DIV.BC		; divide address by length
+	ld	e,(ix+X$.buf)	; get buffer
+	ld	d,(ix+X$.buf+1)
+	add	hl,de		; position it
+	ret
+
+;-----------------------------------------------------------------------
+
+; Compare strings
+; ENTRY	Reg B  holds length of string
+;	Reg DE points to 1st string
+;	Reg HL points to 2nd string
+; EXIT	Z flag set if match
+
+Compare:
+	ld	a,(de)
+	cp	(hl)		; compare
+	ret	nz
+	inc	de
+	inc	hl
+	djnz	Compare
+	ret
+
+; Convert hex value to string
+; ENTRY	Reg HL holds 16 bit value
+;	Reg DE points to string buffer
+;	Preserves HL and BC
+
+CnvHexWord:
+	ld	a,h		; convert HI byte
+	call	CnvHexByte
+	ld	a,l		; convert LO byte
+
+; Convert hex byte to string
+; ENTRY	Accu holds byte
+;	Reg DE points to string buffer
+
+CnvHexByte:
+	push	af
+	rra			; get HI nibble
+	rra
+	rra
+	rra
+	call	CnvHexNibble	; .. convert HI nibble
+	pop	af		; .. convert LO nibble
+
+; Convert hex nibble to string
+; ENTRY	Accu holds nibble
+;	Reg DE points to string buffer
+
+CnvHexNibble:
+	and	00001111b	; mask low nibble
+	add	a,90h		; get ASCII the tricky way
+	daa
+	adc	a,40h
+	daa
+	ld	(de),a
+	inc	de
+	ret
+
+; Clear memory region
+; ENTRY	Reg DE points to buffer
+;	Reg BC holds length of buffer (must be > 1)
+
+ZeroMem:
+	xor	a
+FillMem:
+	ld	h,d		; copy start address
+	ld	l,e
+	dec	bc		; adjust length
+	inc	de
+	ld	(hl),a		; clear first byte
+	ldir			;  and the rest
+	ret
+
+; 16-bit divide routine
+; DE := DE DIV BC
+; HL := DE MOD BC
+
+DIV.BC:	ld	hl,0
+	ld	a,16
+div1:	rl	e
+	rl	d
+	adc	hl,hl
+	sbc	hl,bc
+	jr	nc,div2
+	add	hl,bc
+div2:	ccf
+	dec	a
+	jr	nz,div1
+	rl	e
+	rl	d
+	ret
+
+; 16-bit multiply routine
+; HL := DE * BC
+
+MUL.BC:	ld	hl,0
+	ld	a,16
+mul1:	add	hl,hl
+	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	nc,mul2
+	add	hl,bc
+mul2:	dec	a
+	jr	nz,mul1
+	ret
+
+; Multiply by record length
+; ENTRY	Reg HL holds value
+; EXIT	Reg AHL multiplied by 128
+;
+; Formula: HL MUL 128 = (HL MUL 256) DIV 2
+
+MulRec:	ld	a,h		; get HI byte
+	ld	h,l		; get LO into HI (= MUL 256)
+	ld	l,0		; clear LO byte
+	srl	a		; divide by 2
+	rr	h
+	rr	l
+	ret
+
+; Divide by record length
+; ENTRY	Reg HL holds value
+; EXIT	Reg HL divided by 128
+;	Accu and Reg DE hold modulo 128
+; Preserves BC
+;
+; Formula: HL DIV 128 = (HL MUL 2) DIV 256
+
+DivRec:	ld	e,l
+	xor	a
+	add	hl,hl		; multiply by 2
+	rla			; get carry into LSB of A
+	ld	l,h		; divide by 256
+	ld	h,a
+	ld	a,e
+	and	RecLen-1	; .. modulo
+	ld	e,a
+	ld	d,0
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+LUNtbl:	ds	16*4		; LUN table for TSK file
+TSKnam:	db	'      '	; default task name            ! do not !
+TSKid:	db	'      '	; task version identification  ! change !
+TSKpar:	db	'      '	; task partition name          ! order  !
+TSKpri:	db	50		; task priority
+TSKattr:db	0		; task attributes
+
+@@IO:	ds	2		; WrtIO output routine address
+
+A.opt:	db	0		; value of /XM switch (extra memory)
+B.opt:	db	FALSE
+Q.opt:	db	TRUE
+P.opt:	db	FALSE		; ! do not !
+D.opt:	db	FALSE		; | change !
+G.opt:	db	FALSE		; ! order  !
+O.opt:	db	.OC
+S.opt:	db	FALSE
+Y.opt:	db	0
+
+O.sav:	ds	1		; original (root module) output type
+
+MemSize:
+	ds	2		; additional PRL/SPR/etc. memory requirements
+LoadAddr:
+	ds	2		; initially = TPA
+LAdr.sav:
+	ds	2
+
+objflg:	db	0		; true to generate output file
+symflg:	db	0		; true to generate symbol file
+mapflg:	db	0		; true to generate map file
+ovlflg:	db	0		; true to generate overlay file
+
+IF	NOT	@@HASH
+SpecSym:
+	db	0		; #-symbols (???)
+ENDIF	;NOT @@HASH
+
+ModTop:	ds	2		; module top address
+
+Linking:
+	db	0
+
+OVflg:	ds	1
+OVlvl:	ds	1		; current overlay nesting level
+OVLTab:	ds	MaxOVL*4
+
+MemTop:	ds	2		; top of memory
+FreeMem:
+	ds	2		; remaining free memory (for 'use factor')
+
+LoRec:	dw	0		; lo and hi record number
+HiRec:	dw	0		;  of last read REL/IRL segment
+
+IRC.rc:	dw	0		; current position of IRL file
+IRX.rc:	dw	0		; start of next segment of IRL index
+REL.rc:	dw	0		; start of next segment of REL module
+IRS.rc:	dw	0		; start of REL section in a IRL file
+IRM.rc:	dw	0		; start of module in a IRL file
+IRM.bp:	db	0		; byte offset of start of module in IRL file
+
+IRLflag:
+	db	FALSE
+
+BitCnt:	ds	1
+
+IrlPtr:	ds	2		; IRL buffer pointer
+IrlMax:	dw	BFlen2	;;128 ;test
+
+InPtr:	ds	2		; input file pointer
+InMax:	dw	BFlen3		; size of input file buffer
+
+OutPtr:	ds	2		; output file pointer
+OutMax:	dw	BFlen3		; size of output file buffer
+
+ModLen:				;\
+	db	0		; |    do not
+ModName:			; | change order
+	ds	_LabLen		;/
+
+CurAdr:	dw	0
+
+PrgOrig:
+	dw	0		;!!!TODO: reinit?
+DatOrig:
+	dw	0		;!!!TODO: reinit?
+
+optGlen:
+	db	0
+optGlabel:
+	ds	_LabLen
+
+XFerFlg:
+	db	0
+XFerAddr:
+	dw	0
+XFerMode:
+	db	0
+XFerStrt:
+	dw	0
+
+ABS.beg:
+	dw	-1
+ABS.end:
+	dw	0
+
+JmpFlg:	ds	1		; jump vector to entry point flag
+
+ExtFlg:	db	0
+
+SymTop:	ds	2		; current top of symbol table
+SymBeg:	ds	2		; start of symbol table
+SymPtr:	ds	2		; pointer to symbol during searches, etc.
+
+COMctr:	ds	1
+COMval:	ds	2
+
+YTop:	ds	2		; current top of YY data
+MinYTop:
+	ds	2
+
+X$Seg:	ds	1
+
+Y$Ptr:	ds	2
+SavY$Ptr:
+	ds	2
+
+Dsk$ABS:
+	dw	BFlen3		; buffer size for XX/YYABS.$$$ files
+Dsk$PRG:
+	dw	BFlen5		; buffer size for XX/YYPRG.$$$ files
+Dsk$DAT:
+	dw	BFlen4		; buffer size for XX/YYDAT.$$$ files
+Dsk$COM:
+	dw	BFlen2		; buffer size for XX/YYCOM.$$$ files
+
+X$TAB:	dw	X$ABS$FIB
+	dw	X$PRG$FIB
+	dw	X$DAT$FIB
+	dw	X$COM$FIB
+
+Y$TAB:	dw	Y$ABS$FIB
+	dw	Y$PRG$FIB
+	dw	Y$DAT$FIB
+	dw	Y$COM$FIB
+
+Y.FCB:	ds	2		; pointer to current YY FCB
+X.FCB:	ds	2		; pointer to current XX FCB
+
+YTable:
+	ds	2		; ASEG
+	ds	2		; CSEG
+	ds	2		; DSEG
+	ds	2		; COMMON
+
+SegLoc:
+	ds	2		; ASEG current location
+	ds	2		; CSEG current location
+	ds	2		; DSEG current location
+	ds	2		; COMMON current location
+
+TotalLenTab:
+	ds	2		; ASEG
+	ds	2		; CSEG
+	ds	2		; DSEG
+	ds	2		; COMMON
+
+SngLenTab:
+	ds	2		; module ASEG length
+	ds	2		; module CSEG length
+	ds	2		; module DSEG length
+	ds	2		; module COMMON length
+
+StrtTab:
+	ds	2		; ASEG
+	ds	2		; CSEG
+	ds	2		; DSEG
+	ds	2		; COMMON
+
+SegOrder:
+	db	@aseg
+	db	@cseg
+	db	@dseg
+	db	@comn
+
+ValidSegs:
+	ds	1		; number of valid segments
+
+AF.mode:
+	ds	1		; address mode
+AF.val:
+	ds	2		; address value
+BF.Len:							;\
+	ds	1		; length of name	; |    do not
+BF.Name:						; | change order
+	ds	_LabLen+1	; name			;/
+
+AdrCnt:	dw	0
+ChnAdr:	dw	0
+
+B$R.adr:
+	ds	2
+B$R.val:
+	ds	2
+B$R.ctrl:
+	ds	1		; mode + solve bit + offset bit
+B$R.cnt:
+	ds	1
+B$R.offVal:
+	ds	2
+B$R.off:
+	ds	1
+
+HashTab:
+	ds	HashLen*2
+
+SFptr:	ds	2
+SSptr:	ds	2
+SSlen:	ds	1
+SSmod:	ds	1
+
+IS.nam:	ds	2		; temporary variables for InsSym routine
+IS.len:	ds	1
+IS.val:	ds	2
+IS.adr:	ds	1
+IS.MSB:	ds	1
+IS.sel:	ds	1
+IS.COM:	ds	2
+
+Y$Cl.Sta:
+	db	0
+Y$Cl.Adr:
+	dw	0
+Y$Cl.Val:
+	dw	0
+Y$Cl.Off:
+	dw	0
+
+ABSLoc:
+	ds	1		; initially FALSE
+OffSgn:
+	ds	1		; initially FALSE
+
+SC.Chn:
+	ds	2
+SC.flag:
+	ds	1
+SC.mode:
+	ds	1
+SC.CurAdr:
+	ds	2
+SC.adr:
+	ds	2
+
+STWval:	ds	2
+STWmod:	ds	1
+
+BitVal:	ds	1
+
+MapCnt:
+	ds	1
+MapByte:
+	ds	1
+
+MEM$val:
+	ds	2
+
+CodeLen:
+	ds	2
+CurSeg:
+	ds	1
+
+MapSeg:	ds	1	; index to segment during reloc bitmap build
+
+WrtSymCol:
+	ds	2
+
+	end

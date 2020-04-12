@@ -1,0 +1,83 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Convert word value in DE to unsigned decimal string @HL, A = filler.                                                 ;
+
+	.Z80
+
+	public	CVTWD
+
+	cseg
+
+CVTWD:	ld	(filler),a
+	push	de
+	push	bc
+	push	hl
+	ex	(sp),ix		; get ptr to dest string buffer in IX
+	ex	de,hl		; value now in HL
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	(ix),a
+	ex	(sp),ix		; restore IX, save ptr
+	pop	hl
+	inc	hl
+	inc	b
+	res	7,b
+	ld	a,b		; return length in A
+	pop	bc
+	pop	de
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	bit	7,b
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	set	7,b
+sb3:	ld	(ix),c
+	inc	ix
+	inc	b
+	ret
+
+	dseg
+
+filler:	ds	1
+
+	end

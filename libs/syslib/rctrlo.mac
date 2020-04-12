@@ -1,0 +1,70 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;   Resume output canceled by ^O.
+;   Assumes console is assigned to LUN 5.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+
+	public	RCTRLO
+
+	extrn	TTFLSH,QIOBLK,QIOSB,TTLUN
+
+	cseg
+
+RCTRLO:	push	ix
+	push	hl
+	call	TTFLSH		; make sure any pending output is displayed
+	ld	ix,QIOBLK
+	ld	(ix+Q.FUNC),IO.WVB ; function code
+	ld	(ix+Q.SUBF),TF.CCO ; subfunction
+	ld	(ix+Q.EFN),3	; flag number
+	ld	(ix+Q.WAIT),1	; wait for completion
+	xor	a
+	ld	(ix+Q.AST),a	; no AST
+	ld	(ix+Q.AST+1),a
+	ld	hl,QIOSB
+	ld	(ix+Q.IOSB),l	; set result address
+	ld	(ix+Q.IOSB+1),h
+	ld	a,(TTLUN)
+	ld	(ix+Q.LUN),a	; set LUN
+	ld	hl,QIOSB+4
+	ld	(ix+Q.BUF),l	; buffer address
+	ld	(ix+Q.BUF+1),h
+	xor	a
+	ld	(ix+Q.LEN),a	; bytes to write
+	ld	(ix+Q.LEN+1),a
+	push	ix
+	pop	hl
+	SC	.QIO		; .QIOW
+	jr	c,rco1		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; check result
+	jr	z,rco1
+	scf
+rco1:	pop	hl
+	pop	ix
+	ret
+
+	end

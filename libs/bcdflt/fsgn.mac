@@ -1,0 +1,26 @@
+	.Z80
+
+	public	FSGN
+
+	extrn	ZFR0,FLD0R
+	extrn	FR0,FPone
+
+; Return sign of FR0 (-1.0, 0.0 or +1.0)
+
+; FR0 = sgn(FR0)
+
+	cseg
+
+FSGN:	ld	a,(FR0)
+	or	a
+	jp	z,ZFR0
+	push	af
+	ld	hl,FPone
+	call	FLD0R		; load 1.0 into FR0
+	pop	af
+	ret	p
+	ld	a,0C0h		; make it -1.0
+	ld	(FR0),a
+	ret
+
+	end

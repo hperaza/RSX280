@@ -1,0 +1,1181 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of LBR, a relocatable object code librarian      ;
+;   program for CP/M and RSX180.                                       ;
+;   Copyright (C) 1992-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   CP/M-specific routines.                                            ;
+;                                                                      ;
+;   Usage:                                                             ;
+;     LBR [output][,listing[/M]=input[<module,...>][/E][/D][+...]      ;
+;                                                                      ;
+;   Example:                                                           ;
+;     LBR NEWLIB=REL1/E+REL2/E   - create a NEWLIB lib containing      ;
+;                                  REL1 and REL2 modules.              ;
+;     LBR REL1=NEWLIB<REL1>/E    - extract module REL1 from NEWLIB     ;
+;     LBR =NEWLIB<REL1>/D        - delete module REL1 from NEWLIB      ;
+;     LBR ,TTY:/M=NEWLIB         - list to console name of modules     ;
+;                                  stored in NEWLIB                    ;
+;     LBR NEWLIB2=NEWLIB1/E+REL3/E  - add module REL3 to NEWLIB,       ;
+;                                     note that the output name must   ;
+;                                     be different.                    ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+WBOOT	equ	0
+BDOS	equ	5
+CPMBUF	equ	80h
+
+.KBDIN	equ	1
+.OUTCH	equ	2
+.LPOUT	equ	5
+.RDBUF	equ	10
+.OPEN	equ	15
+.CLOSE	equ	16
+.ERASE	equ	19
+.READ	equ	20
+.WRITE	equ	21
+.MAKE	equ	22
+.REN	equ	23
+.DMA	equ	26
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	public	GETTOP,GETCMD,RESCMD,EXIT,ERRMSG,UCASE,PARSE
+	public	SETINP,FGETRB,LNBUF,LNPTR,MAKEF,OPENF,CLSE.I
+	public	FPUTLB,FWRLST,CLSE.O,CLSE.L,LIBNAM,LMODE,MODN
+	public	WRFLAG,WRMODE,CVTWH,CVTWD,GETDT,PROGID,ADDHLA
+
+	extrn	ERROR,ADDR,MEMBOT,SYMTAB
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+GETTOP:	call	CRLF
+	ld	hl,PROGID
+	call	PUTSTR
+	call	CRLF
+	ld	a,(CPMBUF)	; check for empty command line
+	or	a
+	jr	z,gt1
+	ld	hl,CPMBUF
+	ld	c,(hl)		; get character count into C
+	inc	c
+	ld	b,0
+	ld	de,LINE+1
+	ldir			; copy the line to our command buffer
+	ld	a,1
+gt1:	ld	(MODE),a	; remember mode
+	ld	hl,(BDOS+1)
+	ld	l,0
+	dec	hl
+	ret
+
+GETCMD:	ld	a,(MODE)	; check mode
+	or	a		; command line empty?
+	jr	z,prompt	; if yes -> prompt mode
+	scf
+	jp	m,EXIT		; exit if single command already processed
+	neg			; 1 becomes -1
+	ld	(MODE),a
+	ld	hl,LINE+1
+	xor	a
+	ret
+prompt:	call	CRLF
+	ld	a,'*'		; show prompt
+	call	PUTCH
+	ld	de,LINE
+	ld	c,.RDBUF
+	call	BDOS		; get command
+	call	CRLF
+	ld	hl,LINE+1
+	ld	a,(hl)
+	or	a		; empty command line?
+	jr	z,prompt	; prompt again
+	ret			; else return it
+
+RESCMD:	ret			; no indirect command to kill in CP/M
+
+ERRMSG:	call	PUTSTR		; display error message
+	call	CRLF		; followed by a newline
+	ret
+
+EXIT:	jp	WBOOT		; exit to CP/M
+
+PROGID:	db	'LBR Version 1.3',0
+
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+; Translate the command line to uppercase
+
+LNUPR:	ld	hl,(LNPTR)
+ln1:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	CR
+	jr	z,ln2
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	jr	ln1
+ln2:	ld	(hl),0
+	ret
+
+; Parse command line
+
+PARSE:	ld	hl,LINE+1
+	ld	e,(hl)		; get character count
+	ld	d,0
+	inc	hl
+	ld	(LNPTR),hl
+	add	hl,de
+	ld	(hl),0		; append a null character
+	xor	a
+	ld	(WRFLAG),a	; write flag: no output
+	ld	(WRMODE),a
+	ld	(FLG.I),a	; no input file
+	ld	(FLG.O),a	; no output file
+	ld	(FLG.L),a	; no listing file
+	ld	a,2
+	ld	(LMODE),a	; default listing mode = list all
+	call	LNUPR
+	call	GETDST		; get output file
+NEXT:	ld	hl,(LNPTR)
+	ld	a,(hl)
+	inc	hl
+	or	a		; end of line?
+	jr	z,endp		; jump if yes
+	cp	'/'
+	jp	z,SWITCH	; process input switches
+	cp	','
+	jp	z,GETLST	; get the optional listing file
+	cp	'='
+	jp	z,GETINP	; get the input file
+	ld	(LNPTR),hl
+	jp	CMDERR
+endp:	ld	a,(FLG.I)	; do we have an input file?
+	or	a
+	jp	z,CMDERR	; error if not
+	ret
+
+; Get the input switches (only /M allowed)
+
+SWITCH:	ld	a,(hl)
+	inc	hl
+	ld	(LNPTR),hl
+	cp	'M'
+	jr	z,lstm
+ERRSW:	ld	hl,ESMSG
+	jp	ERROR
+lstm:	ld	a,1
+	ld	(LMODE),a	; list only module names
+	jp	NEXT
+
+ESMSG:	db	'Bad switch',0
+
+; Get output (destination) file name
+
+GETDST:	ld	hl,FCB.O
+	call	MKFCB		; create output FCB
+	ld	hl,FCB.O
+	ld	de,EXT.O
+	call	ADDEXT		; add default extension if none was supplied
+	ld	hl,FCB.O
+	call	TSTFCB		; check FCB
+	cp	2
+	jr	nc,OERR		; output cannot be a device
+	ld	(FLG.O),a	; signal we have an output file
+	ret
+OERR:	ld	hl,OEMSG
+	jp	ERROR
+
+OEMSG:	db	'Illegal output file',0
+
+; Return 0 if the FCB is empty, 1 if it is a valid disk file FCB,
+; or 2 if a device (CON:, TTY:, etc.) was specified.
+
+TSTFCB:	inc	hl
+	ld	a,(hl)
+	cp	' '
+	ld	a,0
+	ret	z		; empty FCB
+	ex	de,hl
+	ld	hl,(LNPTR)
+	ld	a,(hl)
+	cp	':'
+	ld	a,1		; disk file
+	ret	nz
+	inc	hl
+	ld	(LNPTR),hl
+	ex	de,hl
+	call	TSTDEV		; CP/M device
+	ret
+
+; Get the listing file name
+
+GETLST:	ld	(LNPTR),hl
+	ld	a,(FLG.L)	; listing already specified?
+	or	a
+	jp	nz,CMDERR	; error if yes
+	ld	hl,FCB.L
+	call	MKFCB		; create listing FCB
+	ld	hl,FCB.L
+	ld	de,EXT.L
+	call	ADDEXT		; add default extension if necessary
+	ld	hl,FCB.L
+	call	TSTFCB
+	ld	(FLG.L),a	; remember listing type (disk, device or file)
+	jp	NEXT
+
+; Get the input file name(s)
+
+GETINP:	ld	a,(FLG.I)	; input already specified?
+	or	a
+	jp	nz,CMDERR	; error if so
+get1:	ld	(LNPTR),hl
+	ld	hl,(MODN)
+	push	hl		; push starting address of name
+	call	FCBNAM		; get input file name
+	ld	(hl),0
+	ld	(ADDR),hl	; addr. for switch
+	inc	hl
+	ld	(hl),0FEh
+	ld	(MODN),hl
+	pop	hl		; HL = begin of name
+	push	hl
+	ld	de,EXT.I
+	call	ADDEXT		; add REL extension if necessary
+	pop	hl
+	call	TSTFCB		; check name specification
+	cp	2
+	jp	nc,IERR		; cannot be a device
+	ld	(FLG.I),a
+get2:	ld	hl,(LNPTR)
+	ld	a,(hl)
+	inc	hl
+	cp	'<'
+	jp	z,GETMOD	; get module name
+	cp	'/'
+	jp	z,INPSW		; get input switches
+	cp	'+'
+	jr	nz,get3
+	ld	de,(MODN)	; keep the 0FEh if '+'
+	inc	de
+	ld	(MODN),de
+	jr	get1
+get3:	ld	hl,(MODN)
+	inc	hl
+	ld	(hl),0FFh	; end of input file list
+	inc	hl
+	ld	(SYMTAB),hl	; set start of symbol table
+	ld	hl,(MEMBOT)
+	ld	(MODN),hl
+	jp	NEXT
+IERR:	ld	hl,IEMSG
+	jp	ERROR
+
+IEMSG:	db	'Illegal input file',0
+
+; Extract module list
+
+GETMOD:	ld	b,8
+	ex	de,hl
+	ld	hl,(MODN)
+	call	GETNAM
+	ld	(hl),0
+	inc	hl
+	ld	(hl),0FEh
+	ld	(MODN),hl
+	ex	de,hl
+	ld	a,(hl)
+	cp	','
+	inc	hl
+	jr	z,GETMOD
+	dec	hl
+	cp	'>'
+	jp	nz,CMDERR
+	inc	hl
+	ld	(LNPTR),hl
+	jp	get2
+
+; Process input switches: /E - extract module, /D - delete module
+
+INPSW:	ld	a,(hl)
+	inc	hl
+	ld	(LNPTR),hl
+	cp	'E'
+	jr	z,incl
+	cp	'D'
+	jr	z,excl
+	jp	ERRSW
+excl:	ld	a,2		; WRMODE = 2 -> exclude (delete)
+	jr	setsw
+incl:	ld	a,1		; WRMODE = 1 -> include (extract)
+setsw:	ld	(WRMODE),a
+	ld	hl,(ADDR)	; get switch address (end of file name)
+	ld	(hl),a		; store switch for this file
+	xor	a
+	ld	(WRFLAG),a	; clear write flag
+	jp	get2
+
+; Create a FCB. HL = FCB address, LNPTR = input line
+
+MKFCB:	call	CLRFCB		; initialize FCB to all zeros
+FCBNAM:	ld	de,(LNPTR)	; input line address in DE
+	call	GETNS		; get next non-space character
+	ld	a,(de)
+	or	a
+	jr	z,mf2
+	sub	'A'-1
+	ld	b,a
+	inc	de
+	ld	a,(de)
+	cp	':'
+	jr	z,mf3
+	dec	de
+mf2:	ld	(hl),0
+	jr	mf4
+mf3:	ld	(hl),b
+	inc	de
+mf4:	ld	b,8
+	inc	hl
+	call	GETNAM		; get file name
+	cp	'.'		; was the extension explicitly supplied?
+	ld	(PFLG),a
+	jr	nz,mf5
+	inc	de
+mf5:	ld	b,3
+	call	GETNAM		; get extension
+	ld	(LNPTR),de
+	ret
+
+; Clear FCB. HL = FCB address
+
+CLRFCB:	push	hl
+	ld	b,35
+clrf1:	ld	(hl),0
+	inc	hl
+	djnz	clrf1
+	pop	hl
+	ret
+
+; Get a name from the input line in (DE), up to C chars in length.
+; Store the name at (HL), padding with spaces if necessary.
+
+GETNAM:	call	GETFS
+	jr	z,sfill
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+skip:	call	GETFS
+	ret	z
+	inc	de
+	jr	skip
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get next (non-blank) symbol
+; Returns Z flag on EOL.
+
+GETNS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Get next symbol
+; Returns Z on delimiter or EOL.
+
+GETFS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,CMDERR
+	ret	z
+	cp	'='
+	ret	z
+	cp	'_'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'*'
+	ret	z
+	cp	'?'
+	ret	z
+	cp	','
+	ret	z
+	cp	'+'
+	ret
+CMDERR:	ld	hl,ERRCMD
+	jp	ERROR
+
+ERRCMD:	db	'Command line error',0
+
+; Add file ext (DE) if necessary.
+; HL = FCB addr.
+
+ADDEXT:	ld	bc,8+1
+	add	hl,bc
+	ld	a,(hl)
+	cp	' '
+	ret	nz
+	ld	a,(PFLG)
+	cp	'.'
+	ret	z
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ret
+
+EXT.I:
+EXT.O:	db	'REL'
+EXT.L:	db	'PRN'
+
+; Check device name, return 2 if console device, 3 if printer.
+
+TSTDEV:	ld	de,DEVNAM
+test1:	ld	a,(de)
+	cp	0FFh
+	ret	z
+	push	hl
+	ld	b,3
+test:	ld	a,(de)
+	cp	(hl)
+	jr	nz,nodev
+	inc	hl
+	inc	de
+	djnz	test
+	pop	hl
+	ld	a,(de)
+	ret
+nodev:	inc	de
+	djnz	nodev
+	inc	de
+	pop	hl
+	jr	test1
+
+DEVNAM:	db	'CON',2
+	db	'TTY',2
+	db	'LST',3
+	db	'LPT',3
+	db	0FFh
+
+; Output newline to console
+
+CRLF:	ld	a,CR
+	call	PUTCH
+	ld	a,LF
+	jp	PUTCH
+
+; Output string to console
+
+PUTSTR:	ld	a,(hl)
+	or	a
+	ret	z
+	call	PUTCH
+	inc	hl
+	jr	PUTSTR
+
+; Open input file
+
+OPENF:	ld	de,FCB.I
+	ld	c,.OPEN
+	call	BDOS
+	inc	a
+	jr	z,ERRFNF
+	ld	a,80h
+	ld	(CNT.I),a
+	ret
+ERRFNF:	ld	hl,ERRNF
+	jp	ERROR
+
+ERRNF:	db	'File not found',0
+
+; Create output file
+
+MAKEF:	ld	a,(FLG.O)	; WRMODE
+	or	a
+	jr	z,op1
+	ld	de,FCB.O
+	ld	c,.ERASE
+	call	BDOS
+	ld	de,FCB.O
+	ld	c,.MAKE
+	call	BDOS
+	inc	a
+	jr	z,NOROOM
+op1:	ld	a,(FLG.L)
+	cp	1		; disk file
+	jr	nz,op2
+	ld	de,FCB.L
+	ld	c,.ERASE
+	call	BDOS
+	ld	de,FCB.L
+	ld	c,.MAKE
+	call	BDOS
+	inc	a
+	jr	z,NOROOM
+op2:	xor	a
+	ld	(CNT.O),a
+	ld	(CNT.L),a
+	ret
+NOROOM:	ld	hl,ERRND
+	jp	ERROR
+
+ERRND:	db	'No directory space',0
+
+SETINP:	push	hl
+	ld	hl,FCB.I	; prepare input FCB with next file name
+	call	CLRFCB
+	pop	hl
+	ld	de,FCB.I
+	ld	bc,12
+	ldir
+	ld	a,(hl)		; get switch
+	inc	hl
+	ret
+
+; Copy current library name to string buffer @DE
+
+LIBNAM:	ld	hl,FCB.I+1
+	ld	b,8
+lbn1:	ld	a,(hl)
+	cp	' '
+	jr	z,lbn2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	lbn1
+lbn2:	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	hl,FCB.I+1+8
+	ld	b,3
+lbn3:	ld	a,(hl)
+	cp	' '
+	ret	z
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	lbn3
+	ret
+
+; Output string @DE to listing device and append newline
+
+FWRLST:	push	de
+fw1:	ld	a,(de)
+	or	a
+	jr	z,fw2
+	call	OUTCHR
+	inc	de
+	jr	fw1
+fw2:	ld	a,CR
+	call	OUTCHR
+	ld	a,LF
+	call	OUTCHR
+	pop	de
+	ret
+
+; Output char in A to listing device
+
+OUTCHR:	push	de
+	ld	e,a
+	ld	a,(FLG.L)
+	or	a
+	jr	z,OUTNUL
+	dec	a
+	jr	z,OUTDSK
+	dec	a
+	jr	z,OUTCON
+OUTLPT:	ld	a,e
+	call	LPUTCH
+	jr	OUTNUL
+OUTCON:	ld	a,e
+	call	PUTCH
+	jr	OUTNUL
+OUTDSK:	ld	a,e
+	call	WRPRN
+OUTNUL:	pop	de
+	ret
+
+; Output character to console
+
+PUTCH:	push	hl
+	push	de
+	push	bc
+	ld	e,a
+	ld	c,.OUTCH
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Output character to printer
+
+LPUTCH:	push	hl
+	push	de
+	push	bc
+	ld	e,a
+	ld	c,.LPOUT
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Read a byte from input file
+
+FGETRB:	ld	a,(CNT.I)
+	cp	80h
+	jr	nz,rd1
+	xor	a
+	ld	(CNT.I),a
+	push	hl
+	push	de
+	push	bc
+	ld	de,BUF.I
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.I
+	ld	c,.READ
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	or	a
+	jr	nz,ENDF
+rd1:	push	hl
+	push	bc
+	ld	a,(CNT.I)
+	ld	c,a
+	inc	a
+	ld	(CNT.I),a
+	ld	b,0
+	ld	hl,BUF.I
+	add	hl,bc
+	ld	a,(hl)
+	pop	bc
+	pop	hl
+	ret
+ENDF:	ld	hl,ERREOF
+	jp	ERROR
+
+ERREOF:	db	'Unexpected end of file',0
+
+; Write byte to listing file
+
+WRPRN:	push	hl
+	push	de
+	push	bc
+	ld	c,a
+	ld	a,(CNT.L)
+	ld	e,a
+	ld	d,0
+	ld	hl,BUF.L
+	add	hl,de
+	ld	(hl),c
+	inc	a
+	ld	(CNT.L),a
+	cp	80h
+	jr	nz,wr1
+	ld	de,BUF.L
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.L
+	ld	c,.WRITE
+	call	BDOS
+	or	a
+	jp	nz,ERRW
+	xor	a
+	ld	(CNT.L),a
+wr1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Write byte to output library file
+
+FPUTLB:	push	hl
+	push	de
+	push	bc
+	ld	c,a
+	ld	a,(CNT.O)
+	ld	e,a
+	ld	d,0
+	ld	hl,BUF.O
+	add	hl,de
+	ld	(hl),c
+	inc	a
+	ld	(CNT.O),a
+	cp	80h
+	jr	nz,wl1
+	ld	de,BUF.O
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.O
+	ld	c,.WRITE
+	call	BDOS
+	or	a
+	jr	nz,ERRW
+	xor	a
+	ld	(CNT.O),a
+wl1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+ERRW:	ld	hl,ERRWF
+	jp	ERROR
+
+ERRWF:	db	'Disk full',0
+
+; Close input file
+
+CLSE.I:	ld	a,(FLG.I)
+	or	a
+	ret	z
+	push	hl
+	push	de
+	push	bc
+	ld	de,FCB.I
+	ld	c,.CLOSE
+	call	BDOS
+	jr	cl21
+
+; Close output file
+
+CLSE.O:	ld	a,(FLG.O)
+	or	a
+	ret	z
+	push	hl
+	push	de
+	push	bc
+	ld	a,9Eh		; REL EOF
+	call	FPUTLB
+cl1:	ld	a,1Ah
+	call	FPUTLB
+	ld	a,(CNT.O)
+	or	a
+	jr	nz,cl1
+	ld	de,FCB.O
+	ld	c,.CLOSE
+	call	BDOS
+	inc	a
+	jr	z,CLERR
+	jr	cl21
+
+; Close listing file
+
+CLSE.L:	ld	a,(FLG.L)
+	cp	1
+	ret	nz
+	push	hl
+	push	de
+	push	bc
+cl2:	ld	a,1Ah
+	call	WRPRN
+	ld	a,(CNT.L)
+	or	a
+	jr	nz,cl2
+	ld	de,FCB.L
+	ld	c,.CLOSE
+	call	BDOS
+	inc	a
+	jr	z,CLERR
+cl21:	pop	bc
+	pop	de
+	pop	hl
+	ret
+CLERR:	ld	hl,ERRCF
+	jp	ERROR
+
+ERRCF:	db	'Error closing output file',0
+
+;-----------------------------------------------------------------------
+
+; Convert current date and time to string @DE.
+
+DAYS	equ	0		; offsets to variables on stack
+HRS	equ	2
+MIN	equ	3
+SEC	equ	4
+MONTH	equ	5
+DAY	equ	6
+YEAR	equ	7
+
+GETDT:	ld	ix,-9
+	add	ix,sp		; allocate 9-byte buffer
+	ld	sp,ix
+
+	push	de
+	ld	c,12
+	push	ix
+	call	BDOS		; get system version
+	pop	ix
+	dec	h
+	ld	c,155
+	jr	z,dt1		; branch if MP/M
+	ld	a,l
+	cp	30h
+	pop	de
+	jp	c,dt2		; skip if not CP/M 3
+	push	de
+	ld	c,105
+dt1:	push	ix
+	pop	de
+	push	de
+	call	BDOS
+	pop	ix
+	pop	de
+
+	ld	(ix+SEC),a	; seconds are returned in A
+	ld	l,(ix+DAYS)
+	ld	h,(ix+DAYS+1)
+	push	de
+	call	CVTDAT		; convert date
+	pop	de		; address to store date
+	ld	l,(ix+DAY)
+	ld	h,0
+	call	BINBCD		; convert days to BCD
+	ex	de,hl
+	ld	a,e
+	call	CVTBH		; store BCD pair
+	ld	a,(ix+MONTH)
+	add	a,a
+	add	a,a		; *4
+	ld	c,a
+	ld	b,0
+	ex	de,hl
+	ld	hl,MLIST
+	add	hl,bc
+	ld	bc,5
+	ldir
+	ld	l,(ix+YEAR)
+	ld	h,(ix+YEAR+1)
+	call	BINBCD		; convert year to BCD
+	ld	a,h
+	add	a,19h
+	daa			; add century
+	ld	h,a
+	ex	de,hl
+	ld	a,d
+	call	CVTBH		; store BCD pair
+	ld	a,e
+	call	CVTBH		; store BCD pair
+	ld	a,' '
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+
+	ld	a,(ix+HRS)
+	call	CVTBH		; store BCD pair
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+MIN)
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+SEC)
+	call	CVTBH
+	ex	de,hl
+dt2:	xor	a
+	ld	(de),a
+	ld	hl,9
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	ret
+
+; Convert BDOS date (num of days) to day-month-year
+; HL = number of days (1 = Jan 1, 1978)
+
+CVTDAT:	call	CYEAR
+	ld	(ix+YEAR),c
+	ld	(ix+YEAR+1),b
+
+	; year has been set, HL has remaining days
+
+	ld	e,0		; leap$bias
+	ld	a,c
+	and	3
+	jr	nz,cvd1		; year & 3 == 0 ?
+	ld	a,l
+	sub	59+1		; and remaining days > 59 ?
+	ld	a,h
+	sbc	a,0
+	jr	c,cvd1
+
+	; after feb 29 on leap year
+
+	inc	e		; then leap$bias = 1
+cvd1:	ld	c,e
+	call	CMONTH
+	ld	(ix+MONTH),e
+
+	; day = remaining_days - (month_days[month] + leap_bias);
+
+	push	hl
+	ld	hl,MDAYS
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = month_days[month]
+	ld	b,0
+	add	hl,bc		;    + leap_bias
+	ex	de,hl
+	pop	hl
+	or	a
+	sbc	hl,de		; day = remaining_days - HL
+	ld	(ix+DAY),l
+	ret
+
+; Compute year from number of days in HL, returns year in BC
+
+CYEAR:	ld	bc,78		; year = 78 (base year)
+cy1:	ld	de,365		; year length
+	ld	a,c
+	and	3		; leap year?
+	jr	nz,cy2
+	inc	de		; year length = 366
+cy2:	push	hl
+	dec	de
+	sbc	hl,de		; remaining days - year length (note CY was clear)
+	jr	c,cy3		; return if <= 0
+	pop	af
+	dec	hl
+	inc	bc		; ++year
+	jr	cy1
+cy3:	pop	hl
+	ret
+
+; Compute month from remaining days in HL, C = leap bias.
+; Returns month in DE, C = leap bias
+
+CMONTH:	push	hl
+	ld	de,11		; E = month, D = 0
+	ld	b,d		; B = 0
+cm1:	ld	a,e
+	cp	2		; jan or feb?
+	jr	nc,cm2
+	ld	c,b		; if yes, leap bias = 0
+cm2:	ld	hl,MDAYS
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = month$days[month]
+	add	hl,bc		;    + leap bias
+	ex	de,hl
+	ex	(sp),hl		; HL = rem days
+	ld	a,e
+	sub	l
+	ld	a,d
+	sbc	a,h
+	ex	(sp),hl
+	ex	de,hl
+	jr	c,cm3
+	dec	e
+	jr	cm1
+cm3:	pop	hl
+	ret
+
+MDAYS:	;	jan feb mar apr may jun jul aug sep oct nov dec
+	dw	  0, 31, 59, 90,120,151,181,212,243,273,304,334
+
+MLIST:	db	'-Jan-Feb-Mar-Apr-May-Jun-Jul-Aug-Sep-Oct-Nov-Dec-'
+
+;-----------------------------------------------------------------------
+
+; Convert binary number in HL to BCD number in AHL.
+
+BINBCD:	push	bc
+	push	de
+	ld	e,16+1
+	call	bd1
+	ld	c,a
+	ld	e,16+1
+	call	bd1
+	ld	h,a
+	ld	a,l
+	ld	l,c
+	pop	de
+	pop	bc
+	ret
+
+bd1:	xor	a
+bd2:	dec	e
+	ret	z
+	add	hl,hl
+	adc	a,a
+	daa
+	jr	nc,bd2
+	inc	hl
+	jr	bd2
+
+; Convert DE to hexadecimal string
+
+CVTWH:	push	af
+	ld	a,d
+	call	CVTBH
+	ld	a,e
+	call	CVTBH
+	pop	af
+	ret
+
+; Convert A to hexadecimal string
+
+CVTBH:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	CVTNH
+	pop	af
+CVTNH:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	ld	(hl),a
+	inc	hl
+	ret
+
+; Convert word value in DE to unsigned decimal string @HL, A = filler.
+
+CVTWD:	ld	(filler),a
+	push	de
+	push	bc
+	push	hl
+	ex	(sp),ix		; get ptr to dest string buffer in IX
+	ex	de,hl		; value now in HL
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	(ix),a
+	ex	(sp),ix		; restore IX, save ptr
+	pop	hl
+	inc	hl
+	inc	b
+	res	7,b
+	ld	a,b		; return length in A
+	pop	bc
+	pop	de
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	bit	7,b
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	set	7,b
+sb3:	ld	(ix),c
+	inc	ix
+	inc	b
+	ret
+
+; HL += A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+MODE:	ds	1		; command prompt mode
+LMODE:	ds	1		; listing mode
+
+LINE:	db	128,0		; 128 characters max
+LNBUF:	ds	128		; CP/M returns the command here
+LNPTR:	ds	2
+
+PFLG:	ds	1		; file name dot presence flag
+MODN:	ds	2		; pointer to module list
+
+FLG.I:	ds	1		; input file structure
+CNT.I:	ds	1
+FCB.I:	ds	35
+BUF.I:	ds	128
+
+FLG.O:	ds	1		; output file structure
+CNT.O:	ds	1
+FCB.O:	ds	35
+BUF.O:	ds	128
+
+FLG.L:	ds	1		; listing file structure
+CNT.L:	ds	1
+FCB.L:	ds	35
+BUF.L:	ds	128
+
+WRMODE:	ds	1
+WRFLAG:	ds	1		; write flag: 0 = no output, <>0 = output
+
+filler:	ds	1
+
+	end

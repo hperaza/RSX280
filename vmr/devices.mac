@@ -1,0 +1,513 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of VMR, an utility to configure the RSX180       ;
+;   system image. Copyright (C) 1985-2020, Hector Peraza.              ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;-----------------------------------------------------------------------;
+;                                                                       ;
+;   VMR - Device driver access routines.                                ;
+;                                                                       ;
+;-----------------------------------------------------------------------;
+
+	.Z80
+
+	include	DCB.INC
+	include	TCB.INC
+	include	ERRORS.INC
+	include	VMR.INC
+
+	public	INSDEV		; install resident device driver
+	public	ASSIGN		; assign logical name to physical device
+	public	DEASGN		; delete logical device assignment
+	public	CLASGN		; delete all assignments of a given type
+	public	FNDDEV		; find device in table, translates TI:
+	public	GETUCB		; return UCB of a unit
+	public	UCB2DN		; get device name from UCB
+
+	extrn	$PHYDV,$LOGDV,KALLOC,KFREE,ADDHLA
+
+	extrn	STHLDE,STHLBC,LDHLHL,LDDEHL,LDDEBC,LDABC,SGETM,SPUTM
+	extrn	SGETB,DCBBUF
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Install single device driver. Called with BC = start of driver descriptor
+; table, HL = ptr to prev $PHYDV entry.
+
+INSDEV:	push	hl
+	push	bc
+	ld	bc,DCBSZ
+	call	KALLOC		; allocate PCB
+	pop	bc
+	pop	de
+	ret	c
+	ex	de,hl
+	call	STHLDE		; set link on prev item
+	push	de		; push DCB address in system image
+	ld	ix,DCBBUF
+	xor	a
+	ld	(ix+D.LNK),a	; clear next link
+	ld	(ix+D.LNK+1),a
+	ld	(ix+D.ST),a
+	ld	(ix+D.TCNT),a
+	ld	(ix+D.TCNT+1),a
+	call	LDDEBC
+	ld	(ix+D.NAME),e	; store name
+	ld	(ix+D.NAME+1),d
+	call	LDABC
+	ld	(ix+D.UNITS),a	; and number of units
+	call	LDDEBC
+	ld	(ix+D.UCBL),e	; set pointer to UCB list
+	ld	(ix+D.UCBL+1),d
+	xor	a
+	ld	(ix+D.BANK),a
+	ld	(ix+D.START),c
+	ld	(ix+D.START+1),b
+	ld	(ix+D.END),a
+	ld	(ix+D.END+1),a
+	ld	(ix+D.EPT),c
+	ld	(ix+D.EPT+1),b
+
+	; store DCB in system image
+
+	ld	hl,DCBBUF
+	pop	de
+	push	de
+	ld	bc,DCBSZ
+	ld	a,0
+	call	SPUTM		; store DCB in system image
+
+	; initialize UCB list
+
+	pop	bc		; BC = DCB address
+	ld	hl,D.UCBL
+	add	hl,bc		; HL = ptr to UCB list
+ldv2:	call	LDDEHL		; get address of UCB into DE
+	ld	a,d
+	or	e		; end of list?
+	jr	z,ldv3
+	ld	hl,U.DCB
+	add	hl,de
+	call	STHLBC
+	ex	de,hl		; next UCB in list
+	jr	ldv2
+
+ldv3:	ld	l,c		; return DCB address in HL
+	ld	h,b
+	ret
+
+;-----------------------------------------------------------------------
+
+; Assign logical device name to physical. Any existing assignment gets
+; replaced. Returns error if the physical device does not exist.
+
+; The assignment table is kept sorted by type, then by name.
+
+; Input:
+;   HL-B = logical device name and unit
+;   DE-C = physical device name and unit
+;   A    = record type
+;   IX   = UCB of terminal
+; Returns:
+;   CY clear on success.
+
+ASSIGN:	ld	(RECTYP),a	; save record type
+
+	; make sure physical device exists, at the same time translate any
+	; logical name given as physical to real physical
+
+	push	hl
+	push	bc
+	call	FNDDEV		; find physical device, get UCB
+	ex	de,hl		;  into DE
+	pop	bc
+	pop	hl
+	ret	c		; return error if device not found
+
+	push	de		; save UCB of physical device
+	push	hl		; save logical device name
+	push	bc		;  and unit
+
+	; see if the logical device is already assigned
+
+	ex	de,hl
+	ld	c,b		; logical name now in DE-C
+	ld	a,(RECTYP)
+	ld	b,a
+	call	FNDLOG
+	jr	c,asn1		; not found
+
+	pop	bc		; discard logical device name
+	pop	de		;  and unit, physical unit in C
+	ld	a,N.UCB
+	call	ADDHLA
+	jr	asn3
+
+	; not found, append a new entry
+
+asn1:	ld	bc,LASZ
+	push	ix
+	push	iy
+	push	hl
+	call	KALLOC		; allocate entry
+	pop	de
+	pop	iy
+	jr	nc,asn2
+
+	; not enough memory
+
+	pop	ix
+	pop	bc
+	pop	hl
+	pop	de
+	ret			; CY set, error code already in A
+
+asn2:	ld	(iy),l		; set link on prev item
+	ld	(iy+1),h
+	ld	(hl),e		; link to next
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,(RECTYP)
+	ld	(hl),a		; store record type
+	inc	hl
+	pop	de
+	ld	(hl),e		; store UCB of terminal
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	pop	bc
+	pop	de		; pop logical name into DE-B
+	ld	(hl),e		; store name on entry
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),b
+	inc	hl
+asn3:	pop	de		; pop UCB address of physical device
+	ld	(hl),e		; store UCB
+	inc	hl
+	ld	(hl),d
+	xor	a		; return success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove (deassign) logical device (DE-C) name from table.
+
+; Input:
+;   DE-C = logical device name
+;   IX   = UCB address of terminal
+;   A    = record type
+
+DEASGN:	ld	b,a		; get record type into reg B
+	call	FNDLOG		; search logical device assignment table
+	ret	c		; no record found, return error
+
+	ld	a,(hl)		; else unlink it from list
+	ld	(iy),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+1),a
+	dec	hl
+	ld	de,LASZ
+	call	KFREE		; and release the block
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove all asignments of a given type.
+
+; Input:
+;   DE = UCB of terminal
+;   B  = record type
+
+CLASGN:	ld	ix,$LOGDV
+cln1:	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	a,h
+	or	l
+	ret	z		; done
+
+	push	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)
+	cp	b		; type matches?
+	jr	c,cln3		; skip if not
+	jr	nz,cln4		; done
+
+	cp	N.GBL		; global record?
+	jr	z,cln2		; skip UCB check if yes
+	inc	hl
+	ld	a,(hl)		; UCB of terminal matches?
+	cp	e
+	jr	nz,cln3		; skip if not
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	nz,cln3
+
+cln2:	pop	hl
+	ld	a,(hl)		; unlink the record from list
+	ld	(ix),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+1),a
+	dec	hl
+	push	ix
+	push	de
+	push	bc
+	ld	de,LASZ
+	call	KFREE		; and free the allocated memory
+	pop	bc
+	pop	de
+cln3:	pop	ix
+	jr	cln1
+
+cln4:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Given a device name and unit, return its UCB address.
+; - First, search in user logical-to-physical assignment table (Local
+;   and Login records - in that order).
+; - If not found, search in system logical-to-physical assignment table
+;   (Global records).
+; - If not found, search in physical device table.
+
+; Input:
+;   DE-C = device name and unit
+;   IX   = UCB of terminal for Local and Login record types
+; Returns:
+;   HL = UCB address.
+;   CY set on error, with HL=0 and error code in A.
+
+FNDDEV:	; search in logical-to-physical assignment table
+
+;;	ld	b,-1
+;;	call	FNDLOG
+;;	jr	nc,fnd4
+
+	; not found in logical table, try physical device table
+
+	ld	hl,($PHYDV)
+fnd2:	call	LDHLHL
+	ld	a,h
+	or	l
+	ld	a,E.NODEV
+	scf
+	ret	z		; device not found
+	push	hl		; remember DCB address
+	push	de
+	push	bc
+	ld	de,DCBBUF
+	ld	bc,DCBSZ
+	ld	a,0
+	call	SGETM		; load DCB into local memory
+	pop	bc
+	pop	de
+	ld	hl,DCBBUF
+	inc	hl		; skip link field
+	inc	hl
+	inc	hl		; skip status
+	inc	hl		; skip timeout counter
+	inc	hl
+	ld	a,(hl)		; compare name
+	cp	e
+	jr	nz,fnd3
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	nz,fnd3
+	inc	hl
+	ld	a,c
+	cp	(hl)		; compare unit number against number of units
+	jr	nc,fnd3		; jump if not valid
+
+	; found, get and return UCB address
+
+	pop	hl		; restore saved DCB address
+	push	bc
+	call	GETUCB		; get UCB address
+	pop	bc
+	ret
+
+fnd3:	pop	hl
+	jr	fnd2		; loop to try next in list
+
+fnd4:	ex	de,hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Search logical-to-physical assignment table.
+
+; Input:
+;   DE-C = device name and unit
+;   B    = record type (-1 = any)
+;   IX   = UCB of terminal for Local and Login record types
+
+; If record found, returns:
+;   DE = UCB of physical device
+;   HL = record address
+;   IY = address of prev record
+; If not found, returns CY set and:
+;   DE-C = device name and unit
+;   HL = address of next record for insert operation
+;   IY = address of prev record for insert operation
+
+FNDLOG:	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	iy,$LOGDV
+next:	ld	l,(iy)
+	ld	h,(iy+1)
+	ld	a,h
+	or	l
+	jr	z,nfnd1		; not found, return error
+
+	push	hl
+	inc	hl		; skip link field
+	inc	hl
+	ld	a,(hl)		; get record type
+	inc	b
+	dec	b		; searching for any record type?
+	jp	m,f1		; skip test if yes
+	cp	b		; else compare record types
+	jr	c,skip		; skip if lower
+	jr	nz,nfnd		; return if higher (no match found)
+
+f1:	inc	hl
+	inc	hl
+	cp	N.GBL		; global record?
+	jr	z,f2		; branch if yes
+
+	dec	hl
+	ld	a,(hl)		; else match UCB of terminal
+	cp	(ix+0)
+	jr	nz,skip
+	inc	hl
+	ld	a,(hl)
+	cp	(ix+1)
+	jr	nz,skip
+
+f2:	inc	hl
+	ld	a,(hl)		; compare logical device name and unit
+	cp	e
+	jr	c,skip
+	jr	nz,nfnd
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	c,skip
+	jr	nz,nfnd
+	inc	hl
+	ld	a,(hl)
+	cp	c
+	jr	c,skip
+	jr	nz,nfnd
+
+	; match found
+
+	inc	hl
+	ld	e,(hl)		; get UCB of physical device into DE
+	inc	hl
+	ld	d,(hl)
+	pop	hl		; restore start of record
+	pop	ix
+	xor	a		; return success
+	ret
+
+skip:	pop	iy
+	jr	next
+
+nfnd:	inc	b
+	dec	b
+	jp	p,nfnd2
+	pop	iy
+	ld	a,(iy+N.TYPE)
+	cp	N.GBL
+	jr	nz,next
+	push	iy
+nfnd2:	pop	hl
+nfnd1:	pop	ix
+	ld	a,E.NODEV
+	scf
+	ret			; no record found, return error
+
+;-----------------------------------------------------------------------
+
+; Get UCB address for the specified unit number.
+
+; Input:
+;   HL = DCB address
+;   C  = unit number
+; Returns:
+;   HL = UCB address
+;   CY set and HL=0 if no such unit
+
+GETUCB:	push	de
+	ld	de,D.UCBL	; offset to UCB list head
+	add	hl,de		; HL now points to UCB list head
+	pop	de
+	ld	b,c		; get unit number into B
+	inc	b
+gtucb:	call	LDHLHL		; get pointer to next UCB into HL
+	ld	a,h
+	or	l		; end of list?
+	ld	a,E.NODEV	; TODO: E.NODU - invalid unit number
+	scf
+	ret	z		; return error if yes
+	djnz	gtucb		; else continue traversing list
+	xor	a		; success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Given a UCB address in DE, return the device name and unit in DE-C.
+
+UCB2DN:	push	hl
+	ld	hl,U.UNIT
+	add	hl,de
+	push	de
+	ld	de,0
+	call	SGETB		; get unit number
+	ld	c,a
+	pop	de
+	ld	hl,U.DCB
+	add	hl,de
+	call	LDHLHL
+	ld	de,D.NAME
+	add	hl,de
+	call	LDDEHL		; get device name
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+RECTYP:	ds	1		; record type for ASSIGN function
+
+	END

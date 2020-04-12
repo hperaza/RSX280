@@ -1,0 +1,130 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	extrn	GCCL,CRLF,PUTSTR,EXIT,PERROR,UCASE
+
+;-----------------------------------------------------------------------
+
+; Program to test the send-receive task communication mechanism.
+
+	cseg
+
+SEND::	ld	sp,stack
+	call	GCCL		; get MCR command line
+	jr	c,usage
+	call	skpnam		; skip our task name
+	jr	z,usage
+	ld	de,tsknam
+	call	getnam		; get task name
+	call	skipsp		; point to begin of text message
+	jr	z,usage
+
+	push	hl		; push src string
+	call	strlen
+	ld	e,c		; DE = message size
+	ld	d,b
+	pop	hl		; HL = message addr
+	ld	bc,tsknam
+	SC	.SEND		; send message
+	jr	c,error		; jump if error
+	ld	hl,EX.SUC	; else exit normally
+	SC	.EXIT
+
+error:	push	af
+	call	CRLF
+	pop	af
+	call	PERROR		; display standard error message
+	call	CRLF
+	ld	hl,EX.ERR
+	jp	EXIT
+
+usage:	ld	hl,umsg
+	call	PUTSTR
+	ld	hl,EX.WRN
+	jp	EXIT
+
+umsg:	db	CR,LF,'Usage: SENDTEST taskname message',CR,LF,0
+
+; return Z if char in A is blank
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; skip blanks
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; skip name
+
+skpnam:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	jr	z,skipsp	; return via skipsp
+	inc	hl
+	jr	skpnam
+
+; compute string length
+
+strlen:	ld	bc,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	bc
+	jr	strl1
+
+; read task name
+
+getnam:	call	skipsp		; skip spaces
+	ld	b,6		; task name is 6 chars long
+gn1:	ld	a,(hl)		; get char
+	call	UCASE		; convert it to uppercase
+	or	a		; end of string?
+	jr	z,gn2		; exit loop if yes
+	cp	' '		; end of name?
+	jr	z,gn2		; exit loop if yes
+	ld	(de),a		; else store char
+	inc	hl		; advance pointers
+	inc	de
+	djnz	gn1		; loop for more
+gn2:	inc	b
+	dec	b		; all chars stored?
+	jr	z,gn4		; jump if yes
+	ld	a,' '
+gn3:	ld	(de),a		; else pad with spaces
+	inc	de
+	djnz	gn3
+	ret
+gn4:	ld	a,(hl)		; skip any extra chars in src string
+	or	a
+	ret	z
+	cp	' '
+	ret	z
+	inc	hl
+	jr	gn4
+
+	dseg
+
+tsknam:	ds	6		; buffer for task name
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	SEND

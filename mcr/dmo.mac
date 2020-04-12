@@ -1,0 +1,502 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command DISMOUNT for RSX280.                          ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	'02.04'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNDSM	equ	2
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,HLDEC,TTFLSH,GCML,RCML
+	extrn	UCASE,CVTWD
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	DISMNT		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m4		; exit normally if yes
+
+	call	CMLERR		; else display error
+m3:	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m4:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'DMO -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'DMO -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Copy string @DE to @HL.
+
+STRCPY:	ld	a,(de)
+	ld	(hl),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Convert device name in DE-C to string @HL
+
+CVTDEV:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	e,c
+	ld	d,0
+	xor	a
+	call	CVTWD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),0
+	ret
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+GETCMD:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	GETNS
+	call	GETNAM
+	ld	(lnptr),de
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+GETNAM:	call	GETFS
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+gn2:	call	GETFS
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+ISBLNK:	call	ISEOL
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+ISEOL:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+GETNS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+FNDCMD:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+DISMNT:	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	ld	hl,baddev
+	jp	c,ERROR		; on error, exit
+
+	ld	(dev),de	; save device name
+	ld	a,c
+	ld	(dev+2),a	; and unit
+
+	xor	a
+	ld	(optdev),a
+
+chkopt:	ld	de,(lnptr)	; check remainder of command line
+	call	GETNS		; skip any spaces
+	call	ISEOL		; end of command?
+	jp	z,DMO		; jump if yes
+	cp	'/'		; option switch?
+	jp	nz,CMDERR	; error if not
+	inc	de		; skip switch char
+	ld	(lnptr),de
+	call	GETCMD		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; error if yes
+	ld	hl,swtbl
+	call	FNDCMD		; search switch in table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,cmderr
+	dec	a
+	jp	z,dmev		; dismount everyone
+	jp	CMDERR
+
+dmev:	ld	a,1
+	ld	(optdev),a
+	jr	chkopt
+
+swtbl:	db	'DEV',0
+	db	0
+
+DMO:	ld	de,(dev)	; get device name
+	ld	a,(dev+2)	;  and unit
+	ld	c,a
+
+	ld	b,LUNDSM
+	SC	.ALUN		; assign LUN to device
+	jp	c,SYSERR
+
+	ld	c,1
+	SC	.SUPER		; map kernel databse
+	jp	c,dmo6
+
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB address
+	jp	c,dmo6
+	KCALL	$REDIR		; follow any redirect links
+	ld	(ucbadr),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.DIR,(hl)	; directory device?
+	ld	a,E.BADOP
+	scf
+	jp	z,dmo6		; error if not
+
+	; see if a checkpoint file is active on device
+
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+
+	ld	hl,$CPLST	; get head of checkpoint PCB list
+dmo1:	ldw	hl,(hl)
+	ld	a,h
+	or	l		; end of list?
+	jr	z,dmo2		; exit loop if yes
+
+	push	hl
+	ldw	hl,(hl+P.UCB)
+	cpw	hl,(ucbadr)	; same device?
+	pop	hl
+	jr	nz,dmo1		; loop if not
+
+	ld	hl,cmdbuf
+	ld	de,cfact	; checkpoint file still active on device
+	call	STRCPY
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	call	CVTDEV		; store device name
+	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	hl,cmdbuf
+	call	ERROR		; output error
+	xor	a
+	jp	dmo6		; and exit
+	
+dmo2:	; check for installed tasks from device
+
+	ld	ix,(ucbadr)
+	ld	a,(ix+U.ACP)
+	or	(ix+U.ACP+1)
+	jr	z,dmo4
+
+	ld	a,(optdev)
+	or	a
+	jr	nz,dmo4
+
+	ld	hl,$TLIST	; get head of task list
+dmo3:	ldw	hl,(hl)
+	ld	a,h
+	or	l		; end of list?
+	jr	z,dmo4		; exit loop if yes
+
+	push	hl
+	ldw	hl,(hl+T.LDEV)	; get UCB address of task load device
+	cpw	hl,(ucbadr)	; same device?
+	pop	hl
+	ld	de,T.TCBL
+	add	hl,de
+	jr	nz,dmo3		; loop to process next TCB if not
+
+	ld	hl,cmdbuf
+	ld	de,twarn	; warning - tasks installed from device
+	call	STRCPY
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	call	CVTDEV		; store device name
+	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	hl,cmdbuf
+	call	ERROR		; output warning and continue
+
+dmo4:	; now dismount the volume
+
+	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+
+	ld	hl,qio1		; unregister unit from file processor
+	SC	.QIO		;  (also clears the U.ACP pointer)
+	jp	c,dmo6
+
+	ld	a,(iosb)
+	or	a		; check result from QIO above
+	jr	z,dmo6
+	cp	E.DMOI		; error is 'dismount initiated'?
+	scf
+	jr	nz,dmo6		; branch if not
+	ld	hl,dmoini
+
+	ld	hl,cmdbuf
+	ld	de,dmoini	; files still open on device...
+	call	STRCPY
+	push	de
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	call	CVTDEV		; store device name
+	pop	de
+	inc	de
+	call	STRCPY		; ...dismount initiated
+	ld	hl,cmdbuf
+	call	ERROR		; display message
+	xor	a
+
+dmo6:	push	af
+	ld	c,0
+	SC	.SUPER		; unmap kernel database
+	pop	af
+	jp	c,SYSERR
+	ret
+
+baddev:	db	'Invalid device specification',0
+cfact:	db	'Checkpoint file still active on ',0
+twarn:	db	'Warning - Tasks installed from ',0
+dmoini:	db	'Warning - Files still open on ',0,' - Dismount initiated',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	cmdbuf,80,'DMO',LUNCML,2
+
+cmdbuf:	ds	82
+lnptr:	ds	2
+cmdnam:	ds	9
+dev:	ds	3
+ucbadr:	ds	2
+optdev:	ds	1
+
+qio1:	QIOW$	IO.DSM,LUNDSM,9,iosb
+iosb:	ds	4
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

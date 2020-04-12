@@ -1,0 +1,283 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of VMR, an utility to configure the RSX180       ;
+;   system image. Copyright (C) 1985-2020, Hector Peraza.              ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   VMR - Pool management routines                                     ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+	include	ERRORS.INC
+	include	VMR.INC
+
+	public	KMINIT		; initialize pool
+	public	KALLOC		; alloc kernel memory block
+	public	KFREE		; free kernel memory block
+	public	KSIZE		; compute amount of free kernel memory
+
+	extrn	SGETB,SPUTB
+	extrn	LDHLIX,LDBCIX,LDEIX2,LDDEHL,LDDEBC,LDBCHL
+	extrn	STHLDE,STHLBC,STIXHL,SIXHL2,STIXBC
+
+	extrn	$POOL,$POLSZ
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Initialize the unallocated space. Free blocks are kept in a
+; single-linked list with a two-word header: the first one is the
+; link field, the second is the block size. The head of the list
+; is kept in the variable $POOL.
+
+; Assumes $POOL and $POLSZ have been setup by the startup routine
+; with 4-byte granularity.
+
+KMINIT:	ld	hl,($POOL)
+	call	LDDEHL
+	ex	de,hl
+	ld	de,0
+	call	STHLDE		; clear next pointer
+	push	hl
+	ld	hl,($POLSZ)
+	call	LDDEHL
+	pop	hl
+	call	STHLDE		; set size field
+	ret
+
+;-----------------------------------------------------------------------
+
+; Allocate the specified number of bytes using a first-fit algorithm.
+
+; Input:
+;   BC = size in bytes of block to allocate
+; Returns:
+;   HL = start address of the allocated block
+;   CY set on error (not enough memory)
+
+; Notes:
+; - Call with interrupts disabled!
+
+; TODO:
+; - use a best-fit algorithm
+
+KALLOC:	inc	bc
+	inc	bc
+	inc	bc
+	ld	a,c
+	and	0FCh		; ensure 4-byte granularity
+	ld	c,a
+	or	b
+	ld	a,E.BADOP
+	scf
+	ret	z		; nothing to allocate
+	ld	ix,($POOL)	; IX = list head
+ka1:	call	LDHLIX		; get link field into HL
+	ld	a,h
+	or	l		; no (more) free blocks?
+	ld	a,E.NOMEM
+	scf
+	ret	z		; then return with error
+	push	hl		; push address of current block
+	push	hl		;  twice
+	call	LDDEHL		; get link to next block into DE
+	push	de		; push address of next block
+	call	LDDEHL		; get free block size into DE
+	call	cpdebc		; compare with requested size
+	jr	nc,ka2		; jump if fits
+	pop	de		;  discard
+	pop	hl		;  discard
+	pop	ix
+	jr	ka1		; else search for another block
+
+ka2:	; Here with:
+	;   IX = addr of prev block
+	;   DE = free block size
+	;   BC = requested size
+	;   (SP) = addr of next block
+	;   (SP+2) = addr of current (just allocated) block
+	;   (SP+4) = addr of current (just allocated) block
+
+	jr	z,ka3
+
+	; if non zero, create a list entry just after this block
+	;  and update the prev pointer to this.
+
+	pop	hl
+	ex	(sp),hl		; get addr of current block into HL
+	add	hl,bc		; point past end of allocated region
+	call	STIXHL		; update prev ptr to the start of this one
+	ex	de,hl		; get free block size into HL
+	or	a
+	sbc	hl,bc		; subtract requested size
+	ld	c,l		;  and we have the new free segment size
+	ld	b,h
+	ex	de,hl		; restore old HL
+	pop	de		; pop addr of next block
+	call	STHLDE		; set next pointer
+	call	STHLBC		; set size of new segment
+	pop	hl		; pop current block address and return it
+	xor	a
+	ret
+
+ka3:	; if zero (exact fit) simply update prev pointer
+
+	pop	hl		; pop address of next block
+	call	STIXHL		; update prev ptr to the start of next
+	pop	hl		; discard
+	pop	hl		; pop current block address and return it
+	xor	a
+	ret
+
+; Compare DE and BC. Returns CY set if BC > DE.
+
+cpdebc:	ld	a,d
+	cp	b
+	ret	nz
+	ld	a,e
+	cp	c
+	ret
+
+;-----------------------------------------------------------------------
+
+; Free memory block.
+
+; Input:
+;   HL = address of block to free
+;   DE = size of the block in bytes
+
+; Notes:
+; - Call with interrupts disabled!
+
+; TODO: validate address to ensure is in range?
+
+KFREE:	push	hl
+	ld	hl,3
+	add	hl,de
+	ld	d,h
+	ld	a,l
+	and	0FCh		; ensure 4-byte granularity
+	ld	e,a
+	or	d
+	pop	hl
+	ret	z
+
+	ex	de,hl
+	push	hl
+	ld	h,0
+
+	ld	ix,($POOL)
+kf1:	call	LDBCIX		; fetch next field
+	ld	a,b
+	or	c
+	jr	z,kf2		; if end of list reached, simply add the block
+	call	cpdebc		; compare next addr with block addr
+	jr	c,kf2		; jump if next addr > block addr, insert here
+	push	bc
+	pop	ix
+	ld	h,1
+	jr	kf1		; else keep searching
+
+kf2:	ex	(sp),hl
+	ex	de,hl
+
+	; here with IX = prev, HL = this, DE = size, BC = next
+
+	call	STIXHL		; set prev ptr
+	call	STHLBC		; set next ptr
+	call	STHLDE		; set size field
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+
+	; attempt to merge with previous
+
+	pop	af
+	push	hl		; this
+	or	a
+	jr	z,kf3
+
+	push	bc		; next
+	push	de		; size
+	push	hl		; this
+
+	call	LDEIX2		; get size of prev block
+	push	ix
+	pop	hl
+	add	hl,de		; prev + size
+	ex	de,hl		; HL = size, DE = prev + prevsize
+	pop	bc		; this
+	call	cpdebc
+	pop	de		; size
+	pop	bc		; next
+	jr	nz,kf3
+
+	add	hl,de		; size + prevsize
+	call	STIXBC		; restore link to next
+	call	SIXHL2		; set new size
+	ex	(sp),ix		; discard old this, push new this (prev)
+	ex	de,hl		; DE = size
+
+kf3:	; attempt to merge with next
+
+	pop	hl		; new this
+	push	hl
+	add	hl,de		; this + size
+	ex	de,hl
+	call	cpdebc		; this + size == next?
+	pop	ix
+	ret	nz		; return if not
+	call	LDDEBC
+	ex	de,hl
+	call	STIXHL		; set next ptr
+	ex	de,hl
+	call	LDDEBC
+	add	hl,de
+	call	SIXHL2		; set new size
+	ret			; job done (full merge)
+
+;-----------------------------------------------------------------------
+
+; Calculate the amount of free kernel memory. Return the value in BC.
+
+KSIZE:	ld	hl,($POOL)
+	ld	bc,0
+ks1:	ld	a,h
+	or	l		; no (more) free blocks?
+	ret	z		; then return
+	ld	e,(hl)		; get link to next block into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,(hl)		; get free block size into BC
+	add	a,c
+	ld	c,a
+	inc	hl
+	ld	a,(hl)
+	adc	a,b		; add to the acummulated size in BC
+	ld	b,a
+	ex	de,hl
+	jr	ks1		; process next block
+
+	end

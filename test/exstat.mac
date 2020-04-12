@@ -1,0 +1,70 @@
+	.Z80
+
+	include	SYSFN.INC
+
+;-----------------------------------------------------------------------
+
+; Set exit status to the value indicated on the command line.
+
+	cseg
+
+EXSTAT::
+	ld	sp,stack
+	call	GCCL##		; get command line
+	call	skpw		; skip command name
+	call	skpbl		; point to begin of next word
+	call	getdec		; convert value to binary in HL
+	SC	.EXIT		; exit with status = HL
+
+skpw:	ld	a,(hl)		; get char from string
+	or	a		; end of line?
+	ret	z		; return if yes
+	cp	' '+1		; blank? (space or anything below)
+	ret	c		; return if yes
+	inc	hl		; else advance pointer
+	jr	skpw		; and loop
+
+skpbl:	ld	a,(hl)		; get char from string
+	or	a		; end of line?
+	ret	z		; return if yes
+	cp	' '+1		; blank? (space or anything below)
+	ret	nc		; return if not
+	inc	hl		; else advance pointer
+	jr	skpbl		; and loop
+
+getdec:	ex	de,hl
+	ld	hl,0
+newdig:	ld	a,(de)
+	or	a
+	ret	z
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	c
+	call	adddig
+	inc	de
+	jr	nc,newdig
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+	dseg
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	EXSTAT

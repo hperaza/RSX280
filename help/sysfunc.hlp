@@ -1,0 +1,391 @@
+
+                            System function calls
+                            ---------------------
+
+	ABORT	ALTPR	ALUN	ASTCT	ASTDF	ASTX	CLRFL	CMKT
+	CONN	EMTST	EXIT	EXTSK	FNDEV	GDAT	GIN	GTCD
+	GTCMD	GTLUN	GTSK	MINFO	MRKT	QIO	RDFLG	RECV
+	RESUM	RPOI	RQST	RUN	SDAT	SEND	SETFL	SINFO
+	STOP	SUPER	WTDAT	WTFLG
+
+For help on specific functions type HELP SYSFUNC function_name.
+
+\EXIT
+
+.EXIT	Exit task
+
+	  Input:
+	    HL = status
+
+\EMTST
+
+.EMTST	Emit status and break connections
+
+	  Input:
+	    HL = status
+          Returns:
+            Always succeeds.
+
+\CONN
+
+.CONN	Connect to task
+
+	  Input:
+	    HL = offspring task name
+	    E  = flag number to set when offspring task emits status
+	    BC = address of Exit Status Block (ESB)
+          Returns:
+            CY set on error and error code in A:
+	      E.TNF, E.NOMEM
+
+\GTCMD
+
+.GTCMD	Get command line
+
+	  Input:
+            HL = address of buffer to store command line
+            E  = size of buffer (max 255 bytes)
+          Returns:
+            Success code (always) in A
+            Command line length stored in first word of buffer (zero
+            if no command line passed, or if it was already read)
+            followed by chars.
+
+\SEND
+
+.SEND	Send data to task
+
+	  Input:
+	    HL = address of data block to send to task
+	    DE = length of data block
+	    BC = task name
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF, E.NOMEM
+
+\RECV
+
+.RECV	Receive data
+
+	  Input:
+	    HL = address of buffer to receive data
+	    DE = size of buffer
+	  Returns:
+	    CY set on error and error code in A:
+	      E.BADOP, E.QEMP
+          Notes:
+	  - Does not block if no data is available
+
+\WTDAT
+
+.WTDAT	Wait for data
+
+	  Input:
+	    None.
+	  Notes:
+          - Blocks until data arrives
+
+\ASTDF
+
+.ASTDF	Declare AST service routine
+
+	  Input:
+	    BC = address of routine to call or zero to disable all ASTs.
+	    DE = address of parameter block
+	  Returns:
+	    Always succeeds.
+
+\ASTCT
+
+.ASTCT	AST control (enable/disable AST types)
+
+	  Input:
+	    E = AST type mask
+	    D = 0 to disable, <> 0 to enable specified type of AST
+	  Returns:
+	    Always succeeds.
+
+\ASTX
+
+.ASTX	Exit AST service routine
+
+	  Input:
+	    None.
+	  Returns:
+	    None.
+
+\ALUN
+
+.ALUN	Assign device to LUN
+
+	  Input:
+	    DE = device name
+	    C  = unit number
+	    B  = LUN
+	  Returns:
+	    CY set on error and error code in A:
+	      E.BADOP, E.NODEV
+
+\GTLUN
+
+.GTLUN	Get LUN information
+
+	  Input:
+	    HL = result buffer address (6 bytes)
+	    C  = LUN
+	  Returns:
+	    CY set on error and error code in A:
+	      E.INV
+
+\GDIR
+
+.GDIR	Get current dir name
+
+	  Input:
+	    HL = result buffer address (9 bytes)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.SSNF
+
+\GDAT
+
+.GDAT	Get date and time
+
+	  Input:
+	    HL = result buffer address (7 bytes)
+	  Returns:
+	    Always succeeds.
+	  Notes:
+	  - Date/time format is YYYY MM DD hh mm ss
+
+\SDAT
+
+.SDAT	Set date and time
+
+	  Input:
+	    HL = address of date/time block (8 bytes)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.PRIV, E.BADOP
+	  Notes:
+	  - Date/time format is YYYY MM DD hh mm ss dow (all in BCD)
+
+\RUN
+
+.RUN	Run task at the specified time
+
+	  Input:
+	    HL = address of task descriptor
+	  Returns:
+	    HL = TCB address of new task
+	    CY set on error and error code in A:
+	      E.TNF, E.TRUN, E.NOMEM
+	  Notes:
+	  - This function is only used during startup
+
+\RQST
+
+.RQST	Request (and optionally connect to) task
+
+	  Input:
+	    HL = address of task descriptor
+	    E  = flag number to set when offspring task emits status,
+                 ignored if BC is zero.
+	    BC = address of Exit Status Block (ESB) for request and connect,
+                 zero for request only
+	  Returns:
+	    HL = TCB address of task
+	    CY set on error and error code in A:
+	      E.TNF, E.TRUN, E.NOMEM, E.PBIG
+	  Notes:
+	  - Values used from TDB are:
+	    * task name to request
+	    * console device
+	    * session ID, user and group
+	    * address of command line block
+	    * data to send, if any
+
+\RPOI
+
+.RPOI	Request and pass offspring information
+
+	  Input:
+	    HL = address of task descriptor
+	  Returns:
+	    HL = TCB address of task
+	    CY set on error and error code in A:
+	      E.TNF, E.TRUN, E.NOMEM, E.PBIG
+	  Notes:
+	  - Values used from TDB are:
+	    * task name to request
+	    * console device
+	    * session ID, user and group
+	    * address of command line block
+	    * data to send, if any
+
+\ABORT
+
+.ABORT	Abort (kill) a task
+
+	  Input:
+	    HL = task name (null for the current task)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF
+
+\STOP
+
+.STOP	Stop task
+
+	  Input:
+	    HL = task name (null for the current task)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF, E.TSTP
+
+\RESUM
+
+.RESUM	Resume task
+
+	  Input:
+	    HL = task name (null for the current task)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF, E.TRUN
+          Notes:
+          - The current task can resume its own execution by e.g. AST.
+
+\CLRFL
+
+.CLRFL	Clear event flag
+
+	  Input:
+	    E  = flag number
+	  Returns:
+	    CY set on error and error code in A:
+	      E.BADFL
+
+\SETFL
+
+.SETFL	Set event flag
+
+	  Input:
+	    E  = flag number
+	  Returns:
+	    CY set on error and error code in A:
+	      E.BADFL
+	  Notes:
+	  - Wakes up the task if it was waiting on this flag
+
+\RDFLG
+
+.RDFLG	Check event flag state
+
+	  Input:
+	    E = flag number
+	  Returns:
+	    A = 0 if flag clear, <>0 if set.
+	    CY set on error and error code in A:
+	      E.BADFL
+
+\WTFLG
+
+.WTFLG	Wait for event flag
+
+	  Input:
+	    E = flag number
+	  Returns:
+	    CY set on error and error code in A:
+	      E.BADFL
+
+\MRKT
+
+.MRKT	Mark Time request
+
+	  Input:
+	    HLDE = tick count
+	    C = flag number
+	  Returns:
+	    CY set on error and error code in A:
+	      E.NOMEM
+
+\CMKT
+
+.CMKT	Clear Mark Time requests
+
+\EXTSK
+
+.EXTSK	Extend task size
+
+	  Input:
+	    HL = increment value in bytes (positive or negative),
+	         zero to reset task size to its installed value.
+          Returns:
+	    CY set on error and error code in A:
+              E.NOMEM, E.INV
+
+\ALTPR
+
+.ALTPR	Change task priority
+
+	  Input:
+	    HL = task name
+	    E  = new priority, zero to reset it to default value
+	    D  = which priority to set: 0 = running, 1 = installed
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF, E.PRIV
+	  Notes:
+	  - non-privileged tasks may only lower their own priority, or to
+	    increase it up to the installed value
+	  - privileged tasks can change not only their own priority, but
+	    the priority of any installed task as well
+	  - a priority value of zero resets the priority to the installed
+	    value (only the idle task is allowed to have a priority = 0)
+
+\SUPER
+
+.SUPER	Enter/leave supervisor mode
+
+	  Input:
+	    C <> 0 to enter supervisor mode, 0 to leave
+	  Returns:
+	    CY set on error and error code in A:
+	      E.PRIV
+	  Notes:
+	  - supervisor mode changes the mapping of the task so it can
+	    access kernel data tables: privileged task size, including
+	    stack should be below 16K (0000-3FFF)
+
+\GTSK
+
+.GTSK	Get task info
+
+	  Input:
+	    HL = task name (null means the current task)
+	    DE = address of buffer to receive task info (TCB)
+	  Returns:
+	    CY set on error and error code in A:
+	      E.TNF 
+
+\GIN
+
+.GIN	General info
+
+	  I.VERS get system version
+	  I.SMEM get system memory info
+	  I.USCB get user's SCB
+	  I.TSCB get SCB of terminal device
+	  I.HOST get host name
+
+\QIO
+
+.QIO	Queue I/O packet
+
+	  Input:
+	    HL = address of QIO block
+	  Returns:
+	    CY set on error and error code in A:
+	      E.NOMEM, E.BADOP, E.TNF (e.g SYSFCP not found), E.PERM,
+              and any driver-specific error code.
+

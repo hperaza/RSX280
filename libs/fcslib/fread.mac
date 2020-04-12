@@ -1,0 +1,185 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+	public	FREAD
+
+	extrn	CPHLDE,FRDBLK,?FINCB,?FDECB
+
+;-----------------------------------------------------------------------
+
+; Read the specified number of bytes from a file.
+
+; Input:
+;   IX = address of file storage region
+;   DE = buffer address in user space
+;   BC = number of bytes to read
+; Returns:
+;   BC = actual number of bytes read
+;   CY set on error and error code in A.
+
+FREAD:	ld	a,b
+	or	c		; check length
+	ret	z		; return if nothing to read
+
+	bit	FS.BV,(ix+FC.MODE)
+	jr	nz,frd0
+	push	de
+	call	FRDBLK		; read first block if necessary
+	pop	de
+	jr	nc,frd0
+	ld	bc,0
+	ret
+
+frd0:	ld	hl,0		; HL = total number of bytes read (nread)
+
+frd1:	; read loop
+
+	push	hl		; save nread
+	push	de		; save dest address
+
+	ld	l,(ix+FC.CNT)	; get number of bytes in this buffer
+	ld	h,(ix+FC.CNT+1)
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE = remaining bytes in buffer
+	jr	c,frd4
+	jr	z,frd4		; jump if no data left in buffer
+	ld	l,c
+	ld	h,b
+	call	CPHLDE		; len > remaining bytes?
+	jr	c,frd3		; jump if yes
+
+	; all the necessary data is in the current buffer
+
+	ld	a,b
+	or	c		; remaining len == 0?
+	jp	z,frd5		; return if yes (we're already done)
+
+	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	add	hl,de		; HL = src
+	pop	de		; DE = dst
+	push	bc		; save len
+	ldir			; copy data to user buffer
+	ld	l,(ix+FC.CUR)
+	ld	h,(ix+FC.CUR+1)
+	pop	bc
+	add	hl,bc		; FC.CUR += len
+	ld	(ix+FC.CUR),l
+	ld	(ix+FC.CUR+1),h
+	pop	hl
+	add	hl,bc		; nread += len
+	ld	c,l		; return nread in BC
+	ld	b,h
+	ld	a,E.OK
+	or	a
+	ret
+
+frd3:	; read operation crosses block boundary
+
+	; copy the data remaining on this block to the user buffer
+
+	push	bc		; save len
+
+	ld	c,e		; BC = rem bytes
+	ld	b,d
+
+	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	add	hl,de		; HL = src
+
+	ex	de,hl		; save src in DE
+	pop	hl		; pop len
+	ex	(sp),hl		; push len, pop dst
+	ex	de,hl		; dst in DE, src in HL
+
+	push	bc		; save rem bytes
+	push	de		; save dst
+	ldir			; copy data to user buffer
+	pop	hl		; pop dst
+	pop	bc		; pop rem bytes
+	add	hl,bc		; advance dst pointer
+	ex	de,hl		;  DE += rem bytes
+
+	pop	hl		; HL = len
+	or	a
+	sbc	hl,bc		; len -= nbytes -> HL
+	ex	(sp),hl		; push len, pop nread
+	add	hl,bc		; nread += nbytes -> HL
+	pop	bc		; pop len into BC
+
+	push	hl		; push nread
+	push	de		; push dst
+
+frd4:	; time to read next block
+
+	call	?FINCB
+	res	FS.BV,(ix+FC.MODE)
+
+	call	FRDBLK		; read next data block
+	jr	nc,frd6
+	
+	; on error, leave file pointer set to last byte
+
+	call	?FDECB		; backup to previous block
+
+	ld	l,(ix+FC.CNT)
+	ld	h,(ix+FC.CNT+1)
+	ld	(ix+FC.CUR),l
+	ld	(ix+FC.CUR+1),h
+
+	pop	de		; discard dst
+	pop	bc		; pop nread into BC
+;;	ld	a,b
+;;	or	c
+;;	ld	a,E.EOF
+;;	scf
+;;	ret	z
+;;	xor	a
+	ret
+
+frd6:	xor	a
+	ld	(ix+FC.CUR),a
+	ld	(ix+FC.CUR+1),a
+
+	pop	de		; pop dst
+	pop	hl		; pop nread
+	jp	frd1		; loop until all read
+
+frd5:	pop	de		; pop dst
+	pop	bc		; return nread in BC
+	ld	a,E.OK
+	or	a
+	ret
+
+	end

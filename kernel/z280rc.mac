@@ -1,0 +1,433 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('Z280RC')
+	TITLE	'RSX280 machine-dependent routines'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Machine-dependent routines - Z280RC board version.             ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+
+	include	SYSCONF.INC
+	include	ERRORS.INC
+
+	public	CPUSPD		; measure CPU clock frequency and get the
+				;  timer reload value
+	public	GETDT		; get date and time from hardware clock
+	public	SETDT		; write date and time to hardware clock
+	public	NVREAD		; read non-volatile RAM values
+	public	NVRAM		; non-volatile RAM data area
+	public	NVOK		; NV RAM OK flag
+
+	cseg
+
+;--------------------------------------------------------------------
+
+; Measure the system-clock speed and return the reload timer constant.
+
+; The Z280 on the Z280RC uses a clock frequency of 14.7456 MHz, the
+; internat timers are clocked at 1/4 of the CPU clock frequency, thus
+; 3.6864 MHz.
+
+; TODO: compute reload value from TCKSEC - may require chaining
+; two counters if < 100 ticks/sec
+
+CPUSPD:
+	ld	hl,36864	; return the reload timer constant
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get current date and time from DS1202 clock chip and store it
+; at HL address in BCD format (YYYY MM DD hh mm ss dow = 8 bytes).
+
+GETDT:	push	hl
+	ld	hl,timbuf	; point to the destination buffer
+	call	rdtime		; read clock
+	pop	hl
+	ld	a,(ds.year)	; fetch year
+	ld	c,a
+	cp	78h		; 1978
+	ld	a,19h
+	jr	nc,t1
+	ld	a,20h
+t1:	ld	(hl),a
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	a,(ds.mon)	; fetch month
+	ld	(hl),a		; month = 1...12
+	inc	hl
+	ld	a,(ds.day)	; fetch day
+	ld	(hl),a		; day = 1...29,30, or 31
+	inc	hl
+	ld	a,(ds.hour)
+	call	cvhour		; convert hour to 24-hours format (BCD)
+	ld	(hl),a		; hours = 00..23
+	inc	hl
+	ld	a,(ds.min)
+	ld	(hl),a		; minutes = 00..59
+	inc	hl
+	ld	a,(ds.sec)
+	ld	(hl),a		; seconds = 00..59
+	inc	hl
+	ld	a,(ds.dow)
+	ld	(hl),a		; day of week = 1..7
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set date and time from data @HL, same format as GETDT.
+
+SETDT:	ld	de,timbuf
+	ld	bc,dterr	; push error return address
+	push	bc		;  on stack for convenience
+	inc	hl		; skip century
+	ld	a,(hl)		; get year
+	ld	(ds.year),a
+	inc	hl
+	ld	a,(hl)		; get month
+	or	a
+	ret	z
+	ld	c,12h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.mon),a
+	inc	hl
+	ld	a,(hl)		; get day
+	or	a
+	ret	z
+	ld	c,31h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.day),a
+	inc	hl
+	ld	a,(hl)		; hour
+	ld	c,24h
+	call	chkbcd
+	ret	c
+	res	7,a		; set 24-hour format bit
+	ld	(ds.hour),a
+	inc	hl
+	ld	a,(hl)		; minutes
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.min),a
+	inc	hl
+	ld	a,(hl)		; seconds
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.sec),a
+	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z
+	cp	7+1
+	ret	nc
+	ld	(ds.dow),a
+	pop	bc		; discard error return address
+	ld	a,80h
+	ld	(ds.wp),a	; set write-protect bit
+	ld	hl,timbuf
+	call	sttime
+	xor	a
+	ret
+dterr:	ld	a,E.BADOP
+	scf
+	ret
+
+chkbcd:	ld	b,a
+	and	0Fh
+	cp	09h+1		; ensure low-nibble is value BCD
+	ccf
+	ld	a,b
+	ret	c
+	cp	c		; compare against max value, this also
+	ccf			;  validates high-nibble of BCD
+	ret
+
+; convert DS1202 hour to 24-hour format
+
+cvhour:	bit	7,a		; already in 24-hour format?
+	ret	z		; return if yes
+	and	7Fh
+	bit	5,a		; check AM/PM bit
+	ret	z		; return if AM
+	and	1Fh
+	add	a,12h		; correct if PM
+	daa
+	cp	24h		; hour >= 24?
+	ret	c		; return if not
+	sub	24h		; otherwise correct it
+	ret
+
+;-------------------------------------------------------------------------
+
+; Activate the Clock chip and set Date/Time from the string passed in HL.
+
+sttime:	di
+	call	copen		; open the Clock
+	ld	a,8Eh
+	call	wrbyte		; write-Protect Off
+	ld	a,0
+	call	wrbyte
+	call	cclose
+	call	copen
+	ld	a,0BEh		; burst write
+	ld	e,8		;  8 bytes
+	call	wrbyte
+stloop:	ld	a,(hl)
+	call	wrbyte
+	inc	hl
+	dec	e
+	jr	nz,stloop
+	call	cclose
+	ei
+	ret
+
+;-------------------------------------------------------------------------
+
+; Read the clock to a buffer area in memory. Seven bytes are read in burst
+; mode from the clock chip, one bit at a time via three bits from the
+; bit-bang register. The clock is accessed serially (LSB first) one byte
+; at a time with a command byte being written to begin the Read/Write. 
+; Burst mode is used with a 0BFH byte for reading, 0BEH for writing as the
+; command. Clock setting clears the Write Protect bit before setting, and
+; resets the chip to Read-Only when finished.
+
+; The entire Date/Time string is eight bytes read as:
+;
+;	Sec   Min   Hour   Day   Mon   DOW   Year   WProt
+;                  (12/24)                          (MSB)
+;
+; In this implementation, the 12/24 hour bit is always set to 24-hour mode
+; by clearing the MSB to 1.
+
+RTCP	equ	0		; DS-1302 I/O page
+RTC	equ	0A2h		; DS-1302 bit-bang register
+
+rdtime:	call	copen		; set clock to read, returns BC = RTCBBR port
+	push	de
+	push	hl		; preserve ptr
+
+; Command the DS-1202 for burst read of clock
+
+	ld	a,0BFh		; load the Burst Clock Read Command
+	call	wrbyte		;  and send it
+
+; Read the clock data, use D as byte index
+
+	ld	d,7		; 7 bytes to read
+rdtim:	call	rdbyte
+	ld	(hl),e		; save value in output string
+	inc	hl		;  go to next byte in output
+	dec	d		;   decrement counter
+	jr	nz,rdtim	; ..get another byte if not done
+	call	cclose		; else deselect clock
+	pop	hl		; restore ptr
+	pop	de
+	ret
+
+;--------------------------------------------------------------------
+
+; Set up DS-1202 interface
+
+; Entry: none
+; Exit : C = data port
+; Uses : AF,BC,DE
+
+copen:	di
+	push	hl
+	iopage	RTCP		; select DS-1320 I/O page
+	ld	c,RTC		; address clock port
+	ld	a,00000010b	; reset high, clock low
+	out	(c),a		;  (set)
+	pop	hl
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+; Read a single byte from the DS-1202 into register E
+
+; Entry: C = data port
+; Exit : E = result
+; Uses : AF,B,E
+
+rdbyte:	di
+	push	hl		; save ptr
+	push	bc
+	iopage	RTCP		; select RTC I/O page
+	pop	bc
+	ld	b,8		; gather 8 bit for a byte
+rdloop:	ld	a,10000010b	; data high (3-state), reset high, clock low
+	out	(c),a		;  set
+	nop			;   (settle)
+	inw	hl,(c)		; read bit into L's MSB
+	rl	l		; data bit to carry
+	rr	e		; and to result
+	ld	a,10000011b	; data, reset and clock high
+	out	(c),a		; set
+	djnz	rdloop		; loop until done
+	pop	hl		; restore ptr
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+; Write the byte in A to the clock
+
+; Entry: C = data port
+; Exit : none
+; Uses : AF,E
+
+wrbyte:	di
+	push	hl		; save regs
+	push	de
+	push	bc
+	iopage	RTCP		; select RTC I/O page
+	pop	bc
+	ld	l,a		; store byte
+	ld	b,8		; set bit count
+wrloop:	ld	a,00000100b	; reset high, clock low << 1
+	rr	l		; get data bit
+	rra			;  into position
+	out	(c),a		;   (set)
+	or	00000001b	; raise clock line
+	out	(c),a		;   (set)
+	djnz	wrloop		; loop until done
+	pop	de
+	pop	hl		; restore regs
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+; Deselect the clock for exit
+
+; Enter: C = data port
+; Exit : none
+; Uses : AF
+
+cclose:	di
+	push	hl
+	push	bc
+	iopage	RTCP		; Select RTC I/O page
+	pop	bc
+	ld	a,00000011b	; clock to high
+	out	(c),a
+	xor	00000010b	; reset active low
+	out	(c),a
+	pop	hl
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+; Load the DS-1202 non-volatile memory into RAM and validate contents
+
+NVREAD:	ld	hl,NVRAM	; point to buffer
+	ld	b,24		; 24 bytes to read
+	xor	a		; A = NV memory address
+nv1:	push	af
+	call	rdnv		; read a byte
+	ld	(hl),a		;  and store it
+	inc	hl
+	pop	af
+	inc	a		; increment address
+	djnz	nv1		; loop until done
+
+	; now validate the NV contents.
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc1:	or	(hl)
+	inc	hl
+	djnz	nvc1
+	or	a
+	jr	z,nvc4		; fail if all zeros
+
+	ld	hl,NVRAM
+	ld	b,24
+	ld	a,0FFh
+nvc2:	and	(hl)
+	inc	hl
+	djnz	nvc2
+	inc	a
+	jr	z,nvc4		; fail if all ones (0FFh)
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc3:	add	a,(hl)
+	inc	hl
+	djnz	nvc3
+	or	a
+	ld	a,0FFh
+	jr	z,nvc4
+	inc	a		; fail if bad checksum
+nvc4:	ld	(NVOK),a
+	ret
+
+; Read a single byte from the DS-1202 NV RAM
+
+rdnv:	push	bc
+	add	a,a		; shift the address
+	or	0C1h		; add command bits, read mode
+	push	af
+	call	copen		; select the chip
+	pop	af
+	call	wrbyte		; send the command
+	call	rdbyte		; read the byte
+	call	cclose		; deselect chip
+	ld	a,e		; return value in A reg.
+	pop	bc
+	ret
+	
+;--------------------------------------------------------------------
+
+	dseg
+
+timbuf:	ds	8		; buffer for reading/setting date/time
+
+ds.sec	equ	timbuf+0
+ds.min	equ	timbuf+1
+ds.hour	equ	timbuf+2
+ds.day	equ	timbuf+3
+ds.mon	equ	timbuf+4
+ds.dow	equ	timbuf+5
+ds.year	equ	timbuf+6
+ds.wp	equ	timbuf+7
+
+NVRAM:	ds	24		; buffer for CMOS memory contents
+NVOK:	ds	1		; NV OK flag
+
+	end

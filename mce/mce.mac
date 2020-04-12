@@ -1,0 +1,5203 @@
+	.Z80
+
+	TITLE	MCE - CLI Command Line Editor
+
+	IDENT	-V4.29-		; This ident code appears in MCE messages
+
+;	Port of the DECUS RSX-11M MCE version V4.28
+;	Original MCE is Copyright (C) 1987-1998 J. H. Hamakers,
+;	pAkUiT International
+
+FALSE	equ	0
+TRUE	equ	NOT FALSE
+
+	list	off
+	INCLUDE	MCEPRE.INC
+	INCLUDE	SYSFN.INC
+	INCLUDE	QIO.INC
+	INCLUDE	DCB.INC
+	INCLUDE	TCB.INC
+	INCLUDE	FCB.INC
+	INCLUDE	FCSLIB.INC
+	INCLUDE	AST.INC
+	INCLUDE	ERRORS.INC
+	list	on,nocond
+
+	extrn	GCCL,UCASE,CPHLDE,CVTBD2,CVTWD,SAVRG
+	extrn	PFN,FOPEN,FGETLN,FCLOSE
+	extrn	MINIT,MALLOC,MFREE
+
+; Test the ident of MCEPRE.INC
+
+	IFNDEF	IDNPRE
+	Error	MCE -- MCEPRE.INC not compatible with this version of MCE.
+	Error	       Please build again with @MCEBLD
+	ELSE
+	IF	IDNPRE NE 429
+	Error	MCE -- MCEPRE.INC not compatible with this version of MCE.
+	Error	       Please build again with @MCEBLD
+	ENDIF
+	ENDIF
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Macros, Constants, Variables etc.
+
+; Local symbol definitions
+
+CMDSIZ	equ	78
+
+BELL	equ	7
+BKSP	equ	8
+HT	equ	9
+LF	equ	10
+CR	equ	13
+ESC	equ	27
+BLNK	equ	32
+DEL	equ	127
+
+TI	equ	5		; TI: LUN
+INILUN	equ	2		; MCEINI.xxx LUN
+EFN	equ	1		; event flag
+
+	IF	STATUS
+	IF	TIMOUT
+EFNAST	equ	2		; event flag in TIMAST
+	ENDIF
+	ENDIF
+
+	IFNDEF	INSDEF
+INSDEF	equ	0
+	ENDIF
+
+	IFNDEF	INTDEF
+INTDEF	equ	1
+	ENDIF
+
+	IFNDEF	MINCHR
+MINCHR	equ	1
+	ENDIF
+
+	IFNDEF	OLDDEF
+OLDDEF	equ	1
+	ENDIF
+
+	IFNDEF	OVSDEF
+OVSDEF	equ	0
+	ENDIF
+
+	IFNDEF	MAXFIF
+	IFDEF	STA
+MAXFIF	equ	22
+	ELSE
+MAXFIF	equ	23
+	ENDIF
+	ENDIF
+
+	IF	EDT
+	IFNDEF	EDTDEF
+EDTDEF	equ	0
+	ENDIF
+	ENDIF
+
+	IF	EXTNPR
+	IFNDEF	PRMDEF
+PRMDEF	equ	1
+	ENDIF
+	ENDIF
+
+	IF	STATUS
+	IFNDEF	STADEF
+STADEF	equ	1
+	ENDIF
+	ENDIF
+
+	IF	VT2XX
+	IFNDEF	MAXHLP
+MAXHLP	equ	' '
+	ENDIF
+	ENDIF
+
+; StopFor/WaitFor I/O DPBs
+;
+; Normally we STOP for I/O. When MCE is aborted we WAIT for I/O.
+; We use the WTSE$ directive here to copy the DIC-code to STOPIO.
+; (See  EXAST:)
+
+	DSEG	; R/O
+
+  if 0
+WAITIO:	WTSE$
+  endif
+
+	DSEG	; R/W
+
+  if 0
+STOPIO:	STSE$	EFN
+  endif
+
+; DBPs
+
+SPAWN:	db	'MCR...'	; CLI task name
+	dw	CMDBLK		; address of command line
+	dw	0		; length of command line
+	db	0,0,0
+	db	'TI',0
+	dw	0,0		; no data block to send
+
+EXSTAT:	ds	2		; exit status code
+CMDBLK:	ds	CMDSIZ		; command buffer
+
+TASK	equ	SPAWN+TD.NAME	; task name
+WAITFL:	defb	1		; event flag
+
+$$$	equ	$
+	org	TASK
+
+	IF	CLISUP
+	defb	'CLI...'	; current CLI
+	ELSE
+	defb	'MCR...'	; task for systems w/o alternate CLI-Support
+	ENDIF
+
+	org	$$$
+
+QIODIR:	QIO$	IO.WLB,TI,EFN,,IOSTAT,,<,,,,>
+
+CODE	equ	QIODIR+Q.FUNC	; I/O function code
+ADR	equ	QIODIR+Q.BUF	; I/O buffer address
+LEN	equ	QIODIR+Q.LEN	; I/O length (also used for Spawn)
+
+; File stuff
+
+	IF	FILE
+
+	DSEG	; R/W
+
+; FSR for MCEINI files
+
+FDBIN:	FSR$	FDB,<1 SHL FM.RD>,INILUN,EFN,
+
+; Descriptors
+
+	DSEG	; R/O
+
+	IF	SYLOGIN
+SYLDEV:	defb	'SYS$LOGIN:'	; SYS$LOGIN on RSX-11M-Plus
+SYDEVL	equ	$-SYLDEV
+	ENDIF
+
+DIR:	defb	'SYSTEM   '
+DIRL	equ	$-DIR
+
+	DSEG	; R/W
+
+; Default startup filename block
+;
+; Default filename (if no alternate CLI support) is 'MCEINI.CMD'.
+; Default device is SY: (but overwritten as LB: in FDSPT).
+;
+; SY: in the FDB will be effective for files specified in the invoking
+; MCR/DCL command line. Specifying 'MCE XXX' thus results in file name
+; 'SY0:XXX.CMD'.
+;
+; Note that the filetype in FDB will be overwritten with the CLI name
+; (see GETCLI).
+
+FDB:	defw	0
+	defb	FN.DEV OR FN.NAME OR FN.EXT
+	defb	'SY',0
+	defb	'         '
+	defb	'MCEINI   ','CMD'
+	defw	0
+	defs	FINFSZ-($-FDB)
+FILTYP	equ	FDB+F.EXT	; address of file type
+
+FDB2:	defs	FINFSZ
+
+	ENDIF	;FILE
+
+; Variable text strings
+
+; These text strings are in RW Psects since they are dynamically changed.
+
+; Pool information
+
+POOLTX:	defb	'MCE -- Pool:'
+POOLDT:	defs	18
+
+; Startup text
+
+STRTXT:	defb	CR,LF,'MCE -- '
+	IF	CLISUP
+	defb	'CLI'
+	ELSE
+	defb	'MCR'
+	ENDIF
+	defb	' Command Line Editor '
+IDENT:	defb	'      '	; ident will be placed here
+STRLEN	equ	$-STRTXT-1
+	defb	CR,LF,0
+
+; Pause text
+
+PSETXT:	defb	CR,LF,'MCE -- Suspended, type "RES '
+TSKNAM:	defb	'      " to continue...',CR,LF,LF,0
+
+; Help spawn string
+
+HLPTXT:	defb	'HELP '
+	IFDEF	HLPNEW
+	defb	'/'
+	ENDIF
+	defb	'MCE'
+HPAG0:	defb	0,'MCE'
+HPAGE:	defb	' ',0
+
+	IF	COMPND
+; Terminating a compound command line
+
+EXSTMS:	defb	CR,LF
+	defb	'MCE -- Terminated Compound Command Line, Exit status:'
+EXSTDA:	defb	'     ',CR,LF
+	defb	'       ---> '
+EXSTML	equ	$-EXSTMS
+
+	ENDIF
+
+	IF	STATUS
+; Status line
+
+STATX1:	defb	ESC,'D'		; line down, line up,
+	defb	ESC,'M'		;   to avoid problems with last line.
+STATX2:	defb	ESC,'7'		; save cursor
+	defb	ESC,'[1;23r'	; set scrolling region
+	defb	ESC,'[24;1H'	; line 24
+	defb	ESC,'[7m'	; inverse video
+STATX3:	defb	'MCE-'
+IDENT2:	defb	'        FIFO:'
+STALIR:	defb	'list/'
+	defb	'xx/'
+	defb	'xx/'
+	defb	'xx CMSZ:'
+STACMD:	defb	'xx KEYP:'
+STAKEY:	defb	'no  SVINT:'
+STASVI:	defb	'xxx SVOLD:'
+STASVR:	defb	'xxx TMO:'
+STATMO:	defb	'no      '
+STALN3	equ	$-STATX3
+	defb	ESC,'8'		; restore cursor
+STALN2	equ	$-STATX2
+STALN1	equ	$-STATX1
+
+	ENDIF	;STATUS
+
+	DSEG	; R/O
+
+; Permanent strings
+
+BS:	REPT	CMDSIZ		; backspace buffer for
+	defb	BKSP		;   cursor positioning
+	ENDM
+
+SCRCLR:	defb	ESC,'[H'	; clear
+	defb	ESC,'[J'	;     screen
+SCRCLL	equ	$-SCRCLR
+
+	IF	STATUS
+; Scrolling region clear
+
+REGCLR:	defb	ESC,'[24;1H'	; clear
+	defb	ESC,'[A'	;
+	defb	ESC,'[132C'	;
+	defb	ESC,'[1J'	;     scrolling
+	defb	ESC,'[H'	;            region
+REGCLL	equ	$-REGCLR
+
+; Status line clear
+
+STACLR:	defb	ESC,'7'		; save cursor
+	defb	ESC,'[1;24r'
+	defb	ESC,'8'		; restore cursor
+	defb	ESC,'[J'
+STACLN	equ	$-STACLR
+
+	ENDIF	;STATUS
+
+; Various messages
+
+BYETXT:	defb	'BYE',0		; Bye after time-out
+EXITXT:	defb	'MCE Exit',0	; exit command on TT0: time-out
+
+ENDTXT:	defb	CR,LF,'MCE -- Exit',0	; exit message
+ERRTXT:	defb	CR,LF,'MCE -- Internal Command Error',BELL,0
+CRET:				; Only <CR><LF>
+NOPOOL:	defb	CR,LF
+	defb	'MCE -- Pool exhausted - Install MCE with a larger Increment',BELL,0
+TOOLON:	defb	CR,LF,'MCE -- Command too long',BELL,0
+CONTXT:	defb	CR,LF,'MCE -- Continuing...',0
+
+	IF	PWD
+PASTXT:	defb	CR,LF
+	defb	'MCE -- Lock terminal',CR,LF
+	defb	'Password    >'
+PASTXL	equ	$-PASTXT
+VFYTXT:	defb	CR,LF
+	defb	'Verification>'
+VFYTXL	equ	$-VFYTXT
+LCKTXT:	defb	CR,LF
+	defb	'MCE -- This terminal is Locked',CR,LF
+LCKTXL	equ	$-LCKTXT
+ULKTXT:	defb	CR,LF
+	defb	'Unlock Password>'
+ULKTXL	equ	$-ULKTXT
+	ENDIF
+
+	IF	EDT
+APLTXT:	defb	ESC,'='
+EDTTXT:	defb	'HELP '
+	IFDEF	HLPNEW
+	defb	'/'
+	ENDIF
+	defb	'MCE KEYPAD',0
+INV:	defb	ESC,'[7m'
+INVL	equ	$-INV
+NOR:	defb	ESC,'[m'
+NORL	equ	$-NOR
+NUMTXT:	defb	ESC,'>'
+	ENDIF
+
+	IF	FILE
+FLSTXT:	defb	CR,LF,'MCE -- Bad file specification',BELL,0
+FILTXT:	defb	CR,LF,'MCE -- File open error',BELL,0
+	ENDIF
+
+	IF	VT2XX
+	IF	MAXHLP LT 'A'
+; This text is needed when MCE is not built together with a HELP-file
+
+NOHTXT:	defb	CR,LF,'MCE -- No information about number of HELP pages, '
+	defb	'so can''t use',CR,LF
+	defb	'       <NEXT-SCREEN> and <PREV-SCREEN> keys.',CR,LF
+	defb	'       Generate MCE.HLP and MCE.TSK together with '
+	defb	'MCEBLD.CMD',BELL
+NOHLEN	equ	$-NOHTXT
+
+	ENDIF	;MAXHLP LT A
+	ENDIF	;VT2XX
+
+; RT:,HT and LT: Messages
+
+	IF	RTEXIT
+RTTXT:	defb	CR,LF,'MCE -- Started on a Remote Terminal, exiting...',BELL
+	defb	CR,LF
+RTTXTL	equ	$-RTTXT
+	ENDIF
+
+	IF	HTEXIT
+HTTXT:	defb	CR,LF,'MCE -- Started on a Remote Terminal, exiting...',BELL
+	defb	CR,LF
+HTTXTL	equ	$-HTTXT
+	ENDIF
+
+	IF	RTMESS
+RTTXT:	defb	CR,LF,'MCE -- ** WARNING ** Started on a Remote Terminal.'
+	defb	CR,LF,'       If your local system is OpenVMS with its Command Line'
+	defb	CR,LF,'       Editor enabled please type "MCE EXIT"',BELL
+	defb	CR,LF
+RTTXTL	equ	$-RTTXT
+	ENDIF
+
+	IF	HTMESS
+HTTXT:	defb	CR,LF,'MCE -- ** WARNING ** Started on a Remote Terminal.'
+	defb	CR,LF,'       If your local system is OpenVMS with its Command Line'
+	defb	CR,LF,'       Editor enabled please type "MCE EXIT"',BELL
+	defb	CR,LF
+HTTXTL	equ	$-HTTXT
+	ENDIF
+
+	IF	VT2XX
+VT2ESQ:	defb	'[23~'		; VT2XX <ESC> Picture
+VT2ESL	equ	$-VT2ESQ	;
+	ENDIF
+
+; Internal MCE command dispatch table (see subroutine INTERN)
+
+INTCMD:	defb	'CLEA'		; clear FIFO
+	defw	ICCLEA
+	defb	'CMSZ'		; minimum cmd size
+	defw	ICCMSZ
+	defb	'ECHO'		; echo command line
+	defw	ICECHO
+	defb	'EXIT'		; exit
+	defw	EXIT
+	defb	'FISZ'		; FIFO maximum
+	defw	ICFISZ
+	defb	'FREE'		; display free pool space
+	defw	ICFREE
+	defb	'INSE'		; auto insert mode
+	defw	ICINSE
+	defb	'LIST'		; FIFO is a list
+	defw	ICLIST
+
+	IF	PWD
+	defb	'LOCK'		; password locking
+	defw	ICLOCK
+	ENDIF
+
+	defb	'OVER'		; auto-overwrite mode
+	defw	ICOVER
+	defb	'PURG'		; delete all command translations
+	defw	ICPURG
+	defb	'RING'		; FIFO is a ring buffer
+	defw	ICRING
+	defb	'SVIN'		; save internal commands on/off
+	defw	ICSVIN
+	defb	'SVOL'		; save old commands on/off
+	defw	ICSVOL
+	defb	'VERS'		; version
+	defw	ICVERS
+
+	IF	EDT
+	defb	'KEYP'		; set Keypad mode on/off
+	defw	ICKEYP
+	ENDIF
+
+	IF	EXTNPR
+	defb	'PROM'		; extended prompt on/off
+	defw	ICPROM
+	ENDIF
+
+	IF	FILE
+	defb	'CHAI'		; chain to other file (= READ)
+	defw	ICREAD
+	defb	'READ'		; read definition file 'MCE READ filespec'
+	defw	ICREAD
+	defb	'REPL'		; replace translations by new file
+	defw	ICREPL
+	ENDIF
+
+	IF	STATUS
+	defb	'STAT'		; status line on/off
+	defw	ICSTAT
+	ENDIF
+
+	IF	TIMOUT
+	IF	TMOSET
+	defb	'TIMO'		; time-out value in minutes
+	defw	ICTIMO
+	ENDIF
+	ENDIF
+
+	defb	'UPFI'		; up find
+	defw	ICUPFI
+
+	IF	UPR
+	defb	'USPR'		; user prompt
+	defw	ICUSPR
+	ENDIF
+
+	defb	0		; end of table marker
+
+	DSEG	; R/W
+
+; Various variables and buffers
+
+; -------------------------------------------------------------
+
+GTKBUF:	defs	6		; task name
+
+; Next buffers overlap GTKBUF
+
+FREE:	defs	2		; free memory listhead
+IOSTAT:	defs	4		; I/O status block
+POOL:	defs	6		; pool information
+
+	IF	PWD
+PWDBUF:	defs	8		; password buffer
+VRFBUF:	defs	8		; password verify buffer
+TMPBUF:	defs	1		; temporary input buffer
+TMPPTR:	defs	2		; misc pointer
+TMPLEN:	defs	2		; saved LEN (see DOEXEC, WRISEL)
+	ENDIF
+
+	org	GTKBUF+GTKSZ
+
+FIFPTR:	defw	0		; ptr to current entry (for UP, DOWN keys
+				;  and PRICMD, PRIFIF)
+FIFCNT:	defb	0		; number of entries in FIFO
+CHAR:	defb	0		; input character
+
+; -------------------------------------------------------------
+
+CURPTR:	defw	CMDBUF		; pointer to current char in CMDBUF
+ENDPTR:	defw	CMDBUF		; pointer to end of text in CMDBUF
+
+MAXF:	defb	MAXFIF		; FIFO size
+MINC:	defb	MINCHR		; command length to be saved
+
+PROMLF:	defw	DEFPR		; pointer to default prompt with <LF><CR>
+PROMPT:	defw	DEFPR+1		; pointer to default prompt with <CR>
+
+	IF	EDT
+SELSTR:	defw	0		; start address of selected range
+	ENDIF
+
+GLUNB:	defs	6		; buffer for .GTLUN
+
+; Flags, buffers and other bytes
+
+ECHFLG:	defb	0		; if ne : Echo Command line
+				;         - change with MCE ECHO on/off
+INSFLG:	defb	INSDEF		; if ne : Auto insert
+				;	  - change with MCE INSErt on/off
+LEAFLG:	defb	0		; if ne : Leave FIFO pointer     (CTRL/X)
+NEXFLG:	defb	0		; if ne : Don't execute Command  (CTRL/N)
+NLOFLG:	defb	0		; if ne : Don't load Command in Command buffer
+OLDFLG:	defb	0		; if ne : Old command, not edited
+OVSFLG:	defb	OVSDEF		; if ne : Auto overwrite
+				;	  - change with MCE OVERwrite on/off
+MODFLG:	defb	OVSDEF		; if odd: Overwrite mode
+				;	  - change with ^A
+PRIFLG:	defb	0		; if ne : Command buffer being printed out
+RNGFLG:	defb	0		; if ne : FIFO is a ring buffer
+				;	  - change with MCE LIST/RING
+SINFLG:	defb	INTDEF		; if ne : Internal commands are saved
+				;	  - change with MCE SVINtern on/off
+SOLFLG:	defb	OLDDEF		; if ne : Old commands are saved
+				;	  - change with MCE SVOLd on/off
+UPFFLG:	defb	1		; if ne : Up Find function enabled
+				;	  - change with MCE UPFI on/off
+UFAFLG:	defb	0		; if ne : Up Find function active
+
+	IF	CLISUP OR FILE
+CLIFLG:	defb	0		; if ne : GETCLI was successful
+	ENDIF	;CLISUP OR FILE
+
+	IF	EDT
+EDTFLG:	defb	EDTDEF		; if ne : EDT Mode active
+				;	  - change with MCE KEYPad on/off
+GOLDFL:	defb	0		; if ne : "GOLD" pushed
+PSTBUF:	defs	CMDSIZ		; paste buffer
+SAVWRD:	defs	CMDSIZ		; last deleted word
+SAVLIN:	defs	CMDSIZ		; last deleted line
+SAVCHR:	defb	0		; last deleted character
+SELFLG:	defb	0		; if ne : ANSI-selective range active
+	ENDIF
+
+	IF	STATUS
+FIFPOI:	defb	0		; current FIFO entry number
+	ENDIF
+
+	IF	EXTNPR
+PRMFLG:	defb	PRMDEF		; if ne : extended prompt
+				;	  - Change with MCE PROMpt on/off
+	ENDIF
+
+	IF	FILE
+FILINI:	defb	0		; if ne : Startup file being processed
+FILINP:	defb	0		; if ne : File Input
+FILREX:	defb	0		; if ne : MCE Read or MCE Replace being
+				;         processed
+FILDEF:	defb	0		; if ne : Reading First default file
+	ENDIF
+
+	IF	STATUS
+STAFLG:	defb	STADEF		; if ne : Status line is displayed
+				;	  - change with MCE STATus on/off
+	ENDIF
+
+	IF	UPR
+USERPL:	defb	0		; user prompt length
+	ENDIF
+
+	IF	TIMOUT
+TT0FLG:	defb	0		; if ne : TI: = TT0:
+	IF	TMOSET
+TMOFLG:	defb	TMOON		; time-out ON/OFF flag
+TMOVAL:	defw	TMOTIM		; time-out value in minutes
+	ENDIF
+TMOCNT:	defw	TMOTIM		; counter for time-out
+	ENDIF
+
+; FIFO Buffer descriptors
+
+FIFO:	defw	0, FIFO		; FIFO Buffer list head
+
+; List head offsets
+
+F.1ST	equ	0		; pointer to first entry
+F.LAST	equ	2		; pointer to last entry
+
+; FIFO entry offsets
+
+FI.NXT	equ	0		; pointer to next entry
+FI.LEN	equ	FI.NXT+2	; length of entry
+FI.TXT	equ	FI.LEN+2	; text, terminated by binary 0
+
+; Translation buffer (same entries as in FIFO)
+
+TRNBUF:	defw	0, TRNBUF	; command definitions list head
+
+; Terminal characteristics buffers
+
+SFGMCB:
+  if 0
+  else
+TC.HLD	equ	91h
+TC.WID	equ	92h
+  endif
+	defb	TC.BIN,0	; binary mode
+ANS:	defb	TC.ANS,1	; ANSI Terminal
+HLD:	defb	TC.HLD,0	; Hold Screen mode
+	IF	STATUS
+	defb	TC.WID,0	; buffer size
+	ENDIF
+SFGMCL	equ	$-SFGMCB
+
+SFBMCB:	defb	TC.BIN,1	; binary mode
+SFBMCL	equ	$-SFBMCB
+
+	IF	STATUS
+STGMCB:	defb	TC.WID,90	; new buffer size
+				;   a bit longer for status line
+STGMCL	equ	$-STGMCB
+	ENDIF
+
+;-------------------------------------------------------\
+;							|
+; Prompt area						|
+;							|
+PRBUFL	equ	24		;			|
+	IF	UPR		;			|
+UPRLEN	equ	PRBUFL-4	; length of user prompt	|
+	ENDIF			;			|
+	defs	PRBUFL		; prompt buffer		|
+DEFPR:	defb	LF		;		must be kept together
+	defb	CR		;			|
+CMDBUF:	defs	CMDSIZ		; current buffer	|
+CMDEND	equ	$		;			|
+;-------------------------------------------------------/
+
+; Various buffers
+
+SAVBUF:	defs	CMDSIZ		; save buffer
+RCLBUF:	defs	CMDSIZ		; recall buffer
+
+	IF	CLISUP OR FILE
+; Buffer to receive CLI information
+;
+; Things taken from CLI information are:
+;
+;  - CLI name to test if DCL	CLISUP
+;  - CLI name as filetype	CLISUP and FILE
+;  - Prompt			CLISUP
+;  - Current Directory		FILE (only if GDIR fails)
+
+CLIBSZ	equ	50
+CLIBUF:	defs	CLIBSZ		; information buffer
+	ENDIF	;CLISUP OR FILE
+
+	IF	CLISUP
+CLIPRM	equ	CLIBUF+G.CIDP	; CLI prompt
+CLINAM	equ	CLIBUF+G.CICL	; CLI name
+	ENDIF
+
+	IF	FILE
+  if 0
+CLIUIC	equ	CLIBUF+G.CICU	; Current UIC
+
+; Buffer to receive Directory information (M+)
+
+GD.LOG	equ	5
+
+GDIR:	GDIR$	GD.LOG,CURDIR,CURDRL,GDIRL
+GDIRL:	defw	0		; length of directory string
+
+; Current directory string
+
+CURDRL	equ	40
+CURDIR:	defs	CURDRL
+  endif
+	ENDIF	;FILE
+
+; ---- THE WHOLE AREA IS CLEARED SO DO NOT SPLIT. --------------v
+;								|
+; Command check buffers and flags				|
+;								|
+CMDDES:	defw	0, 0		; descriptor of whole remainder	|
+PARDES:	REPT	9		; descriptor of P0 .. P8	|
+	defw	0, 0		;				|
+	ENDM			;				|
+;								|
+P.LEN	equ	0		; byte count			|
+P.ADR	equ	2		; address			|
+P.SIZ	equ	4		; entry length			|
+;								|
+FTCFLG:	defb	0		; parameter fetched flag	|
+OVMFLG:	defb	0		; Send Overflow Message flag	|
+STRFLG:	defb	0		; find command with "*" enabled (ne 0)
+FNDFLG:	defb	0		; temporary Flag: "*" encountered in compare
+PCOUNT:	defb	0		; parameter count in CMDCHK	|
+CMDARL	equ	$-CMDDES	; command area length		|
+; ---------------------------------------------------------------
+
+	SUBTTL	Command dispatch tables
+
+	DSEG	; R/O
+
+; This is the dispatch table for control characters. The table contains
+; the addresses of the action routines for the different codes.
+
+DSPTAB:	defw	INSERT		; SINGLE CHR.
+	defw	CHOVER		; CTRL/A
+	defw	UP		; CTRL/B
+	defw	CLRLIN		; CTRL/C
+	defw	LEFT		; CTRL/D
+	defw	ENDLIN		; CTRL/E
+	defw	RIGHT		; CTRL/F
+	defw	loop		; CTRL/G
+	defw	BEGLIN		; BS (CTRL/H)
+	defw	MOVWRD		; HT (CTRL/I)
+	defw	DELEW		; LF (CTRL/J)
+	defw	DELRL		; CTRL/K
+	defw	loop		; CTRL/L
+	defw	EXEC		; CR (CTRL/M)
+	defw	EXENO		; CTRL/N
+	defw	ESCAP		; CTRL/O = SS3 8-bit ctrl. char. in 7-bit mode
+				;  See note in release notes
+				;
+	defw	PAUSE		; CTRL/P
+	defw	loop		; CTRL/Q (XON)
+	defw	DISPLY		; CTRL/R
+	defw	loop		; CTRL/S (XOFF)
+	defw	DELAY		; CTRL/T
+	defw	DELEL		; CTRL/U
+	defw	DELRC		; CTRL/V
+	defw	DELRW		; CTRL/W
+	defw	EXELEA		; CTRL/X
+	defw	EXIT		; CTRL/Y
+	defw	loop		; CTRL/Z
+	defw	ESCAP		; ESC		(CTRL/[)
+	defw	loop		; CTRL/\	(CTRL/|)
+	defw	loop		; CTRL/]	(CTRL/})
+	defw	loop		; CTRL/^	(CTRL/~)
+	defw	HELP		; CTRL/?
+
+; The following ctrl-keys cannot be overriden by a definition
+
+CHKTAB:	defb	0,ESC,CR,0Fh,11h,13h ; Single char,ESC,CR,CTRL/O,CTRL/Q,CTRL/S
+CHKSIZ	equ	$-CHKTAB
+
+	IF	EDT
+
+; EDT-Key Jumptable
+
+EDTTAB:	;	normal  gold	 esc. sequ	key  EDT	GOLD EDT
+
+	defw	DELRC,  UNDCHR	; ESC O l	,   DELCHR	/ UNDLCHR
+	defw	DELRW,  UNDWRD	; ESC O m	-   DELWRD	/ UNDLWRD
+	defw	SELECT, RESET	; ESC O n	.   SELECT	/ RESET
+	defw	loop,	loop	; ESC O o
+	defw	BEGLIN,	CLRLIN	; ESC O p	0   BLINE	/ OPENLINE
+	defw	MOVWRD,	MOVWRD	; ESC O q	1   WORD	/ CHNGCAS
+	defw	ENDLIN,	DELRL	; ESC O r	2   EOL		/ DELEOL
+	defw	EXELEA,	EXELEA	; ESC O s	3   CHAR	/ SPECIN
+	defw	DELAY,	PAUSE	; ESC O t	4   ADVANCE	/ BOTTOM
+	defw	loop,	loop	; ESC O u	5   BACKUP	/ TOP
+	defw	CUT,	PASTE	; ESC O v	6   CUT		/ PASTE
+	defw	TRANSL,	TRANSL	; ESC O w	7   PAGE	/ COMMAND
+	defw	PRICMD,	SHVERS	; ESC O x	8   SECTION	/ FILL
+	defw	PRIFIF,	SHFREE	; ESC O y	9   APPEND	/ REPLACE
+	defw	EXEC,	EXENO	; ESC O M    ENTER  ENTER	/ SUBST
+	defw	GOLD,	GOLD	; ESC O P      PF1  GOLD	/ GOLD
+	defw	EDTHLP, EDTHLP	; ESC O Q      PF2  HELP	/ HELP
+	defw	RECALL,	RECALL	; ESC O R      PF3  FINDNXT	/ FIND
+	defw	DELRL,	UNDLIN	; ESC O S      PF4  DELLIN	/ UNDLIN
+
+	ENDIF	;EDT
+
+	IFDEF	TDV2XX
+
+; TDV2230 Key table
+
+TDVTAB:	;	Action routine	  Key
+
+	defw	loop		; F1
+	defw	loop		; F2
+	defw	loop		; F3
+	defw	loop		; F4
+	defw	loop		; F5
+	defw	loop		; F6
+	defw	loop		; F7
+
+	ENDIF	;TDV2XX
+
+	IF	VT2XX
+
+; VT2XX Key table
+
+; Entry:
+;
+;	Word 1: 2 Ascii char. from esc-seq.
+;	Word 2: Action routine address
+;	Word 3: 2 Ascii char. from key
+
+KEYVT2	MACRO	ESC,ACT,KEY
+	defb	'&ESC'
+	IFNB	<ACT>
+	defw	ACT
+	ELSE
+	defw	LOOP
+	ENDIF
+	defb	'&KEY'
+	ENDM
+;
+VT2TAB:	KEYVT2	<1 >	,RECALL	,<$F>	; Find
+
+	IF	EDT
+	KEYVT2	<2 >	,PASTE	,<$I>	; Insert here
+	KEYVT2	<3 >	,CUT	,<$R>	; Remove
+	KEYVT2	<4 >	,SELECT	,<$S>	; Select
+	ELSE
+	KEYVT2	<2 >	,	,<$I>	; Insert here
+	KEYVT2	<3 >	,	,<$R>	; Remove
+	KEYVT2	<4 >	,	,<$S>	; Select
+	ENDIF
+
+	KEYVT2	<5 >	,PRVHLP	,<$P>	; Prev. Screen
+	KEYVT2	<6 >	,NXTHLP	,<$N>	; Next Screen
+
+	IF	VT4XX
+	KEYVT2	<11>	,	,<1 >	; F1
+	KEYVT2	<12>	,	,<2 >	; F2
+	KEYVT2	<13>	,	,<3 >	; F3
+	KEYVT2	<14>	,	,<4 >	; F4
+	KEYVT2	<15>	,	,<5 >	; F5
+	ENDIF
+
+	KEYVT2	<17>	,	,<6 >	; F6
+	KEYVT2	<18>	,	,<7 >	; F7
+	KEYVT2	<19>	,	,<8 >	; F8
+	KEYVT2	<20>	,	,<9 >	; F9
+	KEYVT2	<21>	,	,<10>	; F10
+	KEYVT2	<23>	,VT2ESC	,<11>	; F11	ESC
+	KEYVT2	<24>	,BEGLIN	,<12>	; F12	BS
+	KEYVT2	<25>	,DELEW	,<13>	; F13	LF
+	KEYVT2	<26>	,CHOVER	,<14>	; F14
+	KEYVT2	<28>	,HELP	,<15>	; F15	HELP
+	KEYVT2	<29>	,EXENW	,<16>	; F16	DO
+	KEYVT2	<31>	,	,<17>	; F17
+	KEYVT2	<32>	,	,<18>	; F18
+	KEYVT2	<33>	,	,<19>	; F19
+	KEYVT2	<34>	,	,<20>	; F20
+
+VT2LEN	equ	$-VT2TAB
+
+	ENDIF	;VT2XX
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Main Code
+
+	CSEG
+
+START:	ld	sp,stack	; setup stack
+
+	; get task information
+
+	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task information
+
+	ld	hl,GTKBUF+GT.VID
+	ld	de,IDENT
+	ld	bc,6
+	ldir			; copy task indent code
+
+	IF	STATUS
+	ld	hl,IDENT	; HL => version field address
+	ld	de,IDENT2	; DE => version field address on status line
+	ld	bc,6		; BC =  counter
+	ldir			; copy ident
+	ENDIF
+
+	ld	hl,GTKBUF+GT.NAME
+	ld	de,TSKNAM
+	ld	bc,6
+	ldir			; set task name for PAUSE message
+
+	; specify exit AST to cleanup things when MCE gets aborted
+
+;!!	SREX$S	#EXAST		; specify exit AST
+
+	ld	ix,FREE		; IX => free memory listhead
+	ld	hl,(GTKBUF+GT.END)
+	ld	de,($MEMRY)
+	or	a
+	sbc	hl,de		; compute size of free memory
+	ex	de,hl		; HL = start of free mem, DE = size
+	call	MINIT		; initialize dynamic storage
+	call	TERM		; get terminal characteristics
+	call	CLRBUF		; initialize CMDBUF Command Line Buffer
+
+	IF	NOT SILENT
+	ld	hl,STRTXT	; let the people know who we are
+	call	IOMSG		; print startup message
+	ENDIF
+
+	ld	hl,GLUNB	; buffer
+	ld	c,TI
+	SC	.GTLUN		; get terminal information
+	;!!TODO: handle error?
+
+	ld	hl,(GLUNB)
+
+	IF	RTMESS OR RTEXIT
+	; RT Remote Terminal handling
+
+	ld	de,'RT'
+	call	CPHLDE		; remote terminal RT?
+	jr	nz,s1		; branch if not
+	push	hl
+	ld	hl,RTTXT
+	ld	de,RTTXTL
+	call	IOW		; print the RT message
+	pop	hl
+	IF	RTEXIT
+	jp	EXIT		; exit
+	ENDIF
+s1:
+	ENDIF	;RTMESS OR RTEXIT
+
+	IF	HTMESS OR HTEXIT
+	; HT Remote Terminal handling
+
+	ld	de,'HT'
+	call	CPHLDE		; remote terminal HT?
+	jr	nz,s2		; branch if not
+	push	hl
+	ld	hl,HTTXT
+	ld	de,HTTXTL
+	call	IOW		; print the HT message
+	pop	hl
+	IF	HTEXIT
+	jp	EXIT		; exit
+	ENDIF
+s2:
+	ENDIF	;HTMESS OR HTEXIT
+
+	IF	TIMOUT
+	; terminal Time-Out handling
+
+	ld	de,'TT'
+	call	CPHLDE		; normal terminal?
+	jr	nz,s3		; skip if not
+	ld	a,(GLUNB+2)
+	or	a		; TT0?
+	jr	nz,s3		; skip if not
+	inc	a
+	ld	(TT0FLG),a	; else set TT0: flag
+s3:
+	IF	TMOSET
+	ld	a,(TMOFLG)	; time-out wanted?
+	or	a
+	call	nz,MARK		; Mark Time for time-out
+	ELSE
+	call	MARK		; Mark Time for time-out
+	ENDIF	;TMOSET
+
+	ENDIF	;TIMOUT
+
+	IF	FILE
+	; open MCEINI file if present, and process it
+
+	call	FILOP		; open MCEINI file
+	ENDIF
+
+RESTAR:	; attach the terminal
+
+	ld	bc,IO.ATT
+	call	IO		; attach the terminal
+
+	call	STERM		; set terminal characteristics
+
+	IF	FILE
+	; process file input, if any
+
+	ld	a,(FILINP)	; file input?
+	or	a
+	call	nz,FILREA	; goto EXEC1 if something read
+				;  then come back to RESTAR
+	ENDIF
+
+	; clear various flags
+
+	xor	a
+	ld	(NEXFLG),a	; clear NoExecute flag
+	ld	(LEAFLG),a	; clear Leave pointer flag
+	ld	(OLDFLG),a	; clear Old command flag
+	ld	(UFAFLG),a	; clear UP Find active flag
+
+	IF	EDT
+	ld	hl,0
+	ld	(SELSTR),hl	; clear start of select
+	ld	(SELFLG),a	; clear ANSI-select flag
+	ld	(GOLDFL),a	; clear "GOLD"
+	ENDIF
+
+	; Insert/overwrite mode
+
+	ld	hl,MODFLG
+	ld	a,(INSFLG)
+	cpl
+	and	(hl)
+	ld	(hl),a		; clear overwrite mode if Auto Insert
+	ld	a,(OVSFLG)
+	or	(hl)
+	ld	(hl),a		; set overwrite mode if Auto Overwrite
+
+	call	TERM		; get terminal info
+
+	IF	EDT
+	; Setup EDT keypad
+
+	ld	hl,APLTXT	; application keypad
+	ld	de,2		; length
+	ld	a,(EDTFLG)
+	or	a		; EDT Keys enabled?
+	call	nz,IOW		; write if yes
+	ENDIF
+
+	; set our task's default directory
+
+  if 0
+SD.TI	equ	6
+	SDIR$S	#SD.TI		; set task DDS to terminal DDS
+  endif
+
+	IF	CLISUP OR FILE
+	; get information from our current CLI
+
+	call	GETCLI		; get CLI information
+	ENDIF	;CLISUP OR FILE
+
+	IF	STATUS
+	; display the status line
+
+	call	PRISTA		; status line
+	ENDIF
+
+PRIPRM:	; Set up to form prompt
+
+	ld	hl,(PROMLF)
+	ld	(ADR),hl	; start of prompt buffer
+	ld	hl,CMDBUF+1	; point after prompt buffer (Room for <ESC>[)
+	ld	(hl),'['	; insert '[' (Hold screen mode)
+	dec	hl
+	ld	(hl),ESC	; insert ESC (Hold screen mode)
+
+	IF	UPR
+	; user prompt
+
+	ld	a,(USERPL)	; do we have a prompt?
+	or	a
+	jr	z,pp1		; no, skip
+	ld	e,a
+	ld	d,0
+	sbc	hl,de		; point to User prompt
+	jr	pp5		; => pp5
+pp1:
+	ENDIF
+
+	IF	CLISUP
+	; CLI prompt
+
+	ld	a,(CLIFLG)	; GETCLI OK?
+	or	a
+	jr	nz,pp2		; yes, skip
+	push	hl
+	ld	hl,SMCR
+	ld	de,TASK
+	ld	bc,3
+	ldir			; else force MCR...
+	pop	hl
+	dec	hl
+	ld	(hl),'>'	; default prompt
+	jr	pp5		; continue with default prompt
+
+pp2:	; copy CLI prompt
+
+	ld	de,CLIPRM	; DE => CLI Prompt information
+	ld	a,(de)		; get length
+	ld	c,a
+	ld	b,0
+	inc	de		; advance to prompt string
+	ex	de,hl
+	add	hl,bc		; point after CLI prompt
+	ex	de,hl
+	ld	b,c
+pp3:	dec	de
+	ld	a,(de)		; get character
+	cp	CR		; <CR>?
+	jr	z,pp4		; skip if yes
+	cp	LF		; <LF>?
+	jr	z,pp4		; skip if yes
+	dec	hl
+	ld	(hl),a		; else copy character
+pp4:	djnz	pp3		; and loop for more
+
+	ELSE	;CLISUP
+
+	dec	hl
+	ld	(hl),'>'	; default prompt
+
+	ENDIF	;CLISUP
+
+pp5:
+	IF	EXTNPR
+	; extended prompt
+
+	ld	a,(PRMFLG)	; extended prompt?
+	or	a
+	jr	z,pp8		; no, skip
+
+	IF	EDT
+	; EDT flag in prompt
+
+	ld	a,(EDTFLG)	; EDT mode active?
+	or	a
+	jr	z,pp6		; branch if not
+
+	IF	STATUS
+
+	ld	a,(STAFLG)	; status line?
+	or	a
+	jr	nz,pp6		; branch if yes
+
+	ENDIF	;STATUS
+
+	dec	hl
+	ld	(hl),':'	; display EDT mode active
+pp6:
+	ENDIF	;EDT
+
+	; set Insert/Overwrite mode flag in prompt
+
+	dec	hl
+	ld	(hl),'+'	; assume insert mode
+	ld	a,(MODFLG)
+	and	1		; overwrite?
+	jr	z,pp8		; branch if not
+	ld	(hl),'-'	; else indicate overwrite mode
+pp8:
+	ENDIF	;EXTNPR
+
+	; rest of prompt
+
+	dec	hl
+	ld	(hl),CR		; insert <CR>
+	dec	hl
+	ld	(hl),LF		; insert <LF>
+	dec	hl
+	ld	(hl),'/'	; insert '/' (hold screen mode)
+	dec	hl
+	ld	(hl),ESC	; insert <ESC> (hold screen mode)
+	inc	hl
+	inc	hl
+	ld	(PROMLF),hl	; adjust pointers
+	inc	hl
+	ld	(PROMPT),hl
+	dec	hl
+	ex	de,hl
+	ld	hl,CMDBUF
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE = LEN, HL = ADR
+
+	; Hold Screen mode
+
+	ld	a,(HLD+1)
+	or	a		; Hold Screen mode?
+	jr	z,pp10		; branch if not
+	inc	de
+	inc	de
+	inc	de
+	inc	de		; adjust length for Hold Screen esc seq.
+	dec	hl
+	dec	hl		; adjust address
+
+pp10:	; display PROMPT
+
+	ld	c,IO.WVB
+	ld	b,TF.CCO	; cancel <CTRL/O>
+	call	IO		; output prompt
+
+	; clear edit buffer and setup pointers
+
+	call	CLRBUF		; clear edit buffer
+
+LOOP:	; accept next char for input and dispatch it
+
+	ld	hl,LOOP
+	push	hl		; push return address
+
+	; read with special terminator characters and no echo
+
+;!!	ld	bc,IO.RST!TF.RNE
+	ld	hl,CHAR		; 1-character buffer
+	ld	de,1		; length
+	call	IOR		; read 1 char
+
+LOOP00:
+	IF	TIMOUT
+	; check if time-out has occurred
+
+	ld	a,(IOSTAT)
+	cp	E.ABOP		; I/O killed? (time-out)
+	jr	nz,l03		;  no: => l03
+	ld	hl,BYETXT	; assume "BYE"
+	ld	a,(TT0FLG)
+	or	a		; are we on TT0:?
+	jr	nz,l01		;  yes: => l01
+	ld	hl,SMCR
+	ld	de,TASK
+	ld	bc,3
+	ldir			; MCR...
+	jr	l02		; => l02
+
+l01:	ld	hl,EXITXT	; "MCE EXIT"
+l02:	call	GETBUF		; copy to CMDBUF
+	call	DISPLY		; display
+	jp	EXEC		; execute "BYE" or "MCE EXIT" command
+l03:
+	ENDIF	;TIMOUT
+
+  IF 0
+	ld	a,(IOSTAT+1)	; test for branch table
+	and	7Fh		; make 7-Bit ASCII
+				; (see note in release notes)
+  ELSE
+	ld	a,(CHAR)
+	or	a
+	ret	z
+	cp	DEL
+	jr	z,l04
+	cp	20h
+	jp	nc,INSERT
+  ENDIF
+
+l04:	; Delete char key
+
+	cp	DEL		; delete?
+	jp	z,DELEC		; => delete char
+
+	; prepare to process via dispatch table
+
+	and	1Fh		; IO.RST: all ctrl-char in iostat
+	ld	hl,CHKTAB
+	ld	bc,CHKSIZ
+	cpir			; allowed to be translated?
+	jr	nz,l06		;  yes: => l06
+	
+	ld	hl,DSPTAB
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	add	hl,de		; index into table
+	ld	a,(hl)		; take address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; do action routine
+
+l06:	; check if Control Character has to be translated
+
+	ld	ix,SAVBUF
+	ld	c,a
+	add	a,'@'		; make ASCII
+	ld	(ix+1),a	; insert key
+	ld	(ix),'^'	;  as ^x
+	cp	'_'		; "_"?
+	jr	nz,l07		; branch if not
+	ld	(ix+1),'?'	; else make "?"
+l07:	ld	b,0
+	ld	hl,DSPTAB
+	add	hl,bc		; index into table
+	add	hl,bc
+	ex	de,hl
+
+	ld	hl,2
+	ld	(PARDES+P.LEN),hl ; P0 length = 2
+
+PROCES:	; check if there is any translation to do
+
+	ld	hl,SAVBUF
+	ld	(PARDES+P.ADR),hl ; P0 address
+
+	push	de
+	call	FNDCMD		; find cmd
+	pop	de
+	jp	nc,PROCMD	;  entry found: => process command
+	ex	de,hl
+	ld	a,(hl)		; take address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; <== go via dispatch table
+
+SMCR:	defb	'MCR'
+	IF	CLISUP
+SDCL:	defb	'DCL'
+	ENDIF
+
+;-----------------------------------------------------------------------
+
+; Insert one character (CHAR) into edit buffer
+
+INSERT:	ld	hl,CMDEND
+	ld	de,(ENDPTR)
+	call	CPHLDE		; still room?
+	ret	nc		;  no: => LOOP
+	ld	hl,CHAR		; +
+	ld	de,1		;  echo character
+	call	IOW		; -
+	xor	a
+	ld	(OLDFLG),a	; no old command
+	ld	a,(MODFLG)
+	and	1		; overwrite?
+	jr	z,ins1		;  no: => ins1
+	ld	a,(CHAR)
+	ld	hl,(CURPTR)
+	ld	(hl),a		; overwrite
+	inc	hl
+	ld	(CURPTR),hl
+	ex	de,hl
+	ld	hl,(ENDPTR)
+	call	CPHLDE		; at end?
+	ret	c		;  no: => loop
+	ld	(ENDPTR),de	; increment end ptr
+	ret			; => LOOP
+
+ins1:	ld	hl,(ENDPTR)
+	inc	hl		; no overwrite - shift
+	ld	(ENDPTR),hl
+	ld	e,l		; DE = dest
+	ld	d,h
+	ld	bc,(CURPTR)
+	sbc	hl,bc		; note CY is clear
+	ld	c,l		; BC = length
+	ld	b,h
+	ld	l,e
+	ld	h,d
+	dec	hl		; HL = src
+	jr	z,ins2
+	lddr			; shift string right
+ins2:	ld	a,(CHAR)
+	ld	(de),a		; insert new character
+	inc	de
+	ld	(CURPTR),de
+
+	IF	EDT
+	; selected range processing
+
+	ld	a,(SELFLG)	; ANSI-Select active?
+	or	a
+	jp	nz,DISPLY	; rewrite line
+	ENDIF	;EDT
+
+	jp	UPDATE		; rewrite line
+
+;-----------------------------------------------------------------------
+
+; Filter out Escape Sequences
+
+ESCAP:	; an escape character was read
+	; test for legal combinations
+
+	ld	hl,CHAR		; 1-character buffer
+	ld	de,1		; length
+	call	IOR		; read next char
+	ld	a,(CHAR)	; get character
+	cp	'['		; <ESC>[ ?
+	jr	z,ESCAP		;  Yes: => ESCAP
+	cp	'O'		; <ESC>O ?
+	jr	z,ESCAP		;  Yes: => ESCAP
+	cp	'?'		; <ESC>? ?
+	jr	z,ESCAP		;  Yes: => ESCAP
+
+	; test for <ESC><ESC> = <DO>
+
+  IF 0
+	ld	a,(IOSTAT+1)
+  ENDIF
+	cp	ESC		; <ESC><ESC> ?
+	jp	z,EXENW		; execute no-wait
+
+	; test for up-arrow
+
+	ld	a,(CHAR)
+	cp	'A'		; <UP-ARROW> ?
+	jr	nz,esc1		; jump if not
+
+UP:	; UP-ARROW -- older command
+
+	ld	hl,(FIFO+F.1ST)	; take first entry
+	ld	a,h
+	or	l		; empty?
+	jp	z,DWNUP		; if yes, load CMDBUF from FIFO and return
+	ld	a,(UFAFLG)
+	or	a		; UP Find active?
+	jp	nz,RECALL	; if yes => find
+
+	ld	bc,(FIFPTR)	; get old pointer
+	ld	a,b
+	or	c		; defined?
+	jr	nz,up2		; branch if yes
+	ld	a,(UPFFLG)
+	or	a		; UP Find enabled?
+	jr	z,up1		; branch if not
+	ld	hl,(ENDPTR)
+	ld	de,CMDBUF
+	call	CPHLDE		; empty line?
+	jr	z,up1		; branch if yes
+	ld	de,(CURPTR)
+	call	CPHLDE		; cursor at EOL?
+	jr	nz,up1		; branch if not
+	ld	a,1
+	ld	(UFAFLG),a	; Up find active!
+	jp	RECALL		; => Find
+
+up1:	ld	hl,(FIFO+F.LAST)
+	ld	(FIFPTR),hl	; take newest entry
+
+	IF	STATUS
+	ld	a,(FIFCNT)
+	ld	(FIFPOI),a	; newest entry
+	ENDIF
+
+	jr	DWNUP		; => DWNUP
+
+up2:	ld	ix,(FIFO+F.1ST)
+up21:	ld	e,(ix+FI.NXT)
+	ld	d,(ix+FI.NXT+1)
+	ld	hl,(FIFPTR)
+	call	CPHLDE		; does this point to me?
+	jr	nz,up3		; branch if not
+
+	IF	STATUS
+	ld	a,(FIFPOI)
+	dec	a		; one older
+	ld	(FIFPOI),a
+	ENDIF
+
+	jr	up4		; load and display
+
+up3:	push	de
+	pop	ix		; next
+	ld	a,d
+	or	e		; got one?
+	jr	nz,up21		; loop if yes
+
+	ld	a,(RNGFLG)
+	or	a		; Ring buffer?
+	jr	z,DWNUP		; no, load and display
+
+	IF	STATUS
+	xor	a
+	ld	(FIFPOI),a	; none
+	ENDIF
+
+up4:	ld	(FIFPTR),ix	; found,
+	jr	DWNUP		;  load and display
+
+esc1:	; test for down-arrow
+
+	cp	'B'		; <DOWN-ARROW> ?
+	jr	nz,esc2		; jump if not
+
+DOWN:	; DOWN-ARROW -- newer command
+
+	ld	hl,(FIFO+F.1ST)
+	ld	a,h
+	or	l		; any entry at all?
+	jr	z,DWNUP		; load and display if not
+	ld	hl,(FIFPTR)	; get ptr to buffer
+	ld	a,h
+	or	l		; defined?
+	jr	nz,dn1		; branch if yes
+	ld	a,(RNGFLG)
+	or	a		; Ring buffer?
+	jr	z,DWNUP		; no, load and display
+
+	ld	de,(FIFO+F.1ST)
+	ld	(FIFPTR),de	; take oldest
+
+	IF	STATUS
+	ld	a,1
+	ld	(FIFPOI),a	; oldest
+	ENDIF
+
+	jr	DWNUP		; => DWNUP
+dn1:
+	IF	STATUS
+	ld	a,(FIFPOI)
+	inc	a		; one newer
+	ld	(FIFPOI),a
+	ENDIF
+
+	push	hl
+	pop	ix
+	ld	l,(ix+FI.NXT)	; next
+	ld	h,(ix+FI.NXT+1)
+	ld	(FIFPTR),hl
+	ld	a,h
+	or	l
+	jr	nz,DWNUP
+
+	IF	STATUS
+	xor	a
+	ld	(FIFPOI),a	; none
+	ENDIF
+
+DWNUP:
+	IF	EDT
+	ld	hl,0
+	ld	(SELSTR),hl	; clear start of select
+	xor	a
+	ld	(SELFLG),a	; clear ANSI-select flag
+	ENDIF
+
+	IF	STATUS
+	call	GETFIF		; load CMDBUF from FIFO
+	jp	PRIST1		; print status line (update of FIFO pointer)
+	ELSE
+	jp	GETFIF		; load CMDBUF from FIFO
+	ENDIF
+
+esc2:	; test for right-arrow
+
+	cp	'C'		; <RIGHT-ARROW> ?
+	jr	nz,esc3		; jump if not
+
+RIGHT:	; RIGHT-ARROW -- cursor right
+
+	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	call	CPHLDE		; end of text?
+	ret	nc		; return if yes
+	ex	de,hl
+	inc	hl		; move cursor right
+	ld	(CURPTR),hl
+	dec	hl		; rewrite
+	ld	de,1		;  character
+	call	IOW		;   at cursor position
+
+	IF	EDT
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	ret	z		; return if not
+	jp	DISPLY		; else rewrite line
+	ELSE
+	ret
+	ENDIF
+
+esc3:	; test for left-arrow
+
+	cp	'D'		; <LEFT-ARROW> ?
+	jr	nz,esc4		; jump if not
+
+LEFT:	; LEFT-ARROW -- cursor left
+
+	call	SPBACK		; cursor left one space
+
+	IF	EDT
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jp	nz,DISPLY	; rewrite line if yes
+	ENDIF
+
+	ret
+
+esc4:
+	IF	EDT
+	; test for EDT-KEYS
+
+	ld	c,a
+	ld	a,(EDTFLG)
+	or	a		; EDT keys enabled?
+	ld	a,c
+	jr	z,esc5		; jump if not
+
+	; test for <ENTER> key
+
+	cp	'M'		; <ENTER> ?
+	jr	nz,edt1		; skip if not
+	ld	a,'z'-'l'	;
+	jr	edt3		; else exec function
+
+edt1:	; test for EDT-PFx keys
+
+	cp	'P'		; +
+	jr	c,edt2		;  PFx range?
+	cp	'S'+1		;  skip if not
+	jr	nc,edt2		; -
+	add	a,'z'-'l'-'P'+1	; relocate to table offset
+	jr	edt3		; exec function
+
+edt2:	; Test for EDT-Keypad keys
+
+	cp	'l'		; +
+	jr	c,esc5		;  within Keypad range?
+	cp	'y'+1		;  no => try PF-keys
+	jr	nc,esc5		; -
+	sub	'l'		; normalize
+edt3:
+	add	a,a		; dispatchtable offset
+	add	a,a
+	ld	c,a
+	ld	a,(GOLDFL)	; Gold?
+	or	a
+	jr	z,edt4		; skip if not
+	inc	c		; else point to "GOLD" entry
+	inc	c
+	xor	a
+	ld	(GOLDFL),a	; clear "GOLD"
+
+edt4:	; process EDT-Keys via EDT-Keys Dispatch table
+
+	ld	b,0
+	ld	hl,EDTTAB
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; do EDT function
+
+esc5:
+	ENDIF	;EDT
+
+	; test for normal PF-KEYS
+
+	sub	'P'		; any PFn key?
+	jp	c,VT2KEY	;  no: => VT2KEY
+	cp	'S'-'P'+1	; > PF4 ?
+	jp	nc,VT2KEY	;  yes: => VT2KEY
+
+	; check if <PFx> key has to be translated
+
+	ld	c,a
+	ld	b,0
+	push	bc		; save 0..3 for <PF1>..<PF4>
+	ld	hl,'PF'
+	ld	(SAVBUF),hl	; "PF' in SAVBUF
+	add	a,'1'		; make ASCII from PR-number
+	ld	(SAVBUF+2),a	; insert in SAVBUF
+	ld	hl,3		; P0 length
+	ld	(PARDES+P.LEN),hl
+	ld	hl,SAVBUF	; P0 address
+	ld	(PARDES+P.ADR),hl
+	call	FNDCMD		; find cmd
+	pop	bc		; restore PFn
+	jp	nc,PROCMD	;  entry found: => Process command
+
+	ld	hl,(ENDPTR)
+	ld	(CURPTR),hl	; point to end of buffer
+	ld	hl,PFTBL
+	add	hl,bc		; word
+	add	hl,bc		;  offset
+
+	; process <PFx> keys
+
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; branch
+
+PFTBL:	defw	TRANSL		; <PF1>
+	defw	RECALL		; <PF2>
+	defw	PRICMD		; <PF3>
+	defw	PRIFIF		; <PF4>
+
+; VT2xx Functionkeys
+
+VT2KEY:
+	IF	VT2XX
+	; Check if function key:
+	;
+	;	<ESC>[n~	n   1..6
+	;	  or
+	;	<ESC>[nn~	nn  11..34
+
+	ld	a,(CHAR)	; get character
+	cp	'1'		; +
+	jr	c,vt25		;  1..6?
+	cp	'6'+1		;
+	jr	nc,vt25		; -
+	ld	e,a		; char in low byte
+	ld	d,' '		; high byte = space
+	push	de		; save it
+	ld	hl,CHAR		; 1-character buffer
+	ld	de,1		; length
+	call	IOR		; read next char
+	pop	de
+	ld	a,(CHAR)	; take char.
+	cp	'~'		; tilde?
+	jr	z,vt21		;  yes: => vt21
+	cp	'0'		; +
+	jr	c,vt24		;  0..9?
+	cp	'9'+1		;
+	jr	nc,vt24		; -
+	ld	d,a		; insert in word
+	push	de		; save it
+	ld	hl,CHAR		; 1-character buffer
+	ld	de,1		; length
+	call	IOR		; read next char
+	pop	de
+	ld	a,(CHAR)
+	cp	'~'		; tilde?
+	jr	nz,vt24		;  no: => vt24
+vt21:	ld	hl,VT2TAB	; HL => VT2XX table
+	ld	b,VT2LEN/6	; B  =  table length
+vt22:	ld	a,(hl)
+	cp	e		; look for table entry
+	inc	hl
+	jr	nz,vt23
+	ld	a,(hl)
+	cp	d
+	jr	z,VT2FN		; found: => VT2FN
+vt23:	inc	hl
+	inc	hl		; next entry
+	inc	hl
+	inc	hl
+	inc	hl
+	djnz	vt22		; try next
+	ret			; not found: => LOOP
+
+vt24:	pop	bc		; flush return address
+vt25:	jp	LOOP00		; => LOOP00
+
+; Check if VT2xx key is to be translated
+
+VT2FN:	inc	hl
+	ex	de,hl
+	inc	de
+	inc	de
+	ld	hl,SAVBUF
+	ld	(hl),'F'	; insert key ident
+	inc	hl
+	ld	a,(de)
+	ld	(hl),a
+	inc	hl
+	inc	de
+	ld	a,(de)
+	ld	(hl),a
+	ld	hl,3		; assume P0 length = 3
+	cp	BLNK		; blank?
+	jr	nz,vfn1		; branch if not
+	dec	hl		; P0 length = 2
+vfn1:	ld	(PARDES+P.LEN),hl
+	dec	de
+	dec	de
+	dec	de
+	jp	PROCES		; go via table
+	ENDIF	;VT2XX
+
+; TDV2230 Key support
+
+TDVKEY:
+	IFDEF	TDV2XX
+	; <ESC> O
+	;
+	; Test character is in the range of "T" - "Z" for F1..F7
+
+	ld	a,(CHAR)	; get character
+	sub	'T'		; normalize
+	ret	c		; return if less than
+	cp	'Z'-'T'+1	; in range?
+	ret	nc		; return if not
+
+	; Function OK: convert to string
+
+	ld	hl,SAVBUF
+	ld	(hl),'F'	; insert
+	inc	hl		;  key
+	add	'1'		;   code
+	ld	(hl),a		;
+	ld	hl,2		; P0 length
+	ld	(PARDES+P.LEN),hl
+	add	a,a		; Make word offset
+	ld	c,a
+	ld	b,0
+	ld	hl,TDVTAB
+	add	hl,bc		; add table address
+	ex	de,hl
+	jp	PROCES
+	ENDIF	;TDV2XX
+	ret			; in case no VT2XX and no TDV2XX
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Process command
+
+PROCMD:	; execute command in (HL)
+
+	push	hl
+	call	IOCR		; clear current line
+	pop	hl
+	call	GETBUF		; load CMDBUF buffer
+	call	DETACH		; detach terminal
+	ld	hl,(ENDPTR)
+	ld	de,CMDBUF	; DE => CMDBUF
+	or	a
+	sbc	hl,de		; calculate length
+	ld	(LEN),hl	; save it
+	jp	EXEC3		; execute without display
+
+	SUBTTL	Key actions
+
+; Begin of line
+
+BEGLIN:
+	IF	EDT
+
+	; selected range processing
+
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jr	z,bgn1		; branch if not
+	ld	hl,CMDBUF
+	ld	(CURPTR),hl	; cursor at pos 1
+	jp	DISPLY		; rewrite line
+	ENDIF
+
+bgn1:	; put cursor at begin of line
+
+	call	SPBACK		; Back space one position
+	jr	nc,bgn1		; if CY clear not yet at the beginning
+	ret
+
+; Toggle between insert and overwrite mode
+
+CHOVER:	ld	a,(MODFLG)
+	inc	a		; change mode
+	ld	(MODFLG),a
+CHOV1:
+	IF	EXTNPR
+	; change extended prompt
+
+	ld	a,(PRMFLG)	; extended prompt?
+	or	a
+	ret	z		;  no: => return
+	ld	hl,(PROMPT)	; HL => prompt
+	inc	hl		; HL => mode character
+	ld	a,(MODFLG)
+	and	1		; overwrite?
+	ld	a,'+'		; insert indicator
+	jr	z,ov1		;  no: => ov1
+	ld	a,'-'		; overwrite indicator
+ov1:	ld	(hl),a
+	jp	DISPLY		; rewrite line
+	ELSE
+	ret
+	ENDIF
+
+; Clear line
+
+CLRLIN:
+	IF	EDT
+	; save deleted line for UNDLIN
+
+	ld	hl,CMDBUF	; HL => CMDBUF
+	ld	de,(ENDPTR)
+	call	CPHLDE		; empty line?
+	jr	z,cln1		; skip if yes
+	ex	de,hl
+	ld	(CURPTR),hl	; cursor at EOL
+	ld	ix,SAVLIN	; IX => SAVLIN
+	call	SAVE		; save line
+cln1:
+	ENDIF
+
+	; clear flags, pointers and buffer
+
+	xor	a
+	ld	(OLDFLG),a	; clear
+	ld	(UFAFLG),a	;   flags
+	ld	hl,0
+	ld	(FIFPTR),hl	; clear FIFO pointer
+
+	IF	STATUS
+	xor	a
+	ld	(FIFPOI),a	; clear FIFO pointers
+	ENDIF
+
+	jp	CLRALL		; clear all
+
+; Detach and delay
+
+DELAY:	call	IOCRLF		; print <CR><LF>
+	call	DETACH		; detach terminal
+	ld	hl,10
+	ld	d,2		; units = seconds
+	ld	e,EFN
+	ld	bc,0		; no AST
+	SC	.MRKT		; wait
+	ld	e,EFN		;  10
+	SC	.STSE		;   seconds
+	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+; Delete character
+
+DELCHR:
+	IF	EDT
+	; selected range processing
+
+	ld	hl,(CURPTR)
+	ld	de,(SELSTR)
+	ld	a,d
+	or	e		; selective range active?
+	jr	z,dc1		; skip if not
+	call	CPHLDE		; compare cursor with start of range
+	jr	c,dc1		; right of start
+	dec	de
+	ld	(SELSTR),de	; backup range
+
+dc1:	; save deleted character for UNDCHR
+
+	ld	a,(EDTFLG)
+	or	a		; EDT active?
+	jr	z,dc2		; skip if not
+	ld	a,(hl)
+	ld	(SAVCHR),a	; save deleted character
+dc2:
+	ENDIF
+
+	; shift rest of line
+
+	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)	; DE = dst
+	or	a
+	sbc	hl,de
+	ld	c,l		; BC = length
+	ld	b,h
+	ld	l,e
+	ld	h,d
+	inc	hl		; HL = src
+	jr	z,dc3
+	ldir			; shift string left
+dc3:
+	IF	EDT
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jr	z,dc4		; branch if not
+	ld	hl,(ENDPTR)
+	dec	hl
+	ld	(ENDPTR),hl	; new end of text
+	call	DISPLY		; rewrite line
+	jr	dc5
+dc4:
+	ENDIF
+
+	call	UPDATE		; rewrite line
+	ld	hl,(ENDPTR)
+	dec	hl
+	ld	(ENDPTR),hl	; new end of text
+dc5:
+	xor	a
+	ld	(OLDFLG),a	; no old command
+	ret
+
+; Delete left single char
+
+DELEC:	call	SPBACK		; back space one position
+	ret	c		; on error return
+	jp	DELCHR		; => DELCHR
+
+; Delete from start of line to cursor
+
+DELEL:	ld	de,CMDBUF	; DE => CMDBUF
+	ld	hl,(CURPTR)
+	call	CPHLDE		; at begin of buffer?
+	ret	nc		;  yes: => return
+
+	IF	EDT
+	; selected range processing
+
+	ld	bc,(SELSTR)
+	ld	a,b
+	or	c		; selective range active?
+	jr	z,dls1		; skip if not
+	call	CPBCHL		; compare cursor with start of range
+	jr	c,dls1		; skip if left of start
+	ld	(SELSTR),hl	; else backup range
+
+dls1:	; save deleted line for UNDLIN
+
+	ld	ix,SAVLIN	; IX => SAVLIN
+	call	SAVE		; save line
+	ENDIF
+
+;!!TODO: just use ldir
+
+	ld	c,e
+	ld	b,d
+	ld	de,(ENDPTR)
+dls2:	call	CPHLDE		; EOL?
+	jr	z,dls3		;  yes: => dls3
+	ld	a,(hl)		; shift string left
+	ld	(bc),a
+	inc	hl
+	inc	bc
+
+	IF	EDT
+	; selected range processing
+
+	push	hl
+	ld	hl,(SELSTR)
+	ld	a,h
+	or	l		; selective range active?
+	jr	z,dls21		; branch if not
+	dec	hl		; else backup range
+	ld	(SELSTR),hl
+dls21:	pop	hl
+	ENDIF
+
+	jr	dls2		; => dls2
+
+dls3:	; fill deleted positions with BLANK
+
+	ld	(ENDPTR),bc	; end of text
+	ld	e,c
+	ld	d,b
+	ld	hl,CMDEND
+dls4:	call	CPHLDE		; end of buffer?
+	jr	nc,dls5		;  yes: => dls5
+	ld	a,BLNK		; fill with blank
+	ld	(de),a
+	inc	de
+	jr	dls4		; loop
+
+dls5:	xor	a
+	ld	(OLDFLG),a	; no old command
+	ld	a,(ANS+1)	; ANSI Screen?
+	or	a
+	jr	nz,dls6		;  yes: => dls6
+
+	IF	EDT
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jr	nz,dls6		;  yes: => dls6
+	ENDIF	;EDT
+
+	ld	de,(PROMPT)
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE = length, HL => PROMPT
+	push	hl
+	call	IOW		; rewrite line
+	pop	de
+	ld	hl,CMDBUF
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE = length, HL => PROMPT
+	call	IOW		; reposition cursor
+	ld	hl,CMDBUF
+	ld	(CURPTR),hl
+	ret
+
+dls6:	ld	hl,CMDBUF
+	ld	(CURPTR),hl	; reposition cursor
+	jp	DISPLY		; rewrite line
+
+; Delete left single word
+
+DELEW:	ld	de,CMDBUF	; DE => CMDBUF
+	ld	hl,(CURPTR)
+	call	CPHLDE		; at begin of buffer?
+	ret	nc		;  yes: => LOOP
+	push	hl		; save cursor position
+dlw1:	dec	hl		; cursor left
+	call	CPHLDE		; at begin of buffer?
+	jr	nc,dlw3		;  yes: => dlw3
+	dec	hl
+	ld	a,(hl)		; get previous char
+	inc	hl
+	cp	BLNK		; space?
+	jr	nz,dlw2		;  no: => dlw2
+	cp	(hl)		; was previous one a space?
+	jr	z,dlw1		;  yes: => dlw1, delete it
+dlw2:	call	SRWORD		; search word
+	jr	nc,dlw1
+dlw3:	ld	c,l		; BC = start of word
+	ld	b,h
+	ex	(sp),hl		; push new cursor position, pop initial pos.
+	jp	DELWRD		; => DELWRD
+
+; Delete right single char
+
+DELRC:	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	call	CPHLDE		; at EOL?
+	ret	nc		; return if yes
+	jp	DELCHR
+
+; Delete from cursor to end of line
+
+DELRL:	ld	de,(CURPTR)	; HL => Cursor
+
+	IF	EDT
+	ld	bc,SAVLIN	; BC => SAVLIN
+	ENDIF
+
+	; detete the line
+
+	ld	hl,(ENDPTR)
+dle1:	call	CPHLDE		; EOL?
+	jr	nc,dle3		;  yes: => dle3
+	xor	a
+	ld	(OLDFLG),a	; no old command
+
+	IF	EDT
+	; save line for UNDLIN	;!!TODO: simply use ldir
+
+	ld	a,(EDTFLG)
+	or	a		; EDT active?
+	jr	z,dle2		;  no: => dle2
+	ld	a,(de)
+	ld	(bc),a		; save
+	inc	bc		;  and
+	xor	a		;   terminate
+	ld	(bc),a
+dle2:
+	ENDIF
+
+	ld	a,BLNK
+	ld	(de),a		; space
+	inc	de
+	jr	dle1
+dle3:
+	IF	EDT
+	; selected range processing
+
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jr	z,dle4		;  no: => dle4
+	ld	hl,(CURPTR)
+	ld	(ENDPTR),hl	; cursor at EOL
+	jp	DISPLY		; rewrite line
+dle4:
+	ENDIF
+
+	call	UPDATE		; rewrite line
+	ld	hl,(CURPTR)
+	ld	(ENDPTR),hl	; cursor at EOL
+	ret
+
+; Delete right single word
+
+DELRW:	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	call	CPHLDE		; at EOL?
+	ret	nc		;  yes: => LOOP
+	push	de		; save cursor position
+drw1:	ld	a,(de)		; get char
+	inc	de
+	cp	BLNK		; space?
+	jr	nz,drw2		;  no: => drw2
+	ld	a,(de)		; is next one a space?
+	cp	BLNK
+	jr	z,drw3		;  yes: => drw3, delete it
+	jr	drw4
+drw2:	call	SRWORD		; search word
+	jr	c,drw4
+drw3:	call	CPHLDE		; at EOL?
+	jr	c,drw1		;  no: => drw1
+drw4:	ex	de,hl		; HL = start of next word
+	pop	bc		; BC = Initial cursor position
+	push	bc
+	jp	DELWRD		; => DELWRD
+
+; Delete single word
+
+DELWRD:
+	IF	EDT
+	; save word for UNDWRD
+
+	ld	e,c
+	ld	d,b
+	ld	ix,SAVWRD	; IX => Save Word buffer
+	call	SAVE		; save word
+	ENDIF
+
+DELWR1:
+	IF	EDT
+	; selected range processing
+
+	ex	de,hl
+	push	hl
+	ld	hl,(SELSTR)
+	ld	a,h
+	or	l		; selective range active?
+	jr	z,dw3		; skip if not
+	ex	de,hl
+	call	CPHLDE		; compare cursor with start of range
+	ex	de,hl
+	jr	c,dw2		; branch if right of start
+	sbc	hl,de		; else
+	add	hl,bc		;  backup
+	ld	(SELSTR),hl	;     range
+	jr	dw3
+
+dw2:	call	CPBCHL		; new cursor left of start range?
+	jr	c,dw3		; branch
+	jr	z,dw3		;  if not
+	ld	(SELSTR),bc	; else update start of range
+dw3:	pop	hl
+	ex	de,hl
+
+	ENDIF
+
+	; delete and replace for BLANK
+
+	ex	de,hl
+	ld	hl,(ENDPTR)
+	call	CPHLDE		; EOL?
+	ex	de,hl
+	jr	nc,dw4		;  yes: => dw4
+	ld	a,(hl)
+	ld	(bc),a		; shift down
+	inc	bc
+	ld	(hl),BLNK	; must be replaced by space
+	inc	hl
+	jr	DELWR1		; => DELWR1
+
+dw4:	ld	(ENDPTR),bc	; new end ptr
+	pop	hl
+	ld	(CURPTR),hl	; restore cursor
+	xor	a
+	ld	(OLDFLG),a	; no old command
+	jp	DISPLY		; => Display
+
+; Move cursor to end of line
+
+ENDLIN:
+	IF	EDT
+	; selected range processing
+
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jr	z,el1		; branch if not
+	ld	hl,(ENDPTR)
+	ld	(CURPTR),hl	; end of text
+	jp	DISPLY		; rewrite line
+el1:
+	ENDIF
+
+	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	or	a
+	sbc	hl,de		; length
+	ret	z		; return if zero
+	ex	de,hl
+	call	IOW		; write from cursor to end
+	ld	hl,(ENDPTR)
+	ld	(CURPTR),hl	; end of text
+	ret
+
+; Help key
+
+HELP:	; <HELP> or <CTRL/?>  Spawn "HELP MCE "
+
+	ld	a,' '
+	ld	(HPAGE),a	; Take
+	xor	a
+	ld	(HPAG0),a	;    main help
+
+HELPGO:	; Spawn "HELP MCE xxxxx"
+
+	call	CLRSCR		; Clear screen
+	ld	hl,HLPTXT	; Move HELP MCE into Buffer
+	jp	PROCMD		; => Process command in HL
+
+; Move cursor one word to the left
+
+MOVWRD:	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	call	CPHLDE		; at EOL?
+	jr	c,mw1		;  no: => mw1
+	ld	de,CMDBUF	; set at begin
+	jr	mw4
+
+mw1:	ld	a,(de)		; get char
+	inc	de
+	cp	BLNK		; space?
+	jr	nz,mw2		;  no: => mw2
+	ld	a,(de)		; is next one a space?
+	cp	BLNK
+	jr	z,mw3		;  yes: => mw3
+	jr	mw4
+mw2:	call	SRWORD		; search word
+	jr	c,mw4
+mw3:	call	CPHLDE		; at EOL?
+	jr	c,mw1		;  no: => mw1
+mw4:	ld	(CURPTR),de
+	jp	DISPLY
+
+; Print Command buffer and put pointer to end of queue
+
+PRICMD:	ld	hl,TRNBUF+F.1ST	; point to Translation buffer
+	ld	a,1
+	ld	(PRIFLG),a	; flag Translation buffer print-out
+	jr	PRIXXX		; => PRIXXX
+
+; Print FIFO and put pointer to end of queue
+
+PRIFIF:	ld	hl,FIFO+F.1ST	; point to FIFO
+PRIXXX:	ld	(FIFPTR),hl
+	call	CLRSCR		; clear screen
+prf1:	ld	hl,(FIFPTR)
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(FIFPTR),hl	; next PTR
+	ld	a,h
+	or	l		; done?
+	jr	z,prf2		; branch if yes
+	call	GETFIF		; display
+	call	IOCRLF		; new line
+	jr	prf1		; loop
+
+prf2:	xor	a
+	ld	(PRIFLG),a	; flag command buffer print-out
+	call	CLRBUF		; clear edit buffer (FIFPTR already cleared)
+	jp	DISPLY		; display prompt
+
+; <PF2> Recall a command
+
+RECALL:
+	IF	STATUS
+	call	RECCMD		; recall command
+	jp	PRIST1		; display status line (FIFO pointer updated)
+	ELSE
+	jp	RECCMD		; recall command
+	ENDIF
+
+; <PF1> Translate a command
+
+TRANSL:	ld	de,CMDBUF	; DE => CMDBUF
+	ld	hl,(ENDPTR)
+	call	CPHLDE		; something in buffer?
+	ret	z		;  no: => LOOP
+	ld	a,1
+	ld	(NLOFLG),a	; disable command load
+	or	a
+	sbc	hl,de		; calculate Length
+	ld	(LEN),hl	; make length
+	call	CMDCHK		; command translation
+ if 0
+	ld	hl,(LEN)	; restore ENDPTR
+	ld	de,CMDBUF
+	add	hl,de		; point
+	ld	(ENDPTR),hl	;  to end
+ else
+	ld	hl,(ENDPTR)
+ endif
+	ld	(CURPTR),hl
+	call	DISPLY		; write line
+	xor	a
+	ld	(NLOFLG),a	; enable command load
+	ret
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	EDT-Key actions
+
+	IF	EDT
+; Put selective range in Paste buffer
+
+CUT:	ld	a,(EDTFLG)
+	or	a		; EDT active?
+	ret	z		; return if not
+	ld	hl,(SELSTR)
+	ld	a,h
+	or	l		; range active?
+	ret	z		; return if not
+	ld	de,(CURPTR)
+	call	CPHLDE		; compare cursor with start of range
+	ret	z		; return if equal
+	jr	c,cut1		; branch if right
+	ex	de,hl
+cut1:	ld	ix,PSTBUF	; IX => Save buffer
+	call	SAVE		; save sel. range
+	ld	c,e
+	ld	b,d
+	push	bc		; save new cursor pos.
+	ld	de,0
+	ld	(SELSTR),de	; range not active
+	xor	a
+	ld	(SELFLG),a	; clear ANSI-select flag
+	jp	DELWR1		; delete range
+
+; Keypad Help
+
+EDTHLP:	call	CLRSCR		; Clear screen
+	ld	hl,EDTTXT	; EDT helptext
+	jp	PROCMD		; => Process command in HL
+
+; "GOLD" Key
+
+GOLD:	ld	a,1
+	ld	(GOLDFL),a	; set "GOLD" flag
+	ret
+
+; Put Paste buffer in at cursor position
+
+PASTE:	ld	a,(EDTFLG)
+	or	a		; EDT active?
+	ret	z		; return if not
+	ld	ix,PSTBUF	; IX => PSTBUF
+	jp	PUTBUF		; put in edit buffer
+
+; Insert the undeleted item or Paste buffer back in the edit buffer
+
+PUTBUF:	ld	b,0		; clear counter
+	push	ix
+pb1:	ld	a,(ix)
+	or	a		; EOS?
+	jr	z,pb2		; exit loop if yes
+	inc	ix
+	inc	b		; count
+	jr	pb1		;  and loop
+
+pb2:	pop	ix		; restore start of string
+	ld	a,b
+	or	a		; any chars?
+	ret	z		; return if not
+	xor	a
+	ld	(OLDFLG),a	; no old command
+	ld	de,(ENDPTR)
+pb3:	ld	hl,CMDEND
+	call	CPHLDE		; still room?
+	ret	nc		; return if not
+	push	bc
+	push	de
+	push	ix
+	pop	hl
+	ld	de,1		; echo character
+	call	IOW
+	pop	de
+	pop	bc
+	ld	hl,(CURPTR)
+	ld	a,(MODFLG)
+	and	1		; overwrite?
+	jr	z,pb4		; branch if not
+
+	ld	a,(ix)
+	ld	(hl),a		; overwrite
+	inc	ix
+	inc	hl
+	call	CPHLDE		; at end?
+	jr	nc,pb6		; no: => Loop
+	ld	e,l		; increment end ptr
+	ld	d,h
+	jr	pb6		; => Loop
+
+pb4:	push	bc		; no overwrite - shift
+	push	de
+	push	hl
+	ld	c,l		; BC = CURPTR
+	ld	b,h
+	ld	l,e
+	ld	h,d
+	sbc	hl,bc		; compute length (note CY is clear)
+	ld	c,l		; BC = length
+	ld	b,h
+	ld	l,e		; DE = dst
+	ld	h,d
+	dec	hl		; HL = src
+	jr	z,pb5		; branch if nothing to shift
+	lddr			; else shift string right
+pb5:	pop	hl
+	pop	de
+	pop	bc
+	ld	a,(ix)
+	ld	(hl),a		; insert new character
+	inc	ix
+	inc	hl
+	inc	de		; new end
+pb6:	ld	(CURPTR),hl
+	djnz	pb3		; loop
+
+	ld	(ENDPTR),de
+
+	ld	a,(SELFLG)
+	or	a		; ANSI-Select active?
+	jp	z,UPDATE	; no: => rewrite line
+	jp	DISPLY		; rewrite line
+
+; Reset key
+
+RESET:	ld	hl,0
+	ld	(SELSTR),hl	; clear start of select
+	xor	a
+	ld	(SELFLG),a	; clear ANSI-select flag
+	ld	a,(ANS+1)
+	or	a		; test ANSI-flag
+	ret	z		; no ANSI, return
+	jp	DISPLY
+
+; Select key
+
+SELECT:	ld	a,(EDTFLG)
+	or	a		; EDT active?
+	ret	z		; return if not
+	ld	hl,(CURPTR)
+	ld	(SELSTR),hl	; save of select address
+	ld	a,(ANS+1)
+	ld	(SELFLG),a	; set ANSI-select flag
+	or	a
+	ret	z		; no ANSI, return
+	jp	DISPLY
+
+; Display Free pool
+
+SHFREE:	call	ICFREE		; display free pool
+	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+; Show Version
+
+SHVERS:	call	ICVERS		; display Version
+	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+; Undelete character (insert the undeleted character back into the
+; edit buffer)
+
+UNDCHR:	ld	a,(SAVCHR)	; take saved character
+	ld	(CHAR),a
+	or	a
+	ret	z		; return if not present
+	jp	INSERT		; else insert it
+
+; Undelete line
+
+UNDLIN:	ld	ix,SAVLIN	; IX => saved line
+	jp	PUTBUF		; put in edit buffer
+
+; Undelete word
+
+UNDWRD:	ld	ix,SAVWRD	; IX => Saved word
+	jp	PUTBUF		; put in edit buffer
+
+	ENDIF	;EDT
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	VT2XX-Key actions
+
+	IF	VT2XX
+
+	IF	MAXHLP LT 'A'
+
+; Next screen
+
+NXTHLP:
+
+; Previous screen
+
+PRVHLP:
+
+; Previous/Next help not supported
+
+	ld	hl,NOHTXT	; no help page
+	ld	de,NOHLEN	;
+	call	IOW		;   information
+	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+	ELSE	;MAXHLP LT 'A'
+
+; Next Help screen
+
+NXTHLP:	ld	a,(HPAG0)
+	or	a		; was main help last?
+	jr	nz,nxh1		;  no: => nxh1
+	ld	a,' '
+	ld	(HPAG0),a	; sub topics
+	ld	a,'A'-1
+	ld	(HPAGE),a	; init for first subtopic
+nxh1:	ld	a,(HPAGE)
+	inc	a		; next screen
+	ld	(HPAGE),a
+	cp	MAXHLP+1	; high limit?
+	jr	c,nxh2		;  no => nxh2
+	ld	a,MAXHLP
+	ld	(HPAGE),a	; take last help
+
+nxh2:	; Spawn "HELP MCE<page+1>"
+
+	jp	HELPGO		; =>
+
+; Previous Help screen
+
+PRVHLP:	ld	a,(HPAGE)	; previous screen
+	dec	a
+	ld	(HPAGE),a
+	cp	'A'		; low limit?
+	jr	nc,prh1		;  no => prh1
+	ld	a,' '
+	ld	(HPAGE),a	; take
+	xor	a
+	ld	(HPAG0),a	;    main help
+
+prh1:	; Spawn "HELP MCE<page-1>"
+
+	jp	HELPGO		; =>
+
+	ENDIF	;MAXHLP-'A
+
+; Check for VT2XX <ESC><ESC>
+; Typed VT2xx F11 (<ESC>) key; look for a second one
+
+VT2ESC:	ld	hl,CHAR		; 1-character buffer
+	ld	de,1		; length
+	call	IOR		; get next char
+	ld	a,(IOSTAT+1)
+	cp	ESC		; <ESC> ?
+	ret	nz		;  no: => return
+	ld	ix,VT2ESQ	; IX -> VT2XX ESC-SEQ.
+	ld	b,VT2ESL	; B = Length
+vte1:	push	bc
+	call	IOR		; get next char
+	pop	bc
+	ld	a,(CHAR)
+	cp	(ix)		; match?
+	inc	ix
+	ret	nz		;  no: => return
+	djnz	vte1		; next
+	jp	EXENW		; <ESC><ESC>
+
+	ENDIF	;VT2XX
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Command Execution
+
+; Execute and leave pointer
+
+EXELEA:	ld	hl,LEAFLG	; don't clear pointers
+	inc	(hl)
+	jr	EXEC1		; => EXEC1
+
+; Save command without execution
+
+EXENO:	ld	hl,NEXFLG	; don't execute
+	inc	(hl)
+	jr	EXEC1		; => EXEC1
+
+; Execute command no-wait
+
+EXENW:	xor	a
+	ld	(WAITFL),a	; clear EVF
+	jr	EXEC1		; => EXEC1
+
+; Execute command
+
+EXEC:	ld	a,1
+	ld	(WAITFL),a	; EVF = 1
+EXEC1:	call	IOCR		; print <CR>
+	call	DETACH		; detach terminal
+	ld	hl,(ENDPTR)
+	ld	de,CMDBUF
+	or	a
+	sbc	hl,de		; calculate length
+	ld	(LEN),hl	; store
+	call	SUPRES		; ignore leading blanks
+	jr	c,exe5		; if empty, return
+
+exe1:	ld	a,(OLDFLG)	; old command?
+	or	a
+	jr	z,exe2		; no, load in FIFO
+	ld	a,(SOLFLG)	; save old commands?
+	or	a
+	jr	z,exe3		; no, don't load in FIFO
+	push	de
+	ld	hl,(FIFPTR)
+	ld	de,(FIFO+F.LAST)
+	call	CPHLDE		; is this the last entry in the FIFO?
+	pop	de
+	jr	z,exe3		; if yes, don't load twice in sequence
+exe2:	call	LDFIF		; load into FIFO
+exe3:	ld	a,(LEAFLG)	; leave pointers?
+	or	a
+	jr	nz,EXEC2	; branch if EXEC2
+	ld	hl,0
+	ld	(FIFPTR),hl	; else clear FIFO pointer
+
+	IF	STATUS
+	xor	a
+	ld	(FIFPOI),a	; clear FIFO pointers
+	ENDIF
+
+	ld	a,(NEXFLG)	; execute?
+	or	a
+	jr	nz,exe5		; no, return
+
+EXEC2:	call	CMDCHK		; check for command translation
+	jr	c,exe5		; nothing to execute
+
+EXEC3:
+	IF	TIMOUT
+	xor	a
+	ld	(TMOCNT),a	; disable time-outs (until next IO)
+	ENDIF
+
+	call	SUPRDE		; ignore leading blanks (Start at DE)
+	jr	c,exe5		; if CY set: empty command
+
+	; DE  => First non blank character
+	; LEN =  Length of command
+
+	IF	NOT COMPND
+	call	INTERN		; internal command, BYE or LOG?
+	jr	nc,exe5		; if CY clear: no command for CLI
+	ENDIF
+
+	call	DOEXEC		; execute command in buffer CMDBUF
+	ld	a,(WAITFL)	; wait?
+	or	a
+	jr	nz,exe4		; branch if yes
+	inc	a
+	ld	(WAITFL),a	; make flag #1
+
+	ld	hl,20		; 20 seconds
+	ld	d,2
+	ld	a,(WAITFL)
+	ld	e,a
+	ld	bc,0		; no AST
+	SC	.MRKT		; allow task to run
+
+exe4:	ld	a,(WAITFL)
+	ld	e,a
+	SC	.STSE		; stop until done
+exe5:	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+; Task exit AST
+
+EXAST:	; change STOP to WAIT
+
+	ld	bc,IO.KIL	;; kill
+	call	IO		;;  pending read
+  if 0
+	MOV	WAITIO,STOPIO	;; change DIC-code
+	DIR$	#STOPIO		;; wait for I/O
+  endif
+
+; Task exit
+
+EXIT:
+	IF	NOT SILENT
+	ld	hl,ENDTXT	; exit
+	call	IOMSG		;   message
+	ENDIF
+	call	TTCLR		; clear status line and detach terminal
+
+; Immediate task exit
+
+EXITI:	ld	hl,0
+	SC	.EXIT		; exit
+
+; Clear status line and detach terminal
+
+TTCLR:
+	IF	STATUS
+	ld	a,(ANS+1)	; ANSI screen?
+	or	a
+	ld	hl,STACLR	; if yes, clear
+	ld	de,STACLN	;  status line
+	call	nz,IOW
+	ENDIF
+
+	jp	DETACH		; detach terminal
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Internal Command Handling
+
+; Check for internal commands
+
+; Input: DE  => Buffer
+;        LEN =  Length
+;
+; Check if the command (the first in a compound command line AFTER
+; translation) is BYE, LOG[out] or an internal command starting with "MCE".
+; Checking for the special commands after translation offers the possibility
+; to redefine LOGOUT or BYE (e.g. LOGOF*F := BYE, BYE := LOGOUT)
+;
+; INTERN returns the CY-bit set if no internal command was found (i.e. the
+; buffer has to be submitted to the CLI.) Else (internal command found),
+; the routine returns with CY clear (don't send command to CLI.)
+
+INTERN:	; To be recognized as an internal command, at least 3 characters
+	; must be present. Internal commands trapped are:
+	;
+	; BYE        : the MCR RSX logout command
+	; LOG[OUT]   : the DCL RSX logout command
+	; MCE action : MCE internal actions
+
+	ld	a,(LEN)
+	cp	3		; length in range?
+	ret	c		; no, return with CY set
+	ex	de,hl		; HL => buffer
+
+	IF	CLISUP
+	push	hl
+	ld	hl,SDCL
+	ld	de,CLINAM
+	ld	b,3
+	call	STRNCP		; in DCL?
+	pop	hl
+	jr	nz,int1		; branch if not
+
+	ld	de,SLOG
+	call	CMP3		; LOG?
+	jr	z,int2
+int1:
+	ENDIF
+
+	ld	de,SBYE
+	call	CMP3		; BYE?
+	jr	nz,int3
+
+int2:	call	TTCLR		; clear status line and detach terminal
+	ld	hl,SMCR
+	ld	de,TASK
+	ld	bc,3
+	ldir			; force MCR...
+	ld	hl,BYETXT	; command to spawn is "BYE"
+	call	GETBUF		; copy to CMDBUF
+	ld	de,CMDBUF	; DE => CMDBUF
+	ld	hl,3		; "BYE" = 3 char.
+	ld	(LEN),hl
+	xor	a
+	ld	(WAITFL),a	; don't wait
+	call	DOEXE1		; submit "BYE" to MCR...
+	jp	EXITI		; immediate task exit
+
+int3:	ld	de,SMCE
+	call	CMP3		; MCE?
+	ex	de,hl
+	scf
+	ret	nz		; return CY, no internal command trapped
+
+	; Internal command strings must not be less than 8 characters 
+	; in length:
+	;
+	;    (12345678   )
+	;    (MCE XXXXxxx)
+	;
+	; Ignore any chars after the first 8.
+
+	ld	hl,INTCMD	; point to internal command table
+	inc	de
+	inc	de
+	inc	de		; point after "MCE"
+	ld	a,(LEN)
+	sub	3
+	ld	(LEN),a
+	call	SUPRDE		; suppress spaces
+	jp	c,int14		; error if empty (argument required)
+	ld	a,(LEN)
+	sub	4		; at least 4 characters left?
+	jp	c,int14		; error if not
+	ld	(LEN),a		; adjust length, now after "MCE XXXX"
+
+int6:	; look for verb in table
+
+	ld	a,(hl)
+	or	a		; end of table reached?
+	jr	z,int14		; error if yes (invalid internal command)
+	push	hl
+	push	de
+	ld	b,4
+	call	STRNCP		; compare strings
+	jr	z,int7		; exit loop if match found
+	pop	de
+	pop	hl
+	ld	bc,6		; point to next table entry
+	add	hl,bc
+	jr	int6		; look for next
+
+int7:	pop	bc		; discard saved HL
+	pop	bc		;  and DE
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	JPHL		; EXECute internal command
+	jr	c,int14		; not OK? => display error message
+
+	; command line is already saved, see if we have to delete it
+
+	ld	a,(SINFLG)	; save internal command?
+	or	a
+	ret	nz		; if yes, we're done
+
+	IF	FILE
+	ld	a,(FILREX)	; Read or Replace being processed?
+	or	a
+	jr	nz,int9		; branch if yes
+	ld	a,(FILINP)	; file input?
+	or	a
+	ret	nz		; return if yes
+int9:	xor	a
+	ld	(FILREX),a	; else clear flag
+	ENDIF
+
+	; delete the command
+
+	ld	hl,(FIFO+F.1ST)	; HL => first entry
+	ld	a,h
+	or	l
+	ret	z		; return success if no entries
+	ld	de,(FIFO+F.LAST); DE => last entry (the one to delete)
+	call	CPHLDE		; 1st = last?
+	jr	z,int12		; branch if yes
+int10:	push	hl		; now search for previous to last
+	ld	bc,FI.NXT
+	add	hl,bc
+	ld	a,(hl)		; get next entry
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CPHLDE		; next = last?
+	pop	bc
+	jr	nz,int10	; no, loop
+
+	ld	(FIFO+F.LAST),bc; set new last
+	xor	a
+	ld	(bc),a		; clear next pointer on last
+	inc	bc
+	ld	(bc),a
+	ld	hl,FI.LEN
+	add	hl,de
+	ld	a,(hl)		; get size of last entry
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl		; HL = block address, DE = length
+	ld	ix,FREE		; IX => free memory listhead
+	call	MFREE		; release block
+	jr	int13
+
+int12:	ld	ix,FIFO+F.1ST	; IX => header
+	call	FRENT		; free entry
+int13:	ld	a,(FIFCNT)
+	dec	a		; one less
+	ld	(FIFCNT),a
+	or	a		; success
+	ret
+
+int14:	ld	hl,ERRTXT	; error
+	call	IOMSG		;  message
+	or	a
+	ret
+
+JPHL:	jp	(hl)
+
+CMP3:	push	hl
+	ex	de,hl
+	ld	b,3
+	call	STRNCP
+	ex	de,hl
+	pop	hl
+	ret
+
+	IF	CLISUP
+SLOG:	db	'LOG'
+	ENDIF
+SBYE:	db	'BYE'
+SMCE:	db	'MCE'
+
+; Clear FIFO
+
+ICCLEA:	ld	a,(MAXF)
+	push	af		; save maxfifo
+	xor	a
+	ld	(MAXF),a
+	call	CLEFIF		; clear FIFO
+	pop	af
+	ld	(MAXF),a	; restore maxfifo
+	ret
+
+; CMD Size (Cmsz x)
+
+ICCMSZ:	ld	bc,CMDSIZ+1	; values from 1..CMDSIZ+1
+				;  (one more to avoid saving)
+	call	VALUE		; convert and check
+	ret	c
+	ld	a,l
+	ld	(MINC),a	; store result
+	ret
+
+; Echo On/Off
+
+ICECHO:	ld	ix,ECHFLG	; IX => flag
+	jp	ONOFF		; set state
+
+; FIFO size (Fisz x)
+
+ICFISZ:	ld	bc,99
+	call	VALUE		; get value
+	ret	c
+	ld	a,l
+	ld	(MAXF),a	; store result
+	jp	CLEFIF		; clear FIFO
+
+; Free pool space
+
+ICFREE:	ld	hl,0
+	ld	(POOL),hl	; clear number of fragments
+	ld	(POOL+2),hl	; clear total pool
+	ld	(POOL+4),hl	; clear biggest hole
+	ld	hl,(FREE)	; get address of pool listhead
+icf1:	ld	a,h
+	or	l
+	jr	z,icf3		; exit loo if no (more) blocks
+	ld	e,(hl)		; DE => next block
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; BC = block size
+	inc	hl
+	ld	b,(hl)
+	push	hl
+	ld	hl,(POOL+2)
+	add	hl,bc		; add this space to total
+	ld	(POOL+2),hl
+	ld	hl,(POOL+4)
+	call	CPBCHL		; this size > stored?
+	jr	nc,icf2
+	ld	(POOL+4),bc	; set new max if yes
+icf2:	ld	hl,(POOL)
+	inc	hl		; increment number of pool fragments
+	ld	(POOL),hl
+	pop	hl
+	ex	de,hl
+	jr	icf1
+
+icf3:	ld	hl,POOLDT	; POOL message
+	ld	b,3		; 3 words to convert
+	ld	ix,POOL+4
+icf4:	ld	e,(ix)		; get binary value
+	ld	d,(ix+1)
+	xor	a
+	call	CVTWD		; convert to ASCII
+	ld	(hl),':'	; terminate
+	inc	hl
+	dec	ix		; next word
+	dec	ix
+	djnz	icf4
+
+	push	hl
+	call	IOCRLF		; newline
+	pop	hl
+	ld	de,POOLTX
+	or	a
+	sbc	hl,de
+	dec	hl
+	ex	de,hl		; HL => message, DE = length
+	jp	IOW		; write
+
+CPBCHL:	ld	a,h
+	cp	b
+	ret	nz		; CY if BC > HL
+	ld	a,l
+	cp	c
+	ret
+
+; Auto insert On/Off
+
+ICINSE:	ld	ix,INSFLG	; IX => flag
+	call	ONOFF		; set state
+	ret	c		; on error return
+	ld	a,(ix)
+	or	a		; set?
+	ret	z		; return if not
+	xor	a
+	ld	(OVSFLG),a	; else clear auto overwrite
+	ret
+
+	IF	EDT
+; Keypad On/Off
+
+ICKEYP:	ld	ix,EDTFLG	; IX => flag
+	jp	ONOFF		; set state
+
+	ENDIF	;EDT
+
+; FIFO is LIST
+
+ICLIST:	xor	a
+	ld	(RNGFLG),a	; set mode to LIST
+	ret
+
+	IF	PWD
+; Lock the terminal with a password
+
+ICLOCK:	ld	bc,IO.ATT
+	call	IO		; attach the terminal
+	ld	hl,PASTXT	; => "PASSWORD>"
+	ld	de,PASTXL	; length
+	call	IOW		; output the message
+	ld	hl,PWDBUF	; HL => buffer
+	call	GETPWD		; read the password
+	ld	a,(PWDBUF)	; any password?
+	or	a
+	jr	z,lck2		; detach terminal and return if not
+	ld	hl,VFYTXT	; => "VERIFICATION>"
+	ld	de,VFYTXL	; length
+	call	PWDVFY		; verification
+	jr	c,lck2		; no match => detach and return
+	ld	hl,LCKTXT	; => "LOCKED"
+	ld	de,LCKTXL	; length
+	call	IOW		; print the message
+lck1:	ld	hl,ULKTXT	; => "UNLOCK PASSWORD>"
+	ld	de,ULKTXL	; length
+	call	PWDVFY		; verification
+	jr	c,lck1		; loop until match
+lck2:	ld	bc,IO.DET
+	jp	IO		; detach the terminal and return
+
+PWDVFY:	call	IOW		; output message
+	ld	hl,VRFBUF
+	call	GETPWD		; get password
+	ld	hl,PWDBUF	; HL => password
+	ld	de,VRFBUF	; DE => verification
+	ld	b,8		; count
+pwv1:	ld	a,(de)
+	cp	(hl)		; compare
+	scf
+	ret	nz		; return CY if not equal
+	inc	hl
+	inc	de
+	djnz	pwv1		; next
+	or	a		; return CY clear if equal
+	ret
+
+GETPWD:	push	hl		; save buffer address
+	ld	b,8		; B = Buffer size
+	xor	a
+gpw1:	ld	(hl),a		; clear buffer
+	inc	hl
+	djnz	gpw1
+	pop	ix		; restore address
+	ld	hl,TMPBUF	; input buffer address
+	ld	de,1		; characters to read
+	ld	b,8		; B = buffer size
+gpw2:	push	bc
+;!!	ld	bc,IO.RNE!TF.RAL ; Read-All No-Echo
+	call	IOR		; read char
+	pop	bc
+	ld	a,(hl)
+	cp	CR		; Return?
+	ret	z		; return if yes
+	cp	BLNK+1		; <= space?
+	jr	c,gpw2		; ignore if yes
+	cp	'~'+1		; > ~ ?
+	jr	nc,gpw2		; ignore if yes
+	ld	(ix),a		; else store in buffer
+	inc	ix
+	ld	(hl),'*'	; echo as '*'
+	push	bc
+	call	IOW		; do IO
+	pop	bc
+	djnz	gpw2		; max. 8 characters
+	ret
+
+	ENDIF	;PWD
+
+; Auto overwrite On/Off
+
+ICOVER:	ld	ix,OVSFLG	; IX => flag
+	call	ONOFF		; set state
+	ret	c		; on error, return
+	ld	a,(ix)
+	or	a		; set?
+	ret	z		; return if not
+	xor	a
+	ld	(INSFLG),a	; else clear auto insert
+	ret
+
+	IF	EXTNPR
+
+; Prompt On/Off
+
+ICPROM:	ld	ix,PRMFLG	; IX => flag
+	jp	ONOFF		; set state
+
+	ENDIF	;EXTNPR
+
+; Delete (Purge) the current translation table
+
+ICPURG:	ld	ix,TRNBUF+F.1ST	; queue header for translation table
+	call	FRENT		; delete table entry
+	jr	c,ICPURG	; loop if more entries
+	ret
+
+	IF	FILE
+
+; Read commands from file specified
+
+ICREAD:	push	de		; save pointer
+	ld	a,(FILINP)	; is a file open?
+	or	a
+	jr	z,icr1		;  no: just open new
+
+	; close a file currently open, i.e. 'MCE READ' issued from
+	; inside a definition is equivalent to a 'MCE CHAIN' command
+
+	call	FILCLO		; close current file
+
+icr1:	pop	hl		; point after 'MCE XXXX'
+	ld	de,(LEN)	; length of command
+	call	GETFIL		; get new file name
+	jr	c,icr2		; error => icr2
+	call	FILOP1		; read file(s)
+	ld	a,1
+	ld	(FILREX),a	; Read or Replace being processed
+icr2:	or	a		; always success
+	ret
+
+; Replace command definitions
+
+ICREPL:	push	de		; save pointer
+	call	ICPURG		; delete current translation table
+	pop	de		; restore pointer
+	jp	ICREAD
+
+	ENDIF	;FILE
+
+; FIFO is RING buffer
+
+ICRING:	ld	a,1
+	ld	(RNGFLG),a	; set mode to RING
+	or	a
+	ret
+
+	IF	STATUS
+; Status [on/off]
+
+ICSTAT:	call	DELSEA		; search for delimiter
+	ld	a,(LEN)
+	cp	1+1		; no blanks, or just one blank left?
+	jr	nc,ics1		; branch if not
+	call	STAFIL		; else fill status line
+	call	IOCRLF
+	ld	hl,STATX3	; address
+	ld	de,STALN3	; length
+	jp	IOW		; display status
+
+ics1:	ld	a,(ANS+1)	; ANSI terminal?
+	or	a
+	ret	z		; return if not
+	ld	ix,STAFLG	; IX => flag
+	ld	c,(ix)		; old status
+	push	bc		; save it
+	call	ONOFF		; set state
+	pop	bc		; restore
+	ret	c		; on error, return
+	ld	a,(STAFLG)
+	or	a		; Off?
+	ret	nz		; return if not
+	ld	a,c
+	or	a		; was it on?
+	ret	z		; return if not
+	ld	hl,STACLR	; address
+	ld	de,STACLN	; length
+	jp	IOW		; clear status line
+
+	ENDIF	;STATUS
+
+; Save internal commands On/Off
+
+ICSVIN:	ld	ix,SINFLG	; IX => flag
+	jp	ONOFF		; set state
+
+; Save old commands On/Off
+
+ICSVOL:	ld	ix,SOLFLG	; IX => flag
+	jp	ONOFF		; set state
+
+	IF	TIMOUT
+	IF	TMOSET
+
+; Time-out Value (Timo x)
+
+ICTIMO:	push	de		; save current pointer to command line
+	ld	bc,999		; values from 1...999
+	call	VALUE		; test if time-out value on command line
+	jr	c,ict1		; branch if not
+	ld	(TMOVAL),hl	; else store result
+	inc	sp		; forget about old command pointer
+	inc	sp
+	ret			; return success
+
+ict1:	pop	de		; restore command line pointer
+	ld	ix,TMOFLG	; IX => flag
+	call	ONOFF		; maybe it is ON/OFF
+	ret	c		; neither, return with CY set
+
+	IF	STATUS
+	call	PRIST1		; print status line (TMO status updated)
+	ENDIF
+
+	call	CANMRK		; clean old time-out ASTs
+	ld	a,(TMOFLG)
+	or	a		; time-out ON?
+	call	nz,MARK		; if yes, set up next time-out
+	or	a
+	ret
+
+	ENDIF	;TMOSET
+	ENDIF	;TIMOUT
+
+; Up find
+
+ICUPFI:	ld	ix,UPFFLG	; UP Find flag
+	jp	ONOFF		; set state
+
+	IF	UPR
+
+; User Prompt
+
+ICUSPR:	call	DELSEA		; search for delimiter
+	call	SUPRDE		; suppress spaces
+	ld	a,(LEN)		; save
+	ld	(USERPL),a	;  length
+	or	a
+	ret	z		; return if zero
+	ld	c,a
+	ld	b,0
+	ex	de,hl
+	ld	de,CMDBUF-1	; DE => Prompt area
+	add	hl,bc		; HL => End of prompt
+	dec	hl
+	lddr			; copy prompt
+	ret
+
+	ENDIF	;UPR
+
+; Show version
+
+ICVERS:	ld	hl,STRTXT	; print
+	ld	de,STRLEN	;  startup
+	jp	IOW		;   message
+
+; Clear FIFO
+
+CLEFIF:	ld	a,(FIFCNT)
+	ld	c,a
+	ld	a,(MAXF)
+	cp	c		; maximum reached?
+	ret	nc		; return if not
+	call	CLFIFI		; release first entry
+	jr	c,CLEFIF	; loop if more entries
+	ret
+
+; Delimiter (BLANK) search
+
+DELSEA:	ld	a,(LEN)		; get length
+	or	a
+	ret	z		; return if zero
+ds1:	ld	a,(de)
+	cp	BLNK		; starts with a Space?
+	ret	z		; return if yes
+	inc	de		; next
+	ld	a,(LEN)
+	dec	a		; one less
+	ld	(LEN),a
+	jr	nz,ds1		; loop
+	ret
+
+; Check for ON or OFF in command
+; IX => Byte flag
+
+ONOFF:	call	DELSEA		; search for delimiter
+	call	SUPRDE		; suppress spaces
+	ret	c		; if empty, return CY set
+	ld	hl,SON
+	ld	b,2
+	push	de
+	call	STRNCP		; check for ON
+	pop	de
+	jr	nz,off		; no match, try off
+	ld	(ix),1		; else set flag
+	ret			; and return success
+
+off:	ld	hl,SOFF
+	ld	b,3
+	call	STRNCP		; check for OFF
+	scf
+	ret	nz		; no match, return CY set
+	xor	a
+	ld	(ix),a		; else reset flag
+	ret			; return success
+
+SON:	db	'ON'
+SOFF:	db	'OFF'
+
+;-----------------------------------------------------------------------
+
+	SUBTTL	Subroutines
+
+; Clear first entry of FIFO buffer
+
+CLFIFI:	ld	ix,FIFO+F.1ST	; this header
+	call	FRENT		; free entry from queue
+	ret	nc		; return if empty
+	ld	a,(FIFCNT)
+	dec	a		; adjust count
+	ld	(FIFCNT),a
+	ret
+
+; Clear ALL
+
+CLRALL:
+	IF	EDT
+	ld	hl,0
+	ld	(SELSTR),hl	; clear start of select
+	xor	a
+	ld	(SELFLG),a	; clear ANSI-select flag
+	ENDIF
+
+	call	CLRBUF		; clear edit buffer
+	IF	STATUS
+	call	DISPLY		; display prompt
+	jp	PRIST1		; print status line
+	ELSE
+	jp	DISPLY		; display prompt
+	ENDIF
+
+; Clear CMDBUF buffer
+
+CLRBUF:	ld	hl,CMDBUF
+	ld	(CURPTR),hl
+	ld	(ENDPTR),hl
+	ld	b,CMDSIZ
+clr:	ld	(hl),BLNK	; reset CMDBUF to all blanks
+	inc	hl
+	djnz	clr		; loop if not the end
+	ret
+
+; Clear Screen
+
+CLRSCR:	ld	a,(ANS+1)
+	or	a		; ANSI screen?
+	jp	z,IOCRLF	; output blank line if not
+
+	IF	STATUS
+	ld	a,(STAFLG)
+	or	a		; status line on?
+	ld	hl,REGCLR
+	ld	de,REGCLL
+	jp	nz,IOW		; clear region if yes
+	ENDIF
+
+	ld	hl,SCRCLR
+	ld	de,SCRCLL
+	jp	IOW		; clear screen
+
+; Check for command definition
+; or replace first command word by stuff defined in command buffer
+; P1..P8 may also be replaced
+;
+;   DE  => Buffer
+;   LEN =  Length
+
+CMDCHK:	push	de		; save CMDBUF pointer
+	ex	de,hl
+	ld	de,(LEN)
+	push	de		; save initial length
+
+	ld	de,CMDDES
+	ld	b,CMDARL
+	xor	a
+cck1:	ld	(de),a		; clear scratch buffer
+	inc	de
+	djnz	cck1
+
+	; compress all blanks to single spaces
+
+	ld	a,(LEN)
+	ld	b,a		; B  =  length
+	ld	de,SAVBUF	; DE => destination buffer
+	ld	ix,PARDES	; IX => current parameter descriptor
+	xor	a
+	ld	(PCOUNT),a
+	ld	(ix+P.ADR),e	; start of P0
+	ld	(ix+P.ADR+1),d
+
+cck2:	; store single char
+
+	ld	a,(hl)		; get char
+	inc	hl
+	call	CNVUPC		; uppercase and check for space
+	ld	(de),a		; store char in SAVBUF
+	inc	de
+	jr	nc,cck6		; branch if no delimiter found
+
+cck3:	ld	a,(hl)
+	cp	BLNK		; another space?
+	jr	nz,cck4		; exit this loop if yes
+	inc	hl		; else advance pointer
+	djnz	cck3		; and loop
+
+	jr	cck8		; exit outer loop if end of buffer
+
+cck4:	; to next Pn
+
+	ld	a,(PCOUNT)
+	or	a		; is this P0?
+	jr	nz,cck5		; branch if not
+	dec	de		; point to space
+	ld	(CMDDES+P.ADR),de ; set start address of command tail
+	inc	de
+
+cck5:	cp	8		; already on P8?
+	jr	nc,cck6		; branch if yes, P8 gets all the rest
+	inc	a
+	ld	(PCOUNT),a
+	push	bc
+	ld	bc,P.SIZ
+	add	ix,bc		; next parameter
+	pop	bc
+	ld	(ix+P.ADR),e	; start address
+	ld	(ix+P.ADR+1),d
+	jr	cck7		; do not count
+
+cck6:	; no delimiter found
+
+	inc	(ix+P.LEN)	; count char
+cck7:	djnz	cck2		; next character
+
+cck8:	push	de
+	ex	de,hl
+	ld	de,SAVBUF
+	or	a		; calculate
+	sbc	hl,de		;  compressed length
+	pop	de
+	ld	(LEN),hl
+	ld	hl,(CMDDES+P.ADR)
+	ld	a,h
+	or	l		; any arguments present?
+	jr	z,cck9		; branch if not
+	ex	de,hl
+	or	a
+	sbc	hl,de		; else calculate length of command tail
+	ld	(CMDDES+P.LEN),hl ; store length
+
+	; Now everything is uppercased, compressed, parsed and moved to
+	; SAVBUF. Check if we define a new command with a ":=" in P1
+
+cck9:	ld	hl,PARDES+P.SIZ	; HL => P1 descr
+	ld	a,(hl)
+	inc	hl
+	inc	hl
+	cp	2		; correct length?
+	jr	nz,cck10	; branch if not
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL => string
+	ld	a,(hl)
+	inc	hl
+	cp	':'
+	jr	nz,cck10
+	ld	a,(hl)
+	inc	hl
+	cp	'='		; ":=" ?
+	jr	nz,cck10
+	call	NEWCMD		; match found
+	scf			; nothing to execute
+	jr	cck11
+
+cck10:	; try to find an entry in the command buffer with key P0
+
+	call	FNDCMA		; check in table
+	jr	nc,cck12	; branch if entry found
+	or	a		; indicate success
+cck11:	pop	hl
+	ld	(LEN),hl	; restore initial length
+	pop	de		; restore CMDBUF pointer
+	ret
+
+cck12:	; entry found, HL points to text
+
+	ld	de,CMDBUF	; DE => destination
+
+cck13:	; assemble buffer CMDBUF
+
+	ld	a,(hl)		; next char
+	inc	hl
+	or	a
+	jr	z,cck15		; all done, exit loop
+	cp	"'"		; could it be 'Pn'?
+	jr	nz,cck14	; skip if not
+	call	SUBST		; check it and substitute if necessary
+	jr	c,cck13		; already substituted, loop
+
+cck14:	ld	(de),a		; store character in CMDBUF
+	inc	de
+	jr	cck13		; loop to process next char from CMDBUF
+
+cck15:	; whole buffer moved to CMDBUF
+
+	ld	a,(FTCFLG)
+	or	a		; buffer already fetched?
+	ld	ix,CMDDES	;  this descriptor to append
+	call	z,STORE		; store if not
+
+	; all done, execute new command
+
+	ld	hl,CMDBUF	; HL => CMDBUF
+	ex	de,hl
+	or	a
+	sbc	hl,de		; calculate new length
+	ld	(LEN),hl	;  and store
+	pop	bc		; flush pointer
+	pop	bc		;  and length
+	ld	a,(OVMFLG)
+	or	a		; buffer overflow?
+	ret	z		;  no: => return
+	ld	hl,TOOLON	; give
+	call	IOMSG		;   message
+	scf			; not success
+	ret
+
+; Convert char to upper case, set CY if delimiter
+
+CNVUPC:	call	UCASE		; convert to uppercase
+	cp	BLNK		; delimiter?
+	scf
+	ret	z		; its a delimiter
+	or	a		; character within string
+	ret
+
+; Detach terminal
+
+DETACH:
+	IF	STATUS
+	; Restore buffer size
+
+	ld	a,(STAFLG)	; status line wanted?
+	or	a
+	ld	hl,SFGMCB	;  GMC buffer
+	ld	de,SFGMCL	;  GMC buffer length
+	ld	bc,SF.SMC	;  SMC code
+	call	nz,IO		; do it
+	ENDIF	;STATUS
+
+	IF	EDT
+	ld	a,(EDTFLG)	; EDT keys enabled?
+	or	a
+	ld	hl,NUMTXT	;  numeric keypad
+	ld	de,2		;  length
+	call	nz,IOW		; write if yes
+	ENDIF	;EDT
+
+	ld	bc,IO.DET	; detach
+	jp	IO		;  the terminal
+
+; Rewrite whole line
+
+;!!TODO: check newline logic! (see e.g. DETACH, LEN save/restore was removed)
+;        (note: affects only non-ANSI terminals)
+
+DISPLY:	ld	a,(ANS+1)
+	or	a		; ANSI screen?
+	jr	nz,dpy2		; branch if yes
+	ld	hl,(ADR)
+	ld	de,(PROMLF)
+	call	CPHLDE		; just newline written?
+	jr	nz,dpy1		;  no: => dpy1
+	ld	hl,(LEN)
+	ld	de,2
+	call	CPHLDE		; something written?
+	jr	nc,dpy2		;  no: => dpy2
+dpy1:	ld	hl,(PROMLF)	; line with <LF><CR>
+	jr	dpy3		; => dpy3
+
+dpy2:	ld	hl,(PROMPT)	; line with <CR>
+dpy3:	ld	(ADR),hl
+	ex	de,hl
+	ld	hl,(ENDPTR)
+	push	hl
+	or	a
+	sbc	hl,de		; calculate length
+	ex	de,hl
+
+	pop	hl		; HL => EOL
+	ld	(hl),ESC	; append
+	inc	hl		;  clear
+	ld	(hl),'['	;   till
+	inc	hl		;    EOL
+	ld	(hl),'K'	;     Esc sequence
+	ld	a,(ANS+1)
+	or	a		; ANSI screen?
+	jr	z,dpy4		; branch if not
+	inc	de		; else make Escseq visible
+	inc	de
+	inc	de
+dpy4:	ld	(LEN),de
+
+	IF	EDT
+	push	hl
+	push	de
+	ld	hl,(SELSTR)
+	ld	a,h
+	or	l		; select active?
+	jr	z,dpy7		; skip if not
+	ld	de,(CURPTR)
+	call	CPHLDE		; compare cursor to start of sel range
+	jr	z,dpy7		; equal? nothing to do
+	jr	nc,dpy6		; branch if cursor right of start
+	ex	de,hl		; else swap limits
+dpy6:	call	WRISEL		; write selective range
+dpy7:	pop	de
+	pop	hl
+	ENDIF	;EDT
+
+	push	hl
+	ld	hl,(ADR)
+	ld	de,(LEN)
+	call	IOW		; write
+	pop	hl
+	ld	a,BLNK
+	ld	(hl),a		; flush Escseq
+	dec	hl
+	ld	(hl),a
+	dec	hl
+	ld	(hl),a
+	ld	hl,(ENDPTR)
+	ld	de,(CURPTR)
+	or	a
+	sbc	hl,de
+	ld	a,h
+	or	l
+	ret	z
+	ex	de,hl		; DE = length
+	ld	hl,BS
+	jp	IOW		; restore cursor
+
+; Submit command to CLI
+;
+; DE  => First non blank character
+; LEN =  Length of command
+
+DOEXEC:
+	IF	COMPND
+
+	ld	l,e		; HL => start of command
+	ld	h,d
+	ld	a,(LEN)
+	ld	(TMPLEN),a	; save length
+	ld	a,(WAITFL)
+	inc	a		; always wait
+	ld	(WAITFL),a
+
+dxc1:	ld	a,(TMPLEN)
+	ld	b,a		; B = length
+	or	a
+	ret	z		; empty: => return [!!! --WAITFL?]
+	ld	c,0		; compute length here
+dxc2:	ld	a,(hl)
+	cp	'&'		; ampersand here?
+	jr	nz,dxc3		;  no: => dxc3
+	dec	hl
+	ld	a,(hl)
+	cp	BLNK		; preceded by a space?
+	inc	hl
+	jr	z,dxc4		;  yes: => dxc4
+dxc3:	inc	hl
+	inc	c		; count command length
+	djnz	dxc2		; end of story?
+
+	ld	b,0
+	ld	(LEN),bc	; load new length
+	ld	a,(WAITFL)
+	dec	a		; restore wait condition
+	ld	(WAITFL),a
+	call	SUPRDE		; ignore leading blanks (start at DE)
+	ret	c		;  if CY set: empty command
+	call	TSTINT		; look if internal command
+	ret	nc		; return if yes, finished processing
+	jp	DOEXE1		; process last or only command
+
+dxc4:	inc	hl
+	ld	b,0
+	dec	bc		; flush trailing space
+	ld	(LEN),bc	; load new length
+	inc	bc
+	inc	bc		; account for &-sign
+	ld	a,(TMPLEN)
+	sub	c		; compute unused string length
+	ld	(TMPLEN),a
+	jr	z,dxc5		; branch if empty
+
+	; execute
+
+	call	SUPRDE		; ignore leading blanks (start at DE)
+	ret	c		;  if CY set: empty command
+	call	TSTINT		; look if internal command
+	jr	nc,dxc5		;  yes: => next part
+	call	DOEXE1		; go execute it
+	push	hl
+	push	de
+	ld	a,(WAITFL)
+	ld	e,a
+	SC	.STSE		; stop for execution
+	pop	de
+	pop	hl
+	ld	bc,(EXSTAT)
+	ld	a,c
+	cp	EX.SUC		; successful?
+	jr	z,dxc5		; branch if yes
+
+	; message with exit status
+
+	push	de		; save command pointer
+	ld	hl,(LEN)
+	push	hl		; save length
+	ld	hl,EXSTDA	; HL => ASCII buffer
+	ld	de,(EXSTAT)	; DE =  Value
+	ld	a,' '		; blank fill
+	call	CVTWD		; convert to ASCII
+	ld	hl,EXSTMS	; message address
+	ld	de,EXSTML	; message length
+	call	IOW
+	pop	de		; restore command length
+	pop	hl		; restore command pointer
+	jp	IOW		; [!!! --WAITFL?]
+
+dxc5:	ld	e,l		; set to unused string
+	ld	d,h
+	jp	dxc1		; go for next part
+
+TSTINT:	push	hl
+	call	INTERN		; internal command?
+	pop	hl
+	ret			; CY set: no internal command
+
+	ENDIF	;COMPND
+
+DOEXE1:	push	hl
+
+	IF	COMPND
+	call	SUPRDE		; suppress leading spaces
+	ENDIF	;COMPND
+
+	ex	de,hl
+	ld	a,(ECHFLG)	; echo?
+	or	a
+	jr	z,dex1		; skip if not
+
+	; echo command
+
+	ld	de,(LEN)
+	push	de		; save length
+	push	hl
+	call	IOCRLF		; output new line
+	pop	hl
+	pop	de		; get length
+	push	de
+	push	hl
+	call	IOW		; write command (address in HL)
+	call	IOCR		; new line
+	pop	hl
+	pop	de
+	ld	(LEN),de	; restore length
+
+dex1:	; ***  EXECUTE COMMAND ***
+
+  IF 1
+	push	hl
+	ld	de,CMDBLK	; DE => Send Data buffer
+	ld	bc,(LEN)
+	ldir			; copy the command
+	ld	a,CR
+	ld	(de),a		; end with a CR
+	ld	hl,(LEN)
+	inc	hl		; include CR
+	ld	(SPAWN+TD.CML),hl
+	ld	hl,SPAWN
+	ld	a,(WAITFL)
+	ld	e,a
+	or	a
+	jr	nz,dex2
+	inc	e
+dex2:	ld	bc,EXSTAT
+  ENDIF
+	SC	.RQST		; request CLI and pass data
+	pop	de
+	pop	hl
+	ret
+
+	IF	FILE
+; Close current MCEINI file
+
+FILCLO:	xor	a
+	ld	(FILINP),a	; no file input
+	ld	ix,FDBIN
+	call	FCLOSE		; close input file
+	ld	a,(FILDEF)
+	or	a		; was it first default file?
+	ret	z		; return if not
+	call	FILOP3		; open next file
+	jp	nc,FILREA	; if opened: => FILREA
+	ret
+
+; Open MCEINI file from MCR line
+
+FILOP:	ld	a,1
+	ld	(FILINI),a	; startup file present
+	call	GETMCR		; get command line (startup file)
+	jr	nc,FILOP2	; branch if filespec in command line
+	ret
+
+; Open MCEINI file
+
+FILOP1:	xor	a
+	ld	(FILINI),a	; no startup
+FILOP2:	call	GETCLI		; get CLI info
+	call	FILOP4		; open file LB:[SYSTEM]xxx.CLI
+	ret	nc		; success
+	ld	a,(FILDEF)
+	or	a		; was it first default file?
+	jr	z,fil1		; error if not
+	call	FILOP3		; open 'SY:xxx.CLI'
+	ret	nc		;  OK: => return
+	ld	a,(FILINI)
+	or	a		; startup?
+	ret	nz		; return if yes
+fil1:	ld	hl,FILTXT	; error
+	jp	IOMSG		;  message
+
+FILOP3:
+	xor	a
+	ld	(FILDEF),a
+ if 0
+	CLR	FDIR		; no directory descriptor
+	MOV	#"SY,DEV	; try file 'SY:xxx.CLI'
+ endif
+	IF	FILE AND SYLOGIN
+	FEAT$S	#FE$LOG		; Logical Names supported?
+	CMP	$DSW,#EX$SUC	; EX$SUC means yes
+	BMI	FILOP4		;  No: => FILOP4
+	MOV	#SYLDEV,FDSPT+2	; Try file 'SYS$LOGIN:xxx.CLI'
+	MOV	#SYDEVL,FDSPT	; Copy to FDSPT table
+	ENDIF	;FILE AND SYLOGIN
+
+FILOP4:	xor	a
+	ld	(FILINP),a	; assume file can not be opened
+	ld	ix,FDBIN
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN		; open input file
+	ret	c		; on error return
+	ld	a,1
+	ld	(FILINP),a	; enable file input
+	ret			; return
+
+; Read from MCEINI file
+
+FILREA:	ld	ix,FDBIN
+	ld	hl,CMDBUF
+	ld	b,CMDSIZ-1
+	call	FGETLN		; get a record
+	jp	c,FILCLO	; if no more records, close file
+	ld	b,0
+	ld	(LEN),bc	; length
+	call	REPLHT		; replace TABs
+	call	SUPRES		; ignore leading blanks
+	jr	c,FILREA	; ignore empty lines
+	ld	a,1
+	ld	(WAITFL),a	; wait for execution of commands
+	jp	EXEC2		;  but execute directly
+
+	ENDIF	;FILE
+
+; Find entry in command table with "*"
+;
+;    Input    - PARDES of P0 defined
+;             - STRFLG <> 0 to allow abbreviated command if command
+;               definition contains "*" (a la VMS)
+;    Output   - CY set - no entry found
+;               CY clr - entry found
+;               IX - to entry
+;               HL - to point to string after ":="
+;               IY - to previous entry (for remove and inserts)
+
+FNDCMA:	ld	a,1
+	ld	(STRFLG),a	; enable abbreviations
+	jr	fnd1
+
+; Find entry in command table
+
+FNDCMD:	xor	a
+	ld	(STRFLG),a	; ignore "*" in translation buffer
+fnd1:	ld	ix,TRNBUF+F.1ST	; IX => translation buffer
+	push	de		; save DE
+	push	hl		; save HL
+fcm2:	ld	(TMPPTR),ix	; save previous entry
+	ld	c,(ix+FI.NXT)
+	ld	b,(ix+FI.NXT+1)
+	ld	a,b
+	or	c		; any next entry?
+	jr	z,fcm10		; no (end of list), return with CY set
+	push	bc
+	pop	ix		; take next entry
+	ld	hl,FI.TXT
+	add	hl,bc		; HL => text
+	ld	a,(PARDES+P.LEN); length to be compared
+	or	a
+	jr	z,fcm10		; if zero, return with CY set
+	ld	b,a
+	ld	de,(PARDES+P.ADR) ; start addr of P0
+	ld	a,(STRFLG)
+	or	a		; without abbreviation?
+	jr	z,fcm8		; branch if yes
+
+	; check for match, accepting any "*" in command definition
+
+	xor	a
+	ld	(FNDFLG),a	; reset flag: "*" found in cmd translation
+fcm3:	ld	a,(hl)
+	cp	'*'		; check for "*" in translation buffer
+	jr	nz,fcm4		; branch if not yet found
+	ld	a,1
+	ld	(FNDFLG),a	; found, remember it
+	inc	hl		; next char
+fcm4:	ld	a,(hl)
+	cp	BLNK		; end of translation buffer?
+	jr	z,fcm6		; branch if yes, terminate compare
+	ld	a,(de)
+	inc	de
+	cp	(hl)		; equal?
+	inc	hl
+	jr	z,fcm5		; branch if yes
+	jr	nc,fcm2		; NE and must come further down in list
+	ld	a,(FNDFLG)
+	or	a		; passed entry - any "*" seen?
+	jr	nz,fcm2		; loop if yes, continue search
+	jr	fcm10		; we passed alphabetical order, return CY
+
+fcm5:	djnz	fcm3		; next char
+
+	ld	a,(hl)
+	cp	BLNK		; end of input string?
+	jr	z,fcm7		; branch if yes
+	cp	'*'		; next byte end?
+	jr	z,fcm7		; branch if yes
+fcm6:	ld	a,(FNDFLG)
+	or	a		; abbreviation possible?
+	jr	z,fcm2		; loop if not
+fcm7:	ld	a,(hl)
+	inc	hl
+	cp	BLNK+1		; end of string (or control char)?
+	jr	nc,fcm7		; loop until found
+	jr	fcm9		; point past key
+
+	; check for match, ignoring any "*" in command definition
+
+fcm8:	ld	a,(de)
+	inc	de
+	cp	(hl)		; compare
+	inc	hl
+	jr	z,fcm81		; equal
+	jr	nc,fcm2		; NE and must come further down in list
+	jr	c,fcm10		; already passed alphabetical order
+fcm81:	djnz	fcm8		; next
+
+	ld	a,(hl)
+	inc	hl
+	cp	BLNK		; followed by space?
+	jr	nz,fcm10	; no, return CY
+fcm9:	inc	hl		; skip ":= "
+	inc	hl
+	inc	hl
+	or	a		; successful
+	ld	iy,(TMPPTR)	; IY => previous entry
+	inc	sp		; flush old HL
+	inc	sp
+	jr	fcm11		; return CY clear
+
+fcm10:	scf			; not found
+	ld	iy,(TMPPTR)	; IY => previous entry
+	pop	hl		; old HL
+fcm11:	pop	de		; Restore DE
+	ret
+
+; Free entry from queue
+; Header in IX. CY clear if it was empty
+
+FRENT:	call	SAVRG		; save BC,DE,HL regs
+	ld	l,(ix+F.1ST)	; get entry, if any
+	ld	h,(ix+F.1ST+1)
+	ld	a,h
+	or	l		; empty?
+	ret	z		; return if yes
+	push	hl
+	pop	iy
+	ld	c,(iy+FI.NXT)
+	ld	b,(iy+FI.NXT+1)
+	ld	(ix+F.1ST),c	; remove from head of queue
+	ld	(ix+F.1ST+1),b
+	ld	a,b
+	or	c
+	jr	nz,fre1		; more entries
+	push	ix
+	pop	bc
+	ld	(ix+F.LAST),c	; this was last one
+	ld	(ix+F.LAST+1),b
+fre1:	ld	e,(iy+FI.LEN)	; DE = length of entry
+	ld	d,(iy+FI.LEN+1)	; block address still in HL
+	ld	ix,FREE		; IX => free memory list head
+	call	MFREE		; release memory block
+	scf			; success
+	ret
+
+; Load Buffer into CMDBUF
+; HL points to source
+
+GETBUF:	ld	de,CMDBUF	; DE => CMDBUF
+	ld	(ENDPTR),de	; ENDPTR => CMDBUF
+	ld	b,CMDSIZ	; B = CMDSIZ
+gb1:	ld	a,(PRIFLG)	; print command buffer?
+	or	a
+	jr	z,gb3		; branch if not
+	ld	a,(hl)
+	cp	':'		; command definition?
+	jr	nz,gb3		; branch if not
+	dec	hl
+	ld	a,(hl)
+	inc	hl
+	cp	BLNK		; space in front?
+	jr	nz,gb3		; branch if not
+	inc	hl
+	ld	a,(hl)
+	dec	hl
+	cp	'='		; equal sign behind?
+	jr	nz,gb3		; branch if not
+	push	hl		; else we have a " :="
+	ld	hl,CMDBUF+12
+gb2:	ld	a,BLNK
+	ld	(de),a		; insert spaces
+	inc	de
+	call	CPHLDE		; at position?
+	jr	c,gb2		; loop if not
+	pop	hl
+gb3:	ld	a,(hl)
+	ld	(de),a		; copy to CMDBUF
+	inc	hl
+	or	a		; null?
+	jr	z,gb5		; exit loop if yes
+	inc	de
+	cp	BLNK		; blank?
+	jr	z,gb4		; skip if yes
+	ld	(ENDPTR),de	; else update ENDPTR
+gb4:	djnz	gb1		; loop
+	jr	gb6
+gb5:	ld	a,BLNK
+	ld	(de),a		; replace null with a space
+gb6:	ld	hl,(ENDPTR)
+	ld	(CURPTR),hl	; both at the end
+	ret
+
+	IF	CLISUP OR FILE
+
+; Get CLI information
+
+GETCLI:	xor	a
+	ld	(CLIFLG),a	; clear GETCLI OK flag
+  if 0
+	ld	hl,CLIBUF
+	SC	.GCLI		; cet CLI information
+	jr	c,gc1		; error is CY set
+	ld	a,1
+	ld	(CLIFLG),a	; set CGLI OK flag
+
+	IF	CLISUP AND FILE
+	ld	hl,CLINAM
+	ld	de,FILTYP
+	ld	bc,3
+	ldir			; use CLI name for file type
+	ENDIF	;CLISUP AND FILE
+gc1:
+	IF	FILE
+	DIR$	#GDIR		; get directory information
+	jr	c,gc2		; error: => 20$
+	MOV	#CURDIR,R2	; R2 => String
+	MOV	GDIRL,R1	; R1 =  Length
+	jr	gc3
+
+gc2:	ld	a(CLIFLG)
+	or	a		; GCLI OK?
+	ret	z		;  No: => return
+	MOV	#CURDIR,R2	; R2 => Ascii Current directory
+	MOV	CLIUIC,R3	; Binary value from GCLI
+	CLR	R4		; Parameters (No lea. zeroes, add separ.)
+	call	.PPASC		; Convert to ASCII
+	MOV	R2,R1		; Calculate
+	MOV	#CURDIR,R2	;    length
+	SUB	R2,R1		;       and point to Ascii
+gc3:	jp	.WDFDR		; Write default directory [in FSR$]
+  else
+	ret
+  endif
+	ELSE
+	ret
+	ENDIF	;FILE
+
+	ENDIF	;CLISUP OR FILE
+
+; Get FIFO Buffer, pointed to by FIFPTR
+
+GETFIF:	xor	a
+	ld	(OLDFLG),a	; no old command
+	ld	hl,(FIFPTR)	; get ptr
+	ld	a,h
+	or	l		; defined?
+	jr	nz,gf1		; use it if yes
+	ld	hl,FIFPTR	; else use null string
+	jr	gf2
+
+gf1:	ld	a,1
+	ld	(OLDFLG),a	; old command
+	ld	de,FI.TXT
+	add	hl,de		; point to start of text
+gf2:	call	GETBUF		; load buffer
+	jp	DISPLY		;  and display
+
+	IF	FILE
+
+; Get file specification from MCR command
+
+; This subroutine dequeues the command which invokes MCE (if any),
+; and overrides the default startup file name (MCEINI.xxx) by
+; file specified in the Command line.
+; Command line syntax is: 'MCE filespec'
+
+GETMCR:	call	GCCL		; get command line, returns pointer to
+				;  command line in HL, length in DE
+	; continue below
+
+; Get file specification
+
+GETFIL:	; reset FDB file-name pointers
+
+	ld	a,1
+	ld	(FILDEF),a
+  if 0
+	push	hl
+	push	de
+	push	bc
+	ld	hl,'LB'
+	ld	(FDB+F.DEV),hl	; reset default file volume
+	xor	a
+	ld	(FDB+F.UNIT),a
+	ld	hl,DIR
+	ld	de,FDB+F.DIR
+	ld	bc,9
+	ldir			; restore pointer to default directory
+	pop	bc
+	pop	de
+	pop	hl
+	ld	a,(FDB+F.ATTR)
+	or	FN.DIR
+	ld	(FDB+F.ATTR),a
+  endif
+
+	ld	bc,FDB		; reset FDB pointer in FDBIN
+	ld	(FDBIN+FC.FDB),bc
+
+	ld	a,d		; any length?
+	or	e
+	ret	z		; return if not
+	ld	b,e
+gtf1:	ld	a,(hl)
+	inc	hl
+	cp	BLNK		; mnemonic delimiter?
+	jr	z,gtf2
+	or	a
+	jr	z,gtf4
+	djnz	gtf1		; count remaining chars
+gtf4:	or	a		; success
+	ret
+
+gtf2:	ld	ix,FDB2
+	call	PFN		; parse file name
+	jr	c,gtf3		; no file: ignore it
+
+	; override the default FDB pointing to MCEINI.CMD:
+
+	ld	hl,FDB2		; new FDB pointer
+	ld	(FDBIN+FC.FDB),hl
+	xor	a
+	ld	(FILDEF),a	; indicate 'No more files'
+	ret			; return
+
+gtf3:	ld	hl,FLSTXT	; filespec
+	call	IOMSG		;   syntax error
+	scf			; indicate error
+	ret
+
+	ENDIF	;FILE
+
+; General I/O Routine
+
+IO:	push	hl
+	push	de
+	ld	(CODE),bc
+	ld	(LEN),de
+	ld	(ADR),hl
+
+	IF	TIMOUT
+	IF	TMOSET
+	ld	hl,(TMOVAL)
+	ELSE
+	ld	hl,TMOTIM
+	ENDIF
+	ld	(TMOCNT),hl	; set new time-out count
+	ENDIF
+
+	ld	hl,QIODIR
+	SC	.QIO		; do I/O
+  if 0
+	DIR$	#STOPIO		; stop for I/O (or wait when aborted)
+  else
+	ld	e,EFN
+	SC	.WTSE
+  endif
+	pop	de
+	pop	hl
+	ret
+
+; Print <CR>
+
+IOCR:	ld	de,1		; length
+	jr	iocl
+
+; Print <CR><LF>
+
+IOCRLF:	ld	de,2		; length
+iocl:	ld	c,IO.WVB
+	ld	b,TF.CCO	; cancel <CTRL/O>
+	ld	hl,CRET		; print <CR> (<LF>)
+	jr	IO		; go to IO
+
+; Print Message in (HL)
+
+IOMSG:	push	hl
+	IF	EDT
+	ld	hl,0
+	ld	(SELSTR),hl	; clear start of select
+	xor	a
+	ld	(SELFLG),a	; clear ANSI-select flag
+	ENDIF
+	call	IOCR		; print <CR>
+	pop	hl
+	call	GETBUF		; (HL) --> CMDBUF
+	call	DISPLY		; write line
+	jp	CLRBUF		; clear buffer
+
+; Write routine
+
+IOW:	ld	bc,IO.WVB	; write
+	jr	IO		; go to IO
+
+; Read routine
+
+IOR:	ld	c,IO.RVB	; IO.RST
+	ld	b,TF.RNE
+	jr	IO
+
+; Load CMDBUF into FIFO Buffer
+; DE  => First non blank character
+; LEN =  Length of command
+
+LDFIF:	call	SAVRG		; save BC,DE,HL regs
+	ld	a,(MINC)
+	ld	c,a
+	ld	a,(LEN)		; get length
+	or	a
+	ret	z		; return if zero
+	cp	c		; save it?
+	ret	c		; return if not
+	add	FI.TXT+1	; account for header and trailing null
+	ld	c,a		; get length into BC
+	ld	b,0
+	ld	a,(MAXF)
+	ld	l,a
+	ld	a,(FIFCNT)
+	cp	l		; maximum reached?
+	jr	c,ldf2		; branch if not
+ldf1:	call	CLFIFI		; else release first entry (saves BC,DE,HL)
+	ret	nc		; return if nothing (more) to release
+ldf2:	ld	ix,FREE		; IX => free memory listhead
+	push	bc
+	push	de
+	call	MALLOC		; allocate block
+	pop	de
+	pop	bc
+	jr	c,ldf1		; nothing yet, release more
+
+	push	hl
+	pop	ix
+	xor	a
+	ld	(ix+FI.NXT),a	; no next entry
+	ld	(ix+FI.NXT+1),a
+	ld	iy,(FIFO+F.LAST)
+	ld	(iy),l		; link to previous
+	ld	(iy+1),h
+	ld	(FIFO+F.LAST),hl; new last entry
+	ld	(ix+FI.LEN),c	; total length
+	ld	(ix+FI.LEN+1),b
+	ld	bc,FI.TXT
+	add	hl,bc		; point to text field
+	ex	de,hl		; HL = source text, DE = dest
+	ld	bc,(LEN)
+	ldir			; load string
+	xor	a
+	ld	(de),a		; end of string
+	ld	a,(FIFCNT)
+	inc	a		; count
+	ld	(FIFCNT),a
+	ret
+
+	IF	TIMOUT
+; Next Marktime
+
+MARK:	ld	hl,60		; 60 seconds
+	ld	d,2
+	ld	e,0		; no EFN
+	ld	bc,TIMAST	; AST routine address
+	SC	.MRKT		; MRKT$S ,60,2,TIMAST
+	ret
+
+	IF	TMOSET
+; Cancel Marktime
+
+CANMRK:	ld	bc,TIMAST
+	ld	e,0
+	SC	.CMKT		; CMKT$S ,TIMAST
+	ret
+
+	ENDIF	;TMOSET
+
+	ENDIF	;TIMOUT
+
+; Define new command in command buffer, or delete it
+
+NEWCMD:	ld	a,(NLOFLG)
+	or	a		; skip processing?
+	ret	nz		; return if yes
+	call	FNDCMD		; check if in table
+	jr	nc,nwc6		; branch if yes to release old entry
+	ld	hl,(PARDES+2*P.SIZ)
+	ld	a,h
+	or	l		; P2 defined?
+	jr	nz,nwc1		; branch if yes, must load
+	ld	hl,(PARDES+3*P.SIZ+P.ADR)
+	ld	a,h
+	or	l		; P3 with addr?
+	ret	z		; return if not, delete only
+
+nwc1:	; insert new command after entry in IY
+
+	ld	hl,(LEN)	; length of string
+	ld	a,h
+	or	l
+	ret	z		; return if zero
+	ld	bc,FI.TXT+1
+	add	hl,bc		; with overhead and trailing null
+	ld	c,l		; get size into BC
+	ld	b,h
+	push	bc
+	ld	ix,FREE		; IX => free memory listhead
+	call	MALLOC		; allocate block
+	pop	bc
+	jr	nc,nwc2		; branch on success
+	ld	hl,NOPOOL	; no more Pool
+	jp	IOMSG		; give error message
+
+nwc2:	push	hl
+	pop	ix
+
+	ld	e,(iy+FI.NXT)	; get next ptr from previous
+	ld	d,(iy+FI.NXT+1)
+	ld	(ix+FI.NXT),e	; link to previous entry
+	ld	(ix+FI.NXT+1),d
+	ld	a,d
+	or	e
+	jr	nz,nwc3
+	ld	(TRNBUF+F.LAST),hl ; we will be last one
+nwc3:	ld	(iy+FI.NXT),l
+	ld	(iy+FI.NXT+1),h
+	ld	(ix+FI.LEN),c	; total length
+	ld	(ix+FI.LEN+1),b
+	ld	de,FI.TXT
+	add	hl,de
+	ex	de,hl		; DE => start of text area
+	ld	hl,SAVBUF	; HL => Source
+	ld	bc,(LEN)	; BC = length
+	ldir			; copy text
+	xor	a
+	ld	(de),a		; add trailing null
+	ret
+
+nwc6:	; release old entry
+
+	ld	e,(ix+FI.NXT)
+	ld	d,(ix+FI.NXT+1)
+	ld	(iy+FI.NXT),e	; link remainder
+	ld	(iy+FI.NXT+1),d
+	ld	a,d
+	or	e		; more entries?
+	jr	nz,nwc7		; branch if yes
+	ld	(TRNBUF+F.LAST),iy ; this was last one
+nwc7:	ld	e,(ix+FI.LEN)	; DE = length
+	ld	d,(ix+FI.LEN+1)
+	push	ix
+	pop	hl
+	ld	ix,FREE		; IX => free memory listhead
+	call	MFREE		; release it
+	jp	NEWCMD		; find more to release
+
+	IF	STATUS
+; Depending on flag in A, fill string @HL with "on" or "off"
+
+OFFON:	ld	(hl),'o'
+	inc	hl
+	or	a
+	jr	z,oo1
+	ld	(hl),'n'
+	inc	hl
+	ld	(hl),' '
+	inc	hl
+	ret
+oo1:	ld	(hl),'f'
+	inc	hl
+	ld	(hl),'f'
+	inc	hl
+	ret
+
+	ENDIF	;STATUS
+
+; Suspend task
+
+PAUSE:	ld	hl,PSETXT	; print
+	call	IOMSG		;  message
+	ld	hl,1		; interval = 1
+	ld	d,2		; units = seconds
+	ld	e,EFN
+	ld	bc,0		; no AST
+	SC	.MRKT		; wait
+	ld	e,EFN		;  1
+	SC	.STSE		;   second
+	call	DETACH		; detach terminal
+	ld	hl,0
+	SC	.STOP		; suspend
+	ld	hl,CONTXT	; print
+	call	IOMSG		;  message
+	pop	bc		; drop return address
+	jp	RESTAR		; => RESTAR
+
+	IF	STATUS
+; Output the status line
+
+PRISTA:	ld	hl,STATX1	; output
+	ld	de,STALN1	;  the
+	jr	PRIST2		;   status line
+
+PRIST1:	ld	hl,STATX2	; output
+	ld	de,STALN2	;  the status line
+PRIST2:	call	STAFIL		; fill status record
+	ld	a,(STAFLG)
+	or	a		; status line wanted?
+	ret	z		; return if not
+	jp	IOW		; else output the status line
+
+	ENDIF	;STATUS
+
+; Recall command from FIFO by key
+
+RECCMD:	ld	hl,(FIFO+F.1ST)	; HL => oldest Entry in FIFO
+	ld	a,h
+	or	l
+	jr	z,rcm6		; branch if empty
+	push	hl
+	pop	ix
+	ld	bc,(FIFPTR)
+	ld	a,b
+	or	c		; old pointer?
+	jr	nz,rcm2		; branch if defined
+	ld	hl,(ENDPTR)
+	ld	de,CMDBUF
+	sbc	hl,de
+	ld	b,l		; B = length
+	ex	de,hl		; HL => source buffer
+	ld	de,RCLBUF	; DE => destination buffer
+	jr	z,rcm2		; branch if length is zero
+
+rcm1:	; store single char into Recall buffer
+
+	ld	a,(hl)		; get next char
+	inc	hl
+	call	CNVUPC		; convert
+	ld	(de),a		; store char
+	inc	de
+	djnz	rcm1		; next
+	xor	a
+	ld	(de),a		; EOL
+
+rcm2:
+	IF	STATUS
+	ld	c,1		; start above oldest
+	ENDIF	;STATUS
+
+	ld	hl,0
+	ld	(TMPPTR),hl	; pointer to FIFO entry
+
+rcm21:	; check next entry in FIFO
+
+	push	ix
+	pop	hl
+	ld	de,FI.TXT
+	add	hl,de
+	ex	de,hl		; DE => text of entry
+	ld	hl,RCLBUF	; HL => source to compare
+	ld	a,(hl)
+	or	a		; search mask defined?
+	jr	z,rcm5		; exit outer loop if not
+rcm3:	ld	a,(de)		; get next char
+	inc	de
+	or	a		; end of string?
+	jr	z,rcm4		; exit this loop if yes
+	call	CNVUPC		; convert to uppercase
+	cp	(hl)		; compare with source
+	inc	hl
+	jr	nz,rcm4		; no match, exit this loop
+	ld	a,(hl)
+	or	a		; end of string?
+	jr	nz,rcm3		; loop if not, try next char
+	ld	(TMPPTR),ix	; source exhausted - match found
+
+	IF	STATUS
+	ld	a,c
+	ld	(FIFPOI),a	; store FIFO entry number
+	ENDIF	;STATUS
+rcm4:
+	IF	STATUS
+	inc	c		; one newer
+	ENDIF	;STATUS
+
+	ld	l,(ix+FI.NXT)
+	ld	h,(ix+FI.NXT+1)	; next entry
+	ld	a,h
+	or	l
+	jr	z,rcm5		; no more, exit loop
+	push	hl
+	pop	ix		; IX => next entry
+	ld	de,(FIFPTR)
+	call	CPHLDE		; continue search?
+	jr	nz,rcm21	; yes, loop
+
+rcm5:	ld	hl,(TMPPTR)	; get pointer to entry, if any
+	ld	(FIFPTR),hl
+
+	IF	STATUS
+	ld	a,h
+	or	l		; any pointer?
+	jr	nz,rcm6		; branch if yes
+	xor	a
+	ld	(FIFPOI),a
+	ENDIF	;STATUS
+
+rcm6:	jp	GETFIF		; load from FIFO (or delete CMDBUF buffer)
+
+; Replace TABs with BLANKs
+
+REPLHT:	ld	hl,CMDBUF	; HL => CMDBUF
+	ld	a,(LEN)		; get length
+	or	a		; empty?
+	ret	z		; return if yes
+	ld	b,a
+rht1:	ld	a,(hl)
+	cp	HT		; TAB?
+	jr	nz,rht2		; skip if not
+	ld	(hl),BLNK	; else replace by space
+rht2:	inc	hl
+	djnz	rht1
+	ret
+
+	IF	EDT
+; Save deleted Word/Line
+
+SAVE:	ld	a,(EDTFLG)	; EDT active?
+	or	a
+	ret	z		; return if not
+	push	hl
+	push	de
+sav1:	ld	a,(de)
+	ld	(ix),a		; copy
+	inc	de
+	inc	ix
+	call	CPHLDE		; end?
+	jr	nz,sav1		; loop if not
+	ld	(ix),0		; terminate
+	pop	de
+	pop	hl
+	ret
+
+	ENDIF	;EDT
+
+; Backspace 1 char
+
+SPBACK:	ld	hl,(CURPTR)
+	ld	de,CMDBUF
+	call	CPHLDE		; at begin of buffer?
+	ccf			; if yes, return with CY set
+	ret	c		;  to indicate cursor error
+	dec	hl		; move cursor left
+	ld	(CURPTR),hl
+	ld	hl,BS		; write
+	ld	de,1		;  one
+	jp	IOW		;   backspace
+
+; Search for word
+
+SRWORD:	cp	'0'		; digit?
+	ret	c		; return with CY set if not
+	cp	'9'+1
+	ccf
+	ret	nc
+	cp	'_'		; special char?
+	ret	z
+	call	UCASE		; convert to uppercase
+	cp	'A'		; alphabetic?
+	ret	c		; return with CY set if not
+	cp	'Z'+1
+	ccf
+	ret
+
+	IF	STATUS
+; Fill status line
+
+STAFIL:	push	hl		; save HL
+	push	de		; save DE
+
+	ld	hl,STALIR
+	ld	a,(RNGFLG)	; Ring or List
+	or	a
+	ld	de,SLIST
+	jr	z,sf1
+	ld	de,SRING
+sf1:	ex	de,hl
+	ld	bc,4
+	ldir
+	ex	de,hl
+	inc	hl
+	ld	a,(MAXF)	; Maxfif
+	call	CVTBD2
+	inc	hl
+	ld	a,(FIFCNT)	; Fifcnt
+	call	CVTBD2
+	inc	hl
+	ld	a,(FIFPOI)	; Fifpoi
+	call	CVTBD2
+
+	ld	hl,STACMD
+	ld	a,(MINC)	; Minchr
+	call	CVTBD2
+
+	IF	EDT
+	ld	hl,STAKEY
+	ld	a,(EDTFLG)	; Keypad
+	call	OFFON
+	ENDIF
+
+	ld	hl,STASVI
+	ld	a,(SINFLG)	; save internals
+	call	OFFON
+
+	ld	hl,STASVR
+	ld	a,(SOLFLG)	; save old
+	call	OFFON
+
+	IF	TIMOUT
+
+	ld	hl,STATMO	; HL => Tmo value in status line
+
+	IF	TMOSET
+
+	ld	a,(TMOFLG)	; time-out ON?
+	or	a
+	jr	nz,sf2		; branch if yes
+	call	OFFON		; else insert "off"
+	jr	sf4		; don't display the Time-out count
+
+sf2:	ld	de,(TMOCNT)	; time-out count
+	ld	a,d
+	or	e		; TMOCNT zero (= current input)?
+	jr	nz,sf3		; branch if not, use it
+	ld	de,(TMOVAL)	; else insert TMOVAL
+sf3:
+	ELSE	;TMOSET
+
+	ld	de,(TMOCNT)	; time-out count
+
+	ENDIF	;TMOSET
+
+  if 0
+	MOV	#15012,R2	; Params. (decimal,w=3,0fill)
+	call	$CBTA		; Convert
+  endif
+sf4:
+	ENDIF	;TIMOUT
+
+	pop	de		; restore DE
+	pop	hl		; restore HL
+	ret
+
+SLIST:	db	'list'
+SRING:	db	'ring'
+
+	ENDIF	;STATUS
+
+; Append string with descriptor (IX) to CMDBUF (pointer in DE)
+
+STORE:	ld	a,(ix+P.LEN)	; check length
+	or	a
+	ret	z		; return if empty
+	ld	b,a
+	ld	l,(ix+P.ADR)	; HL = source addr
+	ld	h,(ix+P.ADR+1)
+sto1:	push	hl
+	ld	hl,CMDEND
+	call	CPHLDE		; in range?
+	pop	hl
+	jr	c,sto2		; branch if yes
+	ld	a,(OVMFLG)
+	dec	a		; else set overflow flag
+	ld	(OVMFLG),a
+	ret
+sto2:	ld	a,(hl)
+	ld	(de),a		; copy characters
+	inc	hl
+	inc	de
+	djnz	sto1
+	ret
+
+; Check for Pn's and substitute if necessary
+
+SUBST:	push	hl
+	ld	a,(hl)
+	inc	hl
+	cp	'P'		; check next symbol
+	jr	nz,sub1		; no match, return
+	ld	a,(hl)		; get parameter number
+	inc	hl
+	sub	'1'		; decode
+	jr	c,sub1		; illegal, return
+	inc	a
+	cp	8+1		; in range?
+	jr	nc,sub1		; no, return
+	ld	c,a
+	ld	a,(hl)
+	inc	hl
+	cp	"'"		; end mark?
+	jr	z,sub2		; branch if yes
+sub1:	pop	hl
+	or	a		; tell no substitution
+	ret
+
+sub2:	; substitution string found
+
+	ex	(sp),hl		; push new HL, drop old
+	sla	c		; param num
+	sla	c		;  times 4
+	ld	b,0
+	ld	ix,PARDES	; HL => descriptor
+	add	ix,bc
+	call	STORE		; load it, advance DE
+	pop	hl		; pop new HL
+	ld	a,1		; mark that parameter fetched
+	ld	(FTCFLG),a
+	scf			; tell substituted
+	ret
+
+; Suppress leading blanks
+
+SUPRES:	ld	de,CMDBUF	; DE => CMDBUF
+	; continue below
+
+; Suppress leading blanks (start at DE)
+
+SUPRDE:	ld	a,(LEN)		; empty?
+	or	a
+	scf
+	ret	z		; return CY if yes
+	ld	b,a
+s10:	ld	a,(de)
+	cp	BLNK		; start with a Space?
+	jr	nz,s30		; return if not
+	inc	de		; next
+	djnz	s10		; loop
+	scf			; return
+	ret
+s30:	ld	a,b
+	ld	(LEN),a
+	or	a		; success
+	ret
+
+; Get terminal information
+
+TERM:	ld	hl,SFGMCB	; GMC buffer
+	ld	de,SFGMCL	; GMC buffer length
+	ld	bc,SF.GMC	; GMC code
+	call	IO		; do it
+	; continue below
+
+; Set terminal characteristics
+
+STERM:	ld	hl,SFBMCB	; GMC buffer
+	ld	de,SFBMCL	; GMC buffer length
+	ld	bc,SF.SMC	; GMC code
+
+	IF	STATUS
+
+	call	IO		; do it
+	ld	a,(ANS+1)
+	or	a		; ANSI terminal?
+	jr	nz,t1		; branch if yes
+	xor	a
+	ld	(STAFLG),a	; no status line possible
+t1:	ld	a,(STAFLG)
+	or	a		; status line wanted?
+	ret	z		; return if not
+
+	; set new buffer size
+
+	ld	hl,STGMCB	; SMC buffer
+	ld	de,STGMCL	; SMC buffer length
+	ld	bc,SF.SMC	; SMC code
+	jp	IO		; do it
+
+	ELSE	;STATUS
+
+	jp	IO		; do it
+
+	ENDIF	;STATUS
+
+	IF	TIMOUT
+; TI: Time-out AST
+; On timeout - log off (TT0: just exit)
+
+TIMAST:	push	af
+	push	hl
+	push	de
+	push	bc
+
+	ld	hl,(TMOCNT)
+	dec	hl
+	ld	(TMOCNT),hl
+	ld	a,h
+	or	a		;; timeout?
+	jp	m,ta1		;; should not be < 0
+	or	l
+	jr	nz,ta2		;; not yet done
+
+	; timed out, kill pending read
+
+	ld	bc,IO.KIL	;; kill
+	call	IO		;;    pending read
+ta1:	ld	hl,0
+	ld	(TMOCNT),hl	;;
+	jr	ta3
+ta2:
+	IF	STATUS
+	call	STAFIL		;; fill status line
+	ld	a,(STAFLG)	;; status line wanted?
+	or	a
+	jr	z,ta3		;;  no: => ta3
+	ld	hl,stqio
+	SC	.QIO
+	ENDIF
+ta3:
+	IF	TMOSET
+	ld	a,(TMOFLG)	;; still timeout ON?
+	or	a
+	call	nz,MARK		;;  yes: => Mark time
+	ELSE
+	call	MARK		;; Mark time
+	ENDIF
+
+	pop	bc
+	pop	de
+	pop	hl
+	pop	af
+	SC	.ASTX		;; exit AST
+
+stqio:	QIOW$	IO.WBT,TI,EFNAST,stiosb,,<STATX2,STALN2,0>
+	dseg
+stiosb:	ds	4
+	cseg
+
+	ENDIF	;TIMOUT
+
+; Update Command line
+; Write from current position to End of Line and reposition Cursor
+
+UPDATE:	ld	hl,(ENDPTR)	; EOL
+	ld	de,(CURPTR)	; address of cursor
+	or	a
+	sbc	hl,de		; length
+	ret	z		;  zero: => return
+	ex	de,hl
+	call	IOW		; write rest of line
+	ld	hl,BS		; address backspaces
+	jp	IOW		; reposition cursor
+
+	IF	EDT
+; Write selective range
+;   Input:
+;	ADR => start of buffer
+;	LEN => length
+;	HL  => start of selected range
+;	DE  => end of selected range
+;   Output:
+;	ADR => after end of seleted range
+;	LEN => remaining length
+
+WRISEL:	ld	a,(ANS+1)
+	or	a		; ANSI Screen?
+	ret	z		; return if not
+	push	hl		; save start of selected range
+	push	de		; save end of selected range
+	ld	bc,(LEN)
+	ld	(TMPLEN),bc	; save length
+	ld	de,(ADR)
+	or	a
+	sbc	hl,de		; calculate length to start of range
+	ex	de,hl
+	ld	hl,(TMPLEN)
+	sbc	hl,de		; update remaining length
+	ld	(TMPLEN),hl
+	ld	hl,(ADR)
+	call	IOW		; write
+	ld	hl,INV		; address of reverse video esc seq.
+	ld	de,INVL		; length
+	call	IOW
+	pop	hl		; pop end of selected range into HL
+	pop	de		; pop start into DE
+	push	hl
+	push	de
+	or	a
+	sbc	hl,de		; calculate length of range
+	ex	de,hl
+	ld	hl,(TMPLEN)
+	sbc	hl,de		; update remaining length
+	ld	(TMPLEN),hl
+	pop	hl
+	call	IOW		; write in reverse video
+	ld	hl,NOR		; address of normal video esc seq.
+	ld	de,NORL		; length
+	call	IOW
+	pop	hl
+	ld	(ADR),hl	; address of rest
+	ld	hl,(TMPLEN)
+	ld	(LEN),hl	; restore length
+	ret
+
+	ENDIF
+
+; Compare strings
+
+STRNCP:	ld	a,(de)
+	call	UCASE
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	STRNCP
+	ret
+
+; Convert value of MCE XXXX nnn command
+
+VALUE:	push	bc
+	call	DELSEA		; search for delimiter
+	call	SUPRDE		; skip blanks
+	pop	bc
+	ret	c		; return CY if empty
+	call	GETDEC		; convert
+	ld	a,h
+	or	l		; empty?
+	scf
+	ret	z		; return CY if yes
+	ld	a,b
+	cp	h
+	ret	nz		; return CY if too large (HL > BC)
+	ld	a,c
+	cp	l
+	ret
+
+; Parse number from string (DE), return value in HL
+
+GETDEC:	ld	hl,0
+gd1:	ld	a,(de)		; get char
+	cp	'0'		; test for digit
+	ret	c
+	cp	'9'+1
+	ccf
+	ret	c
+	push	bc
+	call	ADDDIG		; add digit
+	pop	bc
+	ret	c
+	inc	de
+	jr	gd1
+
+ADDDIG:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	sub	'0'
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+;-----------------------------------------------------------------------
+
+	DSEG
+
+	ds	128
+stack	equ	$
+
+	public	$MEMRY
+$MEMRY:	ds	2		; start of free memory
+
+	END	START

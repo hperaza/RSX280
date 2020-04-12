@@ -1,0 +1,335 @@
+;**********************************************************************;
+;                                                                      ;
+;   Task Termination Notification task for RSX280.                     ;
+;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	'02.03'
+
+	cseg
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TKN.INC
+	include	TCB.INC
+	include	CLICB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	extrn	PERROR,ATTACH,DETACH,BCD2BIN
+	extrn	CRLF,PUTCH,PUTSTR,TTFLSH,AHEX,HLHEX
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+loop:	ld	hl,rcvlen	; receive task termination message
+	ld	de,128
+	SC	.RECV
+	jr	c,exit		; exit if nothing to process
+	call	NOTIFY		; process message
+	call	TTFLSH		; make sure it gets displayed
+	ld	l,EX.SEV
+	ld	a,(msgbuf+TN.RSN)
+	ld	h,a
+	SC	.EMTST		; emit status to parent
+  IF 0
+	SC	.WTDAT		; wait for something to arrive
+  ENDIF
+	jr	loop		; loop until all messages processed
+
+exit:	ld	hl,EX.SUC
+	SC	.EXIT		; check for race condition here, the kernel
+				; may have posted an additional message and
+				; so we will miss it until a second message
+				; is posted... perhaps we should use a sort
+				; of the exit-if system call?
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'TKTN -- message'
+
+CMDERR:	ld	hl,snerr
+	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'TKN -- ',0
+snerr:	db	'Illegal function',0
+
+;-----------------------------------------------------------------------
+
+; Display notification on aborted task's terminal.
+
+NOTIFY:	ld	a,(msgbuf+TN.RSN)
+	or	a		; zero is normal exit, ignore
+  IF 0
+	ret	z		;  (should not happen!)
+  ELSE
+	jp	z,CMDERR
+  ENDIF
+	ld	hl,msgbuf+TN.CON
+	ld	de,TTDEV
+	ld	bc,3
+	ldir			; set output device
+	ld	de,(TTDEV)
+	ld	a,(TTDEV+2)
+	ld	c,a
+	ld	b,5
+	SC	.ALUN		; assign LUN 5 to output device
+	ld	c,5		; LUN
+	ld	de,0		; no ASTs
+	call	ATTACH		; attach output device
+	ld	hl,abomsg
+	call	PUTSTR		; CR,LF
+	push	hl
+  IF 0
+	ld	hl,msgbuf+TN.TIME
+  ELSE
+	ld	hl,dtbuf
+	SC	.GDAT
+  ENDIF
+	call	PRTIM		; display current/abort time
+	pop	hl
+	inc	hl
+	call	PUTSTR		; 'Task '
+	push	hl
+	ld	hl,msgbuf+TN.NAME
+	call	TSKNAM		; display task name
+	pop	hl
+	inc	hl
+	call	PUTSTR		; ' terminated',CR,LF
+	ld	a,(msgbuf+TN.RSN)
+	cp	TK.EIO
+	ld	hl,r0io
+	ld	e,0
+	jr	z,tkn1		; special case
+	ld	e,a		; save reason code in E
+	and	7Fh
+	dec	a
+	cp	14
+	jr	nc,nret		; ignore unknown reasons
+	add	a,a
+	ld	c,a
+	ld	b,0
+	ld	hl,reason
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+tkn1:	call	PUTSTR		; display reason
+	ld	a,e		; get reason code
+	and	TK.EIO		; check outstanding I/O flag
+	jr	z,tkn2		; jump if not set
+	push	hl
+	ld	hl,sep+2	; else display additional message
+	call	PUTSTR		;  (note leading CR/LF skipped)
+	ld	hl,eio
+	call	PUTSTR
+	pop	hl
+tkn2:	inc	hl
+	ld	a,(hl)		; register dump?
+	or	a
+	call	nz,DMPRGS
+nret:	call	TTFLSH
+	ld	c,5		; LUN
+	call	DETACH
+	ret
+
+TSKNAM:	ld	c,'"'
+	call	PUTCH
+	ld	b,6
+	call	PRINTN
+	ld	c,'"'
+	call	PUTCH
+	ret
+
+PRINTN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PRINTN
+	ret
+
+PRDAT:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; day
+	call	AHEX
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	ld	a,(hl)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	push	hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	b,3
+pm:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pm
+	pop	hl
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	dec	hl
+	ld	a,(hl)		; year
+	call	AHEX
+	inc	hl
+	ld	a,(hl)
+	call	AHEX
+	pop	hl
+	ret
+
+PRTIM:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; hour
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; min
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; sec
+	call	AHEX
+	pop	hl
+	ret
+
+	IF	0
+spaces:	ld	b,10
+	ld	c,' '
+spc:	call	PUTCH
+	djnz	spc
+	ret
+	ENDIF
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+abomsg:	db	CR,LF,0,'  Task ',0,' terminated'
+sep:	db	CR,LF,'          ',0
+
+reason:	dw	r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14
+
+r1:	db	'Aborted via directive or CLI',CR,LF,0,0
+r2:	db	'Illegal instruction trap',CR,LF,0,1 ; RSX180 only
+r3:	db	'Unexpected RST execution',CR,LF,0,1
+r4:	db	'Device I/O error',CR,LF,0,0	; 'Load failure. Read error'
+r5:	db	'Invalid task header',CR,LF,0,0
+r6:	db	'AST abort, bad stack',CR,LF,0,1
+r7:	db	'Not enough pool',CR,LF,0,0
+r8:	db	'Failed to start execution',CR,LF,0,0
+r9:	db	'Memory protect violation',CR,LF,0,1 ; RSX280 only
+r10:	db	'Checkpoint allocation failure',CR,LF,0,0
+r11:	db	'Privileged instruction trap',CR,LF,0,1
+r12:	db	'Extended instruction trap',CR,LF,0,1
+r13:	db	'Division exception',CR,LF,0,1
+r14:	db	'SS-bit or breakpoint trap',CR,LF,0,1
+
+r0io:	db	'Task exit with outstanding I/O',CR,LF,0,0
+eio:	db	'And with outstanding I/O',CR,LF,0
+
+DMPRGS:	ld	hl,regnam
+	ld	c,0
+dr1:	push	hl
+	ld	hl,sep
+	ld	a,c
+	or	a
+	jr	nz,dr2
+	inc	hl
+	inc	hl		; skip CR/LF on first line
+dr2:	call	PUTSTR		; display left separator
+	pop	hl
+dr3:	call	PUTSTR		; display register name
+	inc	hl
+	ld	e,(hl)		; get register offset in TN.REGS
+	ld	d,0		;  into DE
+	push	hl
+	ld	hl,msgbuf+TN.REGS
+	add	hl,de		; index into TN.REGS
+	ld	e,(hl)		; fetch register value
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	de,hl
+	call	HLHEX		; display register value
+	pop	hl
+	inc	hl
+	inc	c
+	ld	a,(hl)		; end of regnam table?
+	or	a
+	jp	z,CRLF		; return via CRLF
+	ld	a,c
+	and	1
+	jr	nz,dr3
+	jr	dr1
+
+regnam:	db	"AF=",0,20,"  AF'=",0,12
+	db	"BC=",0,18,"  BC'=",0,10
+	db	"DE=",0,16,"  DE'=",0, 8
+	db	"HL=",0,14,"  HL'=",0, 6
+	db	"IX=",0, 4,"  IY =",0, 2
+	db	"SP=",0, 0,"  PC =",0,22
+	db	0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+TTDEV::	ds	3		; terminal device to output message
+
+rcvlen:	ds	2		; !    do not    !
+msgbuf:	ds	128		; ! change order !
+dtbuf:	ds	8
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

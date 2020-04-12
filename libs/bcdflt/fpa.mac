@@ -1,0 +1,213 @@
+	.Z80
+
+	public	FPA
+
+	extrn	?LBUFF,FR0,?EXP,?FLAG
+
+; Floating Point -> ASCII conversion
+;
+; Entry: FR0    = floating point number
+;        A      = 0 to suppress leading zero in e.g. 0.1 (results in .1)
+; Exit:  ?LBUFF = buffer for result
+;        HL     = points to the ASCII number somewhere in ?LBUFF
+;                 (zero-terminated string)
+;
+; The maximum length of the converted number (not counting the
+; trailing zeros) is 16 bytes.
+
+	cseg
+
+FPA:	ld	(?FLAG),a
+	ld	hl,?LBUFF
+	ld	(IOPTR),hl	; initialize buffer pointer
+	dec	hl
+	ld	(hl),'0'	; leading zero @ ?LBUFF-1
+
+	; check for exponential format required
+
+	ld	a,(FR0)		; get exponent
+	or	a		; zero?
+	jr	z,fa2		; yes, store a '0' and exit
+
+	and	7Fh		; clear sign bit, leave exponent bits
+	cp	3Fh		; exponent < bias-1? (number < 0.01)
+	jr	c,fa3		; jump if yes -> use exponential form
+
+	cp	45h		; exponent >= bias+5? (number >= 10000000000)
+	jr	nc,fa3		; jump if yes -> use exponential form
+
+	sub	3Fh		; subtract bias-1
+	call	MASC		; convert mantissa
+	call	TRIMZ		; remove trailing zeros
+	inc	hl
+	ld	(hl),0		; end of string
+	ld	a,(?LBUFF)
+	cp	'.'		; number begins with a '.'?
+	jr	nz,fa10		; branch if not
+
+	ld	a,(?FLAG)	; suppress of leading zero in 0.xxx
+	or	a		;  desired? (results in .xxx)
+	jp	z,fa11		; branch if yes
+
+	ld	hl,(IOPTR)	; else add the reserved leading zero
+	dec	hl		;  @ ?LBUFF-1
+	ld	(IOPTR),hl
+	jr	fa11
+
+	; case zero number
+
+fa2:	ld	hl,?LBUFF
+	ld	(hl),'0'	; simply put a '0' in the buffer
+	inc	hl
+	ld	(hl),0		; add the null terminator
+	dec	hl
+	ret
+
+	; case exponential form (scientific notation)
+
+fa3:	ld	a,1
+	call	MASC		; convert mantissa to ASCII
+	call	TRIMZ		; remove trailing zeros
+	inc	b
+	inc	hl
+
+	; adjust exponent
+
+	ld	a,(FR0)		; get exponent
+	add	a,a		; double it (num = mantissa*10^(2*exp))
+	sub	80h		; subtract 2 times bias
+	ld	c,a		; save it
+
+	; check first character for '0'
+
+	ld	a,(?LBUFF)
+	cp	'0'		; first mantissa digit is a zero?
+	jr	z,fa5		; jump if yes
+	push	hl
+	ld	hl,?LBUFF+1
+	ld	e,(hl)		; else move decimal point one place
+	inc	hl		; to the right (exchange it with next
+	ld	a,(hl)		; digit)
+	ld	(hl),e
+	dec	hl
+	ld	(hl),a
+	pop	hl
+	ld	a,b
+	cp	2
+	jr	nz,fa4
+
+	IF	0
+	inc	hl		; original code produces 1E+10, 1.0E+11, etc.
+	ELSE
+	ld	a,(hl)		; new code produces 1E+10, 1E+11, etc.
+	inc	hl
+	cp	'0'
+	jr	nz,fa4
+	dec	hl
+	dec	hl
+	ENDIF
+
+fa4:	inc	c		; increment exponent
+fa5:	ld	a,c
+	ld	(?EXP),a	; store corrected exponent
+	ld	(hl),'E'	; store 'E'
+	inc	hl
+	or	a		; check ?EXP, positive exponent?
+	jp	p,fa6		; jump if yes
+	neg
+	ld	(?EXP),a	; otherwise complement it
+	ld	a,'-'
+	jr	nz,fa7
+fa6:	ld	a,'+'
+fa7:	ld	(hl),a		; store exponent sign
+	inc	hl
+	ld	c,0		; initial number of 10's
+	ld	a,(?EXP)
+fa8:	sub	10		; convert the exponent to decimal
+	jr	c,fa9		; if < 0, done
+	inc	c		; increment number of 10's
+	jr	nz,fa8		; loop
+fa9:	add	a,10		; add back 10
+	ld	b,a		; save remainder
+	ld	a,c
+	or	'0'
+	ld	(hl),a		; store first digit (number of 10's)
+	inc	hl
+	ld	a,b		; restore remainder
+	or	'0'
+	ld	(hl),a		; store second digit
+	inc	hl
+	ld	(hl),0		; terminate string
+
+	; perform final adjustments
+
+fa10:	ld	a,(?LBUFF)	; first character
+	cp	'0'
+	jr	nz,fa11
+	ld	hl,(IOPTR)	; skip leading zero
+	inc	hl
+	ld	(IOPTR),hl
+fa11:	ld	hl,(IOPTR)
+	ld	a,(FR0)
+	or	a
+	ret	p		; return if number is positive
+	dec	hl
+	ld	(hl),'-'	; otherwise prefix it with a minus sign
+	ret
+
+; Remove trailing zeros from converted number.
+
+TRIMZ:	ld	hl,?LBUFF+10	; start from the end
+	ld	b,10
+srch:	ld	a,(hl)
+	cp	'.'		; decimal point reached?
+	jr	z,dot		; if yes, remove it and return
+	cp	'0'		; zero?
+	ret	nz		; if not, return
+	dec	hl		; otherwise keep looking
+	djnz	srch
+dot:	dec	hl		; backup one char (skip the decimal point
+	dec	b		;  or point to the reserved leading zero)
+	ld	a,(hl)
+	ret
+
+; Convert mantissa to ASCII.
+;
+; On entry, A contains the decimal point position.
+
+MASC:	ld	c,a
+	ld	hl,?LBUFF
+	ld	de,FR0+1
+	ld	b,5
+d11:	call	d12
+	dec	a
+	ld	c,a
+	ld	a,(de)
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	or	'0'
+	ld	(hl),a		; store digit
+	inc	hl
+	ld	a,(de)
+	and	0Fh
+	or	'0'
+	ld	(hl),a		; store digit
+	inc	hl
+	inc	de
+	djnz	d11
+d12:	ld	a,c
+	or	a
+	ret	nz
+	ld	a,'.'		; ld (hl),'.' - nope, see 'call d12' above
+	ld	(hl),a
+	inc	hl		; same for this
+	ret
+
+	dseg
+
+IOPTR:	ds	2
+
+	end

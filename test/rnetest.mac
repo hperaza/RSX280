@@ -1,0 +1,86 @@
+	.Z80
+
+	include	QIO.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	extrn	GETLN,PUTCH,PUTSTR,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; Program to test reading from terminal with and without echo.
+; Uses SYSLIB calls.
+
+	cseg
+
+TEST::	ld	sp,stack
+
+	; Read with echo
+
+	ld	hl,msg1
+	call	PUTSTR
+
+	ld	hl,buf
+	ld	e,20
+	ld	d,0
+	ld	bc,prompt
+	call	GETLN
+	jr	c,quit
+
+	ld	hl,buf
+	add	hl,bc
+	ld	(hl),0
+
+	ld	hl,msg3
+	call	PUTSTR
+
+	ld	hl,buf
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+
+	; Read without echo
+
+	ld	hl,msg2
+	call	PUTSTR
+
+	ld	hl,buf
+	ld	e,20
+	ld	d,1
+	ld	bc,prompt
+	call	GETLN
+	jr	c,quit
+
+	ld	hl,buf
+	add	hl,bc
+	ld	(hl),0
+
+	ld	hl,msg3
+	call	PUTSTR
+
+	ld	hl,buf
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+
+quit:	ld	hl,EX.SUC
+	jp	EXIT
+
+msg1:	db	LF,'Test 1 -- Read with echo',CR,0
+msg2:	db	LF,'Test 2 -- Read with no echo',CR,0
+prompt:	db	CR,LF,'Enter string: ',0
+msg3:	db	LF,'Response: ',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+buf:	ds	30
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	TEST

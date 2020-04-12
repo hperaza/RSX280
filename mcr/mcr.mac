@@ -1,0 +1,1191 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR-like Command Line Interpreter for RSX280.                      ;
+;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	'02.15'
+
+	cseg
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	LCB.INC
+	include	VCB.INC
+	include	AST.INC
+	include	QIO.INC
+	include	CLICB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+CMDEFN	equ	4	; event flag number for command arrival
+
+	public	TTDEV
+
+	extrn	PERROR,UCASE,BIN2BCD,PUTCH,PUTSTR,TTFLSH
+	extrn	QIOSB
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	call	GETDPR		; get default ptompt from CLICB
+	ld	de,'TT'
+	ld	(TTDEV),de
+	xor	a
+	ld	(TTDEV+2),a	; TTDEV is initially TT0:
+	ld	de,ASTST
+	ld	c,AST.ST
+	SC	.ASTDF		; setup offspring status AST routine
+	ld	de,ASTCMD
+	ld	c,AST.CL
+	SC	.ASTDF		; setup command-received AST routine
+	xor	a
+	ld	(pflag),a	; clear prompt flag
+	ld	a,CR
+	ld	(cmdtrm),a
+
+loop:	ld	a,(pflag)
+	or	a
+	jr	z,rd
+	ld	a,(cmdtrm)
+	cp	ESC		; do not redisplay prompt if command
+	jr	z,next		;  ends with ESC
+	call	TTFLSH
+	ld	hl,PROMPT
+	push	hl
+	call	strlen		; C = string length
+	pop	hl		; HL = string addr
+	ld	de,(TTDEV)	; DE = device name
+	ld	a,(TTDEV+2)
+	ld	b,a		; B = unit
+	call	ASTSTR		; display prompt on the corresponding terminal
+next:	ld	de,(TTDEV)
+	ld	a,(TTDEV+2)
+	ld	c,a
+	call	RESTTS		; reset terminal sync bit
+
+rd:	ld	e,CMDEFN
+	SC	.CLEF		; clear event flag
+	ld	hl,rcvlen	; receive CLI command (includes terminal name)
+	ld	de,80+3
+	SC	.RECV
+	jr	nc,ok		; jump if command received
+	ld	e,CMDEFN
+	SC	.STSE		; else stop until something arrives
+	jr	rd
+
+ok:	ld	a,1		; set display prompt flag
+	ld	(pflag),a	; external commands will clear it
+	ld	a,ESC
+	ld	(cmdtrm),a
+	ldw	bc,(hl)		; get received data length into BC
+	inc	hl
+	ex	de,hl
+	ld	hl,-6
+	add	hl,bc		; safety check, ensure length is >= 6
+	jr	nc,ncmd		; else assume is null command
+	ex	de,hl
+	add	hl,bc		; point to last data byte
+	ld	a,(hl)
+	ld	(cmdtrm),a	; remember original command terminator
+	ld	(hl),0		; strip terminator, replace with null
+	call	PARSE		; parse and execute the command
+	ld	hl,EX.SEV
+	jr	c,emit
+ncmd:	ld	hl,EX.SUC
+emit:	SC	.EMTST		; emit status to any connected tasks
+	jr	loop
+
+;-----------------------------------------------------------------------
+
+; Get default MCR prompt.
+
+GETDPR:	ld	c,1
+	SC	.SUPER
+	jr	c,gdpr0		; should not happen
+	ld	de,($CLIST)	; NOTE: we assume here that first entry
+	ld	a,d		;       corresponds to MCR...
+	or	e		; valid CLICB?
+	jr	nz,gdpr1	; jump if yes
+gdpr0:	ld	hl,DPR
+	ld	bc,DPRL
+	jr	gdpr2		; else use the 'emergency' prompt
+gdpr1:	ld	hl,CL.DPL
+	add	hl,de
+	ld	a,(hl)
+	and	3Fh		; trim length just in case
+	ld	c,a
+	ld	b,0
+	ld	hl,CL.DAT
+	add	hl,de
+gdpr2:	ld	de,PROMPT
+	ldir
+	ld	c,0
+	SC	.SUPER
+	ret
+
+DPR:	db	CR,LF,'>',0	; 'emergency' prompt in case CLICB is not set
+DPRL	equ	$-DPR
+
+;-----------------------------------------------------------------------
+
+; AST service routine, called when an external command task terminates,
+; so we can redisplay the prompt on the correct terminal.
+
+ASTST:	push	ix
+	push	bc
+	push	de
+	push	hl
+	ld	ix,8
+	add	ix,sp
+	ldw	hl,(ix)		; get exit status of task
+	SC	.EMTST		; emit status to connected tasks
+	ld	a,(ix+12)	; get T.ATTR of exiting task
+	bit	TA.MCR,a	; bit TA.MCR set?
+	jr	z,ast0		; jump if not
+	ld	hl,PROMPT	; else redisplay prompt
+	push	hl
+	call	strlen		; C = string length
+	pop	hl		; HL = string addr
+	ldw	de,(ix+3)	; DE = device name
+	ld	b,(ix+5)	; B = unit
+	call	ASTSTR		; output prompt to the corresponding terminal
+ast0:	ldw	de,(ix+3)
+	ld	c,(ix+5)	; terminal name in DE-C
+	call	RESTTS		; reset terminal sync bit
+	jr	ast1
+ast1:	pop	hl
+	pop	de
+	pop	bc
+	ldw	(ix+13),hl
+	pop	ix
+	ld	hl,15-2
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	pop	hl
+	SC	.ASTX		; return from AST
+
+; AST service routine, called on command arrival.
+
+ASTCMD:	push	de
+	ld	e,CMDEFN
+	SC	.SETF		; set command-arrived flag
+	pop	de
+	SC	.ASTX		; return from AST
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+;-----------------------------------------------------------------------
+
+; Reset sync bit in UCB of terminal
+
+RESTTS:	push	bc
+	ld	c,1
+	SC	.SUPER		; privileged operation
+	pop	bc
+	ret	c
+
+	ld	hl,($PHYDV)	; in kernel space
+fdev:	ld	a,h
+	or	l
+	scf
+	jr	z,sb1
+	push	hl
+	ld	a,D.NAME
+	add	hl,a
+	ld	a,(hl)		; compare device name
+	cp	e
+	jr	nz,fdev1
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	z,fdev2		; we have a match, search for unit
+fdev1:	pop	hl
+	ldw	hl,(hl)		; else follow the link
+	jr	fdev		; and check next device
+
+fdev2:	pop	hl
+	ld	a,D.UCBL
+	add	hl,a
+	ld	b,c		; get unit number into B
+	inc	b
+fucb:	ldw	hl,(hl)		; get UCB address into HL
+	ld	a,h		; end of list?
+	or	l
+	jr	z,sb1		; return if yes (should not happen)
+	djnz	fucb
+	ld	a,U.CW
+	add	hl,a
+	inc	hl		; point to hi-byte of U.CW
+	res	TC.TTS,(hl)	; set the sync bit
+	xor	a
+sb1:	push	af
+	ld	c,0		; exit supervisor mode
+	SC	.SUPER
+	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'MCR -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'MCR -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Parse the command line and execute the command.
+
+PARSE:	ld	de,lnbuf
+	call	getns		; skip leading blanks
+	ex	de,hl
+	ld	(lnptr),hl	; save current position
+	ld	(cmdptr),hl	; remember where command line begins
+	cp	';'		; comment?
+	ret	z		; return if yes - ignore it
+	cp	'@'		; indirect command file?
+	jr	nz,ps1		; jump if not
+	inc	hl
+	ld	(lnptr),hl	; else save pointer to argument
+	jp	IND		; and process command file
+ps1:	call	getcmd		; get command name
+	ld	hl,helcmd	; check first HEL[P] or LOG[IN]
+	call	fndcmd
+	or	a
+	jr	z,ps2		; branch if null command name
+	cp	0FFh
+	jr	z,tryint
+	dec	a		; HEL[P]?
+	ld	hl,(cmdptr)
+	jp	z,runtsk	; invoke ...HEL if yes
+	call	getnam		; else discard LOG[IN] word
+	ld	hl,buf
+	ld	de,helcmd
+	call	cpstr		; and replace it with 'HEL'
+	ld	de,(lnptr)
+	call	cpstr		; copy the rest of the command, including sep.
+	ld	(hl),0
+	ld	hl,buf
+	jp	runtsk		; invoke ...HEL
+ps2:	ld	de,(lnptr)
+	call	getns
+	ret	z		; return if empty command line
+	jp	CMDERR		; else is an error
+
+; Try internal command
+
+tryint:	ld	hl,intcmd
+	call	fndcmd		; check for internal command
+	or	a
+	ret	z		; return if command was empty
+	cp	0FFh
+	jr	z,trysys
+	dec	a
+	rlca
+	ld	e,a
+	ld	d,0
+	ld	hl,intdt
+	add	hl,de		; index into routine address table
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; execute routine
+
+; Internal command not found, try external MCR (SYS) command
+
+trysys:	call	CHKLOG		; user must be logged in
+	ld	hl,syscmd
+	call	fndcmd		; check for external command
+	or	a
+	ret	z
+	cp	0FFh
+	jr	z,tryext
+	ld	hl,buf
+	ld	de,systsk
+	call	cpstr
+	ld	(hl),' '
+	inc	hl
+	ld	de,(cmdptr)
+	call	cpstr
+	ld	(hl),0
+	ld	hl,buf
+	jp	runtsk		; request ...MCR and connect to it
+
+systsk:	db	'MCR',0
+
+; Command not found, try to find an installed task with the same name
+
+tryext:	ld	hl,(cmdptr)
+	call	runpgm		; run program, passing full command line
+	ret	nc		; return on success
+	or	a		; syntax error?
+	jr	z,te1		; jump if yes
+	cp	E.TNF		; task not found?
+	jp	nz,SYSERR	; display error if not
+
+	; task not found, try catch-all task
+
+te1:	ld	hl,buf
+	ld	de,catsk
+	call	cpstr
+	ld	(hl),' '
+	inc	hl
+	ld	de,(cmdptr)
+	call	cpstr
+	ld	(hl),0
+	ld	hl,buf
+	jp	runtsk		; request ...CA. and connect to it
+
+catsk:	db	'CA.',0
+
+; Only HELLO/LOGIN/HELP are allowed without logging in
+
+helcmd:	db	'HEL',0
+	db	'LOG',0
+	db	0
+
+; Internal commands
+
+intcmd:	db	'ABO',0
+	db	'BRK',0
+	db	'CAN',0
+	db	'FIX',0
+	db	'REM',0
+	db	'RES',0
+	db	'STP',0
+	db	'SYN',0		; SYS/PIP
+	db	'UNF',0
+	db	'UNS',0
+	db	0
+
+intdt:	dw	doabrt
+	dw	dobrk
+	dw	docan
+	dw	dofix
+	dw	dorem
+	dw	doresm
+	dw	dostp
+	dw	dosync
+	dw	dounfx
+	dw	doresm
+
+; Commands handled by SYS.TSK
+
+syscmd:	db	'ACT',0
+	db	'ATL',0
+	db	'ALT',0
+	db	'ASN',0
+	db	'CHD',0		; SET /DIR
+	db	'CLQ',0
+	db	'DEV',0
+	db	'LUN',0
+	db	'PAR',0
+	db	'RED',0
+	db	'RUN',0
+	db	'SET',0
+	db	'TAL',0
+	db	'TAS',0
+	db	'TIM',0
+	db	0
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	b,9
+getn:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get task name (6 chars max) into cmdnam, padding with blanks if neccessary.
+
+gettn:	ld	b,6
+	call	getn
+	call	fillsp
+	ret
+
+; Get user name (9 chars) into cmdnam, padding with blanks if neccessary.
+
+getun:	call	getcmd
+fillsp:	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get a name (null-terminated, up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+skip:	inc	de
+getns:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip
+	cp	9
+	jr	z,skip
+	ret
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	ret
+gf1:	xor	a
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmd table).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+fndcmd:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	c,0		; keyword index
+fcmd0:	ld	de,cmdnam
+	inc	c
+fcmd1:	ld	a,(de)
+	cp	(hl)		; match?
+	jp	nz,fcmd2	; jump if not
+	or	a		; end of both strings?
+	ld	a,c
+	ret	z		; return if yes, we have a match
+	inc	hl
+	inc	de
+	jr	fcmd1		; else keep comparing bytes
+fcmd2:	ld	a,(hl)
+	or	a		; end of keyword?
+	ld	a,c
+	ret	z		; return if yes, we have a match
+fcmd4:	inc	hl		; else skip to end of keyword
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd4
+	inc	hl		; skip over null
+	ld	a,(hl)
+	or	a		; end of table?
+	jr	nz,fcmd0	; try again if not
+	ld	a,0FFh		; else return 'not found' flag
+	ret
+
+;-----------------------------------------------------------------------
+
+; BRK - Break to system debugger
+
+dobrk:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	rst	DBGRST
+	ret
+
+;-----------------------------------------------------------------------
+
+; ABO <taskname>
+
+doabrt:	call	CHKLOG
+	call	gettn		; get task name, return buf addr in HL
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	SC	.ABORT		; abort task
+	jp	c,SYSERR
+	ret
+
+; Find task by name:
+; - if the name is empty, search for a task name of TTnn
+; - if the name is not empty, search for the specified name
+; - if the task was not found and the task name is 3 chars long, search
+;   for a task name of type xxxTn
+; - if still not found and the task name is 3 chars long, search for a
+;   task name of type ...xxx
+; If the task is found, the terminal name that originated the command
+; will be compared to the terminal that started the task. If they differ
+; and the user is not privileged, an error will be returned.
+
+fndtsk:	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; empty task name?
+	jr	nz,fnd2		; branch if not
+
+	ld	hl,TTDEV	; else build name of type TTnn
+	ld	de,cmdnam
+	ld	bc,2
+	ldir			; copy first two letters of device name
+	ld	a,(hl)
+	call	BIN2BCD		; convert unit number to two BCD digits
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	jr	z,fnd1		; skip first digit if zero
+	add	a,'0'		; else convert to ASCII
+	ld	(de),a		; and store it
+	inc	de
+fnd1:	ld	a,c
+	and	0Fh
+	add	a,'0'		; convert to ASCII
+	ld	(de),a		; the rest is already filled with with spaces
+	jr	fnd7
+
+fnd2:	ld	hl,cmdnam
+	ld	de,gtkbuf
+	SC	.GTSK		; find task
+	jr	nc,fnd8
+	cp	E.TNF		; error is 'task not found'?
+	scf
+	ret	nz		; return if not
+	ld	hl,cmdnam+2
+	ld	a,(hl)		; name is 3-chars long?
+	cp	' '
+	jr	z,fnd3		; error if not
+	inc	hl
+	ld	a,(hl)
+	cp	' '
+	jr	z,fnd4
+fnd3:	ld	a,E.TNF
+	scf
+	ret
+
+fnd4:	ld	a,(TTDEV)	; else build name of type xxxTn
+	ld	(hl),a
+	inc	hl
+	ld	a,(TTDEV+2)
+	call	BIN2BCD
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	jr	z,fnd5
+	add	a,'0'
+	ld	(hl),a
+	inc	hl
+fnd5:	ld	a,c
+	and	0Fh
+	add	a,'0'
+	ld	(hl),a
+	ld	hl,cmdnam
+	ld	de,gtkbuf
+	SC	.GTSK		; find task
+	jr	nc,fnd8
+	cp	E.TNF		; error is 'task not found'?
+	scf
+	ret	nz		; return if not
+
+	ld	hl,cmdnam	; else build name of type ...xxx
+	ld	de,cmdnam+3
+	ld	bc,3
+	ldir
+	ld	hl,cmdnam
+	ld	b,3
+fnd6:	ld	(hl),'.'
+	inc	hl
+	djnz	fnd6
+fnd7:	ld	hl,cmdnam
+	ld	de,gtkbuf
+	SC	.GTSK		; find task
+	ret	c		; on error, return
+
+fnd8:	ld	hl,TTDEV
+	ld	de,gtkbuf+GT.TI
+	ld	b,3
+fnd9:	ld	a,(de)		; compare terminal device
+	sub	(hl)
+	jp	nz,CHKPRV	; if they differ, check user privileges
+	inc	hl
+	inc	de
+	djnz	fnd9
+	ret			; return success
+
+;-----------------------------------------------------------------------
+
+; REM <taskname>
+
+; If task XXX not found and the last 3 chars of task name are spaces,
+; the command tries to remove task ...XXX.
+
+dorem:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	call	gettn		; get task name, return buf addr in HL
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	KCALL	$REMTK		; remove task from STD
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; CAN <taskname>
+
+; If task XXX not found and the last 3 chars of task name are spaces,
+; the command tries to cancel scheduled task ...XXX.
+
+docan:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	call	gettn		; get task name, return buf addr in HL
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	SC	.CSRQ		; cancel scheduled task
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; Run installed task given as command.
+; - The first 3 chars of the command will be used to request task ...XXX
+; - If the ...XXX task is active under another terminal, a temporary
+;   task with a name like XXXTnn will be requested.
+;
+; Called with HL = full command line
+;
+; Clears prompt flag (the prompt will be displayed when the task exits,
+; and not when we return from this routine).
+
+runtsk:	call	runpgm
+	ret	nc
+	or	a
+	jp	z,CMDERR
+	jp	SYSERR
+
+runpgm:	ld	(cmdptr),hl
+	ld	de,newtsk+TD.NAME
+	ld	a,'.'
+	ld	b,3
+rpgm0:	ld	(de),a
+	inc	de
+	djnz	rpgm0
+	ld	b,3
+rpgm7:	ld	a,(hl)
+	or	a
+	jp	z,rcmder
+	cp	' '
+	jp	z,rcmder
+	cp	9
+	jp	z,rcmder
+	call	UCASE
+	ld	(de),a		; set task name
+	inc	de
+	inc	hl
+	djnz	rpgm7
+
+	call	tamcr			; set/clr TA.MCR bit
+	ld	(newtsk+TD.ATTR),a
+	xor	a
+	ld	(newtsk+TD.USR),a	; default user number
+	ld	(newtsk+TD.GRP),a	; default user group
+	ld	de,(TTDEV)
+	ld	(newtsk+TD.TI),de	; default terminal
+	ld	a,(TTDEV+2)
+	ld	(newtsk+TD.TI+2),a	;  is user's terminal
+	ld	hl,0
+	ld	(newtsk+TD.SDAT),hl	; no data to send
+	ld	(newtsk+TD.SLEN),hl
+	ld	hl,(cmdptr)
+	call	setcml		; setup command line for task
+	call	SPAWN		; request and connect to task
+	jp	nc,rpgm1	; clear prompt flag and return on success
+	cp	E.TACT		; task active?
+	jr	z,rpgm2
+	cp	E.TRUN		; or task already running?
+	scf
+	ret	nz		; error if neither
+rpgm2:	ld	c,1
+	SC	.SUPER
+	ld	hl,newtsk+TD.NAME
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNTSK		; get task TCB
+	jr	c,rpgm3
+	ld	de,tcbbuf
+	ld	bc,TCBSZ
+	ldir
+rpgm3:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret	c		; error if not found
+
+	; TODO: check console, start a new copy only if ...XXX is active
+	; on another terminal. Also check for a possible race condition
+	; between the next call to SPAWN and $LKTCB (a new task could be
+	; created with the same name by an external task, which is very
+	; unlikely anyway since user tasks normally have lower proirity)
+
+	ld	hl,newtsk+TD.NAME+3 ; remove dots, try running task as XXXTn
+	ld	de,newtsk+TD.NAME
+	ld	bc,3
+	ldir			; 3 chars of task name
+	push	de
+	ld	b,3
+	ld	a,' '
+rpgm4:	ld	(de),a
+	inc	de
+	djnz	rpgm4
+	pop	de
+	ld	a,(newtsk+TD.TI) ; or use TTDEV?
+	ld	(de),a
+	inc	de
+	ld	a,(newtsk+TD.TI+2)
+	call	BIN2BCD
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	jr	z,rpgm5
+	add	a,'0'
+	ld	(de),a
+	inc	de
+rpgm5:	ld	a,c
+	and	0Fh
+	add	a,'0'
+	ld	(de),a
+	call	SPAWN		; request and connect to task
+	jp	nc,rpgm1	; clear prompt flag and return on success
+	cp	E.TNF		; expecting this error
+	scf
+	ret	nz		; return if anything else
+
+	ld	c,1
+	SC	.SUPER
+	ret	c
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+
+	ld	hl,newtsk+TD.NAME
+	ld	de,tcbbuf+T.NAME
+	ld	bc,6
+	ldir			; copy T.NAME
+	ld	a,(tcbbuf+T.ATTR)
+	res	TA.FIX,a
+	set	TA.REM,a	; remove on exit
+	ld	c,a
+	call	tamcr
+	or	c
+	ld	(tcbbuf+T.ATTR),a
+	xor	a
+	ld	(tcbbuf+T.ST),a
+	ld	(tcbbuf+T.ST+1),a
+	ld	(tcbbuf+T.CPCB),a
+	ld	(tcbbuf+T.CPCB+1),a
+	ld	bc,TCBSZ
+	KCALL	$ALLOC		; allocate new TCB
+	jr	c,rpgm6
+	push	hl
+	pop	ix		; get TCB address into IX for $LKTCB call below
+	ex	de,hl
+	ld	hl,tcbbuf
+	ld	bc,TCBSZ
+	ldir			; copy TCB
+	ld	iy,$TLIST
+	ld	bc,T.TCBL
+	KCALL	$LKTCB		; install temporary task with different name
+	xor	a
+rpgm6:	push	af
+	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret	c
+
+	call	tamcr			; get TA.MCR attrib bit
+	ld	(newtsk+TD.ATTR),a
+	xor	a
+	ld	(newtsk+TD.USR),a	; default user number
+	ld	(newtsk+TD.GRP),a	; default user group
+	ld	de,(TTDEV)
+	ld	(newtsk+TD.TI),de	; default terminal
+	ld	a,(TTDEV+2)
+	ld	(newtsk+TD.TI+2),a	;  is user's terminal
+	ld	hl,0
+	ld	(newtsk+TD.SDAT),hl	; no data to send
+	ld	(newtsk+TD.SLEN),hl
+	ld	hl,(cmdptr)
+	call	setcml		; setup command line for task
+	call	SPAWN		; and request+connect it
+	ret	c
+rpgm1:	xor	a
+	ld	(pflag),a	; clear prompt flag (will be redisplayed
+				; by the AST routine)
+	ret
+
+rcmder:	xor	a		; syntax error
+	scf
+	ret
+
+; Request and connect, or request and pass offspring information, depending
+; on whether a task connected to us or not.
+
+SPAWN:	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,(ocbp)
+	ld	a,h
+	or	l		; any tasks connected?
+	ld	hl,newtsk
+	jr	nz,spwn1	; jump if yes, use RPOI
+	ld	e,11
+	ld	bc,exstat
+	SC	.RQST		; request and connect to task
+	ret
+spwn1:	SC	.RPOI
+	ret
+
+; Get appropriate TA.MCR value for new task
+
+tamcr:	ld	a,(cmdtrm)
+	cp	ESC
+	ld	a,0
+	ret	z
+	set	TA.MCR,a
+	ret
+
+; Setup task command line. HL = address of command line.
+
+setcml:	push	hl
+	call	strlen
+	ld	hl,0
+	ld	(newtsk+TD.CMD),hl
+	ld	(newtsk+TD.CML),hl
+	pop	hl
+	ld	a,c
+	or	a
+	ret	z		; no command supplied
+	ld	b,0
+	inc	bc		; count the trailing CR
+	ld	(newtsk+TD.CML),bc
+	dec	bc
+	ld	de,cmlbuf
+	ld	(newtsk+TD.CMD),de
+	ldir
+	ld	a,CR
+	ld	(de),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; STOP <taskname>
+
+dostp:	call	CHKLOG
+	call	gettn		; get task name, return buf addr in HL
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	SC	.STOP		; suspend task
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; RESUME <taskname>
+
+doresm:	call	CHKLOG
+	call	gettn		; get task name, return buf addr in HL
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	SC	.RESUM		; resume task
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; UNFIX <taskname>
+
+; If task XXX not found and the last 3 chars of task name are spaces,
+; the command tries to remove task ...XXX.
+
+dounfx:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	call	gettn
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+	KCALL	$UNFTK		; unfix task
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; FIX <taskname>
+
+; If task XXX not found and the last 3 chars of task name are spaces,
+; the command tries to remove task ...XXX.
+
+dofix:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	call	gettn
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+	KCALL	$FIXTK		; fix task in memory
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; SYNC
+
+dosync:	call	CHKLOG
+	ld	hl,qsync
+	SC	.QIO
+	jr	c,errs
+	ld	a,(QIOSB)
+	or	a
+	ret	z
+errs:	call	SYSERR
+	ret
+
+qsync:	QIOW$	IO.FFS,1,9,QIOSB
+
+;-----------------------------------------------------------------------
+
+; Check user logged-in flag and return one level higher if not set
+
+CHKLOG:	ld	de,(TTDEV)
+	ld	a,(TTDEV+2)
+	ld	b,a		; get user terminal name into DE-B
+	ld	hl,lcbbuf
+	ld	c,I.TSCB
+	SC	.GIN
+	ret	nc
+	ld	hl,nlimsg
+	call	ERROR
+	inc	sp
+	inc	sp
+	ret
+
+nlimsg:	db	'Not logged in',0
+
+; Check session privileged flag and return one level higher if not set
+
+CHKPRV:	ld	de,(TTDEV)
+	ld	a,(TTDEV+2)
+	ld	b,a		; get user terminal name into DE-B
+	ld	hl,lcbbuf
+	ld	c,I.TSCB
+	SC	.GIN
+	jr	c,ckp1
+	ld	ix,lcbbuf
+	bit	LS.PRV,(ix+L.ST); privileged?
+	ret	nz		; return if yes
+ckp1:	ld	a,E.PRIV
+	call	SYSERR
+	inc	sp
+	inc	sp
+	ret
+
+;-----------------------------------------------------------------------
+
+; Call the external Indirect Command file Processor
+
+IND:	call	CHKLOG
+	ld	hl,buf
+	ld	de,indtsk
+	call	cpstr
+	ld	(hl),' '
+	inc	hl
+	ld	de,(lnptr)
+	call	cpstr
+	ld	(hl),0
+	ld	hl,buf
+	call	runtsk		; request ...AT. and connect to it
+;;	ld	a,1		; NOTE: do not clear prompt flag!
+;;	ld	(pflag),a
+	ret
+
+indtsk:	db	'AT.',0
+
+;-----------------------------------------------------------------------
+
+; Output string in HL, length C to terminal device DE-B.
+; To be called from the AST routine to avoid messing with the current
+; character output.
+
+ASTSTR:	push	bc
+	push	hl
+	push	bc
+	ld	c,b		; get device name into DE-C
+	ld	b,4		; assign LUN 4 to output device
+	SC	.ALUN
+	pop	hl
+	ld	h,0
+	ld	(ASTQBK+Q.LEN),hl ; bytes to write
+	pop	hl
+	push	hl
+	ld	(ASTQBK+Q.BUF),hl ; buffer address
+	ld	hl,0
+	ld	(AIOSB+2),hl	; clear counter of bytes sent
+	ld	hl,ASTQBK
+	SC	.QIO		; .QIOW
+	pop	hl		; ignore errors
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ASTBUF:	ds	20
+
+cmlbuf:	ds	132
+
+MAXPRM	equ	64
+PROMPT:	ds	MAXPRM
+
+pflag:	ds	1		; prompt flag
+cmdtrm:	ds	1		; original command terminator
+
+rcvlen:	ds	2		;!   do   !
+TTDEV:	ds	3		;!  not   !
+ocbp:	ds	2		;! change |
+lnbuf:	ds	132		;! order  !
+
+lnptr:	ds	2
+cmdnam:	ds	9
+
+exstat:	ds	2
+
+buf:	ds	256
+lcbbuf:	ds	LCBSZ
+gtkbuf:	ds	GTKSZ
+tcbbuf:	ds	TCBSZ
+newtsk:	ds	TDBSZ		; task descriptor for new task (RUN)
+cmdptr:	ds	2		; ptr to command args (RUN command)
+
+; QIO block for string output. Does not wait for completion and therefore
+; assumes that the buffer contents does not change, which is correct since
+; we use this routine only to (re)display the prompt.
+
+ASTQBK:	QIO$	IO.WLB,4,3,0,AIOSB,,<0,0,0,0,>
+AIOSB:	ds	4
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,119 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('FORK')
+	TITLE	'RSX280 Fork Queue Management'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Fork processing routines.                                      ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	ERRORS.INC
+
+	public	LNKFQB		; append fork block to the fork queue
+;	public	DOFORK		; remove and execute a fork block
+
+	extrn	$ALLOC,$FREE,$FORKQ
+
+	cseg
+
+; Fork block structure:
+;	dw	link
+;	db	bank
+;	dw	routine_address
+;	dw	context		; reg IY
+
+;-----------------------------------------------------------------------
+
+; Add fork block to the end of the fork queue. Should be called with
+; interrupts disabled because interrupt routines can call this too.
+
+; Input:
+;   IX = address of fork block to add to list
+
+; Preserves BC, IX, IY.
+
+LNKFQB:	ld	hl,$FORKQ
+lnk1:	ldw	de,(hl)		; get link field into DE
+	ld	a,d
+	or	e		; check if zero
+	jr	z,lnk2		; if yes, we reached the end of the list
+	ex	de,hl		; else go to next fork block in list
+	jr	lnk1		; and try again
+
+; we arrive here with:
+;   HL = prev fork block in list or list head ptr +1
+;   IX = address of fork block to add
+
+lnk2:	push	ix		; get address of fork block to insert
+	pop	de		;  into HL
+	ldw	(hl),de		; set next pointer in prev list element
+	xor	a		;  to this one
+	ld	(ix),a		; clear next field of inserted fork block
+	ld	(ix+1),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove and execute a fork block.
+; This should be in common memory, since we switch banks.
+; System stack should also be in common memory.
+
+	IF	0		; this should be in common memory
+
+DOFORK:	ld	iy,$FORKQ
+	ldw	hl,(iy)
+	ld	a,h
+	or	l
+	scf
+	ret	z		; return if queue empty.
+	push	hl
+	ld	a,(hl)
+	ld	(iy),a		; unlink the fork block
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+1),a
+	inc	hl
+	ld	e,(hl)		; bank
+	inc	hl
+	ld	c,(hl)		; routine address
+	inc	hl
+	ld	b,(hl)
+	pop	hl
+	ld	hl,frk2
+	push	hl		; push return address
+	push	bc
+	ret			; call the routine
+frk2:	or	a
+	ret
+
+forksp:	ds	2
+
+	ds	32		; stack space for fork calls
+FRKSTK	equ	$
+
+	ENDIF
+
+	END

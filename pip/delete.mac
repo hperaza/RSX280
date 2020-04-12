@@ -1,0 +1,503 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	cseg
+
+	include	PIP.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	public	PIPDEL,PRFNB,VERR
+
+	extrn	RFNB,CRFNB,ASGN,NRPARM,SWBITS,SEARCH,SRCHDR
+	extrn	DIRFNB,SETDIR,SETNAM,SETEXT,SRCBUF,CPSTR
+	extrn	CPNAME,CPEXT,GETLN,UCASE,CRLF,PUTCH,PUTSTR
+	extrn	SWVAL,CPHLDE,SRCFDB,DSTFDB,NFILES,CVTWD,STRBUF
+
+	extrn	CMDERR,SYSERR,ERROR,ERRNF
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+PIPDEL:	ld	hl,RFNB
+	ld	(CRFNB),hl
+
+	ld	a,(SWBITS+1)
+	bit	S2.SD,a		; /SD set?
+	ld	a,0
+	jr	z,d1
+	dec	a
+d1:	ld	(select),a
+
+	ld	a,(SWBITS+2)
+	bit	S3.VE,a		; /VE set?
+	ld	a,0FFh		; treat it like /LD
+	jr	nz,d2
+	ld	a,(SWBITS+3)
+	bit	S4.LD,a		; /LD set?
+	ld	a,0FFh
+	jr	nz,d2
+	xor	a
+d2:	ld	(list),a
+
+	ld	a,1
+	ld	(header),a
+
+loop:	ld	ix,(CRFNB)
+
+	ld	a,(SWBITS+1)
+	bit	S2.PU,a		; purge operation?
+	jr	z,d4		; branch if not
+
+	ld	a,(ix+F.ATTR)	; else ignore version (assume latest)
+	and	NOT FN.VER
+	ld	c,a
+	ld	(ix+F.ATTR),a
+	ld	a,(ix+F.WLDC)
+	and	NOT FN.VER
+	ld	(ix+F.WLDC),a
+	xor	a
+	ld	(ix+F.VER),a
+	ld	(ix+F.VER+1),a
+
+	ld	a,c
+	and	FN.NAME OR FN.EXT
+	jr	nz,d5
+	ld	a,c
+	or	FN.NAME OR FN.EXT
+	ld	(ix+F.ATTR),a	; if an empty filespec was supplied,
+	ld	a,'*'		;  assume *.* to prevent SEARCH
+	ld	(ix+F.NAME),a	;   from assuming *.*;*
+	ld	(ix+F.EXT),a
+	jr	d5
+
+d4:	ld	a,(ix+F.ATTR)	; delete operation: check version
+	and	FN.VER		; explicit?
+	ld	hl,VERR
+	jp	z,ERROR		; error if not
+
+d5:	ld	ix,(CRFNB)
+	ld	a,(SWBITS+1)
+	bit	S2.PU,a		; purge operation?
+	ld	hl,dodel	; HL = callback routine address for delete
+	jr	z,d6		; branch if not
+	ld	hl,dopur	; HL = callback routine address for purge
+d6:	call	SEARCH		; search directories
+	jr	nc,d3
+	cp	E.ABOP		; operation aborted by user?
+	ret	z		; return without error message if yes
+
+	call	SYSERR		; else display error and continue
+
+d3:	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs in command line?
+	ret	z		; return if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else select next filespec
+	jr	loop		; and loop until all done
+
+VERR:	db	'Version must be explicit or "*"',0
+
+;-----------------------------------------------------------------------
+
+; Delete single file.
+
+dodel:	ld	a,c
+	or	a		; first time call?
+	jr	nz,del1		; jump if not
+
+	ex	de,hl
+
+	ld	hl,0
+	ld	(NFILES),hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in finfo
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.DEV),a	; set also device name and unit
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	xor	a		; return success
+	ret
+
+del1:	dec	c		; matched entry?
+	jr	z,del2		; branch if yes
+
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	ret	nz		; return if set (note CY still clear)
+	ld	hl,(NFILES)
+	ld	a,h
+	or	l		; any files found?
+	call	z,ERRNF		; display warning if not
+	xor	a
+	ret
+
+del2:	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,SRCFDB
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	push	de
+	call	SETEXT
+	pop	de
+
+	ld	hl,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.VER),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.VER+1),a
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.ATTR),a
+
+	call	ASK
+	ret	c		; CY = operation aborted
+	ret	nz		; NZ = do not delete file
+
+	ld	de,(SRCFDB+F.DEV)
+	ld	a,(SRCFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNDST
+	SC	.ALUN		; assign LUN
+	jr	c,del3
+
+	ld	hl,qio1
+	SC	.QIO		; delete file
+	jr	c,del3
+	ld	a,(iosb)
+	or	a
+	jr	z,del4		; jump on success
+
+del3:	call	SYSERR		; else display error message
+	xor	a
+	ret			; and return success to delete other files
+
+del4:	ld	a,(list)	; list deleted files?
+	or	a
+	ret	z		; return if not
+
+	ld	a,(header)
+	or	a
+	ld	hl,delmsg	; display header if first time
+	call	nz,PUTSTR
+	xor	a
+	ld	(header),a
+
+PRFNB:	ld	hl,STRBUF
+	push	hl
+	ld	(hl),LF
+	inc	hl
+	call	FNBSTR		; convert file name to string
+	ld	(hl),CR		; CR forces flushing of output buffer
+	inc	hl
+	ld	(hl),0
+	pop	hl
+	call	PUTSTR		; display file name
+	xor	a		; return success
+	ret
+
+delmsg:	db	CR,LF,'The following files have been deleted:',CR,0
+
+;-----------------------------------------------------------------------
+
+; The purge operation requires an additional scan of the directory
+; in order to find all versions of a given file.
+
+dopur:	ld	a,c
+	or	a		; first time call?
+	jr	nz,pur1		; jump if not
+
+	ex	de,hl
+
+	ld	hl,0
+	ld	(NFILES),hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in finfo
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.DEV),a	; set also device name and unit
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	xor	a		; return success
+	ret
+
+pur1:	dec	c		; matched entry?
+	ret	nz		; return if not
+
+	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	ld	l,(ix+DE.VER)
+	ld	h,(ix+DE.VER+1)
+	ld	(hivers),hl	; remember highest version number of this file
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,DSTFDB	; use DSTFDB as search FDB for purge operation
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	call	SETEXT
+
+	xor	a
+	ld	(ix+F.VER),0
+	ld	(ix+F.VER+1),0
+
+	ld	(ix+F.ATTR),FN.DEV OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.WLDC),FN.VER ; pattern is 'filename.ext;*'
+
+	ld	hl,DIRFNB	; search same directory again
+	ld	de,dopur1	; DE = callback routine address
+	ld	bc,SRCBUF	; BC = I/O buffer address
+	ld	a,LUNSRC	; A  = LUN
+	call	SRCHDR		; process this directory
+	ret	nc		; return if no error
+	cp	E.ABOP		; operation aborted by user?
+	scf
+	ret	z		; return with CY set if yes
+	call	SYSERR		; else display error message
+	xor	a		;  and return success to continue operation
+	ret			;   on next files.
+
+; Process single file
+
+dopur1:	ld	a,c
+	or	a		; first time call?
+	ret	z		; return if yes (SRCFDB already set)
+
+	; TODO: safety check? (compare filename and ext)
+
+	ld	hl,(SWVAL+2)
+	ld	a,h
+	or	l
+	jp	nz,CMDERR
+	ld	hl,(SWVAL)
+	ld	a,h
+	or	l
+	jr	nz,dp1
+	ld	hl,1		; default value is 1
+dp1:	ex	de,hl
+	ld	hl,(hivers)
+	or	a
+	sbc	hl,de		; HL = maxv - n
+	ccf
+	ret	nc		; nothing to purge if n > maxv
+	ex	de,hl		; DE = maxv - n (delete this and below)
+	ld	l,(ix+DE.VER)	; HL = file vers
+	ld	h,(ix+DE.VER+1)
+	call	CPHLDE
+	ccf
+	ret	nc		; keep file if vers > maxv - n
+	jp	del1		; else delete the file
+
+;-----------------------------------------------------------------------
+
+; Ask for confirmation, if specified by user.
+; Returns Z if file should be deleted, NZ otherwise.
+; Returns CY set and E.ABOP code in A if operation should be aborted.
+
+ASK:	ld	a,(select)
+	or	a		; selective delete?
+	ret	z		; return Z if not, delete the file
+	ld	hl,STRBUF
+	ld	de,prompt
+	call	CPSTR		; build prompt for GETLN
+	push	de
+	call	FNBSTR
+	ld	a,35		; max filespec length is 35
+	sub	e		; we *know* D is zero
+	jr	c,a1		; just in case
+	ld	b,a
+	inc	b		; + separator before [Y/N...]
+a2:	ld	(hl),' '	; pad with spaces for nicer display
+	inc	hl
+	djnz	a2
+a1:	pop	de
+	inc	de
+	call	CPSTR
+	ld	(hl),0
+a0:	ld	hl,resp
+	ld	de,10		; D = 0 (read with echo), E = max length
+	ld	bc,STRBUF
+	call	GETLN		; get user response
+	cp	E.EOF
+	jr	z,abort		; abort on operation on ^Z
+	ld	hl,resp
+	call	skipsp		; skip blanks
+	cp	3
+	jr	z,abort		; ^C also aborts (but MCR traps ^C...)
+	call	UCASE
+	cp	'Q'
+	jr	z,abort		; Quit aborts
+	cp	'Y'
+	ret	z		; delete file!
+	cp	'A'
+	jr	z,delall	; delete rest
+	cp	'N'
+	jr	nz,a0
+	or	a		; set NZ flag
+	ret			; do not delete this file
+
+delall:	xor	a
+	ld	(select),a	; do not ask again
+	ret			; return Z to delete this file and the rest
+
+abort:	ld	a,E.ABOP
+	scf
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	3
+	ret	z
+	cp	' '
+	ret	nc
+	inc	hl
+	jr	skipsp
+
+prompt:	db	CR,LF,'Delete file ',0,'[Yes/No/All/Quit]? ',0
+
+; Convert FNB @IX to string @HL, return string length in DE.
+
+FNBSTR:	push	hl
+	ld	a,(ix+F.DEV)
+	ld	(hl),a		; store device name
+	inc	hl
+	ld	a,(ix+F.DEV+1)
+	ld	(hl),a
+	inc	hl
+	ld	e,(ix+F.UNIT)
+	ld	d,0
+	xor	a
+	call	CVTWD		; store unit number
+	ld	(hl),':'
+	inc	hl
+	ex	de,hl
+	push	ix
+	pop	bc
+	ld	a,(ix+F.ATTR)
+	and	FN.DIR
+	jr	z,fnb1
+	ld	a,'['
+	ld	(de),a
+	inc	de
+	ld	hl,F.DIR
+	add	hl,bc
+	push	bc
+	call	CPNAME		; store directory name
+	pop	bc
+	ld	a,']'
+	ld	(de),a
+	inc	de
+fnb1:	ld	hl,F.NAME
+	add	hl,bc
+	push	bc
+	call	CPNAME		; store file name
+	pop	bc
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	hl,F.EXT
+	add	hl,bc
+	call	CPEXT		; store extension
+	ex	de,hl
+	ld	(hl),';'
+	inc	hl
+	ld	e,(ix+F.VER)
+	ld	d,(ix+F.VER+1)
+	xor	a
+	call	CVTWD		; store version number
+	pop	bc		; BC = ptr to start of string
+	ld	e,l
+	ld	d,h
+	or	a
+	sbc	hl,bc
+	ex	de,hl		; HL = end of string, DE = length
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.DEL,LUNDST,9,iosb,,<SRCFDB>
+iosb:	ds	4
+
+header:	ds	1
+select:	ds	1
+list:	ds	1
+resp:	ds	10
+hivers:	ds	2
+
+	end

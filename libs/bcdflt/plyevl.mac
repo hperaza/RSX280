@@ -1,0 +1,56 @@
+	.Z80
+
+	public	PLYEVL
+
+	extrn	FSTOR,FMOVE,FLD0R,FLD1R,FADD,FMUL
+	extrn	?PLARG
+
+; Polynomial evaluation
+;
+; Puts the result of an n-degree polynomial evaluation of FR0
+; in FR0 (Horner's algorithm).
+;
+; Entry: HL = points to list of floating point coefficients,
+;             ordered high to low
+;        A  = number of coefficients in list
+;
+; Returns CY on overflow.
+
+	cseg
+
+PLYEVL:	ld	(TEMP),hl
+	ld	c,a		; number of coefficients into C
+	push	bc
+	ld	hl,?PLARG
+	call	FSTOR		; ?PLARG <- FR0
+	call	FMOVE		; FR1 <- FR0
+	ld	hl,(TEMP)
+	call	FLD0R		; FR0 <- coefficient(0)
+	pop	bc
+	dec	c
+	ret	z		; return if 0-degree (constant)
+	push	bc
+pev1:	call	FMUL		; multiply by argument (old FR0)
+	pop	bc
+	ret	c
+	push	bc
+	ld	hl,(TEMP)
+	ld	de,6
+	add	hl,de		; advance pointer to next coefficient
+	ld	(TEMP),hl
+	call	FLD1R		; load it into FR1
+	call	FADD		;  and add it to FR0
+	pop	bc
+	ret	c
+	dec	c
+	ret	z		; return when finished
+	push	bc
+	ld	hl,?PLARG
+	call	FLD1R		; reload FR1 with argument (old FR0)
+	jr	pev1		; and loop
+
+	dseg
+
+TEMP:	ds	2
+
+	end

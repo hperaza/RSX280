@@ -1,0 +1,1533 @@
+;**********************************************************************;
+;                                                                      ;
+;   Bi-directional File Browser with HEX mode - RSX180 version.        ;
+;   Copyright (C) 1991-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Z80 version, VT100-compatible terminal
+;
+;   TODO:
+;     - Optionally show control characters as ^X
+;     - Auto-binary mode (for COM, TSK and such binary files)
+
+	title	'Bi-directional File Browser'
+	ident	'4.2'
+	.z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	AST.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	QIO.INC
+	include	GCML.INC
+
+	; SYSLIB calls
+
+	extrn	GCML,RCML,PFN,UCASE,ATTACH,DETACH,PUTCH,TTFLSH
+
+false	equ	0
+true	equ	not false
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+LUNCMD	equ	1
+LUNFIL	equ	2
+LUNTI	equ	5
+
+TTEFN	equ	18	; event flag for AST console input
+
+; compile-time options
+
+statln	equ	true	; set to true to display status/help line
+binmod	equ	true	; set to true to include hexadecimal mode
+color	equ	false	; set to true to use color attributes
+
+;---------------------------------------------------------------
+
+	cseg
+
+browse:	jp	start
+
+;---------------------------------------------------------------
+
+; Screen patch area
+
+hshift:	db	8
+swidth:	db	80	; screen width (columns)
+srows:	db	24	; screen rows
+
+;---------------------------------------------------------------
+
+; Screen routines, VT100
+
+cls:	call	prefix
+	ld	a,'2'
+	call	putc
+	ld	a,'J'
+	jp	putc
+
+clrrgn:	call	prefix
+	ld	a,';'
+	call	putc
+	ld	a,'r'
+	jp	putc
+
+clreol:	call	prefix
+	ld	a,'K'
+	jp	putc
+
+clreos:	call	prefix
+	ld	a,'J'
+	jp	putc
+
+setcur:	call	prefix
+	ld	a,e		; y coord
+	inc	a
+	call	putdec
+	ld	a,';'
+	call	putc
+	ld	a,d		; x coord
+	inc	a
+	call	putdec
+	ld	a,'H'
+	jp	putc
+
+insln:	call	prefix
+	ld	a,'L'
+	jp	putc
+
+delln:	call	prefix
+	ld	a,'M'
+	jp	putc
+
+hcolor:	call	prefix
+	IF	color
+	ld	a,46
+	call	putdec
+	ld	a,';'
+	call	putc
+	ld	a,30
+	call	putdec
+	ELSE
+	ld	a,7
+	call	putdec
+	ENDIF
+	ld	a,'m'
+	jp	putc
+
+tcolor:	call	prefix
+	ld	a,0
+	call	putdec
+	IF	color
+	ld	a,';'
+	call	putc
+	ld	a,44
+	call	putdec
+	ld	a,';'
+	call	putc
+	ld	a,37
+	call	putdec
+	ENDIF
+	ld	a,'m'
+	jp	putc
+
+prefix:	ld	a,1Bh		; ESC
+	call	putc
+	ld	a,'['
+	jp	putc
+
+putdec:	push	de
+	push	bc
+	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	call	putc
+	pop	bc
+	pop	de
+	ret
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad4
+	inc	d
+	dec	d
+	jr	z,ad5
+ad4:	call	putc
+	ld	d,1
+ad5:	pop	af
+	ret
+
+hlhex:	ld	a,h
+	call	ahex
+	ld	a,l
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	ah1
+	pop	af
+ah1:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	jp	putc
+
+;---------------------------------------------------------------
+
+; Console I/O routines
+
+; Setup unsolicited char AST and attach to terminal
+
+ttini:	ld	ix,ttq
+	call	qinit		; init input queue
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign LUN 5 to TI:
+	ld	de,ttast	; attach with AST
+	ld	c,LUNTI
+	call	ATTACH
+	ret
+
+; Flush output and detach from terminal
+
+ttex:	call	TTFLSH
+	ld	c,LUNTI
+	call	DETACH		; detach from TI:
+	ret
+
+; Unsolicited char AST routine
+
+ttast:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	c,l		; get the char
+	ld	ix,ttq
+	call	qput		; store it
+	ld	e,TTEFN
+	SC	.SETF		; and set event flag
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+getc:	push	hl
+	push	de
+	push	bc
+	call	TTFLSH
+gc0:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag (before accessing queue!)
+	ld	ix,ttq
+	;di			; prevent AST from messing with the queue
+	call	qget		; get char from queue
+	;ei
+	jr	nc,gc1		; return if available
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for character
+	jr	gc0		; loop back to get char
+gc1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+putc:	push	hl
+	push	de
+	push	bc
+	ld	c,a
+	call	PUTCH
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+putstr:	ld	a,(hl)
+	or	a
+	ret	z
+	call	putc
+	inc	hl
+	jr	putstr
+
+qput:	ld	a,(ix+q.ipos)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+q.opos)
+	scf
+	ret	z		; buffer full
+	ld	(ix+q.ipos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+q.iob),c	; store char
+	pop	ix
+	or	a
+	ret
+
+qget:	ld	a,(ix+q.opos)
+	cp	(ix+q.ipos)
+	scf
+	ret	z		; buffer empty
+	ld	e,a
+	inc	a
+	and	3Fh
+	ld	(ix+q.opos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+q.iob)	; get char
+	pop	ix
+	or	a
+	ret
+
+qinit:	xor	a
+	ld	(ix+q.ipos),a
+	ld	(ix+q.opos),a
+	ret
+
+;---------------------------------------------------------------
+
+; Main routine & command-level loop
+
+start:	ld	(memtop),sp
+	ld	sp,stack
+
+	call	init
+
+m1:	call	TTFLSH
+	ld	iy,gdat
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(cmdptr),hl	; save pointer to command tail
+	call	process		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; exit normally if yes
+
+	ld	de,cmderr	; else display error
+	call	error
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m3:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;---------------------------------------------------------------
+
+; Process the command
+
+process:
+	xor	a
+	ld	(opnflg),a	; clear file open flag
+	ld	(hexmod),a	; default to text mode
+
+	ld	a,(srows)	; get # of screen rows
+	IF	statln
+	dec	a
+	ENDIF
+	ld	(sheight),a	; setup screen height
+
+; TODO: better command line parsing
+
+	ld	hl,(cmdptr)
+	ld	ix,fdb
+	call	PFN		; parse file name from command line
+	ld	(cmdptr),hl
+	ld	a,E.BADF
+	jp	c,error
+
+opts:	call	getopt		; check for option
+	jr	c,endopt
+	cp	'8'		; 8-bit mode option?
+	ld	c,0FFh
+	jr	z,opt8
+	cp	'7'		; 7-bit mode option?
+	ld	c,7Fh
+	jr	z,opt8
+	cp	'H'		; Hex mode option?
+	ld	c,0FFh
+	jr	z,optH
+	cp	'A'		; ASCII mode option?
+	ld	c,0
+	jr	z,optH
+	jr	endopt		; TODO: error - invalid option
+
+opt8:	ld	a,c
+	ld	(dmask),a	; setup data mask
+	jr	opts
+
+optH:	ld	a,c
+	ld	(hexmod),a
+	jr	opts
+
+endopt:	ld	hl,($memry)
+	ld	(lntab),hl	; set start of screen line table
+	ld	a,(sheight)
+	rlca
+	ld	e,a
+	ld	d,0
+	add	hl,de		; line table has pointers to screen lines
+	ld	(fbuf),hl	; file data buffer follows
+
+	; create file buffer from available space
+
+	ex	de,hl
+	ld	hl,(memtop)
+	or	a
+	sbc	hl,de		; compute amount of free memory
+	ld	l,0		; bufsiz must be a multiple of 1024,
+	ld	a,h		;  as half-buffer must be a multiple
+	and	0FCh		;   of the block size (512 bytes)
+	ld	h,a
+	cp	20h		; try 8K as minimum
+	ld	de,nomem
+	jp	c,error
+	ld	(bufsiz),hl	; remember buffer size
+
+	ex	de,hl
+	ld	hl,(fbuf)	; fbuf = start of free memory
+	push	hl
+	add	hl,de
+	ld	(endbuf),hl	; endbuf = fbuf + bufsiz
+	call	bufsz2
+	pop	hl
+	add	hl,bc
+	ld	(hbuf),hl	; hbuf = fbuf + bufsiz/2
+
+	ld	hl,0FFFFh
+	ld	(blkno),hl
+
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	b,LUNFIL
+	SC	.ALUN		; assign lun
+	jp	c,error
+
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open the file
+	ld	de,nofile	; file not found
+	jp	c,error
+	ld	a,(iosb)
+	or	a
+	jp	nz,error
+
+	ld	a,1
+	ld	(opnflg),a
+
+	call	ttini		; init terminal I/O
+
+	call	clrrgn		; reset any scrolling region (e.g. from MCE)
+
+	IF	statln
+	call	hcolor
+	call	helpbar
+	ENDIF
+
+	call	tcolor
+	call	home		; go to top of file
+	call	display
+
+mloop:	call	TTFLSH		; ensure all chars are displayed
+	call	getc
+	ld	hl,mloop
+	push	hl		; ret address on stack
+	cp	1Bh		; ESC
+	jp	z,escseq
+	cp	'Q'
+	jp	z,finish
+	cp	'q'
+	jp	z,finish
+	cp	'7'
+	jp	z,bits7
+	cp	'8'
+	jp	z,bits8
+	and	1Fh		; make 'E' or 'e' equal '^E', etc...
+	cp	05h		; Ctrl/E - line up
+	jp	z,lnup
+	cp	18h		; Ctrl/X - line down
+	jp	z,lndown
+	cp	13h		; Ctrl/S - reset left
+	jp	z,tleft
+	cp	04h		; Ctrl/D - tab right
+	jp	z,tright
+	cp	12h		; Ctrl/R - page up
+	jp	z,pgup
+	cp	03h		; Ctrl/C - page down
+	jp	z,pgdown
+	cp	17h		; Ctrl/W - top of file
+	jp	z,begf
+	cp	1Ah		; Ctrl/Z - end of file
+	jp	z,endf
+	cp	08h		; Ctrl/H - hex/text toggle
+	jp	z,modtgl
+	cp	0Ch		; Ctrl/L - redraw
+	jp	z,display
+	ret
+
+escseq:	ld	b,0
+	call	getc
+	cp	1Bh		; ESC-ESC quits
+	jp	z,finish
+	cp	'['
+	ret	nz
+	call	getc
+	cp	'A'		; arrow up
+	jp	z,lnup
+	cp	'B'		; arrow down
+	jp	z,lndown
+	cp	'C'		; arrow right
+	jp	z,tright
+	cp	'D'		; arrow left
+	jp	z,tleft
+	cp	'H'		; HP/Sun/SCO Home
+	jp	z,begf
+	cp	'F'		; HP/Sun/SCO End
+	jp	z,endf
+	cp	'T'		; HP Page Up
+	jp	z,pgup
+	cp	'S'		; HP Page Down
+	jp	z,pgdown
+	cp	'I'		; SCO Page Up
+	jp	z,pgup
+	cp	'G'		; SCO Page Down
+	jp	z,pgdown
+pfn1:	sub	'0'
+	ret	c
+	cp	10
+	ret	nc
+	ld	c,a
+	ld	a,b
+	add	a,a		; * 2
+	add	a,a		; * 4
+	add	a,b		; * 5
+	add	a,a		; * 10
+	add	a,c
+	ld	b,a
+	call	getc
+	cp	'~'
+	jr	z,pfn2
+	cp	'z'		; Sun function keys
+	jr	nz,pfn1
+pfn2:	ld	a,b
+	cp	1		; VT220 Home
+	jp	z,begf
+	cp	4		; VT220 End
+	jp	z,endf
+	cp	5		; VT220 Page Up
+	jp	z,pgup
+	cp	6		; VT220 Page Down
+	jp	z,pgdown
+	ret
+
+getopt:	ld	hl,(cmdptr)
+g1:	ld	a,(hl)
+	or	a
+	scf
+	ret	z
+	cp	'/'
+	inc	hl
+	jr	nz,g1
+	ld	a,(hl)
+	call	UCASE
+	inc	hl
+	ld	(cmdptr),hl
+	or	a
+	ret
+
+;---------------------------------------------------------------
+
+; Perform initializations
+
+init:	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK		; get task info
+	ld	hl,gtkbuf+GT.NAME
+	call	ckdots		; skip initial 3 dots if present
+	ld	de,(gdat+G.PRM)	; set prompt to our task name
+	inc	de
+	inc	de
+	ld	bc,3
+	ldir
+	ret
+
+ckdots:	ld	b,3
+	push	hl
+ckd1:	ld	a,(hl)
+	cp	'.'
+	jr	nz,ckd2
+	inc	hl
+	djnz	ckd1
+	inc	sp
+	inc	sp
+	ret
+ckd2:	pop	hl
+	ret
+
+;---------------------------------------------------------------
+
+error:	push	de
+	ld	hl,pgname
+	call	putstr
+	pop	hl
+	call	putstr
+	ld	a,CR
+	call	putc
+	call	TTFLSH		; flush output buffer
+	call	close
+	scf
+	ret
+
+pgname:	db	CR,LF,'VIEW -- ',0
+nofile:	db	'File not found',0
+nomem:	db	'Not enough memory',0
+cmderr:	db	'Error processing command line',0
+
+close:	ld	hl,opnflg
+	ld	a,(hl)
+	or	a
+	ret	z
+	ld	(hl),0
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close the file
+	ret
+
+	IF	statln
+helpbar:
+	;ld	a,(sheight)
+	;ld	e,a
+	ld	de,0
+	call	setcur
+	IF	color
+	call	clreol
+	ELSE
+	ld	a,(swidth)
+	ld	b,a
+hclr:	ld	a,' '
+	call	putc
+	djnz	hclr
+	ld	de,0
+	call	setcur
+	ENDIF
+	ld	hl,hlpmsg
+	call	putstr
+	ld	hl,(bufsiz)
+	ld	a,h
+	rrca
+	rrca			; bufsiz/1024
+	and	3Fh		; A = bufsiz/1024
+	call	putdec
+	ld	hl,bufmsg
+	call	putstr
+	call	TTFLSH
+	ret
+
+hlpmsg:	db	'E-up X-down S-left D-right R-pgup C-pgdn '
+	db	'W-begin Z-end Q-quit      ',0
+bufmsg:	db	'K buffer',0
+
+	ENDIF
+
+;- Quit --------------------------------------------------------
+  
+finish:	call	close		; close the file
+	IF	1
+	call	cls
+	ELSE	; in case we want to leave screen in our bgnd color
+	ld	a,(srows)
+	ld	b,a
+	ld	de,0
+fin1:	call	setcur
+	call	clreol
+	inc	e
+	djnz	fin1
+	ENDIF
+	ld	de,0
+	call	setcur		; home cursor
+	call	ttex		; detach terminal
+	pop	hl		; discard mloop address
+	ret			; return to command level
+
+;- Home --------------------------------------------------------
+
+begf:	call	home
+	jp	display
+
+;- End ---------------------------------------------------------
+  
+endf:	ld	hl,(lntab)
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get address of top line
+ef1:	call	fnextc		; skip chars until end of file
+	jr	nc,ef1
+	ld	a,(sheight)	; now backup one page
+	dec	a
+	ld	b,a
+ef2:	push	bc
+	call	prevln
+	pop	bc
+	djnz	ef2
+	ex	de,hl
+	call	setlnt		; setup line table
+	jp	display
+
+;- Up ----------------------------------------------------------
+
+lnup:	ld	hl,(lntab)
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get address of top line
+	call	fprevc
+	push	af
+	call	fnextc
+	pop	af
+	ret	c		; return if at start of file
+	call	prevln		; else backup to prev line
+	push	hl
+	ld	hl,(lntab)
+	ld	a,(sheight)
+	dec	a
+	rlca
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	inc	hl
+	ld	e,l		; DE = dst
+	ld	d,h
+	dec	hl
+	dec	hl		; HL = src
+	lddr			; shift table
+	pop	hl
+	ex	de,hl
+	ld	(hl),d
+	dec	hl
+	ld	(hl),e
+	IF	0
+	jp	display
+	ELSE
+	ld	de,1
+	call	setcur
+	call	insln
+	call	dtop
+	ret
+	ENDIF
+
+;- Down --------------------------------------------------------
+  
+lndown:	ld	hl,(lntab)	; get start of line addr table into HL
+	ld	a,(sheight)
+	dec	a
+	rlca
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = address of bottom line
+	ld	a,h
+	or	l
+	ret	z
+	call	nextln
+	ret	c
+	push	hl
+	ld	hl,(lntab)
+	ld	e,l		; DE = dst
+	ld	d,h
+	inc	hl		; HL = src
+	inc	hl
+	ld	a,(sheight)
+	dec	a
+	rlca
+	ld	c,a
+	ld	b,0
+	ldir			; shift line table
+	pop	hl
+	ex	de,hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	IF	0
+	jp	display
+	ELSE
+	ld	de,1
+	call	setcur
+	call	delln
+	call	dbot
+	ret
+	ENDIF
+
+;- Left --------------------------------------------------------
+  
+tleft:	ld	hl,(hpos)
+	ld	a,h
+	or	l
+	ret	z
+	ld	hl,0
+	ld	(hpos),hl
+	call	setxmax
+	jp	display
+
+;- Right -------------------------------------------------------
+  
+tright:	ld	hl,(hpos)
+	ld	a,(hshift)
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	ld	(hpos),hl
+	call	setxmax
+	jp	display
+
+;- PgUp --------------------------------------------------------
+  
+pgup:	ld	a,(sheight)
+	dec	a
+	ld	b,a
+up1:	push	bc
+	call	lnup
+	pop	bc
+	djnz	up1
+	ret
+
+;- PgDn --------------------------------------------------------
+  
+pgdown:	ld	a,(sheight)
+	dec	a
+	ld	b,a
+down1:	push	bc
+	call	lndown
+	pop	bc
+	djnz	down1
+	ret
+
+;- Set 7/8 bit mode --------------------------------------------
+
+bits7:	ld	a,7Fh
+	jr	bs1
+bits8:	ld	a,0FFh
+bs1:	ld	(dmask),a
+	jp	display
+
+;- Toggle text/hex mode ----------------------------------------
+
+modtgl:	ld	hl,hexmod
+	ld	a,(hl)
+	cpl
+	ld	(hl),a
+	or	a
+	jr	z,txtmod
+
+	; hex mode
+
+	ld	hl,(lntab)
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get address of top line
+	ld	de,(fbuf)
+	or	a
+	sbc	hl,de		; topln-fbuf
+	ld	a,l
+	and	0F0h		; start on a 16-byte boundary
+	ld	l,a
+	add	hl,de
+	ex	de,hl
+	call	setlnt		; setup line table
+	jp	display		; and redisplay screen
+
+txtmod:	; text mode
+
+	ld	hl,(lntab)
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get address of top line
+	call	prevln		; backup to start of line
+	ex	de,hl
+	call	setlnt		; setup line table
+	jp	display		; and redisplay screen
+
+;---------------------------------------------------------------
+
+; Display a full screen.
+; On entry, lntab contains addresses of screen lines in buffer.
+  
+display:
+	ld	hl,(lntab)	; get start of line addr table into HL
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = address of top line
+	ld	a,(sheight)
+	ld	b,a
+	IF	statln
+	ld	de,1		; one line below home
+	ELSE
+	ld	de,0		; home cursor
+	ENDIF
+nextl:	call	setcur
+	call	showln
+	inc	e
+	djnz	nextl
+	dec	e
+	call	setcur
+	ret
+
+; Display only top line (used during scroll down)
+
+dtop:	ld	hl,(lntab)	; get start of line addr table into HL
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = address of top line
+	IF	statln
+	ld	de,1		; one line below home
+	ELSE
+	ld	de,0		; home cursor
+	ENDIF
+	call	setcur
+	call	showln
+	call	setcur
+	ret
+
+; Display only bottom line (used during scroll up)
+
+dbot:	ld	hl,(lntab)	; get start of line addr table into HL
+	ld	a,(sheight)
+	dec	a
+	rlca
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = address of bottom line
+	ld	e,c
+	ld	d,0
+	call	setcur
+	call	showln
+	call	setcur
+	ret
+
+;---------------------------------------------------------------
+
+; Display a single line
+
+showln:	ld	a,(hexmod)
+	or	a
+	jr	nz,showhx
+
+; --- Text ---
+
+	push	de
+	push	bc
+	ld	de,0		; x pos
+
+nextc:	push	de
+	call	fnextc
+	pop	de
+	jp	c,endln
+	ld	c,a
+	ld	a,(dmask)
+	and	c
+	ld	c,a
+	cp	CR		; CR?
+	jr	z,nextc
+	cp	LF		; LF?
+	jp	z,endln
+	cp	9		; TAB?
+	jp	z,do_tab
+	cp	20h		; control char?
+	jr	nc,prnt
+	ld	c,'~'		; yes -> display as ~
+prnt:
+	ld	b,1
+  
+dsp1:	push	hl
+
+	ld	hl,(hpos)
+	ld	a,e		; ex de,hl ! or a ! sbc hl,de
+	sub	l
+	ld	a,d
+	sbc	a,h
+	jp	c,dsp2
+
+	ld	hl,(xmax)
+	ld	a,e		; ex de,hl | sbc hl,de (note CY was unset)
+	sub	l
+	ld	a,d
+	sbc	a,h
+	jp	nc,dsp2
+
+	ld	a,c
+	call	putc
+
+dsp2:	pop	hl
+	inc	de
+	djnz	dsp1
+
+	jp	nextc
+
+do_tab:	ld	a,e
+	and	7
+	ld	b,a
+	ld	a,8
+	sub	b
+	ld	b,a
+	ld	c,' '
+	jp	dsp1
+
+endln:	call	clreol
+	pop	bc
+	pop	de
+	ret
+
+; --- Hex ---
+
+showhx:	push	de
+	push	bc
+
+	; We need to save the bytes to display, as fnextc will
+	; cause a file read when HL points to the end of the
+	; file buffer. If we don't, and use the same initial
+	; HL for the ASCII data, a second unwanted file read
+	; will occur.
+
+	push	hl
+	ld	de,hexbuf
+	ld	b,16
+	ld	c,0
+ldhex:	push	de
+	push	bc
+	call	fnextc
+	pop	bc
+	pop	de
+	jr	c,hx0
+	ld	(de),a
+	inc	de
+	inc	c
+hx0:	djnz	ldhex
+	ld	a,c
+	ld	(hexlen),a
+	or	a
+	jp	z,hxeof
+
+	ex	(sp),hl
+
+	ld	bc,(fbuf)
+	or	a
+	sbc	hl,bc		; offset = pos - fbuf
+	ld	bc,(blkno)
+	ld	d,0
+	ld	e,b
+	ld	b,c
+	ld	c,0		; DEBC = blkno * 256
+	sla	b
+	rl	e
+	rl	d		; DEBC = blkno * 512
+	add	hl,bc
+	ex	de,hl
+	ld	bc,0
+	adc	hl,bc		; HLDE = blkno * 512 + offset
+	call	hlhex
+	ex	de,hl
+	call	hlhex		; output 32-bit address
+	ld	a,' '
+	call	putc
+
+	ld	e,16		; x bytes
+	ld	a,(hexlen)
+	ld	d,a
+	ld	hl,hexbuf
+	push	hl
+nextx:	ld	a,d
+	or	a
+	jr	z,hx1
+	ld	a,(hl)
+	inc	hl
+	call	ahex
+	dec	d
+	jr	hx2
+hx1:	ld	a,' '
+	call	putc
+	call	putc
+hx2:	ld	a,' '
+	call	putc
+	dec	e
+	jr	z,hx4
+
+	ld	a,e
+	and	3
+	jr	nz,nextx
+	ld	a,d
+	or	a
+	ld	a,' '
+	jr	z,hx3
+	ld	a,'|'
+hx3:	call	putc
+	ld	a,' '
+	call	putc
+	jr	nextx
+
+hx4:
+  IF 0
+	ld	a,' '
+	call	putc
+  ENDIF
+	pop	hl
+	ld	a,(hexlen)
+	ld	e,a		; x bytes
+nexta:	ld	a,(hl)
+	inc	hl
+	call	toprnt
+	call	putc
+	dec	e
+	jr	nz,nexta
+
+hxeof:	pop	hl
+	call	clreol
+	pop	bc
+	pop	de
+	ret
+
+toprnt:	cp	20h
+	jr	c,tp1
+	cp	80h
+	ret	c
+tp1:	ld	a,'.'
+	ret
+
+;---------------------------------------------------------------
+
+; Set xmax according to hpos
+
+setxmax:
+	ld	a,(swidth)
+	dec	a
+	ld	c,a
+	ld	b,0
+	ld	hl,(hpos)
+	add	hl,bc
+	ld	(xmax),hl	; xmax = end character pos to display
+	ret
+
+;---------------------------------------------------------------
+
+; Get next character from file.
+; On entry HL points to current position in buffer.
+; Returns with CY set on EOF.
+
+fnextc:	ld	de,(eofptr)
+	ld	a,d
+	or	e		; end of file in buffer?
+	jr	z,fnxt0		; branch if not
+	call	cmp_hlde	; else check if reached
+	scf
+	ret	z		; return with CY set if yes
+fnxt0:	ld	de,(endbuf)
+	call	cmp_hlde	; end of buffer reached?
+	jp	c,fnxt1		; fetch character if not
+
+	call	bufsz2		; BC = bufsiz/2 (half buffer size)
+
+	ld	a,(sheight)
+	ld	hl,(lntab)
+fnxt3:	ld	e,(hl)		; fix line addresses
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	or	a
+	sbc	hl,bc
+	ex	de,hl
+	ld	(hl),d		; line addr -= bufsz/2
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	inc	hl
+	dec	a
+	jr	nz,fnxt3
+
+	ld	hl,(hbuf)	; half buffer
+	ld	de,(fbuf)	; begin of buffer
+	ldir			; shift down the upper half of the buffer
+
+	push	de		; ptr to next char is now in DE
+	call	bufsz9		; BC = bufsiz/512
+	ld	hl,(blkno)
+	add	hl,bc
+	ld	(blkno),hl	; blkno += bufsiz/512
+
+	ld	hl,(hbuf)	; half buffer
+	call	bufsz8		; num of blocks = half_buffer/512
+	call	freadn		; fill in the upper half of the buffer
+
+;;	push	af
+	call	bufsz8
+	ld	hl,(blkno)
+	or	a
+	sbc	hl,bc
+	ld	(blkno),hl	; blkno -= half_buffer/512
+;;	pop	af
+	pop	hl		; new ptr to char
+;;	ret	c
+
+fnxt1:	ld	a,(hexmod)
+	or	a
+	ld	a,(hl)		; fetch character
+	jr	nz,fnxt2
+	cp	1Ah		; EOF marker?
+	scf
+	ret	z		; return with CY set if yes
+fnxt2:	inc	hl		; otherwise advance pointer
+	or	a		; and return with CY clear
+	ret
+
+;---------------------------------------------------------------
+
+; Get previous character.
+; On entry HL points to character in buffer.
+; Returns CY if tried to read prior begin of file.
+
+fprevc:	ex	de,hl
+	ld	hl,(fbuf)
+	call	cmp_hlde	; begin of buffer?
+	ex	de,hl
+	jp	c,fprv1		; return character if yes
+
+	ld	de,(blkno)	; is the file pointer at the beginning
+	ld	a,d		;  of the file?
+	or	e
+	scf
+	ret	z		; yes -> return CY
+
+	call	bufsz2		; BC = bufsiz/2
+
+	ld	a,(sheight)
+	ld	hl,(lntab)
+fprv3:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	(hl),d		; line addr += bufsz/2
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	inc	hl
+	dec	a
+	jr	nz,fprv3
+
+	ld	hl,(fbuf)	; begin of buffer
+	ld	de,(hbuf)	; half buffer
+	ldir
+
+	push	hl
+	call	bufsz8		; BC = (bufsiz/2)/512
+	ld	hl,(blkno)
+	or	a
+	sbc	hl,bc
+	ld	(blkno),hl	; blkno -= half_buffer/512
+
+	ld	hl,(fbuf)	; begin of buffer
+	call	bufsz8		; no of blocks = (bufsiz/2)/512
+	call	freadn
+	pop	hl
+
+fprv1:	dec	hl
+	ld	a,(hl)
+	or	a		; clear CY
+	ret
+  
+;---------------------------------------------------------------
+
+; Backup HL to previous line in buffer
+
+prevln:	ld	a,(hexmod)
+	or	a
+	jr	z,plntxt
+pln0:	call	fprevc
+	ret	c
+	ld	bc,(fbuf)
+	ld	a,l
+	sub	c
+	and	0Fh
+	jr	nz,pln0
+	ret
+
+plntxt:	call	fprevc
+	ret	c
+pln1:	call	fprevc
+	ret	c
+	cp	LF
+	jr	nz,pln1
+	call	fnextc
+	ret
+
+;---------------------------------------------------------------
+
+; Advance HL to next line in buffer
+
+nextln:	ld	a,(hexmod)
+	or	a
+	jr	z,nlntxt
+nln0:	call	fnextc
+	ret	c
+	ld	de,(fbuf)
+	ld	a,l
+	sub	e
+	and	0Fh
+	jr	nz,nln0
+	ret
+
+nlntxt:	call	fnextc		; get next char
+	ret	c		; on EOF, return
+	cp	LF
+	jr	nz,nlntxt	; else loop until end of line reached
+	ret
+
+;---------------------------------------------------------------
+
+; Set pointer to begin of file
+
+home:	ld	hl,(blkno)	; check current file pointer
+	ld	a,h		; at start of file?
+	or	l
+	ld	hl,0
+	ld	(blkno),hl	; reset file pointer to the start
+	ld	(hpos),hl	; horiz offset = 0
+	push	af
+	call	setxmax
+	pop	af
+	jr	z,h1		; yes, setup line buffer and return
+	call	bufsz9		; num of blocks to read = bufsiz/512
+	ld	hl,(fbuf)	; begin of file buffer
+	call	freadn		; fill up buffer
+h1:	ld	de,(fbuf)
+setlnt:	ld	hl,(lntab)
+	ld	a,(sheight)
+	ld	b,a
+h2:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ex	de,hl
+	ld	a,h
+	or	l
+	push	de
+	call	nz,nextln
+	pop	de
+	jr	nc,h3
+	ld	hl,0
+h3:	ex	de,hl
+	djnz	h2
+	ret
+
+;---------------------------------------------------------------
+
+; Return bufsiz/2 (bufsiz shr 1) in BC
+
+bufsz2:	ld	bc,(bufsiz)
+	srl	b
+	rr	c
+	ret
+
+; Return bufsiz/1024 = half_buffer/512 (bufsiz shr 10) in BC
+
+bufsz8:	ld	bc,(bufsiz)
+	srl	b
+	srl	b
+	ld	c,b
+	ld	b,0
+	ret
+
+; Return bufsiz/512 (bufsiz shr 9) in BC
+
+bufsz9:	ld	bc,(bufsiz)
+	srl	b
+	ld	c,b
+	ld	b,0
+	ret
+
+;---------------------------------------------------------------
+
+; Compare HL and DE, return Z if HL == DE, CY if DE > HL
+
+cmp_hlde:
+	ld	a,h
+	cp	d
+	ret	nz
+	ld	a,l
+	cp	e
+	ret
+
+;---------------------------------------------------------------
+
+; Read BC blocks from file into (HL), starting from blkno
+
+freadn:	push	bc
+	push	hl
+
+	ld	(qio2+Q.BUF),hl
+
+	ld	hl,(blkno)
+	ld	(qio2+Q.BLK),hl
+
+	ld	hl,0
+	ld	(eofptr),hl
+
+frd1:	ld	hl,qio2
+	SC	.QIO		; read block
+	ld	hl,0
+	jr	c,rdeof
+
+	ld	a,(iosb)
+	or	a
+	jr	nz,rdeof
+
+	ld	hl,(iosb+2)	; get num bytes read
+	ld	de,512
+	call	cmp_hlde	; all bytes read?
+	jr	nz,rdeof
+
+	ld	hl,(qio2+Q.BLK)
+	inc	hl		; next block
+	ld	(qio2+Q.BLK),hl
+
+	ld	hl,(qio2+Q.BUF)
+	ld	de,512
+	add	hl,de		; advance pointer
+	ld	(qio2+Q.BUF),hl
+
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,frd1		; loop until all block read or EOF reached
+	
+	pop	hl
+	pop	bc
+	ret
+
+rdeof:	ld	de,(qio2+Q.BUF)
+	add	hl,de
+	ld	(hl),1Ah
+	ld	(eofptr),hl
+	pop	hl
+	pop	bc
+	scf
+	ret
+
+;---------------------------------------------------------------
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+;---------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ		; buffer for task info
+
+gdat:	GCML$	cmdbuf,80,'VIE',LUNCMD,2
+cmdbuf:	ds	82
+
+fdb:	ds	FNSZ
+
+qio1:	QIOW$	IO.ACC,LUNFIL,9,iosb,,<fdb>
+qio2:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<,512,0,0,0>
+iosb:	ds	4
+
+sheight:db	24	; screen height = screen rows - 1
+dmask:	db	7Fh	; data mask byte
+hexmod:	db	0	; non-zero means hexadecimal mode
+
+lntab:	ds	2	; address of screen line table
+blkno:	dw	0FFFFh	; number of first block in buffer
+
+hpos:	dw	0	; offset from begin of line
+xmax:	dw	0	; max x pos
+
+cmdptr:	ds	2	; command line pointer
+opnflg:	ds	2	; file open flag
+bufsiz:	ds	2	; buffer size in bytes
+fbuf:	ds	2	; pointer to start of file buffer
+hbuf:	ds	2	; pointer to half buffer
+endbuf:	ds	2	; pointer to end of buffer
+eofptr:	ds	2	; pointer to end of file in buffer
+
+hexbuf:	ds	16	; temp buffer for hexadecimal data display
+hexlen:	ds	1	; number of valid bytes in hexbuf
+
+memtop:	ds	2
+
+q.ipos	equ	0	; queue structure offsets
+q.opos	equ	1
+q.iob	equ	2
+
+ttq:	ds	1	; ipos
+	ds	1	; opos
+	ds	64	; buf
+
+	ds	256	; stack space
+stack	equ	$
+
+	public	$memry
+
+$memry:	ds	2
+
+	end	browse

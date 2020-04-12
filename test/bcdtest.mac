@@ -1,0 +1,760 @@
+; Program to test the BCDFLT library functions.
+; Implements a simple RPN calculator with a Forth-like syntax, e.g.:
+;
+;   2 2 + =
+;   2 sqr =
+;   1 atn 4 * =
+;
+; The following operators are implemented:
+;
+;   + - * / ^ =
+;
+; The following functions are defined:
+;
+;   abs sgn sqr sin cos atn log log10 exp exp10 int
+;
+; You can switch between degrees and radians mode for the trigonometric
+; functions with:
+;
+;   deg rad
+;
+; The default mode is radians. In addition, a number of Forth-like
+; operations are supported to manipulate the stack:
+;
+;   dup drop swap
+;
+; The current stack depth is displayed as a string of '#' symbols to the
+; right of the OK prompt. For example:
+;
+;   OK ###
+;
+; means that the stack contains 3 values.
+
+	.Z80
+
+	ident	'1.0'
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	IFDEF	CPM
+BDOS	equ	5
+WBOOT	equ	0
+
+.TTOUT	equ	2
+.LPOUT	equ	5
+.RDBUF	equ	10
+	ELSE
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	extrn	UCASE,PUTCH,PUTSTR,CRLF,GETLN,HLDEC,EXIT
+	ENDIF
+
+	extrn	AFP,FPA,FMUL,FDIV,FADD,FSUB,FPOW,FPUSH,FPOP,FPI
+	extrn	LOG,LOG10,EXP,EXP10,SQR,SIN,COS,ATN,FABS,FSGN,FINT
+	extrn	FR0,FR1,DEGRAD
+
+	cseg
+
+START::	ld	sp,stack
+	xor	a
+	ld	(stklvl),a
+loop:	call	GETCMD		; get user command
+	call	TEST		; process it
+	jr	loop		; repeat
+
+	IFDEF	CPM
+
+; Convert char to uppercase
+
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+; Read a command line
+
+GETCMD:	push	bc
+	push	de
+	push	hl
+again:	call	CRLF
+	ld	hl,prompt
+	call	PUTSTR		; output prompt
+	ld	a,(stklvl)
+	or	a
+	jr	z,gtln2
+	ld	b,a
+gtln1:	ld	c,'#'
+	call	PUTCH		; display current stack level
+	djnz	gtln1
+gtln2:	call	CRLF
+	ld	de,ibuf
+	ld	c,.RDBUF
+	call	BDOS		; read line
+	call	CRLF
+	ld	a,(ibuf+1)
+	or	a		; empty?
+	jr	z,again		; try again
+	ld	hl,lnbuf
+	ld	(lnptr),hl
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	ld	(hl),0		; end with null
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; Output newline to terminal
+
+CRLF:	ld	c,CR
+	call	PUTCH
+	ld	c,LF
+	jp	PUTCH
+
+; Output char in C to terminal
+
+PUTCH:	push	bc
+	push	de
+	push	hl
+	ld	e,c
+	ld	c,.TTOUT
+	call	BDOS
+	pop	hl
+	pop	de
+	pop	bc
+	ld	a,c
+	ret
+
+; Output null-terminated string @HL to terminal
+
+PUTSTR:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	ld	c,a
+	call	PUTCH
+	jr	PUTSTR
+
+; Display HL as decimal
+
+HLDEC:	ld	(filler),a
+	push	hl
+	push	de
+	push	bc
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	c,a
+	call	PUTCH
+	inc	b
+	res	7,b
+	ld	a,b		; return length in A
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	bit	7,b
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	set	7,b
+sb3:	call	PUTCH
+	inc	b
+	ret
+
+	ELSE
+
+GETCMD:	push	bc
+	push	de
+	push	hl
+again:	call	CRLF
+	ld	hl,prompt
+	call	PUTSTR		; output prompt
+	ld	a,(stklvl)
+	or	a
+	jr	z,gtln2
+	ld	b,a
+gtln1:	ld	c,'#'
+	call	PUTCH		; display current stack level
+	djnz	gtln1
+gtln2:	call	CRLF
+	ld	hl,lnbuf
+	ld	e,128
+	ld	d,0
+	ld	bc,0
+	call	GETLN		; read line
+	cp	E.EOF
+	jr	z,quit
+	call	CRLF
+	ld	a,b
+	or	c		; empty?
+	jr	z,again		; try again
+	ld	hl,lnbuf
+	ld	(lnptr),hl
+	add	hl,bc
+	ld	(hl),0		; end with null (just in case, done by GETLN)
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+quit:	ld	hl,EX.SUC
+	jp	EXIT
+
+	ENDIF
+
+prompt:	db	'OK ',0
+
+; Skip blanks
+
+SKIPBL:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '+1		; any control char is also a "blank"
+	ret	nc
+	inc	hl
+	jr	SKIPBL
+
+; Process user command
+
+TEST::	ld	hl,(lnptr)
+	call	SKIPBL		; skip leading blanks and get a char
+	or	a
+	ret	z
+	ld	(lnptr),hl
+	ld	c,a		; get char into C
+	ld	e,l		; remember start of word
+	ld	d,h
+	inc	hl
+	ld	a,(hl)		; test next char
+	or	a		; end of line?
+	jr	z,chkop
+	cp	' '+1		; or blank?
+	jr	nc,t1		; branch if not
+chkop:	ld	(lnptr),hl	; else it is a single-char word
+	ld	a,c
+	call	UCASE
+	cp	'+'		; test for arith operator
+	jp	z,tadd
+	cp	'-'
+	jp	z,tsub
+	cp	'*'
+	jp	z,tmul
+	cp	'/'
+	jp	z,tdiv
+	cp	'^'
+	jp	z,tpow
+	cp	'='
+	jp	z,tequ
+	ld	(lnptr),de	; reset pointer to start of word
+t1:	ld	hl,(lnptr)
+	call	AFP		; try to read a number
+	ld	(lnptr),hl	; remember where scan stopped
+	jr	c,nan		; not a number
+	ld	a,(stklvl)
+	inc	a		; increase stack level
+	jp	z,stkovf	; error if stack overflows
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR0
+	call	FPUSH		; push floating point value
+	push	ix
+	jr	TEST		; loop to process next
+
+nan:	ld	a,(hl)
+	or	a		; test for end of string
+	ret	z		; done if so
+	ld	hl,fntbl	; else test for function
+f1:	ld	de,(lnptr)
+f2:	ld	a,(hl)
+	or	a		; end of name in table?
+	jr	z,f3		; branch if yes
+	ld	a,(de)
+	call	UCASE
+	cp	(hl)		; char matches name?
+	jr	nz,f4		; branch if not to try next name
+	inc	hl
+	inc	de
+	jr	f2		; else loop to test next char
+
+f3:	ld	a,(de)
+	or	a		; end of input word?
+	jr	z,f5		; yes, match found
+	cp	' '+1
+	jr	c,f5		; match found
+f4:	ld	a,(hl)		; else find end of name in table entry
+	inc	hl
+	or	a
+	jr	nz,f4
+	inc	hl		; skip routine address
+	inc	hl
+	ld	a,(hl)
+	or	a		; end of table?
+	jr	nz,f1		; loop if not
+	jp	error		; else error, function not found
+
+f5:	ld	(lnptr),de	; save command pointer
+	inc	hl
+	ld	a,(hl)		; fetch routine address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; exec function
+
+error:	ld	hl,snerr
+	jp	PUTSTR
+
+snerr:	db	'Syntax error',0
+
+; Add two top-of-stack (TOS) values
+
+tadd:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR1
+	call	FPOP		; pop first
+	push	ix
+	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop second
+	call	FADD		; add
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Subtract two TOS values
+
+tsub:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR1
+	call	FPOP		; pop first
+	push	ix
+	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop second
+	call	FSUB		; subtract
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Multiply two TOS values
+
+tmul:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR1
+	call	FPOP		; pop first
+	push	ix
+	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop second
+	call	FMUL		; multiply
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Divide two TOS values
+
+tdiv:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR1
+	call	FPOP		; pop divisor
+	push	ix
+	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop dividend
+	call	FDIV		; divide
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Raise to power
+
+tpow:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR1
+	call	FPOP		; pop exponent
+	push	ix
+	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop base
+	call	FPOW		; raise to power
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Pop TOS and display it
+
+tequ:	ld	a,(stklvl)
+	or	a		; check stack level
+	jp	z,stkund	; error if stack underflows
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop floating point value
+	push	ix
+	xor	a		; suppress leading zero in 0.xxx
+	call	FPA		; convert to string
+	call	PUTSTR		; and output it
+	ld	c,' '
+	call	PUTCH
+	jp	TEST
+
+stkovf:	ld	hl,soerr
+	jp	PUTSTR
+
+soerr:	db	'Stack overflow',0
+
+stkund:	ld	hl,suerr
+	jp	PUTSTR
+
+suerr:	db	'Stack underflow',0
+
+FNTBL:	db	'LOG',0
+	dw	flog
+	db	'LOG10',0
+	dw	flog10
+	db	'EXP',0
+	dw	fexp
+	db	'EXP10',0
+	dw	fexp10
+	db	'SQR',0
+	dw	fsqr
+	db	'SIN',0
+	dw	fsin
+	db	'COS',0
+	dw	fcos
+	db	'ATN',0
+	dw	fatn
+	db	'ABS',0
+	dw	fabs0
+	db	'SGN',0
+	dw	fsgn0
+	db	'INT',0
+	dw	fint0
+	db	'INT=',0
+	dw	ftoint
+	db	'DUP',0
+	dw	dup
+	db	'SWAP',0
+	dw	swap
+	db	'DROP',0
+	dw	drop
+	db	'DEG',0
+	dw	mdeg
+	db	'RAD',0
+	dw	mrad
+	db	0
+
+; Natural logarithm of TOS
+
+flog:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	LOG
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Decimal logarithm of TOS
+
+flog10:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	LOG10
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; e^TOS
+
+fexp:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	EXP
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; 10^TOS
+
+fexp10:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	EXP10
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Square root of TOS
+
+fsqr:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	SQR
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Sine of TOS
+
+fsin:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	SIN
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Cosine of TOS
+
+fcos:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	COS
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Arctangent of TOS
+
+fatn:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	ATN
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Absolute value of TOS
+
+fabs0:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	FABS
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Sign of TOS
+
+fsgn0:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	FSGN
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Integer part of TOS
+
+fint0:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	call	FINT
+	ld	hl,FR0
+	call	FPUSH		; push result
+	push	ix
+	jp	TEST
+
+; Convert TOS to integer and display result
+
+ftoint:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop argument
+	push	ix
+	call	FPI
+	call	HLDEC
+	jp	TEST
+
+; Duplicate TOS
+
+dup:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	inc	a		; increase stack level
+	jp	z,stkovf	; error if stack overflows
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop value
+	ld	hl,FR0
+	call	FPUSH		; push it back
+	ld	hl,FR0
+	call	FPUSH		;  twice
+	push	ix
+	jp	TEST
+
+; Drop TOS
+
+drop:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a		; decrease stack level
+	ld	(stklvl),a
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop value
+	push	ix
+	jp	TEST
+
+; Swap two TOS values
+
+swap:	ld	a,(stklvl)
+	or	a
+	jp	z,stkund
+	dec	a		; stack depth
+	jp	z,stkund	;  must be at least 2
+	pop	ix
+	ld	hl,FR0
+	call	FPOP		; pop first
+	ld	hl,FR1
+	call	FPOP		; pop second
+	ld	hl,FR0
+	call	FPUSH		; push first
+	ld	hl,FR1
+	call	FPUSH		; push second
+	push	ix
+	jp	TEST
+
+; Set 'degrees' mode for trigonometric functions
+
+mdeg:	ld	a,6
+	ld	(DEGRAD),a
+	jp	TEST
+
+; Set 'radians' mode for trigonometric functions
+
+mrad:	xor	a
+	ld	(DEGRAD),a
+	jp	TEST
+
+	dseg
+
+	IFDEF	CPM
+ibuf:	db	128,0		; command input buffer
+lnbuf:	ds	128+1
+filler:	ds	1
+	ELSE
+lnbuf:	ds	128+1
+	ENDIF
+
+lnptr:	ds	2		; command line pointer
+stklvl:	ds	1		; current stack level
+
+	ds	64+256*6
+stack	equ	$
+
+	end	START

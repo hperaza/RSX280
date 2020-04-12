@@ -1,0 +1,11 @@
+In this directory you will find a simple 'Hello world' example written
+in assembly language for the RSX280 system.
+
+ * To compile the example, you can use the supplied HELLO.CMD command file
+   like this:
+   >@hello
+
+ * To execute the example, use the RUN command:
+   >run hello
+
+Have fun!

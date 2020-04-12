@@ -1,0 +1,76 @@
+	.Z80
+
+	public	ATN
+
+	extrn	XFORM,FSTOR,FMOVE,FADD,FMUL,FDIV,PLYEVL,FLD1R
+	extrn	?FLAG,?DIGRT,FR0,?FSCR,DEGRAD
+
+	; Compute arctan of value in floating point register FR0
+
+	cseg
+
+ATN:	xor	a
+	ld	(?FLAG),a
+	ld	(?DIGRT),a
+	ld	a,(FR0)
+	and	7Fh		; clear sign bit
+	cp	40h
+	jp	m,atn1
+	ld	a,(FR0)
+	and	80h
+	ld	(?FLAG),a
+	ld	hl,?DIGRT
+	inc	(hl)
+	ld	a,(FR0)
+	and	7Fh
+	ld	(FR0),a
+	ld	hl,F09999	; 0.9999999999
+	call	XFORM		; FR0 = (FR0 - .999999) / (FR0 + .999999)
+atn1:	ld	hl,?FSCR
+	call	FSTOR
+	call	FMOVE
+	call	FMUL
+	ret	c
+	ld	a,11
+	ld	hl,ATANC	; point to coefficients
+	call	PLYEVL		; evaluate polynom
+	ret	c
+	ld	hl,?FSCR
+	call	FLD1R
+	call	FMUL
+	ret	c
+	ld	a,(?DIGRT)
+	or	a
+	jr	z,atn2
+	ld	hl,ATAN1
+	call	FLD1R
+	call	FADD
+	ld	hl,?FLAG
+	ld	a,(FR0)
+	or	(hl)
+	ld	(FR0),a
+atn2:	ld	a,(DEGRAD)
+	or	a
+	ret	z
+	ld	hl,PI180
+	call	FLD1R
+	jp	FDIV		; convert to radians
+
+	; arctan coefficients
+
+ATANC:	db	03Eh,016h,005h,044h,049h,000h	;  0.001605444900
+	db	0BEh,095h,068h,038h,045h,000h	; -0.009568384500
+	db	03Fh,002h,068h,079h,094h,016h	;  0.0268799416
+	db	0BFh,004h,092h,078h,090h,080h	; -0.0492789080
+	db	03Fh,007h,003h,015h,020h,000h	;  0.0703152000
+	db	0BFh,008h,092h,029h,012h,044h	; -0.0892291244
+	db	03Fh,011h,008h,040h,009h,011h	;  0.1108400911
+	db	0BFh,014h,028h,031h,056h,004h	; -0.1428315604
+	db	03Fh,019h,099h,098h,077h,044h	;  0.1999987744
+	db	0BFh,033h,033h,033h,031h,013h	; -0.3333333113 
+
+F09999:	db	03Fh,099h,099h,099h,099h,099h	;  0.9999999999
+ATAN1:	db	03Fh,078h,053h,098h,016h,034h	;  0.7853981634 [ arctan(1) ]
+PI180:	db	03Fh,001h,074h,053h,029h,025h	;  0.0174532925 [pi/180]
+
+	end

@@ -1,0 +1,232 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	cseg
+
+	include	PIP.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	public	PIPREN
+
+	extrn	LFNB,RFNB,CRFNB,NRPARM,SWBITS,SEARCH
+	extrn	SETDIR,SETNAM,SETEXT,NFILES,SYSERR,ERROR
+	extrn	SRCFDB,DSTFDB,ERRNF
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+PIPREN:	ld	hl,RFNB
+	ld	(CRFNB),hl
+
+loop:	ld	ix,(CRFNB)
+	ld	hl,doren	; HL = callback routine address
+	call	SEARCH		; search for files
+
+	call	c,SYSERR	; on error, display message and continue
+
+	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs in command line?
+	ret	z		; return if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else select next filespec
+	jr	loop		; and loop until all done
+
+;-----------------------------------------------------------------------
+
+; Rename single file.
+
+doren:	ld	a,c
+	or	a		; first time call?
+	jr	nz,ren1		; jump if not
+
+	ex	de,hl
+
+	ld	hl,0
+	ld	(NFILES),hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in finfo
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.DEV),a	; set also device name and unit
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	xor	a		; return success
+	ret
+
+ren1:	dec	c		; matched entry?
+	jr	z,ren2		; branch if yes
+
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	ret	nz		; return if set (note CY still clear)
+	ld	hl,(NFILES)
+	ld	a,h
+	or	l		; any files found?
+	call	z,ERRNF		; display warning if not
+	xor	a
+	ret
+
+ren2:	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,SRCFDB	; SRCFDB will contain the old name
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM		; set filename
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	push	de
+	call	SETEXT		; set extension
+	pop	de
+
+	ld	hl,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.VER),a	; set version number
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.VER+1),a
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.ATTR),a	; all fields are valid
+
+	ld	hl,SRCFDB
+	ld	de,DSTFDB	; DSTFDB will contain the new name
+	ld	bc,FDBSZ
+	ldir			; use all SRCFDB fields as default
+
+	ld	ix,DSTFDB
+
+	ld	de,LFNB		; now check new filespec
+	ld	hl,F.ATTR
+	add	hl,de
+	ld	c,(hl)
+	ld	a,c
+	and	FN.NAME		; name specified?
+	jr	z,ren3		; branch if not
+
+	ld	hl,F.NAME
+	add	hl,de
+	ld	a,(hl)
+	cp	'*'		; name is '*'?
+	jr	z,ren3		; branch if yes
+
+	push	de
+	push	bc
+	call	SETNAM		; else set new name
+	pop	bc
+	pop	de
+
+ren3:	ld	a,c
+	and	FN.EXT		; extension specified?
+	jr	z,ren4		; branch if not
+
+	ld	hl,F.EXT
+	add	hl,de
+	ld	a,(hl)
+	cp	'*'		; extension is '*'?
+	jr	z,ren4		; branch if yes
+
+	push	de
+	push	bc
+	call	SETEXT		; else set new extension
+	pop	bc
+	pop	de
+
+ren4:	ld	a,c
+	and	FN.VER		; extension specified?
+	jr	z,ren5		; branch if not
+
+	ld	hl,F.VER
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h		; null extension? (0 means '*')
+	jr	z,ren5		; branch if yes
+
+	ld	(ix+F.VER),l	; else set version
+	ld	(ix+F.VER+1),h
+
+ren5:	ld	a,(SWBITS+2)
+	bit	S3.NV,a		; force new version?
+	jr	z,ren6		; branch if not
+
+	ld	a,(ix+F.ATTR)
+	and	NOT FN.VER	; else clear FN.VER bit
+	ld	(ix+F.ATTR),a
+
+ren6:	ld	de,(SRCFDB+F.DEV)
+	ld	a,(SRCFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNSRC
+	SC	.ALUN		; assign LUN
+	jr	c,ren7
+
+	ld	hl,qio1
+	SC	.QIO		; rename file
+	jr	c,ren7
+	ld	a,(iosb)
+	or	a
+	ret	z		; return on success
+
+ren7:	call	SYSERR		; else display error message
+	xor	a
+	ret			; and return success to rename next files
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.REN,LUNSRC,9,iosb,,<SRCFDB,DSTFDB>
+iosb:	ds	4
+
+	end

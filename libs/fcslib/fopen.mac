@@ -1,0 +1,202 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Create and/or open file.
+;
+;   Input:
+;     IX  = pointer to I/O structure, with the following fields
+;           initialized: FC.FDB, FC.MODE, FC.LUN, FC.EFN, FC.BUF
+;     CDE = number of blocks to allocate (contiguous file only)
+;     A   = if not zero, create contiguous file
+;   Returns:
+;     A   = completion code, CY set on error.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	FCSLIB.INC
+	include	QIO.INC
+
+	public	FCREAT,FOPEN
+
+	extrn	QIOBLK,QIOSB
+
+	cseg
+
+FCREAT:	add	a,0FFh
+	sbc	a,a
+	and	SF.CTG
+	ld	(ctgflg),a
+	ld	(cblks),de
+	ld	a,c
+	ld	(cblks+2),a
+	ld	a,1
+	jr	fopn0
+
+FOPEN:	xor	a
+fopn0:	ld	(creflg),a
+	ld	l,(ix+FC.FDB)	; get FDB address into HL
+	ld	h,(ix+FC.FDB+1)
+	push	hl
+	ld	de,F.DEV
+	add	hl,de
+	ld	e,(hl)		; get device name and unit into DE-C
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	ld	b,(ix+FC.LUN)	; LUN in B
+	SC	.ALUN		; assign LUN
+	pop	hl
+	ret	c
+
+	res	FS.BV,(ix+FC.MODE) ; clear block valid
+	res	FS.BM,(ix+FC.MODE) ;  and modified bits
+
+	push	hl
+	ld	hl,luninf
+	ld	c,(ix+FC.LUN)
+	SC	.GTLUN		; get LUN info
+	pop	hl
+	ret	c
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	jr	nz,fopn2	; branch if yes, open the file
+
+	set	FM.DV,(ix+FC.MODE) ; else set device mode bit
+
+	bit	DV.TTY,a	; terminal device?
+	jr	z,fopn1		; branch if not
+
+	set	FM.TT,(ix+FC.MODE) ; else set terminal mode bit
+
+	;...set bit in MODE to indicate CR/LF (prompt?) required when reading
+	;   (CR/LF may NOT be desirable in some cases!)
+	;...and that ^Z terminates input (sets EOF)
+	;...also CR should cause output buffer flush
+
+	; attach terminal?
+
+fopn1:	ld	de,F.DEV
+	add	hl,de
+	ex	de,hl		; DE = dst
+	ld	hl,luninf	; HL = src
+	ld	bc,3
+	ldir			; set physical device name in FDB
+
+	;...set bit in FC.MODE to indicate close not required
+	;   but a bit is also needed to tell when close was called
+	;   and device closed (no more I/O allowed)
+	;...also no FSIZE/FSEEK/FPOS allowed
+
+	jr	fopn4		; return success
+
+	;thus, mode bits:
+	; open for read (may be combined with write or append)
+	; open for write (truncate/create new)
+	; open append
+	; not a file
+	; terminal device
+	; file currently open
+	; shared mode
+
+fopn2:	ld	(QIOBLK+Q.P1),hl; FDB address
+	ld	a,(creflg)
+	or	a
+	ld	hl,IO.ACC	; function code
+	jr	z,fopn3
+	ld	hl,(cblks)	; blocks to allocate for contiguous file
+	ld	(QIOBLK+Q.P2),hl
+	ld	hl,(cblks+2)
+	ld	h,0
+	ld	(QIOBLK+Q.P2+2),hl
+	ld	hl,IO.CRE
+	ld	a,(ctgflg)
+	ld	h,a
+fopn3:	call	fmode		; get sufbunction code according to mode bits
+	or	h		; merge with contiguous file bit
+	or	SF.SHR		; !! TODO: implement shared option !!
+	ld	h,a
+	ld	(QIOBLK+Q.FUNC),hl
+	ld	a,(ix+FC.LUN)	; LUN
+	ld	(QIOBLK+Q.LUN),a
+	ld	a,(ix+FC.EFN)	; event flag number
+	ld	(QIOBLK+Q.EFN),a
+	ld	hl,0
+	ld	(QIOBLK+Q.AST),hl
+	ld	hl,QIOBLK
+	SC	.QIO		; open/create file
+	ret	c		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; check result
+	scf
+	ret	nz
+
+	ld	hl,FINFSZ	; Q.P1 = Q.BUF still has FDB
+	ld	(QIOBLK+Q.LEN),hl
+	ld	hl,IO.RAT	; function code
+	ld	(QIOBLK+Q.FUNC),hl
+	ld	hl,0
+	ld	(QIOBLK+Q.AST),hl
+	ld	hl,QIOBLK
+	SC	.QIO		; read file attributes
+	ret	c		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; check result
+	scf
+	ret	nz
+
+	;TODO: if open for append, seek to end of file
+
+fopn4:	xor	a
+	ld	(ix+FC.BLK),a	; clear block number
+	ld	(ix+FC.BLK+1),a
+	ld	(ix+FC.BLK+2),a
+	ld	(ix+FC.BLK+3),a
+	ld	(ix+FC.CNT),a	; clear char count
+	ld	(ix+FC.CNT+1),a
+	ld	(ix+FC.CUR),a	; clear current index
+	ld	(ix+FC.CUR+1),a
+	ret			; return success
+
+fmode:	xor	a
+	bit	FM.RD,(ix+FC.MODE)
+	jr	z,fm1
+	or	SF.ACR
+fm1:	bit	FM.WR,(ix+FC.MODE)
+	jr	z,fm2
+	or	SF.ACW
+fm2:	bit	FM.WA,(ix+FC.MODE)
+	ret	z
+	or	SF.ACW
+	ret
+
+	dseg
+
+luninf:	ds	6
+creflg:	ds	1
+ctgflg:	ds	1
+cblks:	ds	3
+
+	end

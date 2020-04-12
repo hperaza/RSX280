@@ -1,0 +1,340 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   File buffer (cache) routines.
+
+	.Z280
+
+	include	SYSFCP.INC
+	include	BUFFER.INC
+	include	ERRORS.INC
+	include	SYSTEM.INC
+
+	public	INIBUF		; initialize buffer pool
+	public	RLSBLK		; release block
+	public	FLSBLK		; flush block
+	public	FLBUFS		; flush all buffers
+	public	INVBFS		; invalidate buffers
+	public	GETBLK		; get block
+	public	NEWBLK		; get new block
+
+	extrn	RDBLK,WRBLK,CLRMEM
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+STBUF	equ	0		; statically allocated
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Initialize buffer system. Called by the initialization code.
+
+INIBUF:
+	IF	STBUF
+
+	ld	hl,BUFS
+	ld	($FILBF),hl
+
+	ELSE
+
+	ld	hl,($FILBF)
+	ld	a,h
+	or	l
+	jr	nz,inib0	; skip if buffer pool already allocated
+	ld	bc,NBUFF*BUFSZ
+	KCALL	$ALLOC
+	ret	c
+	ld	($FILBF),hl
+inib0:
+
+	ENDIF
+
+	push	hl
+	ld	bc,NBUFF*BUFSZ
+	call	CLRMEM
+	pop	de
+	ld	b,NBUFF
+	dec	b
+	ret	z		; return if single buffer
+inib1:	ld	hl,BUFSZ
+	add	hl,de
+	ex	de,hl
+	ldw	(hl),de		; chain buffers in a single-linked list
+	djnz	inib1
+	ld	hl,HIT
+	ld	bc,8
+	call	CLRMEM		; clear hit and miss counters
+	xor	a		; last buffer has B.LNK cleared by CLRMEM above
+	ret
+
+;-----------------------------------------------------------------------
+
+; Release a block. The contents will be eventually saved to the disk.
+; HL = buffer address. Preserves DE, BC, IX, IY.
+
+RLSBLK:	ld	a,h
+	or	l
+	ret	z
+	dec	(hl+B.ACCS)	; decrement access count
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Flush block. HL = buffer address. On error, returns CY set and error
+; code in A.
+
+FLSBLK:	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ex	(sp),ix
+	bit	BS.VAL,(ix+B.ST); buffer contains valid data?
+	jr	z,fls1		; return with CY clear if not (nothing to do)
+	bit	BS.MOD,(ix+B.ST); modified flag set?
+	jr	z,fls2		; return with CY clear if not (nothing to do)
+	ld	de,B.DATA
+	add	hl,de		; get address of data area into HL
+	exx
+	ldw	hl,(ix+B.BLKNO)	; get block number into B'HL'
+	ld	b,(ix+B.BLKNO+2)
+	exx
+	ldw	de,(ix+B.UCB)	; get UCB address into DE
+	call	WRBLK		; write block
+	jr	c,fls1		; return error if the buffer could not be saved
+fls1:	res	BS.MOD,(ix+B.ST); clear modified flag (here with no CY)
+fls2:	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Flush all buffers.
+
+FLBUFS:	ld	hl,($FILBF)
+flb1:	push	hl
+	call	FLSBLK		; TODO: handle errors
+	pop	hl
+	ldw	hl,(hl)
+	ld	a,h
+	or	l
+	jr	nz,flb1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Invalidate all buffers for the given device (UCB address in DE).
+; Assumes FLBUFS has been called. Preserves BC, DE, IX and IY.
+
+INVBFS:	push	ix
+	ld	ix,($FILBF)
+invb1:	ldw	hl,(ix+B.UCB)
+	cpw	hl,de		; same device?
+	jr	nz,invb2
+	res	BS.VAL,(ix+B.ST); invalidate buffer
+invb2:	ldw	ix,(ix+B.LNK)
+	ld	a,ixh
+	or	ixl
+	jr	nz,invb1
+	pop	ix
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Try to find an allocated buffer with the same block number (in BHL)
+; and device (UCB address in DE). If no allocated buffer is found,
+; then a new one is allocated and assigned to the block. The new buffer
+; is moved to the head of the LRU list. On success (CY clear) returns
+; the buffer address in IX. Preserves HL, DE, BC. Used internally only.
+
+FNDBUF:	ld	ix,$FILBF	; get pointer to head of list
+	push	ix		; push prev ptr
+	push	hl		; save lo-blkno
+	ldw	hl,(ix)		; get address of first buffer in list
+	ex	(sp),hl		; push buffer address, pop lo-blkno
+	pop	ix		; get buffer address into IX
+fnd1:	bit	BS.VAL,(ix+B.ST); valid buffer?
+	jr	z,fnd2		; skip if not
+	ld	a,(ix+B.UCB)
+	cp	e		; same device?
+	jr	nz,fnd2		; skip if not
+	ld	a,(ix+B.UCB+1)
+	cp	d
+	jr	nz,fnd2
+	ld	a,(ix+B.BLKNO)
+	cp	l		; same block number?
+	jr	nz,fnd2		; skip if not
+	ld	a,(ix+B.BLKNO+1)
+	cp	h
+	jr	nz,fnd2
+	ld	a,(ix+B.BLKNO+2)
+	cp	b
+	jr	nz,fnd2
+	push	hl
+	ld	hl,HIT
+	call	inc32
+	pop	hl
+	jr	fnd4		; else return it
+fnd2:	ex	(sp),hl		; push lo-blkno, pop prev ptr
+	push	hl		; push prev ptr again
+	ldw	hl,(ix+B.LNK)
+	ld	a,h
+	or	l		; last buffer in list?
+	jr	z,fnd3		; exit loop if yes to reallocate it
+	inc	sp		; drop old prev ptr
+	inc	sp
+	ex	(sp),hl		; push next, pop lo-blkno
+	ex	(sp),ix		; pop next, push prev
+	jr	fnd1		; loop to process next buffer
+
+fnd3:	push	hl
+	ld	hl,MISS
+	call	inc32
+	pop	hl
+	ld	a,(ix+B.ACCS)
+	or	a		; block in use?
+	scf
+	ld	a,E.NOBUF
+	jr	nz,fnd5		; return error if yes
+	push	de
+	push	bc
+	push	ix
+	pop	hl
+	call	FLSBLK		; flush any old data
+	pop	bc
+	pop	de
+	jr	c,fnd5		; on error, return
+	pop	hl		; pop prev ptr
+	ex	(sp),hl		; pop lo-blkno, push prev ptr
+	ldw	(ix+B.BLKNO),hl	; assign new block number to buffer
+	ld	(ix+B.BLKNO+2),b
+	ldw	(ix+B.UCB),de	; set UCB address
+	res	BS.VAL,(ix+B.ST); clear valid flag
+	res	BS.MOD,(ix+B.ST); clear modified flag
+fnd4:	inc	(ix+B.ACCS)	; increment access count
+	ex	(sp),hl		; push lo-blkno, pop prev ptr
+	push	bc
+	ldw	bc,(ix+B.LNK)	; unlink the buffer
+	ldw	(hl),bc
+	ld	hl,($FILBF)
+	ld	(ix+B.LNK),hl	; and make it the new head of the list
+	ld	($FILBF),ix
+	pop	bc
+	pop	hl		; restore lo-blkno
+	xor	a		; return success
+	ret
+
+fnd5:	pop	hl		; drop prev ptr
+	pop	hl		; restore lo-blkno
+	ret			; return CY and error code in A
+
+inc32:	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get an existing disk block (read it from disk).
+; On input DE = UCB address, BHL = blkno, returns HL = buffer.
+; On error CY is set, error code is in A, and HL is set to zero.
+
+GETBLK:	push	ix
+	call	FNDBUF		; get buffer
+	jr	c,gblk3		; on error, return
+	bit	BS.VAL,(ix+B.ST); valid buffer?
+	jr	nz,gblk1	; return it if yes
+	ld	a,b
+	push	hl
+	exx
+	pop	hl		; block number in B'HL'
+	ld	b,a
+	exx
+	push	ix
+	pop	hl
+	ld	bc,B.DATA
+	add	hl,bc		; address of data area into HL
+	call	RDBLK		; load block into buffer
+	jr	c,gblk2		; on error, return
+	set	BS.VAL,(ix+B.ST); set valid flag
+gblk1:	push	ix
+	pop	hl		; return buffer address in HL
+	xor	a		; return success
+	pop	ix
+	ret
+
+gblk2:	dec	(ix+B.ACCS)	; release buffer
+gblk3:	pop	ix
+	ld	hl,0
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get a new block (zeroed).
+; On input DE = UCB address, BHL = new blkno, returns HL = buffer.
+; On error CY is set, error code is in A, and HL is set to zero.
+
+NEWBLK:	push	ix
+	call	FNDBUF		; get buffer
+	ld	hl,0
+	jr	c,nblk1		; on error, return
+	push	ix
+	pop	hl
+	ld	de,B.DATA
+	add	hl,de
+	ld	bc,BLKSZ
+	call	CLRMEM
+	set	BS.VAL,(ix+B.ST); set valid flag
+	set	BS.MOD,(ix+B.ST); set modified flag
+	push	ix
+	pop	hl		; return buffer address in HL
+	xor	a		; clear CY
+nblk1:	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+  IF	0
+HIT:	ds	4
+MISS:	ds	4
+  ELSE
+HIT	equ	0080h
+MISS	equ	HIT+4
+  ENDIF
+
+	IF	STBUF
+BUFS:	ds	NBUFF * BUFSZ
+	ENDIF
+
+	end

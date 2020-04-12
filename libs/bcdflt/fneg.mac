@@ -1,0 +1,16 @@
+	.Z80
+
+	public	FNEG
+
+	extrn	FR0
+
+	cseg
+
+FNEG:	ld	a,(FR0)
+	or	a
+	ret	z
+	xor	80h
+	ld	(FR0),a
+	ret
+
+	end

@@ -1,0 +1,1069 @@
+;**********************************************************************;
+;                                                                      ;
+;   RSX280 SHUTUP program.                                             ;
+;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	/01.06/
+
+	cseg
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	AST.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	LCB.INC
+	include	TCB.INC
+	include	VCB.INC
+	include	PCB.INC
+	include	CLICB.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+BELL	equ	07h
+ESC	equ	1Bh
+
+LUN1	equ	1	; LUN to output message to logged-in terminals
+LUN2	equ	2	; LUN for SHUTUP.CMD file
+
+EFN	equ	4
+
+	extrn	PERROR,CRLF,UCASE,GCCL,SLEEP,CPHLDE,CVTBD,CVTBH,CVTWD
+	extrn	BCD2BIN,GETLN,PUTCH,PUTSTR,TTLUN,TTFLSH,PFN
+
+KCALL	MACRO	fn
+	call	$SWSTK
+	dw	fn
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	call	GCCL		; get MCR command line
+	ld	(lnptr),hl
+	call	init
+	call	getopt		; get options
+	call	nc,shutup	; shutdown system
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'SHUTUP -- message'
+
+CMDERR:	ld	hl,snerr
+	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SHUTMS:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	jp	PUTSTR
+
+eprfx:	db	CR,LF,'SHUTUP -- ',0
+snerr:	db	'Syntax error',0
+
+; Return Z if char in A is blank.
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret
+
+; Get next non-blank char.
+
+getns:	ld	a,(de)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getns
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	cp	':'
+	ret	z
+	cp	'-'
+	ret
+gf1:	xor	a
+	ret
+
+; Read a decimal number from (DE) line into HL
+; Returns CY if the number contains invalid chars or if overflow happens.
+
+GETDEC:	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	ret	z		; note no CY
+	sub	'0'
+	ret	c		; note CY
+	cp	10
+	ccf
+	ret	c		; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+;-----------------------------------------------------------------------
+
+init:	ld	hl,luninf
+	ld	a,(TTLUN)
+	ld	c,a
+	SC	.GTLUN		; get TI LUN info
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get shutdown options
+
+getopt:	ld	hl,header
+	call	PUTSTR
+
+	ld	hl,0
+	ld	(mnolog),hl
+	inc	hl
+	ld	(mmsgs),hl
+
+	ld	hl,buf		; response buffer
+	ld	bc,prm1		; 'enter minutes to wait before shutdown'
+	ld	de,10		; D = 0 (read with echo), E = max resp length
+	call	GETLN
+	ld	de,buf
+	call	GETDEC
+	ld	(mwait),hl
+	ld	a,h
+	or	l
+	jr	z,gtop3
+
+gtop1:	ld	hl,buf		; response buffer
+	ld	bc,prm2		; 'enter minutes between messages'
+	ld	de,10		; D = 0 (read with echo), E = max resp length
+	call	GETLN
+	ld	de,buf
+	call	GETDEC
+	ld	a,h
+	or	l
+	jr	z,gtop1		; can't be zero
+	ld	de,(mwait)
+	call	CPHLDE
+	jr	c,gtop1		; can't be > mwait
+	ld	(mmsgs),hl
+
+gtop2:	ld	hl,buf		; response buffer
+	ld	bc,prm3		; 'enter minutes to wait before dis. logins'
+	ld	de,10		; D = 0 (read with echo), E = max resp length
+	call	GETLN
+	ld	de,buf
+	call	GETDEC
+	ld	de,(mwait)
+	call	CPHLDE
+	jr	c,gtop2
+	ld	(mnolog),hl
+
+gtop3:	ld	hl,buf		; response buffer
+	ld	bc,prm4		; 'OK to shutdown?'
+	ld	de,10		; D = 0 (read with echo), E = max resp length
+	call	GETLN
+	ld	de,buf
+	call	getns
+	call	UCASE
+	cp	'Y'
+	ret	z
+	cp	'N'
+	scf
+	ret	z
+	jr	gtop3		; require explicit Y or N
+
+header:	db	CR,LF,'RSX280 SHUTDOWN PROGRAM',CR,LF,0
+
+prm1:	db	CR,LF,'Enter minutes to wait before shutdown: ',0
+prm2:	db	CR,LF,'Enter minutes between messages: ',0
+prm3:	db	CR,LF,'Enter minutes to wait before disabling logins: ',0
+prm4:	db	CR,LF,'OK to shutdown? [Y/N]: ',0
+
+;-----------------------------------------------------------------------
+
+; Shut down the system
+
+; TODO:
+; - kill all other active tasks
+
+shutup:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+
+	ld	hl,buf
+	ld	(hl),LF
+	inc	hl
+	ld	de,hmsg1
+	call	strcpy		; 'system shutdown initiated'
+	inc	de
+	call	strcpy		; 'from'
+	ld	de,(luninf)
+	ld	(hl),e		; store our terminal name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,(luninf+2)
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),0
+	ld	hl,buf
+	call	strlen
+	ld	de,'CO'
+	ld	c,0
+	call	TTSTR		; log message on system console
+
+	call	CRLF
+	ld	hl,hmsg1
+	call	SHUTMS		; 'system shutdown initiated'
+	inc	hl
+	ex	de,hl
+	call	strskp		; skip 'from'
+	ex	de,hl
+	inc	hl
+	call	PUTSTR
+	call	shdt		; show date and time
+	ld	c,CR
+	call	PUTCH
+	call	pause1
+
+	call	swait		; wait the specified number of minutes
+				; and notify logged-in terminals
+	call	pause1
+	call	BYEALL		; force logout of any remaining active users
+	call	pause5
+	call	pause5
+
+	call	STPCOT		; stop console logger, if active
+	call	pause1
+
+	call	EXECMD		; execute SHUTUP.CMD, if it exists
+	call	pause1
+
+	ld	hl,($CPLST)	; get ptr to head of checkpoint PCB list
+dea1:	ld	a,h
+	or	l		; end of list?
+	jr	z,dea2		; exit loop if yes
+
+	push	hl
+	ld	de,P.UCB
+	add	hl,de
+	ld	e,(hl)		; get UCB address of checkpoint file device
+	inc	hl
+	ld	d,(hl)
+	KCALL	$UCBDN		; get its device name and unit into DE-C
+	pop	hl
+	ld	a,(hl)		; grab ptr to next before PCB is removed
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	push	hl
+	call	DEACF
+	pop	hl
+	ret	c		; on error, exit (error msg already displayed)
+
+	call	pause1
+	jr	dea1		; loop until all ckpt files are discontinued
+
+dea2:	ld	hl,($MVTBL)	; get head of mounted volume list
+dsm1:	ld	a,h
+	or	l		; end of list?
+	jr	z,dsm2		; exit loop if yes
+
+	push	hl
+	ld	de,M.UCB
+	add	hl,de
+	ld	e,(hl)		; get UCB address of mounted volume
+	inc	hl
+	ld	d,(hl)
+	KCALL	$UCBDN		; get device name and unit number into DE-C
+	pop	hl
+	ld	a,(hl)		; grab ptr to next before VCB is removed
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	push	hl
+	call	DISMNT		; initiate dismount
+	pop	hl
+	ret	c		; on error, exit (error msg already displayed)
+
+	call	pause1
+	jr	dsm1		; loop until all volumes are processed
+
+dsm2:	ld	b,20
+dsm3:	ld	hl,($MVTBL)
+	ld	a,h
+	or	l		; all volumes finally dismounted?
+	jr	z,dsm4		; exit loop if yes
+
+	call	pause1		; else keep waiting
+	djnz	dsm3
+
+	ld	hl,buf		; if too long, warn about files still open
+	ld	de,hmsg3
+	call	strcpy
+	push	hl
+	ld	hl,($MVTBL)
+	ld	de,M.UCB
+	add	hl,de
+	ld	e,(hl)		; get UCB addr of first stubborn device
+	inc	hl
+	ld	d,(hl)
+	ld	hl,($MVTBL)
+	ld	a,h
+	or	l		; meanwhile the volume may have been dismounted
+	pop	hl
+	jr	z,dsm4
+	KCALL	$UCBDN		; obtain device name and unit
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,c
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),0
+	ld	hl,buf
+	call	SHUTMS		; display message
+	jr	dsm2		; and start waiting again
+
+dsm4:	call	pause1
+	call	CRLF
+	ld	hl,hmsg4
+	call	SHUTMS		; 'operation complete'
+	ld	de,6		; 6 seconds to give time for the message
+	call	pause		;  to be displayed, for the floppy motors
+				;   to turn off, etc.
+
+	ld	hl,$SCRBF
+	ld	(hl),0F3h	; di
+	inc	hl
+	ld	(hl),76h	; halt
+	inc	hl
+	ld	(hl),18h	; jr
+	inc	hl
+	ld	(hl),-2		; $
+
+	ld	hl,$SCRBF
+	KCALL	$SCRBF		; stop the system
+	jr	$		; paranoia
+
+hmsg1:	db	'System shutdown initiated',0,' from ',0,' -- ',0
+hmsg2:	db	'All further logins are disabled',CR,0
+hmsg3:	db	BELL,'Files still open on ',0
+hmsg4:	db	'Operation complete',CR,LF,CR,0
+
+; Show current date and time
+
+shdt:	ld	hl,buf
+	call	CVTDT
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),0
+	ld	hl,buf
+	jp	PUTSTR
+
+; Wait for the specified number of minutes and notify logged-in terminals
+
+swait:	ld	hl,1
+	ld	(msgcnt),hl
+	ld	hl,(mwait)
+swt0:	ld	a,h		; check minute counter
+	or	l		; zero?
+	jr	z,swt2		; notify users and return if yes
+	ld	hl,(mnolog)
+	ld	a,h		; check count down to disable logins
+	or	l		; already zero?
+	jr	z,swt3		; jump if yes
+	dec	hl		; else decrement counter
+	ld	(mnolog),hl
+	jr	swt4
+swt3:	call	nolgn		; disable logins
+swt4:	ld	hl,(msgcnt)
+	dec	hl
+	ld	(msgcnt),hl
+	ld	a,h		; check message count down
+	or	l		; zero?
+	jr	nz,swt1		; jump if not
+	ld	hl,(mmsgs)	; else reset counter
+	ld	(msgcnt),hl
+	call	uwarn		; and warn users
+swt1:	call	paus1m		; 1-minute pause
+	ld	hl,(mwait)
+	dec	hl		; decrement minute counter
+	ld	(mwait),hl
+	jr	swt0
+swt2:	call	nolgn		; ensure logins are disabled
+	call	ushdn		; notify all logged-in terminals
+	ret
+
+; Disable further logins
+
+nolgn:	ld	hl,$MFLGS
+	bit	0,(hl)
+	ret	z		; return if logins already disabled
+	res	0,(hl)		; else disable logins
+	ld	hl,hmsg2	; and display message
+	call	SHUTMS		; 'all further logins are disabled'
+	call	pause1
+	ret
+
+; Warn logged-in terminals about remaining time
+
+uwarn:	ld	hl,buf
+	ld	de,ucrlf
+	call	strcpy
+	push	de
+	call	CVTDT
+	ld	(hl),' '
+	inc	hl
+	ld	de,umsg2	; 'please finish up'
+	call	strcpy
+	push	de
+	ld	de,(mwait)
+	xor	a		; no filler
+	call	CVTWD
+	dec	de		; 1 -> 0 for \s expansion below
+	ld	a,d
+	or	e
+	ld	b,a		; for \s expansion in strcps below
+	pop	de
+	inc	de		; 'minute\s before shutdown'
+	call	strcps
+	pop	de
+	inc	de
+	call	strcpy
+	ld	hl,buf
+	call	strlen
+	call	userms
+	ret
+
+; Notify logged-in terminals about shutdown
+
+ushdn:	ld	hl,buf
+	ld	de,ucrlf
+	call	strcpy
+	push	de
+	call	CVTDT
+	ld	(hl),' '
+	inc	hl
+	ld	de,umsg1
+	call	strcpy
+	pop	de
+	inc	de
+	call	strcpy
+	ld	hl,buf
+	call	strlen
+	call	userms
+	ret
+	
+ucrlf:	db	BELL,CR,LF,LF,0,CR,LF,0
+umsg1:	db	'System is now shutting down',0
+umsg2:	db	'Please finish up, ',0,' minute\s before shutdown',0
+
+; Copy string @DE -> @HL
+
+strcpy:	ld	a,(de)
+	ld	(hl),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	strcpy
+
+; Skip (sub)string @DE
+
+strskp:	ld	a,(de)
+	or	a
+	ret	z
+	inc	de
+	jr	strskp
+
+strcps:	ld	a,(de)
+	or	a
+	ret	z
+	cp	'\'
+	jr	nz,pl1
+	inc	de
+	inc	b
+	dec	b
+	jr	nz,pl1
+	inc	de
+pl1:	ld	a,(de)
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	strcps
+
+strlen:	push	hl
+	ld	b,0
+strl1:	ld	a,(hl)
+	or	a
+	jr	z,strl2
+	inc	hl
+	inc	b
+	jr	strl1
+strl2:	pop	hl
+	ret
+
+; Send message @HL to all logged-in terminals. Assumes supervisor
+; mode is on.
+
+userms:	push	hl
+	push	bc
+	ld	hl,($PHYDV)	; get head of physical device list
+ums1:	ld	a,h
+	or	l		; end of list?
+	jr	z,ums5		; exit loop if yes
+	push	hl
+	pop	ix
+	ld	e,(ix+D.UCBL)	; get UCB list head into DE
+	ld	d,(ix+D.UCBL+1)
+ums2:	ld	a,d
+	or	e		; end of UCB list?
+	jr	z,ums4		; exit inner loop if yes
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)	; terminal device?
+	jr	z,ums3		; skip if not
+	ld	hl,U.LCB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h		; logged-in?
+	jr	z,ums3		; skip if not
+	pop	bc
+	pop	hl
+	push	hl
+	push	bc
+	push	de
+	KCALL	$UCBDN		; get terminal name into DE-C
+	call	TTSTR
+	pop	de
+ums3:	ld	hl,U.LNK
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	jr	ums2
+ums4:	ld	l,(ix+D.LNK)
+	ld	h,(ix+D.LNK+1)
+	jr	ums1
+ums5:	pop	bc
+	pop	hl
+	ret
+
+; Spawn BYE on all logged-in terminals. Assumes supervisor mode is on.
+
+BYEALL:	ld	hl,($PHYDV)	; get head of physical device list
+bye1:	ld	a,h
+	or	l		; end of list?
+	ret	z		; return if yes
+	push	hl
+	pop	ix
+	ld	e,(ix+D.UCBL)	; get UCB list head into DE
+	ld	d,(ix+D.UCBL+1)
+bye2:	ld	a,d
+	or	e		; end of UCB list?
+	jr	z,bye4		; exit inner loop if yes
+	push	de
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)	; terminal device?
+	jr	z,bye3		; skip if not
+	ld	hl,U.LCB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h		; logged-in?
+	jr	z,bye3		; skip if not
+	KCALL	$UCBDN		; get terminal name into DE-C
+	ld	hl,luninf
+	ld	a,(hl)		; do not log us out!
+	cp	e
+	jr	nz,bye5
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	nz,bye5
+	inc	hl
+	ld	a,(hl)
+	cp	c
+	jr	z,bye3
+bye5:	call	SNDBYE
+bye3:	pop	de
+	ld	hl,U.LNK
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	jr	bye2
+bye4:	ld	l,(ix+D.LNK)
+	ld	h,(ix+D.LNK+1)
+	jr	bye1
+
+; Send BYE command to MCR as if it was from terminal in DE-C.
+
+SNDBYE:	ld	(tidev),de	; override terminal name in TDB
+	ld	a,c
+	ld	(tidev+2),a
+	ld	hl,byecmd
+	ld	(mcrtdb+TD.CMD),hl
+	ld	hl,byelen
+	ld	(mcrtdb+TD.CML),hl
+	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,mcrtdb
+	ld	e,11
+	ld	bc,exstat
+	SC	.RQST		; request MCR to execute the command
+	ret
+
+byecmd:	db	'BYE',CR
+byelen	equ	$-byecmd
+
+; Stop console logger, if active. Assumes supervisor mode is on.
+
+STPCOT:	ld	de,'CO'
+	ld	c,0
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of CO: device
+	jp	c,SYSERR
+	ld	de,U.ACP
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; console logger active?
+	ret	z		; return if not
+	ld	hl,cotcmd
+	ld	de,cotlen
+SPAWN:	ld	(mcrtdb+TD.CMD),hl
+	ld	(mcrtdb+TD.CML),de
+	call	ECHO
+	ld	hl,'TI'
+	ld	(tidev),hl	; reset terminal device name
+	xor	a
+	ld	(tidev+2),a
+	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,mcrtdb
+	ld	e,11
+	ld	bc,exstat
+	SC	.RQST		; request MCR to execute the command
+	jp	c,SYSERR
+	ld	e,11
+	SC	.STSE		; stop until MCR is done
+	jp	c,SYSERR
+	ld	a,(exstat)
+	sub	EX.SUC
+	ret	z
+	scf
+	ret
+
+cotcmd:	db	'SET /COLOG=OFF',CR
+cotlen	equ	$-cotcmd
+
+; Execute LB:[SYSTEM]SHUTUP.CMD if exists
+
+EXECMD:	ld	hl,shutcf
+	call	OPENF
+	ret	c		; shutup command file not found, return
+	call	CLOSEF
+	ld	hl,buf
+	ld	(hl),'@'
+	inc	hl
+	ld	de,shutcf
+	call	strcpy
+	ld	de,buf
+	or	a
+	sbc	hl,de		; compute command length
+	ex	de,hl
+	ld	hl,buf
+	jp	SPAWN		; execute command
+
+shutcf:	db	'LB0:[SYSTEM]SHUTUP.CMD',CR,0
+
+; Deallocate checkpoint file
+
+DEACF:	push	de
+	ld	hl,buf
+	ld	de,acscmd
+	call	strcpy
+	ex	de,hl
+	ex	(sp),hl
+	ex	de,hl
+	ld	(hl),e		; copy device name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,c
+	call	CVTBD
+	pop	de
+	inc	de
+	call	strcpy
+	ld	de,buf
+	or	a
+	sbc	hl,de		; compute command length
+	ex	de,hl
+	ld	hl,buf
+	jp	SPAWN		; execute command
+
+acscmd:	db	'ACS ',0,':/BLKS=0',CR,0
+
+; Dismount volume
+
+DISMNT:	push	de
+	ld	hl,buf
+	ld	de,dmocmd
+	call	strcpy
+	ex	de,hl
+	ex	(sp),hl
+	ex	de,hl
+	ld	(hl),e		; copy device name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,c
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	pop	de
+	inc	de
+	call	strcpy
+	ld	de,buf
+	or	a
+	sbc	hl,de		; compute command length
+	ex	de,hl
+	ld	hl,buf
+	jp	SPAWN		; execute command
+
+dmocmd:	db	'DMO ',0,'/DEV',CR,0
+
+; Echo command on terminal
+
+ECHO:	call	PRDPR
+	ld	hl,(mcrtdb+TD.CMD)
+	ld	a,(mcrtdb+TD.CML)
+	ld	b,a
+PRTN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PRTN
+	ret
+
+; Get and display MCR prompt
+
+PRDPR:	ld	de,($CLIST)	; TODO: get CLICB associated to terminal
+	ld	a,d
+	or	e
+	ld	hl,DPR
+	ld	b,DPRL
+	jp	z,PRTN
+	ld	hl,CL.DPL
+	add	hl,de
+	ld	b,(hl)
+	ld	hl,CL.DAT
+	add	hl,de
+	jp	PRTN
+
+DPR:	db	CR,LF,'>',0
+DPRL	equ	$-DPR
+
+;-----------------------------------------------------------------------
+
+; Pause routines
+
+paus1m:	ld	de,60		; 1 minute
+	jr	pause
+
+pause5:	ld	de,5		; 5 seconds
+	jr	pause
+
+pause1:	ld	de,1		; 1 second
+pause:	push	hl
+	push	bc
+	ex	de,hl		; HL = magnitude of interval
+	ld	d,2		; units = seconds
+	call	SLEEP
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert date and time to string @HL.
+
+CVTDT:	push	hl
+	ld	hl,dtbuf
+	SC	.GDAT
+	ex	de,hl
+	pop	hl
+	call	CVTDAT
+	ld	(hl),' '
+	inc	hl
+	call	CVTTIM
+	ret
+
+CVTDAT:	push	de
+	inc	de
+	inc	de
+	inc	de
+	ld	a,(de)		; day
+	call	CVTBH
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	ld	a,(de)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	push	de
+	ex	de,hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	bc,3
+	ldir
+	ex	de,hl
+	pop	de
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	dec	de
+	ld	a,(de)		; year
+	call	CVTBH
+	inc	de
+	ld	a,(de)
+	call	CVTBH
+	pop	de
+	ret
+
+CVTTIM:	push	de
+	inc	de
+	inc	de
+	inc	de
+	inc	de
+	ld	a,(de)		; hour
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; sec
+	call	CVTBH
+	pop	de
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+;-----------------------------------------------------------------------
+
+; Output string in HL, length B to terminal device DE-C. Uses LUN 1 to
+; avoid conflicts with SYSLIB, which normally uses LUN 5.
+
+TTSTR:	push	ix
+	push	bc
+	push	de
+	push	hl
+	push	bc
+	ld	b,LUN1		; assign LUN to output device
+	SC	.ALUN
+	pop	bc
+	jp	c,tts1
+	push	bc
+	ld	hl,10		; timeout = 10 seconds
+	ld	d,2
+	ld	e,EFN
+	ld	bc,0		; no AST
+	SC	.MRKT		; setup timeout event
+	pop	bc
+	pop	hl
+	push	hl
+	ld	(qio3+Q.BUF),hl	; buffer address
+	ld	l,b
+	ld	h,0
+	ld	(qio3+Q.LEN),hl	; bytes to write
+	ld	hl,qio3
+	SC	.QIO		; write message
+	push	af
+	ld	bc,0
+	ld	e,EFN
+	SC	.CMKT		; cancel timeout event, if pending
+	pop	af
+	jr	c,tts1		; return if queuing failed
+	ld	a,(iosb)	; check status
+	or	a
+	jr	z,tts1		; return on success
+	cp	E.PEND		; request pending?
+	scf
+	jr	nz,tts1		; return eror if not
+	ld	hl,qio4
+	SC	.QIO		; else cancel I/O
+	ld	a,E.TMO		; and return timeout error
+	scf
+tts1:	pop	hl
+	pop	de
+	pop	bc
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse file name, assign LUN and open file.
+
+OPENF:	ld	ix,fdb
+	call	PFN		; parse file name
+	ld	a,E.BADF
+	ret	c
+	ld	b,LUN2
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Close file
+
+CLOSEF:	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+lnptr:	ds	2
+dtbuf:	ds	8		; date/time buffer
+luninf:	ds	6		; buffer for LUN info
+fdb:	ds	FDBSZ
+
+mwait:	ds	2		; minutes before shutdown
+mmsgs:	ds	2		; minutes between messages
+msgcnt:	ds	2		; message count down
+mnolog:	ds	2		; minutes before disabling logins
+
+mcrtdb:	db	'MCR...'	; task name
+	dw	0,0		; address and length of command line
+	db	0,0,0		; attr, user, grp (not used)
+tidev:	db	'TI',0		; terminal device and unit
+	dw	0,0		; no data block to send
+
+afmode	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
+
+qio1:	QIOW$	afmode,LUN2,EFN,iosb,,<fdb>
+qio2:	QIOW$	IO.DEA,LUN2,EFN,iosb
+
+btmode	equ	IO.WVB OR (TF.WBT SHL 8)
+
+qio3:	QIOW$	btmode,LUN1,EFN,iosb,,<,,,,>
+qio4:	QIOW$	IO.KIL,LUN1,EFN,iosb
+
+iosb:	ds	4
+exstat:	ds	2
+buf:	ds	256		; string buffer
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

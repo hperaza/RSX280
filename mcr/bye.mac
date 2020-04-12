@@ -1,0 +1,612 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command BYE for RSX180.                               ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.15'
+
+	cseg
+
+	include	AST.INC
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	LCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+	include	TKN.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	extrn	ATTACH,DETACH,CRLF,UCASE,PUTCH,PUTSTR,TTFLSH
+	extrn	GCCL,PDN,PERROR,AHEX,BCD2BIN,HLDEC,CVTBD
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK		; get task info
+	call	GCCL		; get MCR command line
+	call	skpnam
+	ld	(lnptr),hl
+	call	BYE
+	ld	hl,EX.SUC
+	jr	nc,quit
+	ld	hl,EX.ERR
+quit:	push	hl
+	call	TTFLSH
+	pop	hl
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'BYE -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'BYE -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Compare strings (HL) and (DE), max B chars
+
+nmatch:	ld	a,(de)
+	call	UCASE
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	nmatch
+	ret
+
+; Compute string (HL) length, return value in C.
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	b,9
+getn:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+skip:	inc	de
+getns:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip
+	cp	9
+	jr	z,skip
+	ret
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	ret
+gf1:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Output date as DD-MMM-YYYY
+
+PRDAT:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; day
+	call	AHEX
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	ld	a,(hl)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	push	hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	b,3
+pm:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pm
+	pop	hl
+	ld	c,'-'
+	call	PUTCH
+	dec	hl
+	dec	hl
+	ld	a,(hl)		; year
+	call	AHEX
+	inc	hl
+	ld	a,(hl)
+	call	AHEX
+	pop	hl
+	ret
+
+; Output time as HH:MM:SS
+
+PRTIM:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; hour
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; min
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)		; sec
+	call	AHEX
+	pop	hl
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+; Validate date (only day and month)
+
+valdt:	inc	hl
+	inc	hl
+	ld	c,12h+1		; month
+	call	vldt1		; check if in range
+	ret	c
+	ld	c,31h+1		; day
+vldt1:	ld	a,(hl)
+	inc	hl
+	or	a
+	scf
+	ret	z
+	cp	c
+	ccf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Skip spaces
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; Skip name
+
+skpnam:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	jr	z,skipsp	; return via skipsp
+	inc	hl
+	jr	skpnam
+
+; Check for blank character in A
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	TAB
+	ret
+
+; ----- LOGOUT user
+
+; TODO:
+; - accept user or terminal name (privileged option)
+; - /HOLD option for telnet?
+
+BYE:	ld	de,ASTBYE
+	ld	c,AST.ST
+	SC	.ASTDF		; setup AST routine
+
+	call	ABOTSK		; abort active tasks
+
+	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN		; get login details
+	jp	c,SYSERR	; should not happen
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+	KCALL	$LGOUT		; logout from terminal
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR	; on error, display message and exit
+
+	ld	de,'CO'
+	ld	c,0
+	ld	b,1		; use LUN 1 for console logging
+	SC	.ALUN
+	jp	c,bye4
+
+	ld	hl,buf		; build message for console logger
+	ld	(hl),LF
+	inc	hl
+	ld	de,lgomsg
+	call	cpstr		; 'logout user'
+	ex	de,hl
+	ld	hl,lcbbuf+L.NAME
+	ld	bc,9
+	ldir			; copy user name
+	ex	de,hl
+	ld	(hl),' '
+	inc	hl
+	ld	(hl),'['
+	inc	hl
+	ld	a,(lcbbuf+L.GRP)
+	call	CVTBD		; copy UIC
+	ld	(hl),','
+	inc	hl
+	ld	a,(lcbbuf+L.USR)
+	call	CVTBD
+	ld	(hl),']'
+	inc	hl
+	ld	(hl),' '
+	inc	hl
+	call	GETTI
+	ld	(hl),e		; copy terminal name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),0
+	ld	de,buf
+	or	a
+	sbc	hl,de		; compute length
+	ld	(qlog+Q.LEN),hl
+	ld	hl,0
+	ld	(qlog+Q.LEN+2),hl
+	ld	hl,qlog
+	SC	.QIO		; send to system console
+
+bye4:	ld	c,5		; LUN 5 is TI:
+	ld	de,0		; no ASTs
+	call	ATTACH		; attach terminal
+
+	ld	hl,dtbuf
+	SC	.GDAT
+	ld	hl,havea	; 'have a ... good morning, evening, etc.'
+	call	PUTSTR
+	ld	a,(dtbuf+4)	; get hour
+	call	chkhr		; wish accordingly
+	call	PUTSTR
+	ld	hl,dtbuf
+	call	PRDAT		; display date
+	ld	c,' '
+	call	PUTCH
+	call	PRTIM		; and time
+	ld	c,' '
+	call	PUTCH
+	ld	hl,hname
+	ld	c,I.HOST
+	SC	.GIN
+	jr	c,bye3		; jump if host name not available
+	push	hl
+	ld	b,9
+bye1:	ld	a,(hl)
+	cp	' '
+	jr	z,bye2
+	inc	hl
+	djnz	bye1
+bye2:	ld	(hl),0		; trim host name
+	pop	hl
+	call	PUTSTR		; display host name
+	ld	c,' '
+	call	PUTCH
+bye3:	call	GETTI
+	push	af
+	ld	c,e
+	call	PUTCH		; display terminal device...
+	ld	c,d
+	call	PUTCH
+	pop	af
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	HLDEC		; ...and unit
+	ld	c,':'
+	call	PUTCH
+	ld	hl,lgdoff
+	call	PUTSTR		; 'logged off'
+	call	TTFLSH		; ensure message is output
+
+	ld	c,5		; TI: LUN
+	call	DETACH		; detach terminal
+
+	ld	hl,qterm
+	SC	.QIO		; restore default/safe terminal settings
+	jp	c,SYSERR
+
+	xor	a		; return success
+	ret
+
+chkhr:	cp	18h
+	ld	hl,ge
+	ret	nc
+	cp	12h
+	ld	hl,ga
+	ret	nc
+	cp	6h
+	ld	hl,gm
+	ret	nc
+	ld	hl,nd
+	ret
+
+havea:	db	CR,LF,'Have a ',0
+nd:	db	'nice day',CR,LF,0
+gm:	db	'Good Morning',CR,LF,0
+ga:	db	'Good Afternoon',CR,LF,0
+ge:	db	'Good Evening',CR,LF,0
+lgdoff:	db	' Logged off',CR,0
+lgomsg:	db	'Logout user ',0
+
+;-----------------------------------------------------------------------
+
+; Scan the active task list and abort non-privileged tasks that are still
+; active under the current terminal.
+
+ABOTSK:	xor	a
+	ld	(ntsks),a
+	ld	e,12
+	SC	.CLEF		; clear event flag
+	ld	c,1
+	SC	.SUPER		; enter in supervisor mode
+	jp	c,SYSERR
+	xor	a		; disable task dispatching while
+	ld	(SYSLVL),a	;  we mess around
+	ld	hl,($TLIST)	; get task list head into IX
+act1:	ld	a,h
+	or	l		; end of list?
+	jr	z,act2		; exit loop if yes
+	push	hl
+	pop	ix
+	ld	l,(ix+T.TCBL)	; get next TCB in STD before
+	ld	h,(ix+T.TCBL+1)	;  this one gets removed from the list
+	call	act3		; process task
+	jr	act1
+act2:	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	c,0
+	SC	.SUPER		; exit supervisor mode
+	ld	a,(ntsks)
+	or	a		; all tasks exited?
+	ret	z		; return if yes
+	ld	e,12
+	SC	.STSE		; else stop until all tasks are killed
+	ret
+
+act3:	bit	TS.ACT,(ix+T.ST)
+	ret	z		; skip task if not active
+	bit	TA.PRV,(ix+T.ATTR)
+	ret	nz		; skip task if privileged
+	ex	de,hl
+	ld	hl,($CTCB)
+	ld	bc,T.TI
+	add	hl,bc
+	ex	de,hl
+	ld	a,(de)
+	cp	(ix+T.TI)	; check terminal device
+	ret	nz		; return if it is not our terminal
+	inc	de
+	ld	a,(de)
+	cp	(ix+T.TI+1)
+	ret	nz
+	push	hl
+	push	ix
+	ld	hl,dtbuf
+	ld	b,6
+act4:	ld	a,(ix+T.NAME)	; get task name into dtbuf
+	ld	(hl),a
+	inc	hl
+	inc	ix
+	djnz	act4
+ IF 1
+	ld	hl,0
+	ld	(exstat),hl
+  IF 0
+	ld	hl,dtbuf	; connect to task
+	ld	e,11		;  so we know when the task
+	ld	bc,exstat	;   finally exits
+	SC	.CONN
+  ELSE
+	pop	hl
+	push	hl
+	ld	e,11
+	ld	bc,exstat
+	KCALL	$CONN		; direct kernel call, since SYSLVL=0
+  ENDIF
+	jr	c,act5
+	ld	hl,ntsks
+	inc	(hl)
+act5:
+ ENDIF
+ IF 0
+	ld	hl,dtbuf
+	SC	.ABORT		; abort task via directive
+ ELSE
+	pop	bc
+	push	bc
+	ld	e,TK.CLI
+	KCALL	TKILL		; direct kernel call, since SYSLVL=0
+ ENDIF
+	pop	ix
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; AST service routine, called when the aborted task finally exits.
+
+ASTBYE:	ld	(temp),hl
+	ld	hl,ntsks
+	ld	a,(hl)
+	or	a
+	jr	z,ast1
+	dec	(hl)
+	jr	nz,ast2
+ast1:	push	de
+	ld	e,12
+	SC	.SETF		; set event flag
+	pop	de
+ast2:	ld	hl,15
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	ld	hl,(temp)
+	SC	.ASTX		; return from AST
+
+; Get terminal device name and unit into DE-A
+
+GETTI:	ld	de,(gtkbuf+GT.TI)
+	ld	a,(gtkbuf+GT.TI+2)
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ		; buffer for task info
+lcbbuf:	ds	LCBSZ
+dtbuf:	ds	8
+
+qlog:	QIOW$	IO.WVB,1,1,iosb,,<buf,,,,>
+qterm:	QIOW$	SF.SMC,5,1,iosb,,<ttchr,ttlen>
+ttchr:	db	TC.SLV,0	; unslave terminal
+	db	TC.NEC,0	; back to echo mode
+	db	TC.BIN,0	; disable binary mode
+	db	TC.NBR,0	; receive broadcast messages
+ttlen	equ	$-ttchr
+iosb:	ds	4
+
+lnptr:	ds	2
+temp:	ds	2
+cmdnam:	ds	9
+uname:	ds	10
+hname:	ds	10
+buf:	ds	100
+
+ntsks:	ds	1
+exstat:	ds	2
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

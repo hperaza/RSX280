@@ -1,0 +1,404 @@
+	.Z80
+
+	cseg
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	VCB.INC
+	include	BUFFER.INC
+	include	ERRORS.INC
+
+	extrn	PUTCH,PUTSTR,CRLF,ADEC,HLDEC,HLHEX,PERROR,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+KCALL	macro	addr
+	call	$SWSTK
+	dw	addr
+	endm
+
+;-----------------------------------------------------------------------
+
+; Dumps a number of system resources.
+
+; TODO: lock access via SYSLVL while accessing the system tables?
+; [But then QIO requests will not get processed.]
+
+DMPRES::
+	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER		; switch to supervisor mode
+	jp	c,fatal
+
+	; dump device tables
+
+	ld	hl,drms1
+	call	PUTSTR
+	ld	hl,($PHYDV)
+drs00:	ld	a,h
+	or	l
+	jr	z,drs01
+	push	hl
+	ld	de,D.NAME
+	add	hl,de
+	ld	c,(hl)		; display device name
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	c,':'
+	call	PUTCH
+	call	CRLF
+	pop	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	drs00
+
+drs01:	ld	hl,drms2
+	call	PUTSTR
+	ld	ix,$LOGDV
+drs02:	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	a,h
+	or	l
+	jp	z,drs05
+	push	hl
+	pop	ix
+	ld	c,(ix+N.NAME)	; display logical device name
+	call	PUTCH
+	ld	c,(ix+N.NAME+1)
+	call	PUTCH
+	ld	a,(ix+N.UNIT)	; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	c,'='
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	e,(ix+N.UCB)	; get UCB of physical device
+	ld	d,(ix+N.UCB+1)
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	b,(hl)		; get unit number
+	ld	hl,U.DCB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,D.NAME
+	add	hl,de
+	ld	c,(hl)		; display physical device name
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	a,b		; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	a,(ix+N.TYPE)
+	cp	N.LCL
+	ld	hl,drms8
+	jr	z,drs03
+	cp	N.LGN
+	ld	hl,drms9
+	jr	z,drs03
+	ld	hl,drms10
+drs03:	push	af
+	call	PUTSTR
+	pop	af
+	cp	N.GBL
+	jr	z,drs04
+	ld	c,' '
+	call	PUTCH
+	ld	e,(ix+N.TI)	; get UCB of terminal device
+	ld	d,(ix+N.TI+1)
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	b,(hl)		; get unit number
+	ld	hl,U.DCB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,D.NAME
+	add	hl,de
+	ld	c,(hl)		; display physical device name
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	a,b		; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+drs04:	call	CRLF
+	jp	drs02
+
+	; dump mounted device table
+
+drs05:	ld	hl,drms3
+	call	PUTSTR
+	ld	hl,($MVTBL)
+drs1:	ld	a,h
+	or	l
+	jr	z,drs2
+	push	hl
+	inc	hl
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e		; display device name
+	call	PUTCH
+	ld	c,d
+	call	PUTCH
+	ld	a,b		; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	pop	hl
+	call	PUTSTR		; display volume label
+	call	CRLF
+	pop	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	drs1
+
+	; dump FCB lists
+
+drs2:	ld	hl,drms4
+	call	PUTSTR
+	ld	hl,($MVTBL)
+drs21:	ld	a,h
+	or	l
+	jr	z,drs4
+	push	hl
+	ld	bc,M.UCB
+	add	hl,bc
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	KCALL	$UCBDN
+	ld	(ddn),de
+	ld	a,c
+	ld	(ddn+2),a
+	pop	hl
+	push	hl
+	ld	bc,M.FCBL
+	add	hl,bc
+drs3:	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	jr	z,drs22
+	push	hl
+	ld	hl,ddn
+	ld	c,(hl)
+	call	PUTCH		; display device name
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC		;  and unit
+	ld	c,':'
+	call	PUTCH
+	pop	hl
+	push	hl
+	ld	de,F.DIR
+	add	hl,de
+	ld	c,'['
+	call	PUTCH
+	ld	b,9
+	call	pname		; display directory name
+	ld	c,']'
+	call	PUTCH
+	ld	b,9
+	call	pname		; display file name
+	ld	c,'.'
+	call	PUTCH
+	ld	b,3
+	call	pname		; display extension
+	ld	c,';'
+	call	PUTCH
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	xor	a
+	call	HLDEC		; display version number
+	call	CRLF
+	pop	hl
+	jr	drs3		; loop to process next FCB in list
+drs22:	pop	hl
+	ld	a,(hl)		; get next VCB in list
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	drs21
+
+	; dump buffer usage
+
+drs4:	ld	hl,drms5
+	call	PUTSTR
+	ld	hl,($FILBF)
+drs5:	push	hl
+	ex	de,hl
+	ld	hl,B.ST
+	add	hl,de
+	bit	BS.VAL,(hl)	; buffer valid (loaded)?
+	jr	z,drs7		; skip if not
+	ld	hl,B.UCB
+	add	hl,de
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e		; display device name
+	call	PUTCH
+	ld	c,d
+	call	PUTCH
+	ld	a,b		; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	pop	de
+	ld	hl,B.BLKNO
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,' '
+	call	HLDEC		; display block number
+	ld	hl,B.ACCS
+	add	hl,de
+	ld	l,(hl)
+	ld	h,0
+	ld	a,' '
+	call	HLDEC		; display access count
+	ld	hl,B.ST
+	add	hl,de
+	bit	BS.MOD,(hl)
+	jr	z,drs6
+	ld	hl,drms6
+	call	PUTSTR		; display modified flag
+drs6:	call	CRLF
+drs7:	pop	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	jr	nz,drs5
+
+	; show pool usage
+
+drs10:	ld	hl,drms7
+	call	PUTSTR
+	push	hl
+	ld	hl,($POLSZ)
+	xor	a
+	call	HLDEC
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	xor	a
+	ld	(SYSLVL),a
+	call	KSIZE
+	ld	a,1
+	ld	(SYSLVL),a
+	ld	l,c
+	ld	h,b
+	xor	a
+	call	HLDEC
+	call	CRLF
+	ld	hl,EX.SUC
+	jp	EXIT
+
+pname:	ld	a,(hl)
+	or	a
+	jr	z,pn1
+	cp	' '
+	jr	z,pn1
+	ld	c,a
+	call	PUTCH
+pn1:	inc	hl
+	djnz	pname
+	ret
+
+fatal:	push	af
+	call	CRLF
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ld	hl,EX.ERR
+	jp	EXIT
+
+KSIZE:	ld	hl,($POOL)
+	ld	bc,0
+ks1:	ld	a,h
+	or	l		; no (more) free blocks?
+	ret	z		; return then
+	ld	e,(hl)		; get link to next block into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,(hl)		; get free block size into BC
+	add	a,c
+	ld	c,a
+	inc	hl
+	ld	a,(hl)
+	adc	a,b		; add to the accumulated size in BC
+	ld	b,a
+	ex	de,hl
+	jr	ks1		; process next block
+
+drms1:	db	CR,LF,'Loaded devices:',CR,LF,0
+drms2:	db	CR,LF,'Logical device assignment:',CR,LF,0
+drms3:	db	CR,LF,'Mounted volume table:',CR,LF,0
+drms4:	db	CR,LF,'FCB usage:',CR,LF,0
+drms5:	db	CR,LF,'Buffer usage:',CR,LF,0
+drms6:	db	' *',0
+drms7:	db	CR,LF,'Pool:',CR,LF,'Size ',0,', Free ',0
+drms8:	db	'Local',0
+drms9:	db	'Login',0
+drms10:	db	'Global',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ddn:	ds	3
+	ds	128
+stack	equ	$
+
+	end	DMPRES

@@ -1,0 +1,187 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('INTS')
+	TITLE	'RSX280 interrupt control'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Interrupt control routines for the P112 board.                 ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	SYSCONF.INC
+
+FALSE	equ	0
+TRUE	equ	NOT FALSE
+
+	public	ININT		; init interrupt table
+	public	SETVEC		; set interrupt vector
+	public	SETHVC		; set interrupt vector via stub
+	public	INTON		; enable Z280 interrupts
+	public	INTOFF		; disable Z280 interrupts
+
+	extrn	$ITBL,$SBANK,$ALLOC,IHSP,IHSTK,INTMAP,CPUSPD
+	extrn	TICSEC,TICCNT,UPTIME
+
+	cseg
+
+;--------------------------------------------------------------------
+
+; Init interrupt table and setup system timer
+
+ININT:	di
+	call	INTOFF		; just in case
+
+	ld	a,TCKSEC
+	ld	(TICSEC),a
+
+	ld	hl,TICCNT
+	xor	a
+	ld	b,4
+itcn:	ld	(hl),a		; clear absolute time count
+	inc	hl
+	djnz	itcn
+	ld	hl,UPTIME
+	ld	b,6
+iupt:	ld	(hl),a		; clear uptime (A still = 0)
+	inc	hl
+	djnz	iupt
+
+	call	CPUSPD		; measure CPU speed and get timer reload const
+	iopage	CTP
+	ld	a,10100000b	; continuous mode, timer, interrupt
+	out	(CR0),a
+	dec	hl		; n-1 in timer register
+	ld	c,TC0
+	outw	(c),hl
+
+	; initialize the internal Z280 int/trap table address, which
+	; must begin on an 4K page boundary.
+
+	ld	hl,($SBANK)	; get system base bank address
+	add	hl,hl		; get bits into position
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	de,$ITBL	; get interrupt/trap base address
+	ld	e,d		; get bits into position (note: we
+	ld	d,0		;  assume that the lower 12 bits are zero)
+	add	hl,de		; obtain physical bank address
+	ld	c,ITV
+	ldctl	(c),hl		; set CPU interrupt/trap table pointer
+	ld	c,ISR
+	ld	hl,0
+	ldctl	(c),hl		; disable vectored external ints
+	im	3		; set Z280 interrupt mode 3
+	ret
+
+INTON:	iopage	CTP
+	ld	a,11100000b	; enable timer and start downcounting
+	out	(CS0),a
+	ei
+	ret
+
+INTOFF:	iopage	CTP
+	xor	a		; disable timer
+	out	(CS0),a
+	di			; disable all ints
+	ret
+
+;--------------------------------------------------------------------
+
+; Set interrupt vector in A to address in DE
+
+SETVEC:	ld	l,a
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	inc	hl		; skip MSR
+	inc	hl
+	ld	bc,$ITBL
+	add	hl,bc
+	ldw	(hl),de
+	ret
+
+;--------------------------------------------------------------------
+
+; Set interrupt vector (number in A) to address in DE of bank C
+
+SETHVC:	push	af		; push vector number
+	push	de		; push routine address
+	push	bc		; push bank number
+	ld	bc,ISTLEN	; BC = stub length
+	call	$ALLOC		; allocate an Interrupt Transfer Block
+	jr	c,sv1
+	ex	de,hl		; DE = dst
+	push	de
+	ld	hl,ISTUB	; HL = start of stub routine
+	ld	bc,ISTLEN	; BC = stub length
+	ldir			; copy stub to ITB
+	pop	de		; DE = start of copied stub routine
+	ld	hl,ISBASE
+	add	hl,de
+	pop	bc		; pop bank number
+	ld	(hl),c		; set bank in copied stub routine
+	ld	hl,ISCALL
+	add	hl,de
+	pop	bc		; pop routine address
+	ldw	(hl),bc		; set handler address in stub routine
+	pop	af		; pop vector number
+	jp	SETVEC		; now set vector to stub (address in DE)
+
+sv1:	pop	bc
+	pop	de
+	pop	af
+	ret
+
+; Interrupt stub subroutine, copied to the Interrupt Transfer Block.
+
+ISTUB:	ex	(sp),hl		; ignore reason code, save HL
+	push	af		; save accum and flags
+	push	bc		; save BC
+	push	de		; save DE
+	ld	(IHSP),sp
+	ld	sp,IHSTK
+	ld	c,IOP
+	ldctl	hl,(c)
+	push	hl		; save I/O page
+	ld	e,0		; will be replaced with ISR's base bank
+ISBASE	equ	$-1-ISTUB
+;;	ld	d,0
+;;	call	INTMAP		; setup MMU
+	call	0		; will be replaced with ISR entry point
+ISCALL	equ	$-2-ISTUB
+	pop	hl
+	ld	c,IOP
+	ldctl	(c),hl		; restore I/O page
+	ld	sp,(IHSP)
+	pop	de		; restore registers
+	pop	bc
+	pop	af
+	pop	hl
+	retil
+ISTLEN	equ	$-ISTUB
+
+	end

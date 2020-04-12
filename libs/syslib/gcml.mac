@@ -1,0 +1,586 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Get command line. If a MCR command line was supplied, returns
+;  the command tail, else an interactive mode is entered which
+;  prompts the user to enter a command. Interactive mode ends
+;  when ^Z is entered. Also supports reading commands from an
+;  indirect command file.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	GCML.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+	public	GCML,RCML,CCML
+
+	extrn	PFN,GETLNL
+	;extrn	ATTACH,DETACH
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; * UNDER DEVELOPMENT *
+
+; Input:
+;   IY = address of param block
+;   - flags/options
+;   - attach/detach?
+; Returns:
+
+; Flags/options:
+; - filter ';' and '!' comments
+; - return/don't return empty lines
+; - enable/disable '@' recognition
+; - abort current '@' file processing
+; - skip initial blanks
+; - close cmd file between calls
+
+; - for consistency, when line comes from .GTCMD task name is removed.
+;   A separate field in control block can be added to return then the
+;   invocation task name. [HL returns the command tail, but the full
+;   command line is still at G.BUF]
+
+RCML:	call	CCML		; close current command file
+	xor	a
+	ld	(iy+G.ERR),a	; clear error code
+	ld	(iy+G.LEN),a
+	ld	(iy+G.LVL),0	; clear command nesting level (purge PDL)
+	bit	GS.INT,(iy+G.ST); are we in interactive mode?
+	jr	nz,OPNTTY	; jump if yes to reopen terminal
+	set	GS.EOF,(iy+G.ST); else set EOF bit
+	ret
+OPNTTY:	push	iy
+	pop	ix
+	ld	bc,G.IFN
+	add	ix,bc
+	ld	(ix+F.DEV),'T'	; setup input from TI:
+	ld	(ix+F.DEV+1),'I'
+	ld	(ix+F.UNIT),0
+	call	opn1		;OPNIND
+	ld	(iy+G.ERR),a
+	ret
+
+CCML:	call	CLSIND
+	xor	a
+	ret
+
+GCML:	bit	GS.EOF,(iy+G.ST)
+	ld	a,E.EOF		; return E.EOF if GS.EOF bit is set
+	ld	(iy+G.ERR),a
+	scf
+	ret	nz
+
+	bit	GS.MCR,(iy+G.ST)
+	jr	nz,m2		; jump if MCR command already processed
+
+	set	GS.MCR,(iy+G.ST)
+
+	ld	l,(iy+G.BUF)
+	ld	h,(iy+G.BUF+1)
+	ld	e,(iy+G.SIZE)
+	dec	e
+	dec	e
+	SC	.GTCMD		; get command line
+	ld	a,(hl)		; check command length
+	or	a		; command line available?
+	jr	z,m1		; jump if not
+
+	ld	e,a
+	ld	d,0
+	inc	hl
+	ex	de,hl
+	add	hl,de
+	ld	(hl),0		; add trailing null
+	ex	de,hl
+
+	call	skpnam		; skip task name
+	or	a		; command tail present?
+	jr	z,m1		; jump if not
+	cp	'@'		; @filename?
+	jr	z,m4		; jump if yes
+
+	set	GS.EOF,(iy+G.ST); set EOF status bit
+	xor	a
+	ld	(iy+G.ERR),a
+	ret			; return the command tail to the user
+
+m1:	; no MCR command line, display prompt and enter interactive mode
+
+	call	OPNTTY		; setup input from TI:
+	ret	c
+
+	set	GS.INT,(iy+G.ST); set interactive status bit
+
+m2:	call	RDCMD		; get user command
+	ld	(iy+G.ERR),a
+	jr	c,m5		; jump on error
+
+	call	skipbl
+	cp	'@'		; scan for @cmdfile
+	jr	z,m3
+	cp	';'		; comment line?
+	jr	z,m2
+	or	a		; empty line?
+	jr	z,m2
+	xor	a
+	ld	(iy+G.ERR),a
+	ret
+
+m3:	ld	a,(iy+G.LVL)
+	cp	(iy+G.MAXD)	; CY if G.MAXD > G.LVL
+	ccf
+	ld	a,GE.NLV
+	ld	(iy+G.ERR),a
+	ret	c		; TODO: set G.ERR
+
+	inc	(iy+G.LVL)	; increase nesting level
+	push	hl
+	call	CPUSH		; push current level
+	pop	hl
+m4:	call	OPNIND		; open next indirect file
+	ld	(iy+G.ERR),a
+	jr	nc,m2		; on success loop back to read commands
+
+m5:	ld	c,a
+	ld	a,(iy+G.LVL)	; check nesting level
+	or	a
+	ld	a,c
+	jr	nz,m6		; jump if not zero
+
+	set	GS.EOF,(iy+G.ST); else set EOF status bit
+	scf
+	ret			; and return error
+
+m6:	cp	E.EOF		; EOF?
+	scf
+	ret	nz		; return if not
+
+	dec	(iy+G.LVL)	; else decrement nesting level
+
+	call	CPOP		; pop previous command level
+	ld	(iy+G.ERR),a
+	ret	c
+	jr	m2		; and loop
+
+;-----------------------------------------------------------------------
+
+; Push current command file status into the push-down list and close
+; the file. Called just after increasing the nesting level.
+
+CPUSH:	ld	l,(iy+G.PDL)	; get push-down list area address into HL
+	ld	h,(iy+G.PDL+1)
+	ld	a,(iy+G.LVL)
+	dec	a
+	jr	z,cp2
+	ld	b,a
+	ld	de,PDLSZ
+cp1:	add	hl,de		; get slot to store status info
+	djnz	cp1
+cp2:	ex	de,hl
+	push	iy
+	pop	hl
+	ld	bc,G.IFN
+	add	hl,bc
+	ld	bc,FNSZ
+	ldir			; store current filespec
+	push	de
+	call	INDPOS		; get current file position into BCDE
+	pop	hl
+	ret	c
+	ld	(hl),e		; store byte pos
+	inc	hl
+	ld	(hl),d		; block offset
+	inc	hl
+	ld	(hl),c		; block number
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	a,(iy+G.LN)	; store current line number
+	ld	(hl),a
+	inc	hl
+	ld	a,(iy+G.LN+1)
+	ld	(hl),a
+	call	CLSIND		; close the file
+	xor	a
+	ret
+
+; Restore command file status from saved push-down list info and open the
+; file. Called just after decreasing the nesting level.
+
+CPOP:	ld	l,(iy+G.PDL)	; get push-down list area address into HL
+	ld	h,(iy+G.PDL+1)
+	ld	a,(iy+G.LVL)
+	or	a
+	jr	z,cp4
+	ld	b,a
+	ld	de,PDLSZ
+cp3:	add	hl,de		; find slot with status info
+	djnz	cp3
+cp4:	ex	de,hl
+	push	iy
+	pop	hl
+	ld	bc,G.IFN
+	add	hl,bc
+	ld	bc,FNSZ
+	ex	de,hl
+	ldir			; restore filespec
+	push	hl
+	push	iy
+	pop	ix
+	ld	bc,G.IFN
+	add	ix,bc
+	call	opn1		; open the file
+	pop	hl
+	ret	c
+	ld	e,(hl)		; restore saved file position
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+G.LN),a	; restore saved line number
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+G.LN+1),a
+	call	SEKIND		; seek to saved pos
+	ret
+
+;-----------------------------------------------------------------------
+
+; Open indirect command file
+
+OPNIND:	inc	hl		; point to filename
+	push	iy
+	pop	ix
+	ld	bc,G.IFN
+	add	ix,bc
+	call	PFN		; parse filename
+	ld	a,GE.SN		; syntax error
+	ret	c
+
+	ld	a,(ix+F.ATTR)
+	and	FN.EXT		; extension specified?
+	jr	nz,opn1		; go open command file if yes
+
+	push	ix
+	pop	hl
+	ld	de,F.EXT
+	add	hl,de
+	ex	de,hl
+	ld	hl,cmdext	; else force CMD extension
+	ld	bc,3
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+
+opn1:	ld	e,(ix+F.DEV)
+	ld	d,(ix+F.DEV+1)
+	ld	c,(ix+F.UNIT)
+	ld	b,(iy+G.LUN)
+	SC	.ALUN		; assign device to LUN
+	ret	c
+
+	ld	hl,luninf
+	ld	c,(iy+G.LUN)
+	SC	.GTLUN		; get LUN information
+	ret	c
+
+	ld	a,(luninf+4)
+	ld	(iy+G.DEVC),a
+	bit	DV.DIR,a	; directory device?
+	jr	nz,opn2		; jump to open file if yes
+
+	jr	opn3
+
+opn2:	push	iy
+	pop	hl
+	ld	bc,G.IFN
+	add	hl,bc
+	ld	(qio1+Q.P1),hl
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	a,(iy+G.LUN)
+	ld	(qio1+Q.LUN),a
+	ld	hl,qio1
+	SC	.QIO		; open file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+
+	; TODO: call FRATTR to get full file info including dev, dir,
+	; vers, etc.
+
+	ld	hl,0
+	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.OFS),hl
+	call	INDFRD		; read first partial block
+	ld	hl,iobuf
+	ld	(bufptr),hl	; init buffer pointer
+
+opn3:	xor	a
+	ld	(iy+G.LN),a	; clear line number
+	ld	(iy+G.LN+1),a
+	ret			; return with CY clear (success)
+
+cmdext:	db	'CMD'
+
+; Read user command from console or from indirect file
+
+RDCMD:	bit	DV.DIR,(iy+G.DEVC) ; reading from file?
+	jr	nz,RDIND	   ; jump if yes
+
+;;	bit	DV.TTY,(iy+G.DEVC) ; reading from a terminal?
+;;	jr	z,..		   ; jump if not, use IO.RVB
+
+	res	GS.FIL,(iy+G.ST)
+
+	ld	l,(iy+G.BUF)
+	ld	h,(iy+G.BUF+1)
+	ld	e,(iy+G.SIZE)
+	dec	e
+	ld	d,0
+	ld	c,(iy+G.PRM)
+	ld	b,(iy+G.PRM+1)
+	push	hl
+
+	; TODO: attach?
+
+	ld	a,(iy+G.LUN)
+	call	GETLNL		; read line after prompt
+
+	; TODO: detach?
+
+	pop	hl
+	ld	(iy+G.LEN),c
+	push	af
+	ld	e,l
+	ld	d,h
+	add	hl,bc
+	call	reol		; add trailing null and inc line number
+	pop	af		; return with HL=G.BUF, BC=length
+	ret			;  and AF = error/success code
+
+RDIND:	set	GS.FIL,(iy+G.ST)
+	ld	l,(iy+G.BUF)
+	ld	h,(iy+G.BUF+1)
+	ld	b,(iy+G.SIZE)
+	dec	b
+rloop:	push	hl
+	push	bc
+	call	INDGC
+	pop	bc
+	pop	hl
+	ret	c		; [TODO: BC can be zero! - EOF]
+	cp	LF
+	jr	z,rloop
+	ld	(hl),a
+	inc	hl
+	cp	CR
+	jr	z,reol
+	djnz	rloop
+	call	CLSIND		; line too long
+	ld	a,GE.LEN
+	scf
+	ret
+
+reol:	ld	(hl),0		; add trailing null
+	ld	l,(iy+G.LN)	; TODO: set G.LEN
+	ld	h,(iy+G.LN+1)
+	inc	hl		; increase line number
+	ld	(iy+G.LN),l
+	ld	(iy+G.LN+1),h
+	ld	l,(iy+G.BUF)
+	ld	h,(iy+G.BUF+1)
+	xor	a
+	ret
+
+; Get char from indirect file
+
+INDGC:	ld	a,(bufcnt)	; get char count
+	or	a		; any chars remaining in buffer?
+	jr	nz,ind1		; jump if yes
+	ld	hl,iobuf
+	ld	(bufptr),hl	; else reset buffer pointer
+	ld	hl,(qio2+Q.OFS)
+	ld	de,128
+	add	hl,de		; time to read next block fragment
+	ld	a,h
+	cp	02h		; offset >= 512?
+	jr	c,ind0		; branch if not
+	ld	hl,(qio2+Q.BLK)
+	inc	hl		; advance to next block
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+ind0:	ld	(qio2+Q.OFS),hl
+	call	INDFRD		; refill buffer
+	jr	c,CLSIND
+	ld	a,(bufcnt)
+ind1:	dec	a		; decrement char counter
+	ld	(bufcnt),a
+	ld	hl,(bufptr)
+	ld	a,(hl)		; get char from buffer
+	inc	hl
+	ld	(bufptr),hl	; update pointer
+	or	a
+	ret
+
+; Read partial block from file
+
+INDFRD:	ld	a,(iy+G.LUN)
+	ld	(qio2+Q.LUN),a
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	a,(iosb+2)
+	ld	(bufcnt),a
+	xor	a
+	ret
+
+; Close current indirect file
+
+CLSIND:	push	af
+	ld	c,(iy+G.LUN)
+	bit	DV.DIR,(iy+G.DEVC)
+	jr	z,cls1
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	a,(iy+G.LUN)
+	ld	(qio1+Q.LUN),a
+	ld	hl,qio1
+	SC	.QIO		; close file
+cls1:	pop	af
+	ret
+
+; Return indirect file position in DEBC
+
+INDPOS:	xor	a
+	bit	DV.DIR,(iy+G.DEVC)
+	ret	z		; ignore operation if not reading from file
+	ld	c,(iy+G.LUN)
+	ld	hl,(bufptr)
+	ld	de,iobuf
+	or	a
+	sbc	hl,de
+	ld	e,l		; E = char pos
+	ld	hl,(qio2+Q.OFS)
+	add	hl,hl
+	ld	d,h		; offset D=1 for 128, 2 for 256, 3 for 384
+	ld	bc,(qio2+Q.BLK)
+	xor	a
+	ret
+
+; Seek indirect file to specified position
+
+SEKIND:	xor	a
+	bit	DV.DIR,(iy+G.DEVC)
+	ret	z		; ignore operation if not a file
+	ld	(qio2+Q.BLK),bc
+	ld	h,d
+	ld	l,0
+	srl	h
+	rr	l		; get block offset
+	ld	(qio2+Q.OFS),hl
+	ld	d,0		; byte pos in DE
+	ld	hl,iobuf
+	add	hl,de
+	ld	(bufptr),hl	; set buffer pointer
+	push	de
+	call	INDFRD		; refill buffer
+	pop	de
+	ret	c
+	ld	a,(bufcnt)
+	sub	e
+	ld	(bufcnt),a	; adjust remaining char count
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; Skip spaces
+
+skipbl:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipbl
+
+; Skip name
+
+skpnam:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	'/'
+	ret	z
+	call	isblnk
+	jr	z,skipbl	; return via skipbl
+	inc	hl
+	jr	skpnam
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.ACC,0,9,iosb,,<0>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<iobuf,128,0,0,0>
+iosb:	ds	4
+iobuf:	ds	128		; buffer for indirect file I/O
+bufptr:	ds	2		; pointer to current char in iobuf
+bufcnt:	ds	1		; number of bytes left in iobuf
+luninf:	ds	6		; buffer for LUN information
+
+	end

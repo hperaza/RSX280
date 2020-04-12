@@ -1,0 +1,162 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('SSMGR')
+	TITLE	'RSX180 Session Management'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Session Management routines.                                   ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+	include	TCB.INC
+	include	PCB.INC
+	include	LCB.INC
+	include	DCB.INC
+	include	ERRORS.INC
+
+	public	$LOGIN		; login
+	public	$LGOUT		; logout
+
+	extrn	$MCOPY,$UGETW,$SBANK,$ALLOC,$FREE,$CLASN,CLRMEM
+	extrn	$CTCB,$CPCB,$FNDEV
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Note: these two routines will be moved eventually outside the kernel
+; module into the HEL program.
+
+; Login user (assign user to terminal). Assumes checks have been made
+; (i.e. user name valid, home device and directory exists, etc.).
+
+; Input:
+;   $CTCB = TCB of current task
+;   IY = address of user name string (9 chars) in user space,
+;        followed by user ID and group ID
+; Returns:
+;   HL = LCB address
+;   CY set on error.
+
+$LOGIN:	ld	ix,($CTCB)
+	ld	l,(ix+T.TI)	; get UCB of terminal
+	ld	h,(ix+T.TI+1)
+	push	hl
+	pop	ix		; IX = terminal UCB address
+	ld	a,(ix+U.LCB)	; check if U.LCB is set
+	or	(ix+U.LCB+1)
+	ld	a,E.ULI		; error if yes - other user logged in
+	scf
+	ret	nz
+	push	ix
+	call	NEWLCB		; allocate new LCB
+	pop	ix
+	ret	c		; error if not enough memory
+	ld	(ix+U.LCB),l	; set U.LCB of terminal
+	ld	(ix+U.LCB+1),h
+	push	hl
+	pop	ix		; IX = LCB address
+	ld	de,L.NAME
+	add	hl,de
+	ex	de,hl		; DE = dst
+	di
+	ld	hl,($CPCB)
+	ld	bc,P.BASE
+	add	hl,bc
+	ld	a,(hl)
+	push	iy
+	pop	hl		; HL = src
+	push	af
+	exx
+	ld	e,a		; E' = src bank
+	ld	a,($SBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	ld	bc,9
+	call	$MCOPY		; copy user name
+	pop	af
+	ld	e,a		; E = src bank
+	call	$UGETW		; get user and group ID
+	ei
+	ld	(ix+L.USR),c
+	ld	(ix+L.GRP),b
+	push	ix
+	pop	hl
+	xor	a
+	ret
+
+; Allocate new LCB from kernel memory pool.
+
+; Returns:
+;   HL = address of LCB
+;   CY flag set if not enough memory for new LCB
+
+NEWLCB:	ld	bc,LCBSZ	; LCB size
+	call	$ALLOC		; allocate new LCB
+	ret	c		; return if not enough memory
+	push	hl
+	ld	bc,LCBSZ
+	call	CLRMEM
+	pop	hl
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Logout user (remove assignment from terminal). Assumes some house-
+; keeping has been done (i.e. killing running tasks, etc.)
+
+; Input:
+;   $CTCB = TCB of current task
+; Returns:
+;   CY set on error.
+
+$LGOUT:	ld	ix,($CTCB)
+	ld	l,(ix+T.TI)	; get UCB of terminal
+	ld	h,(ix+T.TI+1)
+	push	hl
+	pop	ix
+	ld	l,(ix+U.LCB)	; get LCB associated to the terminal
+	ld	h,(ix+U.LCB+1)
+	ld	a,h
+	or	l
+	ld	a,E.SSNF
+	scf
+	ret	z
+	xor	a
+	ld	(ix+U.LCB),a
+	ld	(ix+U.LCB+1),a
+	ld	de,LCBSZ	; free LCB
+	push	ix
+	call	$FREE
+	pop	de
+	ld	b,N.LCL
+	call	$CLASN		; delete all local device assignments
+	ld	b,N.LGN
+	call	$CLASN		; delete all login device assignments
+	xor	a
+	ret
+
+	END

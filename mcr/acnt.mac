@@ -1,0 +1,2430 @@
+;**********************************************************************;
+;                                                                      ;
+;   Account File Maintenance Program for RSX180.                       ;
+;   Copyright (C) 2018-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	ident	'01.05'
+
+	include	FCB.INC
+	include	TCB.INC
+	include	LCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+	include	SYSFN.INC
+	include	ACNT.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+AFLUN	equ	1		; LUN for account file I/O
+TMPLUN	equ	2		; LUN for temporary file I/O
+
+	extrn	PUTCH,PUTSTR,TTFLSH,GETLN,UCASE,CRLF,PERROR
+	extrn	BCD2BIN,CVTBD,ADEC,AHEX,HLDEC,PDN,CPHLDE,GCCL
+	extrn	MD5INI,MD5UPD,MD5END
+
+;-----------------------------------------------------------------------
+
+; This application must be built as privileged, so that ordinary users
+; could have write access to the account file in order to change their
+; passwords.
+
+; TODO:
+; - attach/detach terminal during list/modify/delete/etc.
+
+	cseg
+
+START:	ld	sp,stack
+	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK		; get task info
+	ld	hl,(gtkbuf+GT.END)
+	ld	(memtop),hl	; save address of task memory
+
+	call	CHKPRV		; is user privileged?
+	jr	nc,tn1		; branch if yes
+
+	cp	E.PRIV		; non-privileged?
+	jp	z,PASWD		; then allow changing password only
+
+	jp	abort		; else exit with error
+
+tn1:	call	GCCL		; get MCR command line
+	jr	c,ACNT
+	ex	de,hl
+	ld	hl,pwd
+	ld	b,3
+tn2:	ld	a,(de)		; was task invoked as 'PWD'?
+	call	UCASE
+	cp	(hl)
+	jr	nz,ACNT		; branch if not
+	inc	hl
+	inc	de
+	djnz	tn2
+	jp	PASWD		; else allow changing password only
+
+ACNT:	ld	hl,header
+	call	PUTSTR		; display heading
+	call	TTFLSH
+
+	call	AFOPEN		; open or create account file
+	jp	c,abort		; on error, exit
+
+mloop:	ld	hl,menu
+	call	PUTSTR		; display menu
+
+opt0:	ld	hl,buf
+	ld	bc,prompt
+	ld	de,4		; D = 0 (read with echo), E = length
+	call	GETLN		; get option
+	jr	nc,opt1
+	cp	E.EOF		; ^Z exits program
+	jp	z,exit
+	jr	opt0
+
+opt1:	ld	a,c
+	cp	1		; ensure at least one char was typed
+	jr	c,opt0
+
+	ld	hl,mloop
+	push	hl		; push return address
+	ld	a,(buf)		; get option char
+	call	UCASE		; convert to uppercase
+	cp	'A'
+	jp	z,addu		; add
+	cp	'D'
+	jp	z,del		; delete
+	cp	'E'
+	jp	z,exam		; examine
+	cp	'L'
+	jp	z,list		; list
+	cp	'M'
+	jp	z,mod		; modify
+	cp	'S'
+	jp	z,sort		; sort
+	cp	'X'
+	jp	z,exit		; exit
+	ld	hl,erropt
+	jp	ERROR
+
+header:	db	LF,'RSX180 Account File Maintenance Program',CR,0
+
+menu:	db	CR,LF,LF,'Options are:',CR
+	db	LF,'  A - Add an account',CR
+	db	LF,'  D - Delete an account',CR
+	db	LF,'  E - Examine existing account',CR
+	db	LF,'  L - List account file',CR
+	db	LF,'  M - Modify existing account',CR
+	db	LF,'  S - Sort account file',CR
+	db	LF,'  X - eXit',CR,LF,0
+
+prompt:	db	CR,LF,'Enter option: ',0
+erropt:	db	'Invalid option',0
+
+pwd:	db	'PWD'
+
+;-----------------------------------------------------------------------
+
+; Add user
+
+addu:	ld	hl,new
+	ld	bc,AFSZ
+	call	CLRMEM		; clear record
+
+	ld	hl,buf
+	SC	.GDAT		; get current date and time
+	ld	de,new+AF.CRE
+	ld	bc,7
+	ldir			; set created timestamp, exclude DOW
+
+	call	CRLF
+
+	; get user name
+
+	ld	de,12
+	ld	bc,aopt1	; 'Enter name'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	or	a
+	scf
+	ret	z
+	push	hl
+	ld	hl,uname
+	push	hl
+	ld	bc,9
+	call	CLRMEM
+	pop	de
+	pop	hl
+	ld	b,9
+add1:	ld	a,(hl)
+	or	a
+	jr	z,add2
+	call	VALID		; validate name
+	ret	c
+	ld	(de),a		; set name
+	inc	hl
+	inc	de
+	djnz	add1
+add2:	ld	hl,uname
+	ld	de,new+AF.UNAM
+	ld	bc,9
+	ldir
+
+	; get UIC
+
+	ld	de,12
+	ld	bc,aopt2	; 'Enter account'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	GETUIC		; validate and convert to binary
+	ret	c		; TODO: display error and ask again
+	ld	(new+AF.USR),de	; store UIC
+	ld	(uic),de
+
+	; get full name
+
+	ld	de,32
+	ld	bc,aopt3	; 'Full name'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	ld	de,new+AF.NAME
+	ld	b,32
+	call	SKIPBL
+add3:	ld	a,(hl)
+	or	a
+	jr	z,add4
+	ld	(de),a		; store full name or description
+	inc	hl
+	inc	de
+	djnz	add3
+
+	; get password
+
+add4:	ld	hl,new+AF.UNAM
+	ld	de,aopt4	; 'Password'
+	call	GETPWD
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	ld	de,new+AF.PWD
+	ld	bc,16
+	ldir			; set MD5 password
+
+	; get system device
+
+	ld	de,20
+	ld	bc,aopt5	; 'System device'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	PDN		; parse device name
+	ret	c
+	ld	(new+AF.SYD),de	; TODO: convert to physical name and
+	ld	(udev),de
+	ld	a,c		;  emit warning if device does not exist
+	ld	(new+AF.SYD+2),a
+	ld	(udev+2),a
+
+	; get CLI name
+
+	ld	de,20
+	ld	bc,aopt6	; 'System device'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	ld	de,new+AF.CLI
+	ld	b,6
+	call	SKIPBL
+	or	a
+	jr	z,add8		; if response is empty, use default
+add7:	ld	a,(hl)
+	or	a
+	jr	z,add9
+	call	VALID		; validate name
+	ret	c
+	ld	(de),a		; set CLI name
+	inc	hl
+	inc	de
+	djnz	add7
+	jr	add9
+
+add8:	ld	hl,mcrtdb
+	ld	bc,3
+	ldir			; default to MCR
+
+add9:	; get options:
+
+	; disabled account?
+
+	ld	de,20
+	ld	bc,aopt7	; 'Locked account?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.LCK
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+	; silent login?
+
+	ld	de,20
+	ld	bc,aopt8	; 'Silent login?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.SIL
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+	; slave terminal?
+
+	ld	de,20
+	ld	bc,aopt9	; 'Slave terminal?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.SLV
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+	; disable remote login?
+
+	ld	de,20
+	ld	bc,aopt10	; 'Disable remote login?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.RLD
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+	; Try to find a deleted slot
+	; TODO: Also check for duplicate user name and/or UIC
+	;  (should check for duplicate above, right after user name
+	;   and UIC are entered)
+
+	call	AFRWND		; rewind account file
+
+find:	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	jr	nc,check
+	cp	E.EOF
+	jr	z,found
+	scf
+	ret
+
+check:	call	AFCHK		; deleted record?
+	jr	nz,find		; skip if not
+
+found:	ld	bc,(fpos)
+	ld	de,(fpos+2)
+	call	AFSEEK		; seek to saved position
+	call	AFWRIT		; save new record
+
+	; create user directory
+
+	ld	de,cmdbuf
+	ld	hl,ucmd1	; 'UFD '
+	call	STRCPY
+	call	CPDEVN		; copy system device name and unit
+	inc	hl
+	call	STRCPY		; ':['
+	call	CPNAME		; copy user (directory) name
+	inc	hl
+	call	STRCPY		; ']/OWNER=['
+	ex	de,hl
+	ld	a,(new+AF.GRP)
+	call	CVTBD
+	ex	de,hl
+	inc	hl
+	call	STRCPY		; ','
+	ex	de,hl
+	ld	a,(new+AF.USR)
+	call	CVTBD
+	ex	de,hl
+	inc	hl
+	call	STRCPY		; ']'
+	ld	a,CR
+	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a
+	call	SNDMCR		; execute command
+	ex	de,hl
+	ld	hl,0
+	jp	c,SYSERR
+	ld	a,e
+	cp	EX.SEV
+	ld	hl,errd1
+	jp	z,ERROR
+	ret
+
+aopt1:	db	CR,LF,'Enter name (max. 9 chars): ',0
+aopt2:	db	CR,LF,'Enter account (group,user): ',0
+aopt3:	db	CR,LF,'Full name (max. 30 chars): ',0
+aopt4:	db	CR,LF,'Password (max. 16 chars): ',0
+aopt5:	db	CR,LF,'Default system device (DDU): ',0
+aopt6:	db	CR,LF,'Enter user CLI (default=MCR): ',0
+aopt7:	db	CR,LF,'Locked account? [Y/N]: ',0
+aopt8:	db	CR,LF,'Silent login? [Y/N]: ',0
+aopt9:	db	CR,LF,'Slave terminal? [Y/N]: ',0
+aopt10:	db	CR,LF,'Disable remote login? [Y/N]: ',0
+
+errex:	db	'Account already exists',0
+
+ucmd1:	db	'UFD ',0,':[',0,']/OWNER=[',0,',',0,']',0
+
+;-----------------------------------------------------------------------
+
+; Delete account
+
+del:	call	GETNAM		; get account or user name
+	ret	c
+	call	CRLF
+	call	CRLF
+
+	; search for entry
+
+	call	AFRWND		; rewind account file
+del1:	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	ret	c
+    if 1
+	ld	a,b
+	or	c
+	ret	z
+    endif
+	call	AFCHK		; deleted record?
+	jr	z,del1		; skip if yes
+
+	ld	a,(mode)	; check search mode
+	cp	2
+	jr	z,del3		; search by UIC
+	ld	hl,rec+AF.UNAM	; else search by user name
+	ld	de,uname
+	ld	b,9
+del2:	ld	a,(de)
+	cp	(hl)
+	jr	nz,del1
+	inc	hl
+	inc	de
+	djnz	del2
+	jr	del4		; found
+
+del3:	ld	hl,(rec+AF.USR)
+	ld	de,(uic)
+	call	CPHLDE
+	jr	nz,del1
+
+del4:	; entry found
+
+	call	LSTREC		; display record details
+	ld	de,20
+	ld	bc,dopt1	; 'This entry?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	cp	'Y'		; require explicit 'Y'
+	ret	nz
+
+	ld	hl,rec+AF.UNAM
+	ld	de,uname
+	ld	bc,9
+	ldir			; copy user name in case of UIC search
+
+	ld	hl,rec+AF.SYD
+	ld	de,udev
+	ld	bc,3
+	ldir			; copy system device
+
+	; seek file back to selected entry
+
+	ld	bc,(fpos)
+	ld	de,(fpos+2)
+	call	AFSEEK		; seek to saved position
+
+	; delete entry (fill with all nulls)
+
+	ld	hl,new
+	ld	bc,AFSZ
+	call	CLRMEM		; clear record
+	call	AFWRIT		; write deleted record
+
+	ld	de,20
+	ld	bc,dopt2	; 'Delete UFD and files?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	cp	'Y'		; require explicit 'Y'
+	ret	nz
+
+	; delete all user files
+
+	ld	de,cmdbuf
+	ld	hl,dcmd1	; 'PIP '
+	call	STRCPY
+	call	CPDEVN		; copy system device name and unit
+	inc	hl
+	call	STRCPY		; ':['
+	call	CPNAME		; copy user (directory) name
+	inc	hl
+	call	STRCPY		; ']*.*;*/DE'
+	ld	a,CR
+	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a
+	call	SNDMCR		; execute command
+	ex	de,hl
+	ld	hl,0
+	jp	c,SYSERR
+	ld	a,e
+	cp	EX.SEV
+	ld	hl,errd1
+	jp	z,ERROR
+
+	; delete user directory
+
+	ld	de,cmdbuf
+	ld	hl,dcmd2	; 'PIP '
+	call	STRCPY
+	call	CPDEVN		; copy system device name and unit
+	inc	hl
+	call	STRCPY		; ':[MASTER]'
+	call	CPNAME		; copy user (directory) name
+	inc	hl
+	call	STRCPY		; '.DIR;*/DE'
+	ld	a,CR
+	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a
+	call	SNDMCR		; execute command
+	ex	de,hl
+	ld	hl,0
+	jp	c,SYSERR
+	ld	a,e
+	cp	EX.SEV
+	ld	hl,errd1
+	jp	z,ERROR
+
+;   search disk for files belonging to user and delete them?
+;   PIP ddn:[*]*.*;*/OW:[grp,usr]/DE
+
+	ret
+
+dopt1:	db	CR,LF,'This entry? [Y/N]: ',0
+dopt2:	db	CR,LF,'Delete UFD and files? [Y/N]: ',0
+
+dcmd1:	db	'PIP ',0,':[',0,']*.*;*/DE',0
+dcmd2:	db	'PIP ',0,':[MASTER]',0,'.DIR;*/DE',0
+
+errd1:	db	'Command failed',0
+
+STRCPY:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	(de),a
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+CPDEVN:	push	hl
+	ld	hl,udev
+	ld	a,(hl)		; copy system device name
+	ld	(de),a
+	inc	hl
+	inc	de
+	ld	a,(hl)
+	ld	(de),a
+	inc	hl
+	inc	de
+	ld	a,(hl)
+	ex	de,hl
+	call	CVTBD		; copy unit number
+	ex	de,hl
+	pop	hl
+	ret
+
+CPNAME:	push	hl
+	ld	hl,uname
+	ld	b,9
+cpun1:	ld	a,(hl)
+	or	a
+	jr	z,cpun2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	cpun1
+cpun2:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Examine user record
+
+exam:	call	GETNAM		; get account or user name
+	ret	c
+	jp	dlist		; continue via detailed-list code
+
+GETNAM:	ld	a,2
+	ld	(mode),a	; default to UIC mode
+	ld	de,12
+	ld	bc,gtnam	; 'Account or name?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	scf
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	push	hl
+	call	GETUIC		; read UIC
+	ld	(uic),de
+	pop	hl
+	ret	nc		; return if valid UIC
+	push	hl
+	ld	hl,uname	; else try user name
+	push	hl
+	ld	bc,9
+	call	CLRMEM
+	pop	de
+	pop	hl
+	ld	b,9
+	call	SKIPBL
+	or	a
+	scf			; error if name is empty
+	ret	z
+gtn1:	ld	a,(hl)
+	or	a
+	jr	z,gtn2
+	call	VALID		; validate name
+	ret	c
+	ld	(de),a		; set name
+	inc	hl
+	inc	de
+	djnz	gtn1
+gtn2:	ld	a,3
+	ld	(mode),a	; user name mode
+	ret
+
+gtnam:	db	CR,LF,'Enter account or name: ',0
+
+;-----------------------------------------------------------------------
+
+; List account(s)
+
+list:	xor	a
+	ld	(mode),a	; all accounts by default
+	ld	de,12
+	ld	bc,lopt1	; 'All accounts?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	cp	'N'
+	jr	nz,list1
+	ld	a,1
+	ld	(mode),a	; group accounts
+
+	ld	de,12
+	ld	bc,lopt2	; 'Enter group number'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	GETNUM
+	ret	c
+	ld	a,d
+	or	a
+	ret	nz
+	ld	a,e
+	ld	(uic+1),a	; set group
+
+list1:	ld	de,12
+	ld	bc,lopt4	; 'Summary or Detailed?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	cp	'D'
+	jp	z,dlist
+	cp	'S'
+	jp	z,slist
+	jr	list
+
+slist:	call	CRLF
+	call	CRLF
+	ld	hl,sumhdr
+	xor	a
+	ld	(col),a		; reset column
+sl1:	call	PUTSC		; display string
+	inc	hl
+	ld	a,(hl)
+	or	a
+	jr	z,sl2
+	ld	b,a
+	call	TABTO
+	inc	hl
+	jr	sl1
+sl2:	call	CRLF
+	call	AFRWND		; rewind account file
+sloop:	call	AFREAD		; read user acount record
+	ret	c
+    if 1
+	ld	a,b
+	or	c
+	ret	z
+    endif
+	call	AFCHK		; deleted record?
+	jr	z,sloop		; skip if yes
+
+	ld	a,(mode)
+	or	a
+	jr	z,sl4
+	ld	hl,rec+AF.GRP
+	ld	a,(uic+1)
+	cp	(hl)		; same group?
+	jr	nz,sloop	; skip if not
+
+sl4:	xor	a
+	ld	(col),a
+	ld	c,LF
+	call	PUTCH
+	ld	hl,rec+AF.UNAM
+	ld	b,9
+	call	PRNAME
+
+	ld	b,11
+	call	TABTO
+	ld	de,(rec+AF.USR)	; get UIC
+	ld	a,d
+	call	PAD
+	call	PRTUIC
+	ld	a,e
+	call	PAD
+	ld	a,(col)
+	add	a,9
+	ld	(col),a
+
+	ld	b,22
+	call	TABTO
+	ld	hl,rec+AF.NAME	; full name
+	ld	b,32
+	call	PRNAME
+
+	ld	b,56
+	call	TABTO
+	ld	ix,rec+AF.LDT	; last succesful login
+	call	PRTDT
+
+	ld	c,CR
+	call	PUTCH
+	jp	sloop
+
+PAD:	cp	100
+	ret	nc
+	call	pad1
+	cp	10
+	ret	nc
+pad1:	push	af
+	ld	c,' '
+	call	PUTCH
+	pop	af
+	ret
+
+sumhdr:	db	'User name',0
+	db	14,'UIC',0
+	db	22,'Full name',0
+	db	61,'Last login',0
+	db	0
+
+dlist:	call	CRLF
+	call	CRLF
+	call	AFRWND		; rewind account file
+dloop:	call	AFREAD		; read user acount record
+	ret	c
+    if 1
+	ld	a,b
+	or	c
+	ret	z
+    endif
+	call	AFCHK		; deleted record?
+	jr	z,dloop		; skip if yes
+
+	ld	a,(mode)
+	or	a
+	jr	z,dl1		; all acounts
+	dec	a
+	jr	z,dl2		; search by group
+	dec	a
+	jr	z,dl3		; search by UIC
+	ld	hl,rec+AF.UNAM	; search by user name
+	ld	de,uname
+	ld	b,9
+dl4:	ld	a,(de)
+	cp	(hl)
+	jr	nz,dloop
+	inc	hl
+	inc	de
+	djnz	dl4
+	jr	dl1
+
+dl3:	ld	hl,(rec+AF.USR)
+	ld	de,(uic)
+	call	CPHLDE
+	jr	nz,dloop
+	jr	dl1
+
+dl2:	ld	hl,rec+AF.GRP
+	ld	a,(uic+1)
+	cp	(hl)		; same group?
+	jr	nz,dloop	; skip if not
+
+dl1:	call	LSTREC		; display record details
+	jp	dloop
+
+lopt1:	db	CR,LF,'All accounts? [Y/N]: ',0
+lopt2:	db	CR,LF,'Enter group number (N): ',0
+lopt3:	db	CR,LF,'Enter T - Terminal or F - File: ',0
+lopt4:	db	CR,LF,'Enter S - Summary or D - Detailed: ',0
+
+; List single record in detailed format
+
+LSTREC:	ld	hl,unmsg	; user name
+	call	PRTLAB
+	ld	hl,rec+AF.UNAM
+	ld	b,9
+	call	PRNAME
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,fnmsg	; full name
+	call	PRTLAB
+	ld	hl,rec+AF.NAME
+	ld	b,32
+	call	PRNAME
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,uicmsg	; UIC
+	call	PRTLAB
+	ld	de,(rec+AF.USR)	; get UIC
+	call	PRTUIC
+	ld	c,CR
+	call	PUTCH
+    
+	ld	hl,ldmsg	; login device
+	call	PRTLAB
+	ld	hl,rec+AF.SYD
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,climsg	; user CLI
+	call	PRTLAB
+	ld	hl,rec+AF.CLI
+	ld	b,3		; TODO: 6
+	call	PRNAME
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,crmsg	; account created
+	call	PRTLAB
+	ld	ix,rec+AF.CRE
+	call	PRTDT
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,exmsg	; account expires
+	call	PRTLAB
+	ld	ix,rec+AF.EXP
+	call	PRTDAT
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,llsmsg	; last succesful login
+	call	PRTLAB
+	ld	ix,rec+AF.LDT
+	call	PRTDT
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,llamsg	; last login attempt
+	call	PRTLAB
+	ld	ix,rec+AF.LLA
+	call	PRTDT
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,tslmsg	; total logins
+	call	PRTLAB
+	ld	hl,(rec+AF.LGNS)
+	xor	a		; no filler
+	call	HLDEC
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,tflmsg	; login failures
+	call	PRTLAB
+	ld	hl,(rec+AF.FAIL)
+	xor	a		; no filler
+	call	HLDEC
+	ld	c,CR
+	call	PUTCH
+
+	ld	hl,optmsg	; account options
+	call	PRTLAB
+	ld	de,(rec+AF.OPT)
+	call	PRTOPT
+	ld	c,CR
+	call	PUTCH
+
+  IF 0
+	ld	hl,mpmsg	; MD5 password
+	call	PRTLAB
+	ld	hl,rec+AF.PWD
+	ld	b,16
+pw1:	ld	a,(hl)
+	call	AHEX
+	inc	hl
+	djnz	pw1
+	ld	c,CR
+	call	PUTCH
+  ENDIF
+	ld	c,LF		; extra line after record
+	jp	PUTCH
+
+uicmsg:	db	'UIC',0
+unmsg:	db	'User name',0
+fnmsg:	db	'Full name',0
+ldmsg:	db	'Login device',0
+crmsg:	db	'Account created',0
+exmsg:	db	'Account expires',0
+llsmsg:	db	'Last succesful login',0
+llamsg:	db	'Last unsuccessful attempt',0
+TABPOS	equ	$-llamsg-1+2	; tab past the longest string
+tslmsg:	db	'Total logins',0
+tflmsg:	db	'Login failures',0
+fpmsg:	db	'Default file prot',0
+climsg:	db	'User CLI',0
+  IF 0
+mpmsg:	db	'MD5 password',0
+  ENDIF
+optmsg:	db	'Account options',0
+
+; Output label and tab to info column
+
+PRTLAB:	ld	b,TABPOS
+	ld	c,LF
+	call	PUTCH
+prl1:	ld	a,(hl)
+	or	a
+	jr	z,prl2
+	ld	c,a
+	call	PUTCH
+	inc	hl
+	djnz	prl1
+	ret
+prl2:	ld	c,':'
+	call	PUTCH		; end with a colon
+	dec	b
+	ret	z
+prl3:	ld	c,' '
+	call	PUTCH
+	djnz	prl3
+	ret
+
+; Output char, keeping track of column
+
+PUTCC:	call	PUTCH
+	ld	a,(col)
+	inc	a
+	ld	(col),a
+	ret
+
+; Output string, keeping track of column
+
+PUTSC:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	c,a
+	call	PUTCC
+	inc	hl
+	jr	PUTSC
+
+; Tab to column specified in reg B
+
+TABTO:	ld	a,(col)
+	cp	b
+	ret	nc
+	ld	c,' '
+	call	PUTCC
+	jr	TABTO
+
+; Output UIC as [grp,usr]. Called with D=grp and E=usr
+
+PRTUIC:	ld	c,'['
+	call	PUTCH
+	ld	a,d
+	call	ADEC
+	ld	c,','
+	call	PUTCH
+	ld	a,e
+	call	ADEC
+	ld	c,']'
+	call	PUTCH
+	ret
+
+; Output account options. Called with DE = option word
+
+PRTOPT:	ld	a,d
+	or	e
+	ld	hl,noopt
+	jp	z,PUTSTR
+	ld	hl,optbl
+po1:	ld	a,(hl)
+	inc	hl
+	and	e
+	jr	z,po2
+	call	PUTSTR
+	inc	hl
+	ld	a,(hl)
+	or	a		; end of table?
+	ret	z
+	xor	a
+	ld	(col),a
+	call	CRLF
+	ld	b,TABPOS
+	call	TABTO
+	jr	po1
+po2:	ld	a,(hl)		; skip string
+	inc	hl
+	or	a
+	jr	nz,po2
+	ld	a,(hl)		; end of table?
+	or	a
+	jr	nz,po1
+	ret
+
+noopt:	db	'None',0
+optbl:	db	(1 SHL AO.SIL),'Silent login',0
+	db	(1 SHL AO.SLV),'Slave terminal',0
+	db	(1 SHL AO.NPW),'No password',0
+	db	(1 SHL AO.NPC),'No password change',0
+	db	(1 SHL AO.LCK),'Account disabled',0
+	db	(1 SHL AO.RLD),'Remote login disabled',0
+	db	0
+
+;-----------------------------------------------------------------------
+
+; Modify record
+
+mod:	call	GETNAM		; get account or user name
+	ret	c
+	call	CRLF
+	call	CRLF
+
+	; search for entry
+
+	call	AFRWND		; rewind account file
+mod1:	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	ret	c
+    if 1
+	ld	a,b
+	or	c
+	ret	z
+    endif
+	call	AFCHK		; deleted record?
+	jr	z,mod1		; skip if yes
+
+	ld	a,(mode)	; check search mode
+	cp	2
+	jr	z,mod3		; search by UIC
+	ld	hl,rec+AF.UNAM	; else search by user name
+	ld	de,uname
+	ld	b,9
+mod2:	ld	a,(de)
+	cp	(hl)
+	jr	nz,mod1
+	inc	hl
+	inc	de
+	djnz	mod2
+	jr	mod4		; found
+
+mod3:	ld	hl,(rec+AF.USR)
+	ld	de,(uic)
+	call	CPHLDE
+	jr	nz,mod1
+
+mod4:	; entry found
+
+	call	LSTREC		; display record details
+	ld	de,20
+	ld	bc,dopt1	; 'This entry?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	cp	'Y'		; require explicit 'Y'
+	ret	nz
+
+	ld	hl,modmsg
+	call	PUTSTR
+
+	;...do not allow changing UIC
+	;...if user name is changed, check for duplicates!
+
+	ld	hl,rec
+	ld	de,new
+	ld	bc,AFSZ
+	ldir
+
+	; get new user name
+
+	ld	de,12
+	ld	bc,aopt1	; 'Enter name'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod7		; ESC leaves entry unchanged
+	call	SKIPBL
+	or	a
+	scf
+	ret	z
+	push	hl
+	ld	hl,uname
+	push	hl
+	ld	bc,9
+	call	CLRMEM
+	pop	de
+	pop	hl
+	ld	b,9
+mod5:	ld	a,(hl)
+	or	a
+	jr	z,mod6
+	call	VALID		; validate name
+	ret	c
+	ld	(de),a		; set name
+	inc	hl
+	inc	de
+	djnz	mod5
+mod6:	ld	hl,uname
+	ld	de,new+AF.UNAM
+	ld	bc,9
+	ldir
+
+	; get new full name
+
+mod7:	ld	de,32
+	ld	bc,aopt3	; 'Full name'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod9		; ESC leaves entry unchanged
+	ld	de,new+AF.NAME
+	ld	b,32
+	call	SKIPBL
+mod8:	ld	a,(hl)
+	or	a
+	jr	z,mod9
+	ld	(de),a		; store full name or description
+	inc	hl
+	inc	de
+	djnz	mod8
+
+mod9:	; get password
+
+	ld	hl,new+AF.UNAM
+	ld	de,aopt4	; 'Password'
+	call	GETPWD
+	ret	c		; ^Z exits
+	jr	z,mod10		; ESC leaves entry unchanged
+	ld	de,new+AF.PWD
+	ld	bc,16
+	ldir			; set MD5 password
+
+mod10:	; get system device
+
+	ld	de,20
+	ld	bc,aopt5	; 'System device'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod11		; ESC leaves entry unchanged
+	call	PDN		; parse device name
+	ret	c
+	ld	(new+AF.SYD),de	; TODO: convert to physical name and
+	ld	(udev),de
+	ld	a,c		;  emit warning if device does not exist
+	ld	(new+AF.SYD+2),a
+	ld	(udev+2),a
+
+mod11:	; get CLI name
+
+	ld	de,20
+	ld	bc,aopt6	; 'System device'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod14		; ESC leaves entry unchanged
+	ld	de,new+AF.CLI
+	ld	b,6
+	call	SKIPBL
+	or	a
+	jr	z,mod13		; if response is empty, use default
+mod12:	ld	a,(hl)
+	or	a
+	jr	z,mod14
+	call	VALID		; validate name
+	ret	c
+	ld	(de),a		; set CLI name
+	inc	hl
+	inc	de
+	djnz	mod12
+	jr	mod14
+
+mod13:	ld	hl,mcrtdb
+	ld	bc,3
+	ldir			; default to MCR
+
+mod14:	; get options:
+
+	; disabled account?
+
+	ld	de,20
+	ld	bc,aopt7	; 'Locked account?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod15		; ESC leaves entry unchanged
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.LCK
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+mod15:	; silent login?
+
+	ld	de,20
+	ld	bc,aopt8	; 'Silent login?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod16		; ESC leaves entry unchanged
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.SIL
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+mod16:	; slave terminal?
+
+	ld	de,20
+	ld	bc,aopt9	; 'Slave terminal?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod17		; ESC leaves entry unchanged
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.SLV
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+mod17:	; disable remote login?
+
+	ld	de,20
+	ld	bc,aopt10	; 'Disable remote login?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	jr	z,mod18		; ESC leaves entry unchanged
+	call	SKIPBL
+	call	UCASE
+	sub	'Y'		; require explicit 'Y'
+	sub	1
+	sbc	a,a
+	and	1 SHL AO.RLD
+	ld	hl,new+AF.OPT
+	or	(hl)
+	ld	(hl),a
+
+mod18:	; update record
+
+	ld	bc,(fpos)
+	ld	de,(fpos+2)
+	call	AFSEEK		; seek to saved position
+	call	AFWRIT		; save new record
+	ret
+
+modmsg:	db	CR,LF,LF,'Type <ESC> to leave entry unchanged, '
+	db	'^Z to abort operation',0
+
+;-----------------------------------------------------------------------
+
+; Sort account file
+
+sort:	ld	de,12
+	ld	bc,sopt1	; 'by UIC or by Name?'
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	call	SKIPBL
+	call	UCASE
+	ld	(mode),a
+	cp	'U'
+	jr	z,sort1
+	cp	'N'
+	jr	nz,sort
+
+sort1:	call	FREALL		; erase any old data
+
+	; read records and build table
+
+	call	AFRWND		; rewind account file
+	ld	hl,0
+	ld	(nrec),hl
+sort2:	ld	bc,4+2+9
+	call	ALLOC		; alloc table record
+	ret	c		; on error return
+sort6:	push	hl
+	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	pop	hl
+	jr	c,sort3
+    if 1
+	ld	a,b
+	or	c
+	jr	z,sort4
+    endif
+	call	AFCHK		; deleted entry?
+	jr	z,sort6		; skip if yes
+
+	ld	bc,(fpos)
+	ld	de,(fpos+2)
+	ld	(hl),c		; store file position
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	de,(rec+AF.USR)
+	ld	(hl),e		; store UIC
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	de,rec+AF.UNAM
+	ex	de,hl
+	ld	bc,9
+	ldir			; store user name
+	ld	hl,(nrec)
+	inc	hl
+	ld	(nrec),hl
+	jr	sort2
+
+sort3:	cp	E.EOF
+	scf
+	ret	nz
+
+sort4:	ld	hl,(nrec)
+	ld	a,h
+	or	l
+	ret	z		; account file empty, nothing to sort
+	dec	hl
+	ld	a,h
+	or	l
+	ret	z		; only one record, nothing to sort
+	inc	hl
+	add	hl,hl
+	ld	c,l
+	ld	b,h
+	call	ALLOC		; allocate table of pointers
+	ret	c		; on error return
+	ld	(ptbl),hl
+	ld	bc,(nrec)
+	ld	de,($MEMRY)
+sort5:	ld	(hl),e		; store pointer
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	push	bc
+	ex	de,hl
+	ld	bc,4+2+9
+	add	hl,bc
+	ex	de,hl
+	pop	bc
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,sort5
+	inc	a
+	ld	(sorted),a
+
+	; sort the pointers using a simple bubble sort
+
+	ld	bc,(nrec)
+sort7:	dec	bc
+	ld	a,b
+	or	c
+	ret	z		; only one left, return
+	push	bc
+	inc	bc
+	xor	a
+	ld	(swpflg),a	; clear swap flag
+	ld	hl,(ptbl)	; get addr of first element into HL
+sort8:	ld	e,(hl)		; get first pointer
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl		; save pointer
+	ld	a,(hl)		; get second pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	dec	bc
+	ld	a,b
+	or	c
+	jp	z,sort10		; end of this pass
+	push	bc
+
+	push	hl		; save second pointer
+	push	de		; save first pointer
+
+	call	CMPREC		; else compare records
+	jr	c,sort9
+
+	; 1st > 2nd, swap pointers
+
+	pop	de		; pop first pointer into DE
+	pop	bc		; pop second pointer into BC
+	pop	hl
+	ex	(sp),hl		; get reference pointer
+	dec	hl		; drop back to first pointer
+	dec	hl
+	ld	(hl),c		; and store second pointer there
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	(hl),e		; store first pointer
+	inc	hl
+	ld	(hl),d
+	dec	hl		; restore ref pointer
+	xor	a
+	ld	(sorted),a
+	inc	a
+	ld	(swpflg),a	; set the swap flag
+	pop	bc
+	jp	sort8		; and round again
+
+	; 2nd >= 1st, no swap required
+
+sort9:	pop	de		; pop first pointer
+	pop	hl		; pop second pointer
+	pop	bc		; get counter
+	pop	hl		; get ref pointer
+	jp	sort8
+
+sort10:	pop	hl
+	pop	bc
+	ld	a,(swpflg)
+	or	a
+	jp	nz,sort7
+	
+	; sort in memory done, now rearrange the file records
+
+	ld	a,(sorted)
+	or	a
+	ld	hl,smsg1
+	jp	nz,ERROR	; return if file already sorted
+
+	; sort in memory done, now create and write new file
+
+	call	TMPCRE
+	ret	c
+
+	ld	hl,(ptbl)
+	ld	bc,(nrec)
+sort11:	push	bc
+	ld	e,(hl)		; get pointer to table item
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl
+	ex	de,hl
+	ld	c,(hl)		; get file position
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	call	AFSEEK		; seek source file
+	jr	c,sort12
+	call	AFREAD		; read record
+	jr	c,sort12
+	call	TMPWRT		; store in temporary file
+	jr	c,sort12
+	pop	hl
+	pop	bc
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,sort11	; loop until all records copied
+
+	call	TMPCLS		; close temporary file
+	ret	c
+	call	AFCLSE		; close old account file
+	call	AFOPEN		; open the new file
+	ret	c		; an error here is fatal
+	ld	hl,mspfx
+	call	PUTSTR
+	ld	hl,smsg2
+	call	PUTSTR
+	ld	a,(mode)
+	ld	hl,smsg21
+	cp	'N'
+	jr	z,sort15
+	ld	hl,smsg22
+sort15:	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+sort12:	pop	hl
+	pop	bc
+	call	TMPCLS		; error: close temporary file
+				; TODO: delete it!
+	ret
+
+sopt1:	db	CR,LF,'Enter U - Sort by UIC or N - Sort by Name: ',0
+
+smsg1:	db	'File already sorted',0
+smsg2:	db	'File now sorted by ',0
+smsg21:	db	'user name',0
+smsg22:	db	'UIC',0
+
+; Compare records according to option
+
+CMPREC:	ld	a,(mode)
+	cp	'N'
+	jr	z,cr1
+	call	CMPUIC
+	ret	nz
+	jp	CMPNAM
+cr1:	call	CMPNAM
+	ret	nz
+CMPUIC:	push	hl
+	push	de
+	ld	bc,4+1
+	add	hl,bc		; skip file pos
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	a,(de)		; first group ID
+	cp	(hl)
+	dec	hl
+	dec	de
+	jr	nz,cmp1
+	ld	a,(de)		; then user ID
+	cp	(hl)
+cmp1:	pop	de
+	pop	hl
+	ret
+
+CMPNAM:	push	hl
+	push	de
+	ld	bc,4+2
+	add	hl,bc		; skip file pos and UIC
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	b,9
+cmpn1:	ld	a,(de)
+	cp	(hl)
+	jr	nz,cmpn2
+	inc	hl
+	inc	de
+	djnz	cmpn1
+cmpn2:	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Change current user's password. The Login control block has been
+; already loaded into lcbbuf by the CHKPRV routine.
+
+PASWD:	ld	hl,header
+	call	PUTSTR		; display heading
+	call	TTFLSH
+
+	call	AFOPEN		; open account file
+	jp	c,abort
+
+	; search for entry
+
+	call	AFRWND		; rewind account file
+pwd1:	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	jp	c,perr
+    if 1
+	ld	a,b
+	or	c
+	jp	z,punkn
+    endif
+	call	AFCHK		; deleted record?
+	jr	z,pwd1		; skip if yes
+
+	ld	hl,rec+AF.UNAM	; search by user name
+	ld	de,lcbbuf+L.NAME
+	ld	b,9
+pwd2:	ld	a,(de)
+	cp	' '
+	jr	nz,pwd4
+	xor	a
+pwd4:	cp	(hl)
+	jr	nz,pwd1
+	inc	hl
+	inc	de
+	djnz	pwd2
+
+	; entry found
+
+	ld	hl,mspwd1
+	call	PUTSTR		; 'Changing password for user'
+	ld	hl,rec+AF.UNAM
+	ld	b,9
+	call	PRNAME		; output user name
+	ld	c,CR
+	call	PUTCH
+
+	; ask for old password
+
+	ld	hl,rec+AF.UNAM
+	ld	de,mspwd2	; 'Current password'
+	call	GETPWD
+	jp	c,pcanc		; ^Z exits
+	jp	z,pcanc		; ESC cancels operation
+
+	ld	de,rec+AF.PWD
+	ld	b,16
+pwd3:	ld	a,(de)		; validate password
+	cp	(hl)
+	jr	nz,pwbad
+	inc	hl
+	inc	de
+	djnz	pwd3
+
+	; ask for new password
+
+	ld	hl,rec+AF.UNAM
+	ld	de,mspwd3	; 'Current password'
+	call	GETPWD
+	jp	c,pcanc		; ^Z exits
+	jp	z,pcanc		; ESC cancels operation
+
+	; seek file back to selected entry
+
+	push	hl
+	ld	bc,(fpos)
+	ld	de,(fpos+2)
+	call	AFSEEK		; seek to saved position
+
+	ld	hl,rec
+	ld	de,new
+	ld	bc,AFSZ
+	ldir
+	pop	hl
+	ld	de,new+AF.PWD
+	ld	bc,16
+	ldir			; replace old password with new
+
+	call	AFWRIT		; update the record
+	jp	c,abort
+	jp	exit		; close file and exit
+
+perr:	ld	hl,0
+	call	SYSERR
+	jp	abort
+
+punkn:	ld	hl,mspwd5
+	call	ERROR
+	jp	abort
+
+pwbad:	ld	hl,mspwd6
+	call	ERROR
+	jp	abort
+
+pcanc:	ld	c,CR
+	call	PUTCH
+	ld	a,E.ABOP
+	call	SYSERR
+	jp	abort
+
+mspwd1:	db	CR,LF,'Changing password for user ',0
+mspwd2:	db	CR,LF,'Current password: ',0
+mspwd3:	db	CR,LF,'New password (max 16 chars): ',0
+mspwd4:	db	'Password successfully changed',0
+mspwd5:	db	'Invalid account',0
+mspwd6:	db	'Invalid password',0
+
+;-----------------------------------------------------------------------
+
+; Exit
+
+exit:	call	AFCLSE
+	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+abort:	call	AFCLSE
+	call	TTFLSH
+	ld	hl,EX.SEV
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Error output routines
+
+SYSERR:	push	af
+	push	hl
+	ld	hl,mspfx
+	call	PUTSTR
+	pop	hl
+	ld	a,h
+	or	l
+	call	nz,PUTSTR
+	pop	af
+	push	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	pop	af
+	ret
+
+ERROR:	push	af
+	push	hl
+	ld	hl,mspfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	pop	af
+	ret
+
+mspfx:	db	LF,'ACNT -- ',0
+
+;-----------------------------------------------------------------------
+
+; Get user response. Called with optional prompt string in BC, length
+; in E and echo-suppress flag in D.
+; Returns CY set if terminated with ^Z, Z if terminated with <ESC>
+
+GETLIN:	ld	hl,buf
+	call	GETLN		; note: preserves HL
+	ret	c
+	ld	a,b
+	or	c
+	ret	z
+	push	hl
+	add	hl,bc
+	dec	hl
+	ld	a,(hl)		; get terminator
+	ld	(hl),0		; replace with null
+	pop	hl
+	cp	ESC
+	ret	z
+	or	a
+	ret
+
+; Get password. Called with optional prompt string address in DE and
+; pointer to user name buffer in HL. Returns CY set if input was
+; terminated with ^Z, Z if terminated with <ESC>. Else returns the
+; MD5 password hash address in HL.
+
+GETPWD:	push	de
+	push	hl
+	ld	hl,pwbuf
+	ld	bc,9+16
+	call	CLRMEM		; clear password buffer
+	pop	hl
+	ld	de,pwbuf
+	ld	bc,9
+	ldir			; copy user name to password buffer
+	ld	e,20
+	ld	d,1		; suppress echo
+	pop	bc
+	call	GETLIN
+	ret	c		; ^Z exits
+	ret	z		; ESC cancels operation
+	ld	de,pwbuf+9
+	ld	b,16
+	call	SKIPBL
+gpw1:	ld	a,(hl)
+	or	a
+	jr	z,gpw2
+	ld	(de),a		; append password to buffer
+	inc	hl
+	inc	de
+	djnz	gpw1
+gpw2:	call	MD5INI
+	ld	hl,pwbuf
+	ld	e,9+16
+	call	MD5END
+	push	hl
+	ld	hl,pwbuf
+	ld	bc,9+16
+	call	CLRMEM		; erase all traces of ASCII password
+	ld	hl,buf
+	ld	bc,20
+	call	CLRMEM
+	pop	hl
+	or	0FFh
+	ret
+
+; Output name. HL points to string, length in B.
+
+PRNAME:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	c,a
+	call	PUTCC		; keep track of column
+	inc	hl
+	djnz	PRNAME
+	ret
+
+; Output current date and time.
+
+PRTDT:	call	PRTDAT
+	ret	c
+	ld	c,' '
+	call	PUTCH
+	call	PUTCH
+	call	PRTTIM
+	ret
+
+PRTDAT:	ld	a,(ix+0)	; do not display null dates
+	or	(ix+1)
+	scf
+	ret	z
+	ld	a,(ix+3)	; day
+	call	AHEX
+	ld	a,(ix+2)	; month
+	call	BCD2BIN
+	dec	a
+	jp	m,prd1
+	cp	12
+	jr	c,prd2
+prd1:	ld	a,0
+prd2:	ld	l,a
+	ld	h,0
+	add	hl,hl
+	add	hl,hl		; *4
+	ld	de,month
+	add	hl,de
+	ld	b,5
+	call	PRNAME
+	ld	a,(ix+0)	; year
+	call	AHEX
+	ld	a,(ix+1)
+	call	AHEX
+	xor	a
+	ret
+
+PRTTIM:	ld	a,(ix+4)	; hour
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	ld	a,(ix+5)	; min
+	call	AHEX
+	ld	c,':'
+	call	PUTCH
+	ld	a,(ix+6)	; sec
+	call	AHEX
+	ret
+
+month:	db	'-Jan-Feb-Mar-Apr-May-Jun-Jul-Aug-Sep-Oct-Nov-Dec-'
+
+; Convert decimal ASCII value to binary. HL points to string.
+; Returns result in DE.
+
+GETNUM:	ld	de,0
+gn1:	ld	a,(hl)		; get char
+	or	a
+	ret	z
+	call	isnum
+	ret	c		; error if not numeric
+	push	bc
+	ex	de,hl
+	call	adddig		; else add digit
+	ex	de,hl
+	pop	bc
+	ret	c
+	inc	hl
+	jr	gn1
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	sub	'0'
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+VALID:	call	UCASE
+	call	isletr
+	ret	nc
+	call	isnum
+	ret	nc
+	cp	'_'
+	ret	z
+	cp	'@'
+	ret	z
+	scf
+	ret
+
+isnum:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+isletr:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+; Skip blanks
+
+skp:	inc	hl
+SKIPBL:	ld	a,(hl)
+	cp	' '
+	jr	z,skp
+	cp	TAB
+	jr	z,skp
+	ret
+
+; Get UIC from input string
+
+GETUIC:	call	SKIPBL
+	ld	c,a
+	cp	'['
+	jr	nz,gtu1
+	inc	hl
+	call	SKIPBL
+gtu1:	call	GETNUM		; get group ID
+	ld	a,d
+	or	a
+	ld	d,e		; into D
+	scf
+	ret	nz		; error if > 255
+	call	SKIPBL
+	cp	','		; comma must follow
+	scf
+	ret	nz
+	inc	hl
+	call	SKIPBL
+	push	de
+	call	GETNUM		; get user ID
+	ld	a,d
+	or	a
+	ld	a,e
+	pop	de
+	ld	e,a		; into E
+	scf
+	ret	nz		; error if > 255
+	ld	a,c
+	cp	'['
+	jr	z,gtu2
+	xor	a
+	ret
+gtu2:	call	SKIPBL
+	cp	']'
+	ret	z
+	scf
+	ret
+
+; Clear memory region. HL = address, BC = length
+
+CLRMEM:	ld	a,b
+	or	c
+	ret	z		; return if nothing to erase
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	(hl),0
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z		; return if len = 1 byte (already cleared)
+	ldir
+	ret
+
+;-----------------------------------------------------------------------
+
+; Account file I/O routines
+
+; Open or create account file
+
+AFOPEN:	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	ld	(fdb1+F.ATTR),a
+	ld	hl,0
+	ld	(fdb1+F.VER),hl
+	ld	b,AFLUN
+	ld	de,(fdb1+F.DEV)
+	ld	a,(fdb1+F.UNIT)
+	ld	c,a
+	SC	.ALUN		; assign LUN
+	ld	hl,errms1
+	jp	c,SYSERR
+	ld	hl,qio2
+	SC	.QIO		; open file
+	ld	hl,errms1
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	ret	z		; on success return
+	cp	E.FNF		; file exists?
+	ld	hl,errms1
+	scf
+	jp	nz,SYSERR	; yes, display error and return
+
+	ld	hl,qio1
+	SC	.QIO		; else create file
+	ld	hl,errms2
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,SYSERR
+	ld	hl,msgcre
+	call	ERROR		; notification, not an error
+	xor	a		;  thus, return success
+	ret
+
+errms1:	db	'Failed to open account file: ',0
+errms2:	db	'Failed to create account file: ',0
+msgcre:	db	'Account file created',0
+
+; Rewind account file
+
+AFRWND:	ld	hl,0
+	ld	(blkno),hl
+	ld	(offs),hl
+	xor	a
+	ret
+
+; Return current file position
+
+AFPOS:	ld	de,(blkno)
+	ld	bc,(offs)
+	ret
+
+; Seek account file
+
+AFSEEK:	ld	(blkno),de
+	ld	(offs),bc
+	ret
+
+; Read record from account file
+
+AFREAD:	ld	hl,(blkno)
+	ld	(qio3+Q.BLK),hl
+	ld	hl,(offs)
+	ld	(qio3+Q.OFS),hl
+	ld	hl,qio3
+	SC	.QIO
+	ld	hl,rderr
+	jp	c,SYSERR
+	ld	bc,(iosb+2)
+	ld	a,(iosb)
+	or	a
+	jr	z,nxtrec
+	cp	E.EOF
+	scf
+	jr	z,nxtrec
+	ld	hl,rderr
+	jp	SYSERR
+
+nxtrec:	push	af
+	ld	hl,(offs)	; advance file pointers
+	ld	de,AFSZ
+	add	hl,de
+	ld	(offs),hl
+	ld	de,512
+	or	a
+	sbc	hl,de
+	jr	c,nxtr2
+	ld	(offs),hl
+	ld	hl,(blkno)
+	inc	hl
+	ld	(blkno),hl
+nxtr2:	pop	af
+	ret
+
+rderr:	db	'Account file read error: ',0
+
+; Write record to account file
+
+AFWRIT:	ld	hl,(blkno)
+	ld	(qio4+Q.BLK),hl
+	ld	hl,(offs)
+	ld	(qio4+Q.OFS),hl
+	ld	hl,qio4
+	SC	.QIO
+	ld	hl,wrerr
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jr	z,nxtrec	; advance pointers and return
+	ld	hl,wrerr
+	jp	SYSERR
+
+wrerr:	db	'Account file write error: ',0
+
+; Close account file
+
+AFCLSE:	ld	hl,qio5
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Check if the current record is deleted
+
+AFCHK:	push	hl
+	ld	hl,rec
+	ld	b,AFSZ		; note: assumes AFSZ is < 256
+	xor	a
+chk:	or	(hl)
+	inc	hl
+	djnz	chk
+	pop	hl
+	or	a
+	ret
+
+; Create new account file on TMPLUN
+
+TMPCRE:	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	ld	(fdb2+F.ATTR),a
+	ld	hl,0
+	ld	(fdb2+F.VER),hl
+	ld	b,TMPLUN
+	ld	de,(fdb2+F.DEV)
+	ld	a,(fdb2+F.UNIT)
+	ld	c,a
+	SC	.ALUN		; assign LUN
+	ld	hl,errms3
+	jp	c,SYSERR
+	ld	hl,0
+	ld	(qio7+Q.BLK),hl	; reset block pointers
+	ld	(qio7+Q.OFS),hl
+	ld	hl,qio6
+	SC	.QIO
+	ld	hl,errms2
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	jp	SYSERR
+
+errms3:	db	'Failed to create new account file: ',0
+
+; Write record to temporary account file
+
+TMPWRT:	ld	hl,qio7
+	SC	.QIO
+	ld	hl,wrerr2
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	scf
+	ld	hl,wrerr2
+	jp	nz,SYSERR
+	ld	hl,(qio7+Q.OFS)	; advance file pointers
+	ld	de,AFSZ
+	add	hl,de
+	ld	(qio7+Q.OFS),hl
+	ld	de,512
+	or	a
+	sbc	hl,de
+	jr	c,nxtr3
+	ld	(qio7+Q.OFS),hl
+	ld	hl,(qio7+Q.BLK)
+	inc	hl
+	ld	(qio7+Q.BLK),hl
+nxtr3:	xor	a
+	ret
+
+wrerr2:	db	'Temporary account file write error: ',0
+
+; Close account file
+
+TMPCLS:	ld	hl,qio8
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ld	hl,errcls
+	call	SYSERR
+	ret
+
+errcls:	db	'Error closing temporary file: ',0
+
+;-----------------------------------------------------------------------
+
+; Send command to MCR and wait until it is processed.
+; Assumes null-terminated command string has been copied to cmdbuf.
+
+SNDMCR:	call	CRLF
+	ld	hl,cmdbuf
+	ld	de,0
+echo:	ld	a,(hl)
+	or	a
+	jr	z,send
+	ld	c,a
+	call	PUTCH		; echo command
+	inc	hl
+	inc	de		; track command length
+	jr	echo
+send:	ld	(mcrtdb+TD.CML),de
+	call	TTFLSH		; flush output before starting external task
+;;	ld	(hl),ESC	;* replace with ESC
+	ld	hl,EX.SUC
+	ld	(exstat),hl	; we want status from task execution
+	ld	hl,mcrtdb
+	ld	e,3
+	ld	bc,exstat
+	SC	.RQST		; request MCR and connect
+	ret	c		; an error here is fatal
+	ld	e,3
+	SC	.STSE		; else wait for completion
+	ret	c
+	ld	hl,(exstat)	; return task status
+	ret
+
+;-----------------------------------------------------------------------
+
+; Memory allocation routines, used by the Sort function.
+
+EXTEND:	SC	.EXTSK
+	ret	c
+	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	ret	c
+	ld	hl,(gtkbuf+GT.END)
+	ld	(memtop),hl
+	ret
+
+; Allocate memory, BC = requested amount.
+; Returns HL = block address, DE = new end of allocated region.
+
+ALLOC:	ld	hl,(endptr)
+	add	hl,bc
+	inc	hl
+	ld	de,(memtop)
+	call	CPHLDE		; CY if endptr + BC >= memtop
+	jr	nc,av2
+av1:	push	hl
+	ld	hl,1024
+	call	EXTEND
+	pop	de
+	ld	hl,errmem
+	jp	c,ERROR		; not enough memory
+	ex	de,hl
+	ld	de,(memtop)
+	call	CPHLDE
+	jr	c,av1
+av2:	ld	de,(endptr)
+	dec	hl
+	ld	(endptr),hl
+	ex	de,hl		; old endptr in HL, new in DE
+	ret
+
+errmem:	db	'Not enough memory',0
+
+; Free all allocated memory
+
+FREALL:	ld	hl,($MEMRY)
+	ld	(endptr),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; See if user is privileged.
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	bit	LS.PRV,(hl)
+	ld	a,E.PRIV
+	scf
+	ret	z
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ		; buffer for task info
+lcbbuf:	ds	LCBSZ		; buffer for user account block
+
+mcrtdb:	db	'MCR...'	; task name
+	dw	cmdbuf		; address of command line
+	dw	0		; length of command line
+	db	0,0,0		; attr, user, grp (not used)
+	db	'TI',0		; terminal device and unit (not used)
+	dw	0,0		; no data to send
+
+exstat:	ds	2
+
+cmdbuf:	ds	80		; MCR command buffer
+
+fdb1:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'LB',0,'SYSTEM   ','ACNT     ','DAT'
+	dw	0
+	ds	FINFSZ-($-fdb1)
+
+fdb2:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'LB',0,'SYSTEM   ','ACNT     ','DAT'
+	dw	0
+	ds	FINFSZ-($-fdb2)
+
+qio1:	QIOW$	IO.CRE,AFLUN,3,iosb,,<fdb1,0>
+qio2:	QIOW$	<<IO.ACC OR ((SF.ACR OR SF.ACW) SHL 8)>>,AFLUN,3,iosb,,<fdb1>
+qio3:	QIOW$	IO.RVB,AFLUN,3,iosb,,<rec,AFSZ,,,>
+qio4:	QIOW$	IO.WVB,AFLUN,3,iosb,,<new,AFSZ,,,>
+qio5:	QIOW$	IO.DEA,AFLUN,3,iosb
+qio6:	QIOW$	IO.CRE,TMPLUN,3,iosb,,<fdb2,0>
+qio7:	QIOW$	IO.WVB,TMPLUN,3,iosb,,<rec,AFSZ,,,>
+qio8:	QIOW$	IO.DEA,TMPLUN,3,iosb
+iosb:	ds	4
+blkno:	ds	2
+offs:	ds	2
+
+col:	ds	1		; current output column
+uic:	ds	2		; UIC being searched
+uname:	ds	9		; user name being searched
+udev:	ds	3		; saved user system device
+mode:	ds	1		; list/sort mode
+swpflg:	ds	1		; bubble sort swap flag
+sorted:	ds	1		; true if file was already sorted
+nrec:	ds	2		; sort table record count
+ptbl:	ds	2		; address of table of ptrs for sort routine
+fpos:	ds	4		; saved account file position
+rec:	ds	AFSZ		; buffer for account file record
+new:	ds	AFSZ		; buffer for new record
+buf:	ds	32		; input string buffer
+pwbuf:	ds	9+16		; password buffer
+
+	ds	256
+stack	equ	$
+
+	public	$MEMRY
+$MEMRY:	ds	2		; use the extra memory for the sort table
+				;  (build with an appropriate increment)
+memtop:	ds	2		; current top of available memory
+endptr:	ds	2		; current end of allocated memory
+
+	end	START

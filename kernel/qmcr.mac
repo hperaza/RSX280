@@ -1,0 +1,142 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('QMCR')
+	TITLE	'RSX280 MCR command queue'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Queue command to MCR                                           ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	AST.INC
+	include	TCB.INC
+	include	QCB.INC
+
+	public	QMCR		; queue command to MCR
+
+	extrn	MCRTCB,$ALLOC,$FREE,SEND,QAST
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Queue command line to MCR.
+
+; Input:
+;   HL = buffer address
+;   DE = input size
+;   IY = terminal UCB address
+
+; Commands to MCR are not queued via T.CMD as done with normal tasks,
+; but instead added to the receive list using the following structure:
+;   +0: address of UCB of terminal
+;   +2: OCB of requester, if any, else null
+;   +4: command line chars
+
+QMCR:	ld	bc,(MCRTCB)
+	ld	a,h
+	or	l
+	scf
+	ret	z
+	push	bc
+	pop	ix
+	ld	bc,0
+QMCR1::	ld	(OCBP),bc
+	ld	(TCBCLI),ix
+	push	de
+	push	hl
+	ld	hl,QHSZ+5	; add header size + overhead bytes
+	add	hl,de
+	ld	c,l
+	ld	b,h		; BC = item size
+	call	$ALLOC		; allocate packet
+	ex	(sp),hl		; push packet start address, pop old HL
+	pop	ix		; pop packet start address into IX
+	pop	bc		; pop string length into BC
+	ret	c		; on error return
+;;	push	hl
+;;	pop	iy
+;;	ld	a,(iy+T.PRI)
+	ld	a,200
+	ld	(ix+QU.PRI),a	; store priority
+	push	hl
+	ld	hl,5
+	add	hl,bc
+	ldw	(ix+QU.SIZ),hl	; store packet size
+	push	bc
+	push	ix
+	pop	de
+	ld	hl,QU.DAT
+	add	hl,de		; point to data area
+	push	iy
+	pop	de
+	call	$UCBDN##
+	ldw	(hl),de		; store device name
+	inc	hl
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	bc,(OCBP)
+	ldw	(hl),bc		; store OCB pointer
+	inc	hl
+	inc	hl
+	ex	de,hl		; DE = dst
+	pop	bc		; BC = len
+	pop	hl		; HL = src
+	ld	a,b
+	or	c
+	jr	z,qmc1
+	ldir			; copy command line to QU.DAT
+qmc1:	ld	hl,(TCBCLI)
+	push	ix		; address of item to add already in IX
+	call	SEND		; queue packet to CLI
+	pop	ix
+	jr	c,qmc2		; jump if send failed
+	ld	ix,(TCBCLI)
+	ld	hl,0		; no args to push
+	ld	de,0		; use specified AST routine address
+	ld	c,0		; arg length
+	ld	a,AST.CL	; AST type
+	call	QAST		; queue AST
+	xor	a
+	ret
+
+qmc2:	push	af		; remember error code
+	ld	de,(ix+QU.SIZ)
+	ld	hl,QHSZ
+	add	hl,de
+	ex	de,hl		; DE = size
+	push	ix
+	pop	hl		; HL = address
+	call	$FREE		; free queue item
+	pop	af		; return error to user
+	ret
+
+	dseg
+
+OCBP:	ds	2		; OCB pointer
+TCBCLI:	ds	2		; TCB address of CLI
+
+	end

@@ -1,0 +1,166 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   TI:, LB: and SY: pseudo-devices.                                   ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	DCB.INC
+	include	ERRORS.INC
+
+	extrn	GETPKT,IODONE
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+DEVTI::	db	'TI',1
+	dw	ucbti
+	jp	initti
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+DEVLB::	db	'LB',1
+	dw	ucblb
+	jp	initlb
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+DEVSY::	db	'SY',1
+	dw	ucbsy
+	jp	initsy
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+	dseg
+
+ucbti:	dw	0		; end of list
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scbti		; pointer to status block
+	dw	0		; redirect pointer
+	db	0		; control bits
+	db	(1 SHL DV.PSE) OR (1 SHL US.RED) ; device characteristics, lo
+	db	0		; device characteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; no owner
+
+scbti:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+ucblb:	dw	0		; end of list
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scblb		; pointer to status block
+	dw	0		; redirect pointer
+	db	0		; control bits
+	db	(1 SHL DV.PSE) OR (1 SHL US.RED) ; device characteristics, lo
+	db	0		; device characteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; no owner
+
+scblb:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+ucbsy:	dw	0		; end of list
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scbsy		; pointer to status block
+	dw	0		; redirect pointer
+	db	0		; control bits
+	db	(1 SHL DV.PSE) OR (1 SHL US.RED) ; device characteristics, lo
+	db	0		; device characteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; no owner
+
+scbsy:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Initialization.
+
+initti:	ld	iy,ucbti
+	jr	init
+
+initlb:	ld	iy,ucblb
+	jr	init
+
+initsy:	ld	iy,ucbsy
+init:	res	US.BSY,(iy+U.ST)
+	ldw	hl,(iy+U.SCB)
+	push	hl
+	pop	iy
+	xor	a
+	ld	(iy+S.ST),a
+	ld	(iy+S.CPKT),a
+	ld	(iy+S.CPKT+1),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O request handling, called by the kernel with IY = UCB.
+; (should never be called since this is a pseudo-device, but just in case)
+
+ioreq:	jp	ierr		; free the packet and send error code to user
+
+;-----------------------------------------------------------------------
+
+; Timeout entry point. Not used.
+
+tmout:	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O kill point. Not used.
+
+iokill:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O request end
+
+ierr:	ld	bc,E.BADOP	; error code in BC
+	ld	de,0		; transfer count in DE
+	res	US.BSY,(iy+U.ST)
+	jp	IODONE		; store result, free packet and end operation
+
+	end

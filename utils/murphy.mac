@@ -1,0 +1,473 @@
+	TITLE	MURPHY
+
+	.Z180
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	CRLF,BCD2BIN,PUTSTR,EXIT
+
+	CSEG
+
+BEGIN:	ld	sp,stack
+
+	ld	hl,gtimbf
+	SC	.GDAT
+
+	ld	a,(gtimbf+4)	; hours
+	call	BCD2BIN
+	ld	l,a
+	ld	h,24
+	mlt	hl
+	ld	a,(gtimbf+5)	; minutes
+	call	BCD2BIN
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	ld	h,60
+	mlt	hl
+	ld	a,(gtimbf+6)	; seconds
+	ld	e,a
+	ld	d,0
+	add	hl,de
+
+	ld	a,h
+	and	7Fh
+	ld	h,a
+
+ if 0
+	ld	h,60
+	mlt	hl
+	ld	a,(ticks)
+	ld	e,a
+	ld	d,0
+	adc	hl,de
+ endif
+	ex	de,hl
+	ld	bc,NNN
+	call	DIV16
+	add	hl,hl
+	ld	de,TAB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CRLF
+	call	TXTOUT
+	ld	hl,EX.SUC
+	jp	EXIT
+
+; Output text, wrapping at word boundary if screen width is exceded
+
+TXTOUT:	ld	de,txtbuf
+	ld	b,78
+txt1:	call	addw		; add word
+	jr	z,txt2		; branch if end of text
+	jr	nc,txt1		; else loop while there is some space left
+txt2:	ld	a,b
+	cp	78
+	ret	z
+	push	hl
+	ex	de,hl
+	ld	(hl),CR		; append newline
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),0
+	ld	hl,txtbuf
+	call	PUTSTR		; output buffer
+	pop	hl
+	call	skipsp		; skip spaces
+	jr	nz,TXTOUT	; restart to output next segment
+	ret
+
+addw:	push	hl
+	push	de
+addw1:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	nz,addw2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw1
+	pop	de
+	pop	hl
+	scf
+	ret
+addw2:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	z,addw3
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw2
+	pop	de
+	pop	hl
+	scf
+	ret
+addw3:	inc	sp
+	inc	sp
+	inc	sp
+	inc	sp
+	or	a
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; DE = DE / BC, remainder in HL
+
+DIV16:	ld	hl,0
+	ld	a,16
+d0:	push	af
+	add	hl,hl
+	ex	de,hl
+	sub	a
+	add	hl,hl
+	ex	de,hl
+	adc	a,l
+	sub	c
+	ld	l,a
+	ld	a,h
+	sbc	a,b
+	ld	h,a
+	inc	de
+	jr	nc,d1
+	add	hl,bc
+	dec	de
+d1:	pop	af
+	dec	a
+	jr	nz,d0
+	ret
+
+TTE	MACRO	B,STRING
+S&B:	db	'&STRING'
+	db	0
+	ENDM
+
+TT	MACRO	B,STRING
+	TTE	%B,<STRING>
+$$	defl	$$+1
+	ENDM
+
+$$	defl	0
+
+TT $$,<Murphy''s law: If anything can go wrong, it will.>
+TT $$,<The man who can smile when things go wrong has thought of someone he can blame it on.>
+TT $$,<Crane''s law: There ain''t no such thing as a free lunch.>
+TT $$,<Matsch''s Law: It''s better to have a horrible ending that to have horrors without end.>
+TT $$,<The Golden Rule: Whoever has the gold makes the rules.>
+TT $$,<Boobs Law: You always find something the last place you look.>
+TT $$,<Meyer''s law: It is a simple task to make things complex, but a complex task to make them simple.>
+TT $$,<Shirley''s law: Most people deserve each other.>
+TT $$,<Man will occasionally stumble over the truth, but most of the time he will pick himself up and continue.>
+TT $$,<Cheops'' Law: Nothing ever gets built on schedule or within budget.>
+TT $$,<The telephone will ring when you are outside the door fumbling for your keys.>
+TT $$,<Ferguson''s Law: A crisis is when you can''t say "Let''s forget the whole thing.">
+TT $$,<Steele''s Philosophy: Everybody should believe in something... I believe I''ll have another drink.>
+TT $$,<Imbesi''s Law: In order for something to become clean, something else must become dirty.>
+TT $$,<Malek''s Law: Any simple idea will be worded in the most complicated way.>
+TT $$,<Cole''s Law: Thinly sliced cabbage.>
+TT $$,<Breda''s Rule: At any event, the people whose seats are farthest from the aisle arrive last.>
+TT $$,<Levy''s Ninth Law: Only God can make a random selection.>
+TT $$,<Jensen''s Law: Win or lose, you lose.>
+TT $$,<Marks'' Law: A fool and your money are soon partners.>
+TT $$,<Law of the Office: Important letters which contain no errors will develop errors in the mail.>
+TT $$,<Weber''s Definition: An expert is one who knows more and more about less and less until he knows nothing.>
+TT $$,<Penny''s Law: You can fool all of the people some of the time and all some of the time but you can''t fool Mom.>
+TT $$,<Telesco''s Nursing Law: All the IV''s are at the other end of the Hall.>
+TT $$,<Chisholm''s Corollary: If you explain so clearly that nobody can misunderstand, somebody will.>
+TT $$,<Doyle''s Law: No matter how many share a cab, each puts the full fare on their expense account.>
+TT $$,<Law of Life''s Highway: If everything is coming your way, you''re in the wrong lane.>
+TT $$,<Thom''s Law of Marital Bliss: The length of marriage is inversely proportional to the cost of the wedding.>
+TT $$,<Barach''s Rule: An alcoholic is a person who drinks more than his own physician.>
+TT $$,<Hawkins'' Theory: Progress consists in replacing a theory that is wrong with one more subtly wrong.>
+TT $$,<Anthony''s shop Law: Any tool dropped will roll into the least accessible corner of the workshop.>
+TT $$,<Law of Reruns: If you have watched a TV series once and watch it again, it will be a rerun.>
+TT $$,<Roger''s Law: As soon as the stewardess serves the coffee, the airliner encounters turbulence.>
+TT $$,<Parkinson''s Second Law: Expenditures rise to meet income.>
+TT $$,<Matilda''s Sub-Committee Law: If you leave the room, you''re elected.>
+TT $$,<The Pace of Progress: Society is a mule, not a car...if pressed too hard, it will throw off its rider.>
+TT $$,<Clark''s Law: The only way to discover the limits of the possible is to go beyond them into the impossible.>
+TT $$,<Murray''s Rule of Baseball: Whatever can go to New York, will.>
+TT $$,<Lavia''s Law of Tennis: A mediocre player will sink to the level of his or her opposition.>
+TT $$,<The Green Thumb Law: The life of a house plant varies inversely with its price and directly with its ugliness.>
+TT $$,<Grossman''s Lemma: Any task worth doing was worth doing yesterday.>
+TT $$,<O''Brien''s Law: Nothing is ever done for the right reasons.>
+TT $$,<Farmer''s Credo: Sow your wild oats on Saturday night, then on Sunday pray for crop failure.>
+TT $$,<Jones'' Law of TV: The only new show worth watching will be canceled.>
+TT $$,<Worker''s Law: No matter how much you do, you''ll never do enough.>
+TT $$,<Worker''s Corollary: What you don''t do is always more important than what you do do.>
+TT $$,<Rominger''s Rule for Students: The more general the title of a course, the less you learn from it.>
+TT $$,<Cheit''s Lament: If you help a friend in need he''s sure to remember you - the next time he''s in need.>
+TT $$,<Murray''s Rule of Football: Nothing is ever so bad it can''t be made worse by firing the coach.>
+TT $$,<Atwood''s Fourteenth Corollary: No books are lost by lending except those you particularly wanted to keep.>
+TT $$,<Young''s Law: All great discoveries are made by mistake.>
+TT $$,<Ron''s Observation for Teens: The pimples don''t appear until the hour before the date.>
+TT $$,<Parker''s Observation: Beauty is only skin deep, but ugly goes right to the bone.>
+TT $$,<Evan''s Law: If you can keep your head when all about you are losing theirs, you don''t understand the problem.>
+TT $$,<Rune''s Rule: If you don''t care where you are, you ain''t lost.>
+TT $$,<The Army Axiom: Any order that can be misunderstood has been misunderstood.>
+TT $$,<Frothingham''s Corollary: The mountain looks closer than it is.>
+TT $$,<Professors Block''s Motto: Forgive and Remember.>
+TT $$,<Murphy''s Flu Philosophy: Just because your doctor has a name for it doesn''t mean he knows what it is.>
+TT $$,<McGowan''s Axiom: If a Christmas gift is advertised as "under $50", you can bet it''s not $19.95.>
+TT $$,<Miles'' Rule: Where you stand depends on where you sit.>
+TT $$,<Finman''s Principle: The one you want is never the one on sale.>
+TT $$,<Murphy''s Tenth Corollary: Mother Nature is a bitch.>
+TT $$,<Law of Gifts: You get the most of what you need the least.>
+TT $$,<Farnsdick''s Corollary: After things have gone from bad to worse, the cycle will repeat itself.>
+TT $$,<Nothing is as easy as it looks.>
+TT $$,<If it looks easy, it''s tough... If it looks tough, it''s impossible.>
+TT $$,<The one time of the day you lean back and relax is the one time of the day the boss walks through the office.>
+TT $$,<If you''re feeling good, don''t worry. You''ll get over it.>
+TT $$,<You can''t win. You can''t break even. You can''t even quit the game.>
+TT $$,<If you do something which you are sure will meet with everybody''s approval, somebody won''t like it.>
+TT $$,<If it jams, force it... If it breaks, it needed replacing anyway.>
+TT $$,<A shortcut is the longest distance between two points.>
+TT $$,<Everything put together fall apart sooner or later.>
+TT $$,<If there is a possibility of several things going wrong, the one that will cause the most damage will.>
+TT $$,<No matter what goes wrong, there is always somebody who knew it would.>
+TT $$,<An unbreakable toy can be used to break other toys.>
+TT $$,<For every action, there is an equal and opposite criticism.>
+TT $$,<Kohn''s Corollary: Two wrongs are only the beginning.>
+TT $$,<The Watergate Principle: Government corruption will always be reported in the past tense.>
+TT $$,<Todd''s Political Principle: No matter what they''re talking about, they''re talking about money.>
+TT $$,<Murray''s rule of Basketball: A free agent is anything but.>
+TT $$,<Knox''s Principle: An acquired player fades, a traded player rises to stardom.>
+TT $$,<Jones'' Law of TV: The show you''ve been looking forward to all week will be preempted.>
+TT $$,<No matter what goes wrong, it will probably look right.>
+TT $$,<Law of the Search: The first place to look for something is the last place you''d expect to find it.>
+TT $$,<Arthur''s Law of Love: People to whom you are attracted think you remind them of someone else.>
+TT $$,<Ehrman''s Law: Things will get worse before they get better. Who said they''ll get better?>
+TT $$,<Spark''s First Rule: Strive to look tremendously important.>
+TT $$,<Cooper''s Metalaw: A proliferation of new laws creates a proliferation of new loopholes.>
+TT $$,<Keep anything long enough and you can throw it away. Throw it away and you will need it next day.>
+TT $$,<O''Reilly''s Spring Cleaning Law: Cleanliness is next to impossible.>
+TT $$,<Diner''s Dilemma: A clean tie attracts the soup of the day.>
+TT $$,<Gumperson''s Law: The probability of anything happening is in inverse ratio to its desirability.>
+TT $$,<O''Toole''s commentary: Murphy was an optimist.>
+TT $$,<Porkingham''s Law: The time available to go fishing shrinks as fishing season draws near.>
+TT $$,<The slowest checker is always at the quick check-out lane.>
+TT $$,<The client who pays the least complains the most.>
+TT $$,<Bocklage''s Law: He who laughs last probably didn''t get the joke.>
+TT $$,<Rev. Chichester''s Law: If the weather is extremely bad or extremely good, attendance will be down.>
+TT $$,<Jacquin''s Postulate: No man''s life, liberty, or property are safe when legislature is in session.>
+TT $$,<Murphy''s Observation: When it rains, it pours.>
+TT $$,<Todd''s First Law: All things being equal, you lose.>
+TT $$,<5th Law of the Office: Vital papers will move from where you left them to where you can''t find them.>
+TT $$,<Only adults have difficulty with child-proof bottles.>
+TT $$,<Truman''s Law: If you cannot convince them, confuse them.>
+TT $$,<Hartley''s Law: You can lead a horse to water, but if you get him to float on his back, you''ve got something.>
+TT $$,<First Rule of Superior Inferiority: Don''t let your superiors know you''re superior to them.>
+TT $$,<First Law of Travel: It always takes longer to get there than to get back.>
+TT $$,<Lee''s Law: In dealing with a body of people, the people will be more tacky than expected.>
+TT $$,<Bedfellows Rule: The one who snores will fall asleep first.>
+TT $$,<Newton''s Law: A bird in the hand is safer than one overhead.>
+TT $$,<If it''s good, they discontinued it.>
+TT $$,<Price''s Law: If everybody doesn''t want it, nobody gets it.>
+TT $$,<Iron Law of Distribution: Them that has, gets.>
+TT $$,<Finagle''s First Law: If an experiment works, something has gone wrong.>
+TT $$,<Muir''s Law: When we try to pick out anything by itself, we find it hitched to the universe.>
+TT $$,<Deal''s Sailing Law: The amount of wind varies inversely with the number and experience of the crew.>
+TT $$,<When the plane you''re on is late, your connecting flight is on time.>
+TT $$,<Fiske''s Teenage Corollary: The stomach expands to accommodate the amount of junk food available.>
+TT $$,<Patry''s Law: If you know something can go wrong and prepare, something else will go wrong.>
+TT $$,<Murphy''s Seventh Corollary: Every solution breeds new problems.>
+TT $$,<Perkins'' Postulate: The bigger they are...the harder they hit.>
+TT $$,<The Fifth Rule: You have taken yourself too seriously.>
+TT $$,<If there are only two shows on TV worth watching this week, they will be on at the same time.>
+TT $$,<Kitman''s Law: Pure drivel tends to drive ordinary drivel off the TV screen.>
+TT $$,<Zymurgy''s Labor Law: People are always available for work in the past tense.>
+TT $$,<Seit''s Law of Higher Education: The one course you need for graduation is not offered your last semester.>
+TT $$,<Lynch''s Law: When the going gets tough...everyone leaves.>
+TT $$,<No matter how much you do, you''ll never do enough.>
+TT $$,<What you don''t do is always more important than what you do.>
+TT $$,<Murray''s Hockey Rule: Hockey is a game played by six good players and the home team.>
+TT $$,<Olivers''s Law of Location: No matter where you go, there you are.>
+TT $$,<Gillenson''s Law of Expectation: Never get excited over how people look from behind.>
+TT $$,<Heisenberg''s Principle: You may know where the Stock Market is going, but not after that.>
+TT $$,<If you''re early, it''s canceled, if you''re on time, it''s late, if you''re late, you''re late.>
+TT $$,<Tood''s First Law: No matter what they''re telling you, it''s not the whole truth.>
+TT $$,<Whistler''s Law: You never know who''s right, but you always know who''s in charge.>
+TT $$,<Murphy''s Flu Law: If you seem to be getting better, it''s your doctor getting worse.>
+TT $$,<Law of the Kitchen: You''re always complimented on the item that took the least effort to prepare.>
+TT $$,<No matter how hard you shop for an item, after you bought it, you will find it on sale.>
+TT $$,<Hadley''s Law of Clothing: If you like it, they don''t have it in your size.>
+TT $$,<Wallace''s Observation: Everything is in a state of utter dishevelment.>
+TT $$,<Gattuso''s Extension: Nothing is ever so bad that it can''t get worse.>
+TT $$,<Fahnestock''s Rule: If at first you don''t succeed, destroy all evidence that you tried.>
+TT $$,<Sodd''s Second Law: Sooner or later the worst is bound to occur.>
+TT $$,<When you finally see light at the end of the tunnel, it will probably be a train coming toward you.>
+TT $$,<Nothing is as temporary as that which is called permanent.>
+TT $$,<Merkin''s Maxim: When in doubt, predict that the trend will continue.>
+TT $$,<Glyme''s Formula: The secret of success is sincerity. Once you can fake that, you''ve got it made.>
+TT $$,<Dykstra''s Law: Everybody is somebody else''s weirdo.>
+TT $$,<Stenderup''s Law: The sooner you fall behind, the more time you will have to catch up.>
+TT $$,<Lieberman''s Law: Everybody lies; but it doesn''t matter since nobody listens.>
+TT $$,<Leo Rogers'' Commentary: If it''s worth doing, it''s worth overdoing.>
+TT $$,<No matter how well you do your job, a superior will seek to modify the results.>
+TT $$,<Alexander Bell''s Theorem: When a body is immersed in water, the phone rings.>
+TT $$,<Hane''s Law: There is no limit to how bad things can get.>
+TT $$,<Rockefeller''s Principle: Never do anything you wouldn''t be caught dead doing.>
+TT $$,<Newton''s Seventh Law: A bird in the hand is safer than one overhead.>
+TT $$,<Byrne''s Law of Concreting: When your pour, it rains.>
+TT $$,<Evans'' and Bjorn''s Law: No matter what goes wrong, there is always somebody who knew it would.>
+TT $$,<1. Never be first. 2. Never be last. 3. Never volunteer for anything.>
+TT $$,<The General Law: The chaos in the universe always increases.>
+TT $$,<Murphy''s Philosophy: Smile . . . tomorrow will be worse.>
+TT $$,<Connor''s Second Law: If something is confidential it will be left in the copier machine.>
+TT $$,<Experience is something you don''t get until just after you need it.>
+TT $$,<Law of Construction: Cut it large and kick it into place.>
+TT $$,<O''Toole''s Axiom: One child is not enough, but two are far too many.>
+TT $$,<Las Vegas Law: Never bet on a loser because his luck is bound to change.>
+TT $$,<Charnock''s Law: You never really learn to swear until you learn to drive.>
+TT $$,<There is nothing so small that it can''t be blown out of proportion.>
+TT $$,<Thom''s Law of Marital Bliss: The length of a marriage is inversely proportional to the cost of the wedding.>
+TT $$,<Patton''s Law: A good plan today is better than a perfect plan tomorrow.>
+TT $$,<Miller''s Law: Exceptions prove the rule - and wreck the budget.>
+TT $$,<Murphy''s Government Law: If anything can go wrong, it will do so in triplicate.>
+TT $$,<Porkingham''s Fishing Philosophy: The worse your line is tangled, the better is the fishing around you.>
+TT $$,<Stitzer''s Vacation Principle: Take half as much clothing & twice as much money.>
+TT $$,<If it weren''t for the last minute, nothing would ever get done.>
+TT $$,<Hoffer''s Law: When people are free to do as they please, they usually imitate each other.>
+TT $$,<Moser''s Law of Sports: Exciting plays only occur when you''re watching the scoreboard or buying a hot dog.>
+TT $$,<Glory may be fleeting, but obscurity is forever.>
+TT $$,<Wagner''s Law of Sports TV: When the camera isolates on a male athlete, he will either spit, pick or scratch.>
+TT $$,<Ferguson''s Precept: A crisis is when you can''t say "let''s forget the whole thing.">
+TT $$,<Katz''s Law: Men and nations will act rationally when all other possibilities have been exhausted.>
+TT $$,<The pet principle: No matter which side of the door the cat or dog is on, it''s the wrong side.>
+TT $$,<Nothing is as inevitable as a mistake whose time has come.>
+TT $$,<Hoffstedt''s Employment Principle: Confusion creates jobs.>
+TT $$,<Student''s Law: Every instructor assumes you have nothing to do but study for his course.>
+TT $$,<Reynold''s Law of Climatology: Wind velocity increases directly with the cost of the hairdo.>
+TT $$,<There is nothing so simple that it can''t be done wrong.>
+TT $$,<Lefty Gomez''s Law: If you don''t throw it, they can''t hit it.>
+TT $$,<Seay''s Law: Nothing ever comes out as planned.>
+TT $$,<Weiner''s Law of Libraries: There are no answers, only cross-references.>
+TT $$,<Seymour''s Investment Principle: Never invest in anything that eats.>
+TT $$,<Almost anything is easier to get into than out of.>
+TT $$,<Walter''s Law of Politics: A fool and his money are soon elected.>
+TT $$,<Brintnall''s Law: If you are given two contradictory orders, obey them both.>
+TT $$,<Thiessen''s Law of Gastronomy: The hardness of the butter is in direct proportion to the softness of the roll.>
+TT $$,<Murphy''s Flu Philosophy: Even water tastes bad when taken on doctor''s orders.>
+TT $$,<If it says "one size fits all," it doesn''t fit anyone.>
+TT $$,<Baker''s Law: You never want the one you can afford.>
+TT $$,<Young''s Principle of Individuality: Everybody wants to peel their own banana.>
+TT $$,<Thine''s Law: Nature abhors people.>
+TT $$,<Lord Balfour''s Contention: Nothing matters very much, and very few things matter at all.>
+TT $$,<Goebel''s law of rush hour traffic: What speeds up, must slow down. But who says it''s ever gonna speed up?>
+TT $$,<Scott''s First Law: No matter what goes wrong, it will probably look right.>
+TT $$,<Scott''s Second Law: When an error has been detected and corrected, it will be found to be correct originally.>
+TT $$,<Finagle''s First Rule: To study a subject best, understand it thoroughly before you start.>
+TT $$,<Finagle''s Second Rule: Always keep a record of data - it indicates you''ve been working.>
+TT $$,<Finagle''s Third Rule: Always draw your curves first, then plot your data.>
+TT $$,<Finagle''s Fourth Rule: In case of doubt, make it sound convincing.>
+TT $$,<Finagle''s Fifth Rule: Experiments should be reproducible - they should all fail in the same way.>
+TT $$,<Finagle''s Sixth Rule: Do not believe in miracles - rely on them.>
+TT $$,<Simon''s Law: Everything put together falls apart sooner or later.>
+TT $$,<Howe''s Law: Everyone has a scheme that will not work.>
+TT $$,<Klipstein''s Engineering Law: Dimensions will always be in the wrong units, such as furlongs per fortnight.>
+TT $$,<Johnson and Laird''s Law: Toothache tends to start on Saturday Night.>
+TT $$,<Etorre''s observation: The other line always moves faster.>
+TT $$,<Osborn''s Law: Variables won''t, constants aren''t.>
+TT $$,<Law of Computer programming: Any given program, when running is obsolete.>
+TT $$,<Law of Computer programming: If a program is useful, it will have to be changed.>
+TT $$,<Law of Computer programming: If a program is useless, it will have to be documented.>
+TT $$,<Law of Computer programming: The value of a program is proportional to the its output.>
+TT $$,<Law of Computer programming: Program complexity grows until it exceeds the capability of the maintainer.>
+TT $$,<Law of Computer programming: Computers are unreliable, but humans are even more unreliable.>
+TT $$,<Lubarsky''s law of cybernetic entomology: There''s always one more bug.>
+TT $$,<Shaw''s Principle: Build a system that even a fool can use, and only a fool will use it.>
+TT $$,<Wyszkowski''s Second Law: Anything can be made to work if you fiddle with it long enough.>
+TT $$,<Sattinger''s Law: It works better if you plug it in.>
+TT $$,<Anthony''s Law of Force: Don''t force it, get a larger hammer.>
+TT $$,<Murphy''s Law of Research: Enough research will tend to support your theory.>
+TT $$,<Maier''s Law: If the facts do not conform to the theory, they must be disposed of>
+TT $$,<Williams and Holland''s Law: If enough data is collected, anything may be proven by statistics.>
+TT $$,<Peer''s Law: The solution to a problem changes the nature of the problem.>
+TT $$,<Young''s law: all great discoveries are made by mistake.>
+TT $$,<Young''s Corollary: The greater the funding, the longer it takes to make the mistake.>
+TT $$,<Hoare''s Law: Inside every large problem is a small problem trying to get out.>
+TT $$,<Fett''s Law of the Lab: Never replicate a successful experiment.>
+TT $$,<Futility Law: No experiment is a complete failure - it can always serve as a negative example.>
+TT $$,<Campbell''s Law: Nature abhors a vacuous experimenter.>
+TT $$,<Vail''s Axiom: In any human enterprise, work seeks the lowest hierarchical level.>
+TT $$,<Cornuelle''s Law: Authority tends to assign jobs to those least able to do them.>
+TT $$,<Truman''s Law: If you cannot convince them, confuse them.>
+TT $$,<First law of Debate: Never argue with a fool - people might not know the difference.>
+TT $$,<TANSTAAFL: There ain''t no such thing as a free lunch.>
+TT $$,<Wiler''s Law: Government expands to absorb revenue and then some.>
+TT $$,<Weinberg''s First Law: Progress is made on alternate Fridays.>
+TT $$,<John''s Collateral Corollary: In order to get a loan you must first prove that you don''t need it.>
+TT $$,<Miller''s Law: You can''t tell how deep a puddle is until you step in it.>
+TT $$,<Hartley''s Second Law: Never sleep with anyone crazier than yourself.>
+TT $$,<Katz''s Law: Men and nations will act rationally when all other possibilities have been exhausted.>
+TT $$,<Jones''s Motto: Friends come and go, but enemies accumulate.>
+TT $$,<Davis'' Answer to Roger''s Law: Serving coffee on an aircraft causes turbulence.>
+TT $$,<Drew''s Law: The client who pays the least complains the most.>
+TT $$,<Wethern''s Law: Assumption is the mother of all screw-ups.>
+TT $$,<Ray''s precision Rule: Measure with a micrometer - Mark with chalk - Cut with an axe.>
+TT $$,<Devries'' Dilemma: If you hit two keys on the typewriter, the one you don''t want will hit the paper.>
+TT $$,<Finagle''s Eighth Rule: Teamwork is essential. It allows you to blame someone else.>
+TT $$,<Greer''s Third Law: A computer program does what you tell it to do, not what you want it to do.>
+TT $$,<Steinbach''s Guideline: never test for an error condition you don''t know how to handle.>
+TT $$,<Rule of Defactualization: Information deteriorates upward through bureaucracies.>
+TT $$,<Winger''s Rule: If it sits on your desk for 15 minutes, you''ve just become the expert.>
+TT $$,<Matz''s Maxim: A conclusion is the place where you got tired of thinking.>
+TT $$,<Fagin''s Rule: Hindsight is an exact science.>
+TT $$,<Hanlon''s Razor: Never attribute to malice that which is adequately explained by stupidity.>
+TT $$,<Law of Tests: When reviewing your notes before an exam, the most important ones will be illegible.>
+TT $$,<Law of Tests: 80',25h,' of the final will be on the one lecture you missed about the one book you didn''t read.>
+TT $$,<Law of Tests: If you are given a take-home exam, you will forget where you live.>
+TT $$,<Moser''s Law of Sports: Exciting plays only occur when your are watching the scoreboard or buying food.>
+TT $$,<Gold''s Law: If the shoe fits, it''s ugly.>
+TT $$,<Hershiser''s First Rule: Anything NEW and/or IMPROVED, isn''t.>
+TT $$,<Hershiser''s Second Rule: The Label NEW and/or IMPROVED means the price went up.>
+TT $$,<Beryl''s Law: The "CONSUMER REPORT" on the item will come out a week after you buy the item.>
+TT $$,<Hamilton''s glass cleaning law: The spot you are scrubbing is always on the other side.>
+TT $$,<Skoff''s Law: A child will not spill on a dirty floor.>
+TT $$,<Ballance''s Law of Relativity: The length of a minute depends on which side of the bathroom door you''re on.>
+TT $$,<Kovac''s conundrum: When you dial a wrong number, you never get a busy signal.>
+TT $$,<Jacob''s Law: To err is human - to blame it on someone else is even more human.>
+TT $$,<If you invent a better mousetrap, somebody will just invent a better mouse.>
+
+NNN	defl	$$
+
+TENTE	MACRO	C
+	dw	S&C
+	ENDM
+
+TENT	MACRO	C
+	TENTE	%C
+$$$	defl	$$$+1
+	ENDM
+
+$$$	defl	0
+
+TAB:	REPT	$$
+	TENT	$$$
+	ENDM
+
+	DSEG
+
+gtimbf:	ds	8
+txtbuf:	ds	82
+
+	ds	256
+stack	equ	$
+
+	END	BEGIN

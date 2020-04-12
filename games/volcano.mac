@@ -1,0 +1,1680 @@
+	.Z80
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+MAPW	equ	78
+MAPH	equ	24
+
+VTOP	equ	7		; volcano top
+MAXASH	equ	10;15		; max ash paticles (20)
+MAXMSL	equ	10		; max missiles (10)
+LAVTIM	equ	20;10		; lava time
+
+DEBUG	equ	1
+
+	extrn	INIT,EXIT,INKEY,GETCH,DELAY
+	extrn	CLS,HOME,SETCUR,CSRON,CSROFF
+	extrn	PUTCH,PUTSTR,CRLF,TTFLSH,UCASE
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Main loop
+
+START::	ld	sp,STACK	; setup stack
+	call	INIT		; init terminal
+	call	TTLSCR		; display title screen
+	call	BANNER		; display top banner
+	call	MENU		; process menu options
+	jp	START		; loop
+
+; Display title screen
+
+TTLSCR:	call	CLS		; clear screen
+	ld	hl,OPTTXT
+	call	PRNTXY
+	call	SNDST		; display sound status
+	ld	c,1
+	call	KEYS		; display key assignment
+	ld	hl,HISCOR
+	ld	de,33*256+18	; cursor initially at 33,18
+	ld	b,5		; 5 scores to go
+t1:	ld	a,(hl)		; check # of rescued men
+	cp	4+1
+	jr	nc,t2		; >4 means end of table
+	ex	de,hl
+	call	SETCUR		; position cursor
+	ex	de,hl
+	call	NUM		; display # of men
+	inc	hl
+	call	NUM		; display # of helicopters
+	inc	hl
+	ld	c,' '
+	call	PUTCH
+	call	PUTSTR		; display name
+	inc	hl
+	inc	e		; next row
+	djnz	t1		; loop
+	call	TTFLSH
+t2:	ld	hl,33*256+24	; cursor to 33,24
+	call	SETCUR
+	call	TTFLSH
+	ld	hl,NMEN		; fetch last number of men
+	ld	a,(hl)
+	cp	5
+	ret	nc		; return if none yet
+	call	NUM
+	ld	hl,NCOPT	; fetch last number of helicopters
+	call	NUM
+	ld	hl,LSTMSG
+	call	PUTSTR
+	ret
+
+OPTTXT:	db	0,9,'Version 2.0'
+	db	CR,LF,LF,'Based on the similar game for the 86-RK'
+	db	CR,LF,'Original game was (C) 1987 BONY,'
+	db	CR,LF,'SKB "DESIGN"'
+	db	CR,LF,LF,LF,'Options:'
+	db	CR,LF,LF,'G - Start Game'
+	db	CR,LF,'K - Key Programming'
+	db	CR,LF,'S - Sound ON/OFF'
+	db	CR,LF,'E - Exit',0
+	db	50,9,'Left  -',0
+	db	50,10,'Right -',0
+	db	50,11,'Up    -',0
+	db	50,12,'Down  -',0
+	db	50,13,'Fire  - other',0
+	db	50,14,'Sound -',0
+	db	35,15,'-+-',0
+	db	33,16,'I  O-+ Hall of Fame:',0
+	db	30,18,'1)',0
+	db	30,19,'2)',0
+	db	30,20,'3)',0
+	db	30,21,'4)',0
+	db	30,22,'5)',0
+	db	0FFh
+
+LSTMSG:	db	' - last result',0
+
+; Display banner in big letters
+
+BANNER:	call	HOME
+	push	hl
+	ld	hl,CMAP		; HL = character map
+	ld	e,7
+nxtln:	ld	b,8
+sep:	ld	c,' '
+	call	PUTCH
+	djnz	sep
+	ld	d,7
+	ex	(sp),hl
+	ld	hl,NAME
+	ex	(sp),hl
+nxtc:	ld	b,8
+	ld	a,(hl)
+nxtp:	rla
+	ld	c,' '
+	jr	nc,cout
+	ex	(sp),hl
+	ld	c,(hl)
+	ex	(sp),hl
+cout:	push	af
+	call	PUTCH
+	pop	af
+	djnz	nxtp
+	ld	c,' '
+	call	PUTCH
+	inc	hl
+	ex	(sp),hl
+	inc	hl
+	ex	(sp),hl
+	dec	d
+	jp	nz,nxtc
+	call	CRLF
+	dec	e
+	jr	nz,nxtln
+	pop	hl
+	ret
+
+NAME:	db	'VOLCANO'
+CMAP:	db	082h,07Ch,080h,07Ch,002h,082h,07Ch
+	db	084h,082h,080h,082h,006h,0C2h,082h
+	db	088h,082h,080h,080h,00Ah,0A2h,082h
+	db	090h,082h,080h,080h,012h,092h,082h
+	db	0A0h,082h,080h,080h,022h,08Ah,082h
+	db	0C0h,082h,080h,082h,07Eh,086h,082h
+	db	080h,07Ch,0FEh,07Ch,082h,082h,07Ch
+
+; Display byte at (HL) as decimal with 2 trailing spaces
+
+NUM:	ld	a,(hl)
+	add	a,'0'
+	ld	c,a
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	c,' '
+	jp	PUTCH
+
+; Handle option menu
+
+MENU:	ld	hl,PROMPT
+	call	PRNTXY
+	call	GETCH
+	call	UCASE
+	cp	'G'		; G = start game
+	jp	z,GAME
+	cp	'K'		; K = program keys
+	jp	z,PRGK
+	cp	'S'		; S = toggle sound
+	jp	z,TGLSND
+	cp	'E'		; E = end program
+	jr	nz,MENU	
+	call	CLS		; clear screen
+	jp	EXIT		; and exit program
+
+PROMPT:	db	0,24,'Enter command: ',0,0FFh
+
+; Toggle sound
+
+TGLSND:	ld	a,(SNDFLG)
+	cp	7
+	ld	a,0
+	jr	z,s1
+	ld	a,7
+s1:	ld	(SNDFLG),a
+	call	SNDST
+	jp	MENU
+
+; Display current sound settings
+
+SNDST:	ld	hl,58*256+14	; X=58 Y=14
+	call	SETCUR
+	ld	a,(SNDFLG)
+	ld	hl,ONMSG
+	cp	7
+	jp	z,PUTSTR
+	ld	hl,OFFMSG
+	jp	PUTSTR
+
+ONMSG:	db	'ON ',0
+OFFMSG:	db	'OFF',0
+
+PRGK:	ld	c,0
+	call	KEYS
+	jp	MENU
+
+KEYS:	ld	hl,58*256+9	; X=58 Y=9
+	ld	de,KTAB
+	ld	b,4
+k1:	push	bc
+	dec	c
+	jr	z,k2
+	call	KEYNAM
+	call	GETCH
+	ld	(de),a
+k2:	call	KEYNAM
+	pop	bc
+	inc	l
+	inc	de
+	djnz	k1
+	ret
+
+; Display assigned key name
+
+KEYNAM:	call	SETCUR
+	ld	bc,15*256+' '	; 15 times ' '
+clrln:	call	PUTCH		; clear key name
+	djnz	clrln
+	call	SETCUR
+	call	TTFLSH
+	ld	a,(de)
+	cp	7Fh
+	jr	z,del
+	cp	' '+1
+	jr	c,ctrl
+	ld	c,a
+	call	PUTCH
+	call	TTFLSH
+	ret
+del:	push	hl
+	ld	hl,DELK
+	call	PUTSTR
+	call	TTFLSH
+	pop	hl
+	ret
+ctrl:	push	hl
+	ld	hl,KEYTAB
+	ld	b,a
+nxt:	dec	b
+	jp	m,thisk
+fndnx:	ld	a,(hl)
+	or	a
+	inc	hl
+	jr	nz,fndnx
+	jr	nxt
+thisk:	call	PUTSTR
+	call	TTFLSH
+	pop	hl
+	ret
+
+DELK:	db	'DELETE',0
+KEYTAB:	db	'^@',0,'^A',0,'^B',0,'^C',0
+	db	'^D',0,'^E',0,'^F',0,'^G',0
+	db	'BACKSPACE',0,'TAB',0,'LINE FEED',0
+	db	'^K',0,'FORM FEED',0,'RETURN',0
+	db	'^N',0,'^O',0,'^P',0,'^Q',0
+	db	'^R',0,'^S',0,'^T',0,'^U',0
+	db	'^V',0,'^W',0,'^X',0
+	db	'^Y',0,'^Z',0,'ESCAPE',0
+	db	'^\',0,'^]',0,'^^',0,'^_',0
+	db	'SPACE',0
+
+; Position cursor and get screen address
+
+CURSCR:	call	SETCUR
+	; fall tru
+
+; Return screen address corresponding to coordinates X=H and Y=L in HL
+
+SCRHL:	ld	a,l
+	ld	l,h
+	; fall thru
+
+; Return screen address corresponding to coordinates X=L and Y=A in HL
+
+SCRADR:	push	de
+	push	hl
+	ld	e,MAPW
+	call	MULT8		; HL = Y*MAPW
+	pop	de
+	ld	d,0
+	add	hl,de		; +X
+	ld	de,SCRBUF
+	add	hl,de
+	pop	de
+	ret
+
+; HL = A * E
+
+MULT8:	ld	hl,0
+	ld	d,0
+next:	or	a
+	ret	z
+	rra
+	jr	nc,shift
+	add	hl,de
+shift:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	next
+
+; Print multiple strings at X,Y coordinates
+
+PRNTXY:	ld	a,(hl)
+	cp	0FFh
+	ret	z
+	ld	d,a
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ex	de,hl
+	call	SETCUR
+	ex	de,hl
+	call	PUTSTR
+	inc	hl
+	jr	PRNTXY
+
+; Create the screen buffer and display the game screen
+
+SCREEN:	call	CSROFF		; hide the cursor
+	call	CLS		; clear the screen
+	ld	hl,VTOP+1	; cursor at 0,VTOP+1
+	call	SETCUR
+	ld	hl,SCRBUF
+	ld	de,MAPW*MAPH	; screen size
+clrs:	ld	(hl),' '	; clear the screen buffer with spaces
+	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,clrs
+	ld	hl,SCRMAP
+	ld	de,SCRBUF+(VTOP+1)*MAPW
+sloop:	push	de
+snext:	ld	a,(hl)		; get a byte (char count)
+	ld	b,a		; into B
+	inc	hl		; point to next
+	or	a		; is zero?
+	jr	z,sdone		; if yes, we're done
+	inc	a
+	jr	z,sstr		; if 0FFh, null-terminated string follows
+	ld	a,(hl)		; get next byte
+	inc	hl		; incr pointer
+	or	a		; is zero?
+	jr	z,snl		; if yes, it marks the end of this line
+	ld	c,a		; save char in C
+srpt:	ld	a,c
+	ld	(de),a		; store it in buffer
+	call	PUTCH		; and display it
+	inc	de
+	djnz	srpt		; B times
+	jr	snext
+sstr:	ld	a,(hl)		; 0FFh case: get next byte
+	inc	hl		; incr pointer
+	or	a		; is zero?
+	jr	z,snext		; if yes, it's the end of the string
+	ld	c,a		; else save it in C
+	ld	(de),a		; store it in buffer
+	call	PUTCH		; and display it
+	inc	de
+	jr	sstr		; continue in a loop
+snl:	call	CRLF
+	pop	de		; restore ptr to begin of line
+	ex	de,hl
+	ld	bc,MAPW		; one line down
+	add	hl,bc
+	ex	de,hl
+	jr	sloop
+sdone:	call	TTFLSH
+	pop	de
+	ret
+
+; Create single ash particle
+
+CREASH:	push	bc
+	ld	a,3
+	call	RND		; get random number 0..2
+	ld	c,a
+	add	a,42-1		; left corner of volcano top
+	ld	d,a		; D = starting X coordinate, integer part
+	ld	a,255
+	call	RND		; get random number 0..255
+	ld	e,a		; E = starting X coordinate, fractionary part
+ IF 0 ; original code
+	and	0FCh
+	or	c
+	rrca
+	rrca
+	sub	80h		; set CY
+ ELSE ; same thing
+	rrca			; set random CY for 'sbc a,a' below
+ ENDIF
+	ld	c,a
+	sbc	a,a		; random CY makes direction random
+	ld	(hl),c		; delta X, fractionary part
+	inc	hl
+	ld	(hl),e		; 0..255 X coordinate, fractionary part
+	inc	hl
+	ld	(hl),a		; 0 or 255 [sign] delta X, integer part
+	inc	hl
+	ld	(hl),d		; X coordinate, integer part
+	inc	hl
+	xor	c
+	sub	83h		;
+	ld	(hl),a		; delta Y, fractionary part
+	inc	hl
+	ld	(hl),0FFh	; delta Y, integer part (always starts as
+	inc	hl		;  negative number, as ashes fly up before
+				;   falling down)
+	ld	(hl),0		; Y coordinate, fractionary part
+	inc	hl
+	ld	(hl),VTOP	; Y coordinate, integer part
+	inc	hl
+	pop	bc
+	ret
+
+; Random number generator (in the range 0..[D-1])
+
+RND:	push	de
+	push	hl
+	ld	d,a
+	ld	hl,(RNDLOC)	; get mem ptr into HL (note - unitialized)
+	ld	a,1Fh		; mask address to 1FFF (to avoid accessing
+	and	h		; the I/O addresses in the 86RK?, or to use
+	ld	h,a		; the program code as random number source?)
+	ld	a,(RNDBYT)	; get uninitialized byte
+	add	a,(hl)		; add memory contents
+	add	a,d		; add max
+	ld	(RNDBYT),a	; set new seed
+	ld	e,a
+	add	hl,de
+	inc	hl		; next address
+	ld	(RNDLOC),hl	; store ptr
+	ld	a,0FFh
+	jr	rnd2
+rnd1:	ld	a,h
+	rra
+rnd2:	ld	h,a
+	and	e
+	cp	d
+	jr	z,rnd3
+	jr	nc,rnd1
+rnd3:	pop	hl
+	pop	de
+	ret
+
+; Play the game
+
+GAME:	call	SCREEN		; display the game screen
+	ld	hl,MSLTBL	; missile table
+	ld	(MSLPTR),hl	; init pointer
+	ld	b,MAXMSL
+	ld	de,4		; missile table entry size
+mclr:	ld	(hl),0		; init missile table
+	add	hl,de
+	djnz	mclr
+	ld	hl,64*256+17	; 64,17
+	ld	(RESLOC),hl	; set rescued men location
+	ld	hl,ASHTBL	; ash particle table
+	ld	b,MAXASH
+ash:	call	CREASH		; create ash particle
+	push	hl
+	ld	a,VTOP		; Y=volcano top
+	ld	l,d		; X
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	(hl),'*'	; store ash
+	ld	l,VTOP		; Y
+	ld	h,d		; X
+	call	SETCUR		; position cursor
+	ld	c,'*'		; display ash
+	call	PUTCH
+	pop	hl
+	djnz	ash
+	call	TTFLSH
+	ld	a,0FFh
+	ld	(FMPOS),a	; no man is falling
+	ld	a,LAVTIM
+	ld	(LAVCNT),a	; init lava time
+	ld	a,16		; lava is initially at the top of volcano
+	ld	(LAVALV),a	; 16 is volcano height in rows
+	xor	a
+	ld	(NGHOST),a	; no ghosts
+	ld	(NMEN),a	; no rescued men yet
+	ld	a,3
+	ld	(NCOPT),a	; 3 helicopters
+	ld	a,7
+	ld	(WAVTIM),a	; init waving time
+NEXTH:	ld	sp,STACK	; setup stack
+	xor	a
+	ld	(HDIR),a	; helicopter facing left
+	ld	(HANGM),a	; no man hanging from helicopter
+	ld	a,(NCOPT)	; get a helicopter
+	dec	a
+	jp	m,EXITG		; exit if none remain
+	ld	(NCOPT),a
+	add	a,a
+	add	a,19		; Y = 2*NCOPT+19
+	ld	l,a
+	ld	h,65		; X = 65
+	push	hl
+	call	CURSCR		; position cursor and get screen address
+	ld	d,' '
+	xor	a		; direction = facing left
+	call	SETMAP		; clear helicopter from map
+	pop	hl
+	ld	de,CLR.L
+	call	DRHELI		; erase helicopter from the screen
+	ld	hl,65*256+14	; X=65, Y=14
+	ld	(HPOS),hl	; initial helicopter position
+	push	hl
+	call	CURSCR		; position cursor and get screen address
+	ld	d,'O'
+	xor	a		; direction = facing left
+	call	SETMAP		; put helicopter on map
+	pop	hl
+	ld	de,COP.L	; helicopter facing left
+	call	DRHELI		; show it on the screen
+	call	BEEP
+LOOP:	ld	hl,MSLTBL
+	ld	b,MAXMSL
+m1:	call	ANIMM		; animate missile
+	djnz	m1
+	ld	hl,ASHTBL	; ash particle table
+	ld	b,MAXASH
+m2:	call	ANIMA		; animate ash
+	djnz	m2
+	ld	hl,MSLTBL
+	ld	b,MAXMSL
+m3:	call	ANIMM		; animate missile (twice as fast as ash)
+	djnz	m3
+ IF 1
+	ld	a,1
+	push	bc
+	call	DELAY
+	pop	bc
+ ENDIF
+	ld	hl,(FMPOS)
+	ld	a,l
+	or	a		; man falling?
+	jp	m,m7		; jump if not (0FFh)
+	ex	de,hl
+	ld	l,d		; get X coordinate into L, Y already in A
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	(hl),' '	; clear location
+	ld	bc,MAPW		; one row below
+	add	hl,bc
+	ld	a,(hl)
+	cp	' '		; empty?
+	jr	nz,m6		; branch if not - man dies
+	ld	(hl),'Y'	; else keep falling
+	ex	de,hl
+	call	SETCUR		; position cursor
+	ld	c,' '
+	call	PUTCH		; erase man from old location of the screen
+	inc	l
+	call	SETCUR		; one row below
+	ld	a,l
+	rrca
+	ld	c,'L'
+	jr	c,m4
+	ld	c,'J'
+m4:	call	PUTCH		; draw falling man on new location
+	call	TTFLSH
+	ld	(FMPOS),hl	; store new coordinates
+	jr	m7
+m6:	push	af
+	call	BEEP
+	pop	af
+	ex	de,hl
+	cp	'Y'		; man?
+	call	z,EXPLG		; turn into ghost if yes
+	cp	'I'
+	call	z,EXPLG
+	ld	a,0FFh
+	ld	(FMPOS),a	; touched ground
+	call	EXPLG1		; turn into ghost
+m7:	call	CHKMOV
+	ld	a,(NGHOST)	; get number of ghosts
+	or	a
+	jr	z,m9		; skip if none
+	ld	b,a
+	ld	hl,GHSTBL	; ghosts table
+m8:	ld	e,(hl)		; get coordinates
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	de,hl
+	call	SETCUR
+	ld	hl,GHOST	; ghost
+	call	PUTSTR
+	ex	de,hl
+	djnz	m8		; loop to process all ghosts
+m9:	ld	a,(WAVTIM)
+	dec	a		; decrement waving time
+	ld	(WAVTIM),a
+	jp	nz,LOOP
+	ld	hl,7*256+21	; Y=21 X=7
+	call	ANIMW
+	ld	hl,14*256+19	; Y=19 X=14
+	call	ANIMW
+	ld	hl,23*256+16	; Y=16 X=23
+	call	ANIMW
+	ld	hl,32*256+12	; Y=12 X=32
+	call	ANIMW
+	ld	a,7
+	ld	(WAVTIM),a	; reset waving time
+	ld	a,(NGHOST)
+	or	a		; any ghosts?
+	jp	z,m11		; skip if not
+	ld	b,a
+	ld	hl,GHSTBL	; ghosts table
+m10:	call	ANIMG		; animate ghost
+	djnz	m10
+m11:	ld	a,(LAVCNT)	; decrement lava time
+	dec	a
+	jr	nz,m12
+	call	ANIML		; animate lava
+	ld	a,LAVTIM	; reset lava time
+m12:	ld	(LAVCNT),a
+	ld	a,(HANGM)
+	or	a		; man hanging from helicopter?
+	jp	z,LOOP		; loop back if not
+	ld	b,a
+	ld	a,(GRPCNT)
+	dec	a		; else decrease grip time
+	ld	(GRPCNT),a
+	jr	z,m14		; if zero, man falls
+	cp	10		; < 10?
+	jp	nc,LOOP		; loop if not
+	ld	a,b
+	cp	'J'
+	ld	a,'L'		; else man begins to swing (gets tired)
+	jr	z,m13
+	ld	a,'J'
+m13:	ld	(HANGM),a
+	jp	LOOP
+m14:	xor	a
+	ld	(HANGM),a	; man just fell
+	ld	hl,(HPOS)
+	inc	l		; Y+1
+	ld	(FMPOS),hl
+	call	SCRHL		; get screen address of (H,L)
+	ld	(hl),'Y'
+	jp	LOOP
+
+; Animate lava
+
+ANIML:	ld	a,(LAVALV)	; get lava level
+	dec	a		; one level down
+	ret	m
+	ld	(LAVALV),a	; store new level
+	ld	b,a
+	add	a,a		; * 2
+	add	a,a		; * 4
+	add	a,b		; * 5
+	ld	e,a
+	ld	d,0		; table offset in DE
+	ld	hl,LAVTBL
+	add	hl,de
+	ld	b,(hl)		; counter
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	ld	d,(hl)		; X
+	ex	de,hl		; save ptr in DE, coords into HL
+	call	CURSCR		; position cursor and get screen address
+	ld	c,'+'
+alv1:	call	PUTCH		; fill level with lava
+	ld	(hl),c
+	inc	hl
+	djnz	alv1
+	call	BEEP
+	ex	de,hl		; get pointer back into HL
+	inc	hl
+	ld	a,(hl)		; check for men
+	or	a
+	ret	z
+	inc	hl
+	ld	d,(hl)
+	ld	e,a		; next value (coords) in DE
+	ld	l,d		; and into A,L
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	a,(hl)
+	cp	'Y'		; still there?
+	jr	z,alv2
+	cp	'I'
+	ret	nz		; nope, safe
+alv2:	ld	(hl),' '
+	ex	de,hl
+	jr	EXPLG1		; else burned
+
+; Clear, explode, implode and turn into a ghost
+
+EXPLG:	ex	de,hl
+	ld	(hl),' '
+	ex	de,hl
+EXPLG1:	push	bc
+	call	EXPLOD		; explode
+	call	IMPLOD
+	call	NWGHST		; promote to ghost
+	pop	bc
+	ret
+
+; New ghost
+
+NWGHST:	push	hl
+	ex	de,hl
+	ld	a,(NGHOST)
+	inc	a
+	ld	(NGHOST),a	; new ghost appears
+	dec	a
+	add	a,a
+	ld	c,a
+	ld	b,0
+	ld	a,e
+	ld	l,d
+	call	SCRADR		; get screen(x,y) address into HL
+	inc	hl
+	ld	a,(hl)
+	cp	' '
+	jr	z,ng1
+	dec	d
+ng1:	ld	hl,GHSTBL	; ghosts table
+	add	hl,bc
+	ld	(hl),e		; store coordinates
+	inc	hl
+	ld	(hl),d
+	ex	de,hl
+	call	SETCUR
+	ld	hl,GHOST	; ghost
+	call	PUTSTR
+	call	BEEP
+	ld	a,(NGHOST)
+	ld	hl,NMEN
+	add	a,(hl)
+	pop	hl
+	cp	4		; any men left to rescue?
+	ret	nz		; return if yes
+	jp	EXITG		; else game is over
+
+; Animate men waving
+
+ANIMW:	call	CURSCR		; position cursor and get screen address
+	ld	a,(hl)
+	ld	c,'Y'
+	cp	'I'		; man still there?
+	jr	z,anw1
+	ld	c,'I'
+	cp	'Y'
+	ret	nz		; return if not
+anw1:	ld	(hl),c
+	call	PUTCH
+	call	TTFLSH
+	ret
+
+; Animate ash
+
+ANIMA:	push	bc
+	ld	a,(hl)		; get delta X (fractionary part)
+	inc	hl
+	add	a,(hl)		; add to fractionary part of X coordinate
+	ld	(hl),a		; save result
+	inc	hl
+	ld	a,(hl)		; get delta X (integer part)
+	inc	hl
+	ld	c,(hl)		; C = old X coordinate
+	adc	a,c		; add to X coordinate (integer part, note +CY)
+	ld	(hl),a		; save new X
+	ld	b,a		; B = new X coordinate
+	inc	hl
+	ld	a,(hl)		; increase first word (delta Y) to give
+	add	a,1		;  acceleration down
+	ld	(hl),a
+	ld	e,a		; result in DE
+	inc	hl
+	ld	a,(hl)
+	adc	a,0
+	ld	(hl),a
+	ld	d,a
+	inc	hl
+	ld	a,(hl)		; add to second word (Y coordinate:
+	add	a,e		;  8 bit integer + 8 bit fractionary)
+	ld	(hl),a
+	inc	hl
+	ld	a,(hl)
+	ld	e,a		; E = old Y coordinate
+	adc	a,d
+	ld	d,a
+	ld	(hl),a		; D = new Y coordinate
+	inc	hl
+	push	hl
+	cp	MAPH		; map height
+	jr	nc,anm1		; branch if off screen
+	ld	a,b
+	cp	MAPW		; map width
+	jr	nc,anm1		; branch if off screen
+	ld	a,e		; old coordinates
+	ld	l,c
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	a,(hl)
+	cp	'*'		; ash?
+	jr	nz,anm4		; return if not
+	jr	anm2		; else branch to move to next position
+anm1:	push	de		; off screen, save old and new Y coordinates
+	ld	de,-8
+	add	hl,de		; point back to start of entry
+	call	CREASH		; create new ash particle
+	ld	b,d
+	pop	de
+	ld	d,VTOP		; new Y coorinate is volcano top
+	ld	a,e		; old coordinates
+	ld	l,c
+	call	SCRADR		; get screen(x,y) address into HL
+anm2:	ld	(hl),' '	; erase old from map
+	ld	l,e
+	ld	h,c
+	call	SETCUR
+	ld	c,' '
+	call	PUTCH		; erase from screen
+	ld	l,b		; new coordinates
+	ld	a,d
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	a,(hl)		; see what's there
+	cp	'O'		; helicopter?
+	jp	z,HCRASH	; if yes, killed
+	cp	'-'		; missile?
+	ld	c,'+'
+	jr	z,anm3		; branch if yes
+	ld	c,'*'
+anm3:	ld	(hl),c		; store ash particle
+	ld	l,d		; new coordinates
+	ld	h,b
+	call	SETCUR
+	call	PUTCH		; display ash particle
+	call	TTFLSH
+anm4:	pop	hl
+	pop	bc
+	ret
+
+; Check user input and move helicopter around
+
+CHKMOV:	ld	a,(HDIR)
+	ld	(OLDDIR),a	; remember old direction
+	ld	hl,(HPOS)
+	ld	(OLDPOS),hl
+	ex	de,hl		; helicopter coordinates in DE
+	ld	bc,0
+	call	INKEY		; check input
+	or	a
+ IF 0
+	jp	z,MOVE2		; jump if no key pressed
+ ELSE
+	ret	z
+ ENDIF
+	cp	3
+	jp	z,EXITG		; ^C exits
+ IF DEBUG
+	cp	12h		; ^R display map contents on the screen
+	jp	z,MAPSCR
+ ENDIF
+	ld	hl,KTAB
+	cp	(hl)
+	jp	z,LEFT		; move left
+	inc	hl
+	cp	(hl)
+	jp	z,RIGHT		; move right
+	inc	hl
+	cp	(hl)
+	jp	z,UP		; move up
+	inc	hl
+	cp	(hl)
+	jp	z,DOWN		; move down
+	ld	hl,(MSLPTR)	; fire missile - get table pointer
+	ld	a,(hl)		; check direction
+	or	a
+	ret	nz		; return if moving
+	ld	a,(OLDDIR)
+	cpl
+	ld	b,a
+	or	1
+	ld	(hl),a		; store direction
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	(hl),e		; store coordinates
+	inc	hl
+	ld	(hl),d
+	ret
+
+; Move helicopter right
+
+RIGHT:	inc	d		; ++X
+	ld	bc,1		; one column right
+	ld	a,0FFh		; helicopter facing right
+MOVE1:	ld	(HDIR),a	; set facing direction
+MOVE2:	ld	a,d		; check X coordinate
+	dec	a
+	cp	MAPW-3
+	ret	nc		; return if X<=0 or X>=MAPW-2
+	ld	a,e		; check Y coordinate
+	or	a
+	ret	z		; return if 0
+	ex	de,hl
+	ld	(HPOS),hl	; store new helicopter position
+	ld	hl,(OLDPOS)
+	call	SCRHL		; get screen address of (H,L)
+	push	hl		; save it
+	ld	d,' '
+	ld	a,(OLDDIR)	; get old direction
+	call	SETMAP		; clear from map
+	pop	hl		; restore screen address of old pos
+	add	hl,bc		; add displacement offset
+	push	hl
+	ld	a,(HDIR)
+	or	a		; helicopter facing left?
+	ld	a,' '
+	jr	nz,mv1		; branch if not
+	call	CMP3
+	jp	nz,mv9
+	ld	de,-MAPW-3
+	jr	mv2
+mv1:	ld	de,-2
+	add	hl,de
+	call	CMP3
+	jp	nz,mv9
+	ld	de,-MAPW-1
+mv2:	add	hl,de
+	call	CMP3
+	jp	nz,mv9
+	ld	de,2*MAPW-1
+	add	hl,de
+	ld	a,(HANGM)	; man hanging?
+	ld	b,a
+	or	a
+	jr	z,mv3		; branch if not
+	ld	a,(hl)		; else check location
+	cp	' '		; empty?
+	jp	nz,mv9		; jump if not
+	ld	de,MAPW
+	add	hl,de		; one row below
+	ld	a,(hl)
+	cp	'='		; platform?
+	call	z,RSCUED	; if yes, man rescued
+	jr	mv5
+mv3:	ld	a,(hl)
+	cp	'I'		; man if there?
+	jr	z,mv4
+	cp	'Y'
+	jr	nz,mv5
+mv4:	ld	a,'I'
+	ld	(HANGM),a	; picked up a man
+	ld	a,40
+	ld	(GRPCNT),a	; reset grip time
+mv5:	pop	hl
+	ld	d,'O'
+	ld	a,(HDIR)	; A = direction
+	call	SETMAP		; put helicopter on map
+	ld	hl,(OLDPOS)
+	call	SETCUR		; place cursor
+	ld	a,(OLDDIR)
+	or	a
+	ld	de,CLR.L
+	jr	z,mv6
+	ld	de,CLR.R
+mv6:	call	DRHELI		; erase from old position
+	dec	b
+	jp	m,mv7		; jump if B was 0 (no man hanging)
+	ld	c,' '
+	call	PUTCH		; else erase man as well
+mv7:	ld	hl,(HPOS)
+	call	SETCUR
+	ld	a,(HDIR)
+	or	a		; helicopter facing left?
+	ld	de,COP.L
+	jr	z,mv8		; branch if yes
+	ld	de,COP.R
+mv8:	call	DRHELI		; draw it on new position
+	ld	a,(HANGM)
+	or	a		; carrying a man?
+	ld	c,a
+	call	nz,PUTCH	; display it if yes
+	call	TTFLSH
+	ret
+
+mv9:	ld	a,(hl)
+	ld	b,0
+	cp	'I'		; man?
+	jr	z,mv10
+	cp	'Y'		; man?
+	jr	nz,mv11
+mv10:	ld	(hl),' '
+	ld	a,(HPOS)	; helicopter Y location
+	cpl
+	add	a,MAPH-1	; MAPH-Y
+	ld	d,a
+	add	a,a		; *2
+	add	a,a		; *4
+	add	a,d		; *5
+	ld	c,a
+	ld	hl,LAVTBL+3
+	add	hl,bc
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; get man coordinates into DE
+	ex	de,hl
+	call	SETCUR		; place cursor
+	ld	c,' '
+	call	PUTCH		; erase it from the screen
+	ld	b,0FFh
+mv11:	ld	hl,(OLDPOS)
+	ld	a,(OLDDIR)
+	jp	CRASH
+
+; Move helicopter up
+
+UP:	dec	e		; --Y
+	ld	bc,-MAPW	; one row up
+	jp	MOVE2		; continue via common code
+
+; Move helicopter left
+
+LEFT:	dec	d		; --X
+	ld	bc,-1		; one column left
+	xor	a		; helicopter facing left
+	jp	MOVE1		; continue via common code
+
+; Move helicopter down
+
+DOWN:	inc	e		; ++Y
+	ld	bc,MAPW		; one row down
+	ld	a,e
+	ld	l,d
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	a,(hl)
+	cp	'='		; platform?
+	jp	nz,MOVE2	; continue via common code if not
+	dec	e		; else move back up
+	ld	bc,0
+	jp	MOVE2		; continue via common code
+
+; Set or clear helicopter on map. A = facing direction, D = char to store.
+
+SETMAP:	or	a		; helicopter facing left?
+	ld	a,d
+	jr	nz,sm1		; branch if not
+	call	SET3		; store 3 @HL
+	ld	de,-MAPW-3	;
+	jr	sm2
+sm1:	dec	hl
+	dec	hl
+	call	SET3		; store 3 @HL
+	ld	de,-MAPW-1
+sm2:	add	hl,de
+	call	SET3		; store 3 @HL
+	ld	de,2*MAPW-1
+	add	hl,de
+	ld	d,a
+	ld	a,(HANGM)
+	or	a		; man hanging?
+	ret	z		; return if not
+	ld	(hl),d		; else put him on map too
+	ret
+
+SET3:	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	ret
+
+CMP3:	cp	(hl)
+	ret	nz
+	inc	hl
+	cp	(hl)
+	ret	nz
+	inc	hl
+	cp	(hl)
+	ret
+
+; Man rescued
+
+RSCUED:	ld	hl,(RESLOC)
+	inc	h		; advance X location
+	ld	(RESLOC),hl
+	dec	h
+	call	CURSCR		; position cursor and get screen address
+	ld	c,'I'
+	ld	(hl),c		; store next rescued man
+	call	PUTCH
+	call	BEEP
+	xor	a
+	ld	(HANGM),a
+	ld	a,(NMEN)
+	inc	a		; incr rescued men counter
+	ld	(NMEN),a
+	ld	hl,NGHOST
+	add	a,(hl)
+	cp	4		; all rescued?
+	ret	nz		; return if not
+	; continue below
+
+; Exit game. Display scores and return to menu.
+
+EXITG:	ld	sp,STACK	; end of game - restore stack
+	call	CLS		; clear screen
+	call	HOME
+	call	CSRON		; enable cursor
+	ld	a,(NMEN)
+	or	a		; any men rescued?
+	jp	z,START		; no, name not deserved in hall of fame
+	cp	4		; all four left?
+	jp	nz,sco1		; no, no congratulations
+	ld	hl,MSGBST	; 'best player'
+	call	PRNTXY
+	ld	a,(NCOPT)
+	cp	3		; all helicopters unharmed?
+	jp	nz,sco1		; no, no congratulations
+	ld	hl,MSGVGP	; 'very good pilot'
+	call	PRNTXY
+sco1:	ld	hl,HISCOR	; high-score table
+	ld	b,5		; table elements
+sco2:	ld	a,(NMEN)	; get # of men rescued
+	cp	(hl)		; compare with value from table entry
+	jp	z,sco4		; branch if same to check helicopters
+	jp	nc,sco5		; branch if higher
+	ld	a,(hl)		; check # of men in table entry
+	cp	4+1
+	jr	nc,sco7		; >4 means end of table
+sco3:	ld	de,25		; score entry size
+	add	hl,de		; point to next entry
+	djnz	sco2		; loop
+	jp	START		; return if could not find a place
+
+sco4:	ld	a,(NCOPT)	; get # of helicopters left
+	inc	hl
+	cp	(hl)		; compare with value from table entry
+	dec	hl
+	jp	z,sco3		; skip this entry if same
+	jp	c,sco3		;  or lower (didn't do better)
+sco5:	push	hl
+	dec	b		; B = number of entries to copy
+	jr	z,sco8
+	ld	hl,HISCOR+4*25-1; src = last byte of one-before-last entry
+	ld	de,HISCOR+5*25-1; dst = last byte of last entry
+sco6:	push	bc
+	ld	bc,25		; score entry size
+	lddr			; shift entries down
+	pop	bc
+	djnz	sco6
+	jr	sco8		; branch to insert new entry
+
+sco7:	push	hl		; remember this entry
+	ld	de,25		; score entry size
+	add	hl,de		; point to next
+	ld	(hl),0FFh	; set new end of table marker
+sco8:	pop	hl		; HL = address of table entry to fill
+	push	hl
+	ld	b,25-1		; score entry size -1
+sco9:	ld	(hl),' '	; clear entry
+	inc	hl
+	djnz	sco9
+	ld	(hl),0		; end with a null
+	ld	hl,ASKNAM
+	call	PRNTXY		; ask player name
+	pop	hl
+	ld	a,(NMEN)
+	ld	(hl),a		; store number of men rescued
+	inc	hl
+	ld	a,(NCOPT)
+	ld	(hl),a		; store number of helicopters left
+	inc	hl
+	ld	e,22		; max length
+	call	GETLN		; get player name
+	jp	START		; done
+
+ASKNAM:	db	10,14,'Enter your name - ',0,0FFh
+MSGBST:	db	 0, 9,'You are the best player!',0,0FFh
+MSGVGP:	db	15,10,' and a very good pilot!',0,0FFh
+
+; Get string from console up to E characters, store at (HL).
+; Returns actual length in B.
+
+GETLN:	ld	b,0
+gnc:	call	GETCH		; wait for key
+	ld	c,a
+	cp	8		; backspace?
+	jr	z,delc		; yes, rubout
+	cp	CR		; CR?
+	ret	z		; return if yes
+	cp	20h
+	jr	c,ign		; other control char: beep and ignore it
+	ld	a,b
+	cp	e		; max length reached?
+	jr	z,ign		; if yes, beep and ignore input
+	inc	b		; incr length
+	ld	(hl),c		; store char
+	inc	hl
+	call	PUTCH		; echo it
+	jr	gnc		; loop for more
+delc:	ld	a,b
+	or	a		; at start?
+	jr	z,ign		; beep if yes
+	dec	b		; else backup one char
+	dec	hl
+	ld	c,8
+	call	PUTCH
+	ld	c,' '
+	ld	(hl),c		; erase it from buffer
+	call	PUTCH		; and from screen
+	ld	c,8
+	call	PUTCH
+	jr	gnc		; loop to process next char
+ign:	ld	c,7		; beep
+	call	PUTCH
+	call	TTFLSH
+	jr	gnc		; loop to process next char
+
+; Animate missile
+
+ANIMM:	push	bc
+	ld	c,(hl)		; get delta X (0 if missile inactive)
+	inc	hl
+	ld	b,(hl)		;  into BC
+	inc	hl
+	ld	e,(hl)		; get Y
+	inc	hl
+	ld	d,(hl)		;  and X coordinates into DE
+	push	hl
+	ld	a,c		; missile active?
+	or	a
+	jp	z,aml6		; jump if not
+	ex	de,hl
+	call	SETCUR		; position cursor
+	ex	de,hl
+	ld	l,d
+	ld	a,e
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	a,(hl)		; fetch screen byte
+	cp	'O'		; helicopter?
+	jr	nz,aml7		; branch if not
+	push	bc
+	ld	c,a
+	call	PUTCH		; else move cursor right
+	pop	bc
+	jr	aml1
+aml7:	push	bc
+	ld	c,' '
+	call	PUTCH		; erase missile from screen
+	pop	bc
+	ld	a,(hl)
+	ld	(hl),' '	; also from memory
+	cp	'-'
+	jp	nz,aml6
+aml1:	ld	a,d		; get X
+	add	a,c		; add delta
+	cp	MAPW		; off screen?
+	jp	nc,aml6		; jump if yes
+	ld	d,a
+	add	hl,bc		; else point to new location
+	dec	c		; delta X > 0?
+	jr	z,aml2		; branch if yes
+	ld	c,8		; backspace
+	call	PUTCH
+	call	PUTCH
+aml2:	ld	a,(hl)
+	cp	'O'		; helicopter?
+	jp	z,HCRASH	; if yes, killed
+	cp	'*'		; ash?
+	ld	c,'+'
+	jr	z,aml3
+	cp	'I'		; man?
+	jr	z,aml5
+	cp	'Y'		; man?
+	jr	z,aml5
+	cp	' '
+	jr	nz,aml6
+	ld	c,'-'		; missile
+aml3:	ld	(hl),c
+	call	PUTCH
+	pop	hl
+	ld	(hl),d		; set new X
+aml4:	inc	hl
+	pop	bc
+	ret
+
+aml5:	ld	(hl),' '
+	ex	de,hl
+	call	EXPLG1		; turn into ghost
+aml6:	ld	hl,-3
+	pop	de
+	add	hl,de		; point to begin of entry
+	ld	(hl),0		; deactivate missile
+	ld	(MSLPTR),hl	; set table pointer
+	ex	de,hl
+	jr	aml4		; and return
+
+; Helicopter crashed
+
+HCRASH:	ld	hl,(HPOS)	; get coordinates
+	ld	a,(HDIR)	; get facing direction
+	ld	b,0
+CRASH:	push	bc
+	ld	b,a
+	call	SETCUR
+	ld	a,b
+	or	a		; helicopter facing left?
+	ld	de,CLR.L
+	jr	z,cr1		; branch if yes
+	ld	de,CLR.R
+cr1:	call	DRHELI		; erase helicopter from the screen
+	ld	a,(HANGM)
+	or	a
+	jr	z,cr2
+	ld	c,' '
+	call	PUTCH		; erase hanging man from screen
+cr2:	ex	de,hl
+	ld	a,e
+	ld	l,d
+	call	SCRADR		; get screen(x,y) address into HL
+	ld	d,' '
+	ld	a,b		; get direction
+	call	SETMAP		; clear helicopter from map
+	call	BEEP
+	ld	hl,(HPOS)
+	call	EXPLOD		; explode
+	pop	bc
+	ld	a,(HANGM)
+	or	b
+	jp	z,NEXTH
+	call	IMPLOD
+	ld	hl,(OLDPOS)
+	call	NWGHST		; new ghost
+	jp	NEXTH
+
+; Explode. Draws 8 dots expanding in all directions
+
+EXPLOD:	ex	de,hl
+	ld	b,0
+expl1:	ld	c,'.'
+	call	EXSTEP		; explode step
+	push	bc
+	ld	a,1		; small delay
+	call	DELAY
+	pop	bc
+	ld	c,0
+	call	EXSTEP		; restore step
+	inc	b
+	ld	a,b
+	cp	32
+	jr	nz,expl1
+	ex	de,hl
+	ret
+
+; Implode. Basically same as above, but in the reverse direction
+
+IMPLOD:	ex	de,hl
+	ld	b,32
+impl1:	ld	c,'.'
+	call	EXSTEP		; explode step
+	push	bc
+	ld	a,2
+	call	DELAY
+	pop	bc
+	ld	c,0
+	call	EXSTEP		; restore step
+	dec	b
+	jp	p,impl1
+	ex	de,hl
+	ret
+
+; Draw one step of the explode animation
+
+EXSTEP:	push	bc
+	call	ECORNR		; do R BR B
+	ld	a,b
+	cpl
+	inc	a
+	ld	h,a		; X=-B
+	ld	l,b		; Y=B
+	call	EXPDOT		; do BL
+	ld	a,b
+	cpl
+	inc	a
+	ld	l,a		; Y=-B
+	ld	h,b		; X=B
+	ld	b,a		; B=-B
+	call	EXPDOT		; do UR
+	call	ECORNR		; do L UL U
+	pop	bc
+	ret
+
+; Draw corner of explode animation
+
+ECORNR:	ld	h,b		; X=B
+	ld	l,0		; Y=0
+	call	EXPDOT		; do R
+	ld	l,b		; X=B
+	ld	h,b		; Y=B
+	call	EXPDOT		; do BR
+	ld	h,0		; X=0
+	ld	l,b		; Y=B
+	jp	EXPDOT		; do B
+
+; Draw single dot of explode animation
+
+EXPDOT:	ld	a,h
+	add	a,a		; X *= 2 (to compensate for aspect ratio)
+	add	a,d		; add center coordinate X
+	ld	h,a
+	ld	a,l
+	add	a,e
+	ld	l,a		; add center coordinate Y
+	ld	a,h
+	cp	MAPW		; X off screen?
+	ret	nc		; return if so
+	ld	a,l
+	cp	MAPH		; Y off screen?
+	ret	nc		; return if so
+	call	CURSCR		; position cursor and get screen address
+	ld	a,(hl)		; see what's there
+	cp	'O'
+	ret	z
+	push	bc
+	ld	a,c
+	or	a		; restore?
+	jr	nz,edot1
+	ld	c,(hl)
+edot1:	call	PUTCH
+	pop	bc
+	ret
+
+; Animate ghost
+
+ANIMG:	push	bc
+	ld	e,(hl)		; get Y coordinate of ghost into E
+	ld	c,e		;  and C
+	ld	a,2
+	call	RND		; get random number 0..1
+	dec	a		; make it -1..0
+	or	a		; for Z80
+	jp	pe,ag1
+	ld	a,(HPOS)	; get helicopter Y location
+	cp	e		; above or below ghost?
+	sbc	a,a		; obtain direction
+	or	1		; make it 1 or -1
+ag1:	add	a,e		; drift towards helicopter
+	cp	MAPH		; don't let it go off screen
+	jr	nc,ag2
+	ld	c,a		; C = new Y coordinate
+ag2:	inc	hl
+	ld	d,(hl)		; get X coordinate into D
+	ld	b,d		;  and B
+	ld	a,1
+	call	RND		; get random number 0..1
+	or	a
+	jr	z,ag3
+	ld	a,(HPOS+1)	; get helicopter X location
+	cp	d		; left or right of ghost?
+	sbc	a,a		; obtain direction
+	or	1		; make it 1 or -1
+ag3:	add	a,d		; drift towards helicopter
+	cp	MAPW-1		; don't let it go off screen
+	jr	nc,ag4
+	ld	b,a		; B = new X coordinate
+ag4:	push	hl
+	ld	a,c		; new coordinates
+	ld	l,b
+	call	SCRADR		; convert to map address
+	ld	a,(hl)		; see what's there
+	cp	'O'		; helicopter?
+	jp	z,HCRASH	; if yes, killed
+	cp	' '		; empty space?
+	jr	nz,ag5		; branch if not
+	inc	hl		; check adjacent location
+	ld	a,(hl)		;  (ghost is 2 chars wide)
+	cp	'O'		; helicopter?
+	jp	z,HCRASH	; if yes, killed
+	cp	' '		; empty space?
+	jr	z,ag6		; branch if yes
+ag5:	ld	b,d		; new location is busy,
+	ld	c,e		;  so we stay put
+ag6:	ex	de,hl
+	push	bc
+	call	SETCUR
+	ld	hl,CLRGH	; clear ghost from old location
+	call	PUTSTR
+	pop	hl
+	push	hl
+	call	SETCUR
+	pop	bc
+	ld	hl,GHOST	; draw ghost on new location
+	call	PUTSTR
+	pop	hl
+	ld	(hl),b		; store new coordinates
+	dec	hl
+	ld	(hl),c
+	inc	hl
+	inc	hl
+	pop	bc
+	ret
+
+; Draw helicopter on the screen.
+
+DRHELI:	push	bc
+	push	hl
+	call	pc0
+	pop	hl
+	push	hl
+	dec	l		; no call to SETCUR here, we know that
+	call	pc0		;  upper row has an offset <>0
+	pop	hl
+	push	hl
+	inc	l
+	call	SETCUR
+	pop	hl
+	pop	bc
+	ret
+
+pc0:	ld	a,(de)
+	inc	de
+	or	a
+	jr	z,pc1
+	add	a,h
+	ld	h,a
+	call	SETCUR
+pc1:	ld	b,3
+pc2:	ld	a,(de)
+	ld	c,a
+	inc	de
+	call	PUTCH
+	djnz	pc2
+	ret
+
+; Beep.
+
+BEEP:	ld	a,(SNDFLG)
+	or	a
+	ret	z
+	push	bc
+	ld	c,a
+	call	PUTCH
+	call	TTFLSH
+	pop	bc
+	ret
+
+ IF DEBUG
+MAPSCR:	call	CLS		; clear the screen
+	call	HOME
+	ld	hl,SCRBUF
+	ld	b,MAPH
+ms1:	push	bc
+	ld	b,MAPW
+ms2:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	ms2
+	pop	bc
+	dec	b
+	call	nz,CRLF
+	inc	b
+	djnz	ms1
+	call	TTFLSH
+ms3:	call	GETCH
+	cp	CR
+	jr	nz,ms3
+	ret
+ ENDIF
+
+GHOST:	db	'()',0
+CLRGH:	db	'  ',0
+
+; Helicopter sprites
+
+CLR.L:	db	 0,'   ',-1,'   '
+CLR.R:	db	-2,'   ',-1,'   '
+COP.L:	db	 0,'O-+',-1,'-+-'
+COP.R:	db	-2,'+-O',-1,'-+-'
+
+; Screen map
+
+SCRMAP:	db	41,' ',4,'#',1,0
+	db	39,' ',2,'#',4,' ',2,'#',1,0
+	db	38,' ',1,'#',8,' ',1,'#',1,0
+	db	37,' ',1,'#',10,' ',1,'#',1,0
+	db	32,' ',1,'Y',2,' ',2,'#',12,' ',1,'#',1,0
+	db	31,' ',4,'#',15,' ',2,'#',12,' ',1,0
+	db	30,' ',1,'#',21,' ',1,'#',12,' ',1,0
+	db	29,' ',1,'#',23,' ',1,'#',8,' ',8,'=',1,0
+	db	23,' ',1,'I',3,' ',2,'#',25,' ',3,'#',5,' '
+	db		1,'|',6,' ',1,'|',1,0
+	db	22,' ',5,'#',30,' ',1,'#',4,' '
+	db		1,'|',6,' ',1,'|',1,0
+	db	20,' ',2,'#',36,' ',2,'#',2,' '
+	db		0FFh,'| -+-  |',0,1,0
+	db	14,' ',1,'Y',3,' ',2,'#',40,' ',2,'#'
+	db		0FFh,'|  O-+ |',0,1,0
+	db	13,' ',5,'#',44,' '
+	db		0FFh,'| -+-  |',0,1,0
+	db	7,' ',1,'I',3,' ',2,'#',49,' '
+	db		0FFh,'|  O-+ |',0,1,0
+	db	6,' ',5,'#',51,' '
+	db		0FFh,'| -+-  |',0,2,'#',1,0
+	db	1,' ',5,'#',56,' '
+	db		0FFh,'|  O-+ |',0,2,' ',5,'#',0
+
+; Lava levels: counter,y,x,man_x,man_y
+
+LAVTBL:	db	61,23, 1, 0, 0
+	db	56,22, 6,21, 7
+	db	51,21,11, 0, 0
+	db	49,20,13,19,14
+	db	44,19,18, 0, 0
+	db	40,18,20, 0, 0
+	db	36,17,22,16,23
+	db	30,16,27, 0, 0
+	db	25,15,29, 0, 0
+	db	23,14,30, 0, 0
+	db	21,13,31,12,32
+	db	15,12,35, 0, 0
+	db	12,11,37, 0, 0
+	db	10,10,38, 0, 0
+	db	 8, 9,39, 0, 0
+	db	 4, 8,41, 0, 0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+KTAB:	db	'D','C','A','B'
+
+SNDFLG:	db	0 ;7		; sound flag: bell character or null
+NMEN:	db	0FFh		; number of men rescued
+
+HISCOR:	db	0FFh		; high scores table, each entry is 25 bytes:
+	ds	5*25-1		;  ds 1  ; # of men rescued (>4 ends list)
+				;  ds 1  ; # of helicopters left
+				;  ds 22 ; player name, blank padded
+				;  db 0
+
+RNDLOC:	ds	2		; random mem location ptr (for RND function)
+RNDBYT:	ds	1		; random byte (for RND function)
+
+HPOS:	ds	2		; helicopter position, X=H,Y=L
+HDIR:	ds	1		;  =0 if helicopter facing left,
+OLDPOS:	ds	2		; previous helicopter position
+OLDDIR:	ds	1		; helicopter direction?
+				; <>0 if facing right
+
+HANGM:	ds	1		; non-zero if man is hanging from helicopter
+GRPCNT:	ds	1		; "grip" time
+FMPOS:	ds	2		; falling man coordinates
+RESLOC:	ds	2		; rescued men location
+NCOPT:	ds	1		; number of helicopters left
+WAVTIM:	ds	1		; men "waving" time
+NGHOST:	ds	1		; number of ghosts
+LAVALV:	ds	1		; lava level
+LAVCNT:	ds	1		; lava time
+MSLPTR:	ds	2		; ptr into MSLTBL
+GHSTBL:	ds	2*4		; ghost coordinate table
+MSLTBL:	ds	4*MAXMSL	; missile table
+ASHTBL:	ds	8*MAXASH	; ash paticle table
+
+	ds	256		; stack space
+STACK	equ	$
+
+SCRBUF:	ds	MAPW*MAPH
+
+	end	START

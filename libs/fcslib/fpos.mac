@@ -1,0 +1,71 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+;  Get current file position into HLDE.
+
+	.Z80
+
+	include	FCSLIB.INC
+
+	public	FPOS
+
+	cseg
+
+; Get current file position.
+
+; Input:
+;   IX = address of file storage region
+; Returns:
+;   DEBC = 32-bit byte position.
+;   CY set on error and error code in A.
+
+FPOS:	ld	c,0
+	ld	b,(ix+FC.BLK)
+	ld	e,(ix+FC.BLK+1)
+	ld	d,(ix+FC.BLK+2)	; DEBC = block * 256 (note: 24 bits max)
+ if 0
+	ld	a,(ix+FC.BLK+3)
+	or	a
+	scf
+	ret	nz
+ endif
+	srl	b
+	rl	e
+	rl	d		; block * 512
+ if 0
+	ret	c
+ endif
+	ld	a,(ix+FC.CUR)
+	add	a,c
+	ld	c,a
+	ld	a,(ix+FC.CUR+1)
+	adc	a,b
+	ld	b,a
+	ld	a,0
+	adc	a,e
+	ld	e,a
+	ld	a,0
+	adc	a,d
+	ld	d,a		; + FC.CUR
+	xor	a		; return success
+	ret
+
+	end

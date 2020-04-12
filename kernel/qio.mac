@@ -1,0 +1,837 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('QIO')
+	TITLE	'RSX280 Queue I/O Packet'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Queue I/O Packet routines                                      ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	ERRORS.INC
+	include	QIO.INC
+	include	IOPKT.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	QCB.INC
+	include	DCB.INC
+	include	TKN.INC
+
+	public	QIO		; queue I/O packet
+	public	GETPKT		; get I/O next packet, called by driver
+	public	IODONE		; end current I/O, called by driver
+	public	$IOEND		; end current I/O, called by ACPs
+	public	IOKILL		; kill all pending I/O packets of a task
+
+	extrn	$CTCB,$CPCB,SEND,$PHYDV,$ALLOC,$FREE,$MCOPY,$REDIR
+	extrn	$CHKPT,SETFLG,CLRFLG,FLWAIT,TKILL2,$SBANK,$UPUTW
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Handle QIO requests. Called with HL = QDB address.
+
+; TODO:
+; - check requests to ensure I/O buffers and IOSB are fully within task
+;   limits (return error if not).
+
+QIO:	push	hl
+	ld	bc,IOPKSZ	; BC = I/O packet size
+	call	$ALLOC		; allocate I/O packet
+	ex	(sp),hl		; push ptr to packet, pop QDB address
+	pop	ix		; get packet start address into IX
+	ret	c		; on error, return
+
+	; setup packet fields
+
+	ld	bc,IDAT
+	ldw	(ix+I.SIZE),bc	; set queue item size
+
+	ld	iy,($CTCB)
+	inc	(iy+T.IOC)	; increase outstanding I/O count
+	ld	a,(iy+T.PRI)
+	ld	(ix+I.PRI),a	; set priority
+
+	push	iy
+	pop	bc
+	ldw	(ix+I.TCB),bc	; set TCB address of caller
+
+	push	hl
+	ld	hl,($CPCB)
+	ld	de,P.BASE
+	add	hl,de
+	ld	a,(hl)		; get task bank
+	exx
+	ld	e,a		; E' = src bank
+	ld	a,($SBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	push	ix
+	pop	hl
+	ld	de,I.QDB
+	add	hl,de
+	ex	de,hl		; DE = dst (ix+I.QDB)
+	pop	hl		; HL = src (QDB in user space)
+	ld	bc,QDBSZ
+	call	$MCOPY		; get QDB from user space into I.QDB
+
+	ld	e,(ix+I.QDB+Q.EFN) ; get event flag number into E
+	push	de
+	push	ix
+	ld	bc,($CTCB)
+	call	CLRFLG		; ensure flag is clear
+	pop	ix
+
+	ldw	hl,(iy+T.CTX)	; get address of task context block
+	ld	a,h
+	or	l
+	jp	z,qio4		; error if not set
+	ld	bc,TX.LUT
+	add	hl,bc		; index into LUN table
+	ld	a,(ix+I.QDB+Q.LUN) ; get LUN
+	dec	a		; 1..16 -> 0..15
+	cp	16		; valid?
+	jp	nc,qio4		; error if not
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	add	hl,bc
+	add	hl,bc
+	add	hl,bc		; index into LUN table
+	ldw	hl,(hl)		; get UCB into HL
+	ld	a,h		; valid?
+	or	l
+	jp	z,qio4		; error if not
+	call	$REDIR		; follow any redirection links
+
+	ldw	(ix+I.UCB),hl	; set UCB address in packet
+
+	call	XLATE		; translate IO.RVB and IO.RLB codes
+	jr	c,qio4
+
+	; check request type
+
+	ld	a,(ix+I.QDB+Q.FUNC) ; check function code
+	cp	20		; is this an ACP request?
+	jr	nc,qio1		; jump if yes
+
+	; handle device request
+
+	cp	IO.KIL
+	jr	nz,qio5
+
+	; IO.KIL requires special processing
+
+	push	iy
+	pop	bc		; get TCB address into BC
+	push	hl
+	pop	iy		; and UCB address into IY
+	call	CLNUCB		; remove all packets from unit's queue
+	ldw	hl,(iy+U.DCB)
+	push	hl
+	ex	(sp),ix		; get DCB address into IX, push packet address
+	call	CLNCPK		; abort current operation, if active
+	pop	ix		; pop packet address
+	xor	a
+	jr	qio3		; free packet and return success
+
+qio5:	call	CHKOFL		; check online/offline status
+	jr	c,qio3		; if offline, free packet and return error
+	call	CHKMNT		; safety check!
+	jr	c,qio3		; on error, free packet and return error
+
+	push	hl
+	ld	bc,E.PEND	; status = request pending
+	ld	de,0
+	call	QSTORE		; store status code in user space
+	pop	hl
+	push	ix		; address of item to add already in IX
+	call	IOREQ		; queue request to driver, HL = UCB
+	pop	ix
+	jr	qio2		; continue processing below
+
+qio1:	; handle ACP request
+
+	ldw	hl,(hl+U.ACP)
+	ld	a,h
+	or	l		; ACP assigned to this unit?
+	ld	a,E.DEVNM
+	scf
+	jr	z,qio3		; error if not, device not mounted
+	push	hl
+	ld	bc,E.PEND	; status = request pending
+	ld	de,0
+	call	QSTORE		; store status code in user space
+	pop	hl
+	push	ix		; address of item to send already in IX
+	call	SEND
+	pop	ix
+	jr	c,qio3		; on error free packet and return
+
+qio2:	pop	de		; E = flag number
+	bit	0,(ix+I.QDB+Q.WAIT) ; wait bit set?
+	ld	bc,($CTCB)
+	call	nz,FLWAIT	; then wait for flag (note: will not cause
+				;  the task to block if the flag has been set
+				;   in the meantime - no race condition here)
+	or	a		; clear CY
+	ret
+
+qio4:	; on error free packet and return
+
+	ld	a,E.BADOP
+	scf
+qio3:	ld	iy,($CTCB)
+	dec	(iy+T.IOC)	; restore original outstanding I/O count
+	pop	bc		; pop flag number
+	push	af		; remember error code
+	ld	de,IOPKSZ	; DE = size
+	push	ix
+	pop	hl		; HL = address
+	call	$FREE		; free I/O packet
+	pop	af		; return error to user
+	ret
+
+;-----------------------------------------------------------------------
+
+; Check if unit is offline
+
+CHKOFL:	cp	IO.RPB
+	ret	z
+	cp	IO.WPB
+	ret	z
+	cp	IO.IDN
+	ret	z
+	push	hl
+	ld	de,U.ST
+	add	hl,de
+	bit	US.OFL,(hl)	; unit offline?
+	pop	hl
+	ret	z		; return success if not
+	ld	a,E.OFL		; else return error
+	scf
+	ret
+
+; TODO:
+; - return error only for write operation if unit is mounted and
+;   requesting task is not the FCP task in mounted device table entry
+;   (or attached task?) -> attach FCP task to mounted device?
+; - allow write access to privileged tasks? (e.g. to loader to swap
+;   out tasks).
+
+; Allowed access:
+; - LDR... unrestricted
+; - Priv task: read-only, attach/detach, write only when attached
+; - Non-priv task: if user is priv, same as priv task, else deny all
+
+CHKMNT:	push	hl
+	ld	bc,U.CW
+	add	hl,bc
+	bit	DV.MNT,(hl)	; mountable device?
+	pop	hl
+	ret	z		; return if not
+
+	ld	a,(ix+I.QDB+Q.FUNC)
+	cp	IO.WLB
+	jr	z,chk1
+
+	cp	IO.WVB
+	jr	z,chk1
+
+	xor	a		; operation allowed
+	ret
+
+chk1:	ldw	de,(ix+I.TCB)	; get TCB of requester task into DE
+
+	push	hl
+	ldw	hl,(hl+U.ACP)
+	cpw	hl,de		; ACP task?
+	pop	hl
+	ret	z		; allowed
+
+	push	hl
+	ld	hl,(LDRTCB##)
+	cpw	hl,de		; LDR... task?
+	pop	hl
+	ret	z		; allowed
+
+	push	hl
+	ld	hl,T.ATTR
+	add	hl,de
+	bit	TA.PRV,(hl)	; task privileged?
+	pop	hl
+	ld	a,E.PERM
+	scf
+	ret	z		; error if not
+
+  IF 0
+	push	hl
+	ldw	hl,(hl+U.ATT)
+	cpw	hl,de		; privileged task attached to this device?
+	pop	hl
+	ret	z		; allowed
+  ELSE
+	xor	a
+	ret
+  ENDIF
+
+;-----------------------------------------------------------------------
+
+; Translate virtual to logical block I/O requests for unmounted devices
+; (for mounted devices virtual block I/O requests are handled by the
+; ACP task). Also checks access permissions.
+
+; Input:
+;   IX = address of I/O packet
+;   HL = UCB address of device
+; Returns:
+;   Z flag set if packet should be redirected to FCP task
+;   CY on error (e.g. privilege violation) and error code in A.
+
+XLATE:	push	hl
+	push	bc
+	ld	bc,U.ST
+	add	hl,bc
+	bit	US.MNT,(hl)	; unit mounted?
+	jr	nz,xlt0		; return if yes, nothing to translate
+
+	ld	a,(ix+I.QDB+Q.FUNC)
+	cp	IO.RVB
+	ld	c,IO.RLB
+	jr	z,xlt2
+
+	cp	IO.WVB
+	ld	c,IO.WLB
+	jr	nz,xlt0
+
+xlt2:	ld	(ix+I.QDB+Q.FUNC),c ; translate operation
+
+xlt0:	pop	bc
+	pop	hl
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Queue I/O packet to the unit and call the driver's IOREQ entry point.
+
+; Input:
+;   HL = UCB address
+;   IX = address of I/O packet
+
+IOREQ:	push	hl		; save UCB address
+	ldw	hl,(hl+U.SCB)
+	lda	iy,(hl+S.PKTL)	; IY = address of I/O packet list head
+iorq1:	ldw	de,(iy)		; get link field into DE
+	ld	a,d
+	or	e		; check if zero
+	jr	z,iorq2		; if yes, we reached the end of the list
+	ld	hl,I.PRI
+	add	hl,de
+	ld	a,(hl)		; else get priority from queue in chain
+	cp	(ix+I.PRI)	; compare with this item's priority
+	jr	c,iorq2		; jump if item with lower priority found
+	push	de
+	pop	iy		; else go to next item in list
+	jr	iorq1		; and try again
+
+; we arrive here with:
+;   IY = prev item in list or list head ptr
+;   DE = current item in list
+;   IX = address of item to insert
+;   UCB address on stack
+
+iorq2:	push	ix		; get address of packet to insert
+	pop	hl		;  into HL
+	ldw	(iy),hl		; set prev pointer in list
+	ldw	(hl),de		; set next field on inserted packet
+	pop	iy		; get UCB adress into IY
+DRIORQ:	ldw	hl,(iy+U.DCB)	; get DCB address into HL
+	ldw	hl,(hl+D.EPT)	; fetch address of dispatch table
+	inc	hl		; offset to ioreq function is 3
+	inc	hl
+	inc	hl
+	jp	(hl)		; call the IOREQ entry point of driver
+
+;-----------------------------------------------------------------------
+
+; Called by the device driver to dequeue and return next I/O packet for the
+; specified unit. The packet should be deallocated from memory afterwards
+; by calling IODONE. If a task is attached to the unit, the routine returns
+; only packets queued by that task.
+
+; Input:
+;   IY = UCB address of the controller to get a packet for.
+; Returns:
+;   IY = UCB address of the unit the packet is for.
+;   IX = I/O packet or null (and CY set) if queue empty.
+
+; Notes:
+; - For units that share the same SCB, the returned UCB address in IY
+;   may be different than the input UCB address.
+
+; TODO:
+; - copy data to driver space (for loadable drivers)
+
+GETPKT:	ldw	de,(iy+U.SCB)	; get SCB address into DE
+	ld	hl,S.ST
+	add	hl,de
+	ld	a,(hl)
+	or	a		; controller busy?
+	scf
+	ret	nz		; return with CY set if yes
+	ld	hl,S.PKTL	; SCB address still in DE
+	add	hl,de		; get address of ptr to next packet into HL
+gpk0:	ldw	de,(hl)		; get address of next I/O packet into DE
+	push	de
+	pop	ix		; get packet address into IX
+	ld	a,d
+	or	e		; end of list?
+	ld	a,E.QEMP
+	scf
+	ret	z		; return error if yes
+	ldw	iy,(ix+I.UCB)	; get address of unit this packet is for
+	ldw	bc,(iy+U.ATT)	; get TCB of attached task, if any, into BC
+	ld	a,b
+	or	c		; task attached to this unit?
+	jr	z,gpk2		; jump if not, dequeue and process packet
+	bit	DV.TTY,(iy+U.CW); terminal device?
+	jr	z,gpk1		; jump if not
+	ld	a,(ix+I.QDB+Q.SUBF)
+	and	TF.WBT		; write pass-thru bit set?
+	jr	nz,gpk2		; jump if yes, process packet
+gpk1:	ld	a,(ix+I.TCB)	; else compare with TCB from packet
+	cp	c		; same task?
+	jr	nz,gpk3		; skip if not
+	ld	a,(ix+I.TCB+1)
+	cp	b
+	jr	z,gpk2		; else dequeue packet and process it
+gpk3:	push	ix
+	pop	hl		; otherwise get pointer to next packet into HL
+	jr	gpk0		; and try again
+
+gpk2:	ldw	bc,(ix+I.LNK)	; get link field
+	ldw	(hl),bc		; dequeue packet
+	ld	a,(ix+I.QDB+Q.FUNC) ; check function code
+	cp	IO.ATT		; attach function?
+	jr	z,ioatt		; jump if yes - handle directly
+	cp	IO.DET		; detach function?
+	jr	z,iodet		; jump if yes - handle directly
+gpk4:	push	ix
+	pop	bc
+	ldw	de,(iy+U.SCB)
+	ld	hl,S.CPKT
+	add	hl,de	
+	ldw	(hl),bc		; else set current packet address in SCB
+	ld	hl,S.ST
+	add	hl,de
+	ld	(hl),1		; set busy state in SCB
+	xor	a		; and return with IX = packet address
+	ret
+
+; detach from device
+
+iodet:	ld	bc,0		; BC = 0 to clear TCB address in UCB
+	jr	att1
+
+; attach to device
+
+ioatt:	ldw	bc,(ix+I.TCB)	; get task TCB into BC
+att1:	ldw	(iy+U.ATT),bc	; set U.ATT accordingly
+	bit	UC.ATT,(iy+U.CTL) ; driver wants attach/detach notifications?
+	jr	nz,gpk4		  ; branch if yes
+	ld	bc,0		; BC = success code
+	ld	de,0		; DE = transfer count
+	call	QSTORE		; store result in task space
+	call	SETFRE		; set flag and free I/O packet
+	jp	GETPKT		; loop back to get next packet, if any
+
+;-----------------------------------------------------------------------
+
+; Called by the device driver to end I/O packet processing.
+; The requesting task is resumed and the memory allocated to the I/O
+; packet is freed.
+
+; Input:
+;   IY = UCB address
+;   BC = I/O return code (first word - error/success)
+;   DE = I/O return code (second word - typ. transfer count)
+
+IODONE:	ldw	ix,(iy+U.SCB)	; get SCB address into IX
+	ld	(ix+S.ST),0	; clear busy state in SCB
+	ldw	hl,(ix+S.CPKT)	; get address of current packet into HL
+	xor	a
+	ld	(ix+S.CPKT),a	; and clear old pointer
+	ld	(ix+S.CPKT+1),a
+	push	hl
+	pop	ix		; IX = packet address
+	call	QSTORE		; store result
+	call	SETFRE		; set event flag and free I/O packet
+	jp	DRIORQ		; call driver's IOREQ entry point to
+				;  process next packet, IY = UCB
+
+; Called by certain ACPs to end I/O processing.
+
+; Input:
+;   BC = TCB address of the I/O requesting task
+;   E  = event flag number to set
+
+$IOEND:	push	bc		; save TCB address
+	call	SETFLG		; set flag and resume task
+	pop	ix		; get TCB address into IX
+IEND:	dec	(ix+T.IOC)	; decrease outstanding I/O count
+	ret	nz		; return if not zero
+	bit	T2.ABO,(ix+T.ST+1) ; else check if task is being aborted
+	jp	nz,TKILL2	; continue/finish the abort process if yes
+	bit	TS.CKR,(ix+T.ST); checkpoint requested?
+	ret	z		; return normally if not
+	jp	$CHKPT		; else try to checkpoint the task
+
+; Set event flag, decrease task's outstanding I/O count and free I/O packet
+; Input:
+;   IX = packet address
+
+SETFRE:	ldw	bc,(ix+I.TCB)	; get TCB of requesting task into BC
+	ld	e,(ix+I.QDB+Q.EFN) ; get flag number into E
+	push	bc		; save TCB address
+	push	iy		; save UCB address
+	push	ix
+	call	SETFLG		; set flag and resume task
+	pop	hl		; packet addr now in HL
+	ld	de,IOPKSZ	; size in DE
+	call	$FREE		; free I/O packet
+	pop	iy		; restore UCB address
+	pop	ix		; get TCB address into IX
+	push	iy
+	call	IEND		; continue/abort/checkpoint the task
+	pop	iy
+	ret
+
+; Store I/O result in user space.
+; Input:
+;   IX = packet address
+;   BC = 1st word of I/O status
+;   DE = 2nd word
+
+QSTORE:	ldw	hl,(ix+I.TCB)
+	ld	a,h
+	or	l
+	ret	z
+	push	de
+	ld	de,T.PCB
+	add	hl,de
+	ldw	de,(hl)
+	ld	hl,P.BASE
+	add	hl,de
+	ld	e,(hl)		; E = task bank
+	ldw	hl,(ix+I.QDB+Q.IOSB) ; HL = addr in user space to store result
+	call	$UPUTW		; store first word (completion code)
+	pop	bc
+	call	$UPUTW		; store second word (transfer count)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Scan the physical device table and call DVIOKL for each device with
+; the specified task TCB as argument. Called with interrupts disabled
+; by the task manager.
+
+; TODO:
+; - scan the complete device table, or only the devices on the assigned
+;   task LUNs? [that means that if a LUN is reassigned, all pending
+;   packets on the prev LUN should be deleted if the device is not
+;   reassigned to another LUN.]
+
+; Input:
+;   BC = task TCB
+; Returns:
+;   A<>0 if task had outstanding I/O, else 0
+; Preserves BC
+
+IOKILL:	xor	a
+	ld	(OIOFLG),a	; clear 'outstanding I/O' flag
+	ld	hl,$PHYDV	; get head address of physical device list
+k0:	ldw	hl,(hl)		; get DCB address
+	ld	a,h
+	or	l		; end of list?
+	jr	z,IOCLN		; exit to IOCLN if yes
+	push	hl
+	call	DVIOKL		; kill any pending I/Os on this device
+	pop	hl
+	jr	k0		; loop to process next
+
+; Scan the task's LUN table and queue an IO.CLN packet for any active FCBs.
+
+IOCLN:	push	bc
+	push	bc
+	pop	ix		; get TCB address into IX
+	ldw	hl,(ix+T.CTX)	; get address of context block
+	ld	a,h
+	or	l
+	jr	z,k2		; return if not set
+	lda	hl,(hl+TX.LUT)	; index into LUN table
+	ld	b,16
+k1:	push	bc
+	ldw	de,(hl)		; get UCB address into DE
+	inc	hl
+	inc	hl
+	ex	de,hl
+	call	$REDIR		; follow redirect pointers
+	ex	de,hl
+	ldw	bc,(hl)		; get FCB into BC
+	xor	a
+	ld	(hl),a		; clear FCB in case the task is fixed
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	a,b
+	or	c
+	push	hl
+	call	nz,QIOCLN	; queue IO.CLN packet
+	pop	hl
+	pop	bc
+	djnz	k1		; loop until all LUNs processed
+k2:	ld	a,(OIOFLG)	; return 'outstanding I/O' flag in A
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; Scan the I/O packet list for the given device and remove any existing
+; packets belonging to the specified task. Also detaches the task from
+; all units.
+
+; Input:
+;   HL = DCB address
+;   BC = task TCB
+
+; Called by the scheduler with interrupts disabled when exiting or
+; aborting a task.
+
+; Preserves BC.
+
+DVIOKL:	push	hl
+	pop	ix		; get DCB address into IX
+	lda	hl,(hl+D.UCBL)	; point to head of device's UCB list
+dvk1:	ldw	hl,(hl)		; get UCB address into HL
+	ld	a,h
+	or	l		; end of list?
+	ret	z		; return if yes
+	push	hl
+	push	hl
+	pop	iy		; UCB address now in IY
+	call	CLNUCB		; delete all task's packets from this unit
+	call	CLNCPK		; kill current I/O, if active for this task
+	call	CLNATT		; detach from attached units
+	pop	hl
+	jr	dvk1		; loop to process next
+
+; Kill current I/O. IX = DCB address, IY = UCB address, BC = TCB address
+
+CLNCPK:	ldw	hl,(iy+U.SCB)	; get SCB address into HL
+	ldw	hl,(hl+S.CPKT)	; get address of current packet
+	ld	a,h
+	or	l		; active I/O?
+	ret	z		; return if not, nothing to do
+	ldw	hl,(hl+I.TCB)	; get TCB address from current packet
+	cpw	hl,bc		; match?
+	ret	nz		; return if not
+	ld	a,TK.EIO
+	ld	(OIOFLG),a	; else set outstanding I/O flag
+	push	bc
+	push	ix
+	push	iy
+	call	DRVKIL		; and call driver's IOKILL entry point
+	pop	iy
+	pop	ix
+	pop	bc
+	ret
+
+; Call driver's IOKILL entry point. IX = DCB address, IY = UCB address.
+
+; Side effects: driver may call IODONE to free current packet and get
+; a new one.
+
+DRVKIL:	ldw	hl,(ix+D.EPT)
+	ld	de,6		; offset to iokill function is 6
+	add	hl,de
+	jp	(hl)		; call driver with UCB address in IY
+
+; Detach task. IY = UCB address, BC = task TCB.
+; [Send a synthetic IO.DET packet instead?]
+
+CLNATT:	ldw	hl,(iy+U.ATT)	; check TCB of attached task
+	cpw	hl,bc		; matches the current task?
+	ret	nz		; return if not
+	ld	hl,0
+	ld	(iy+U.ATT),hl	; else detach the task
+	push	bc
+	push	ix
+	push	iy
+	call	DRIORQ		; call the device driver's IOREQ
+	pop	iy		;  to prevent possible stall
+	pop	ix
+	pop	bc
+	ret
+
+; Delete all task's packets from the specified unit
+
+CLNUCB:	ldw	hl,(iy+U.SCB)	; get SCB address into HL
+	lda	hl,(hl+S.PKTL)
+	push	hl
+	ex	(sp),ix		; get I/O packet list head address into IX
+ikl1:	ldw	hl,(ix)		; get packet address into DE
+	ld	a,h
+	or	l		; end of list?
+	jr	z,ikl3		; return if yes
+	ldw	hl,(hl+I.TCB)	; get TCB address from I/O packet
+	cpw	hl,bc		; match?
+	jr	z,ikl2		; dequeue and free the packet if yes
+	push	hl
+	pop	ix		; else go to next paket in list
+	jr	ikl1		; and loop until all processed
+
+ikl2:	ld	a,TK.EIO
+	ld	(OIOFLG),a	; set outstanding I/O flag
+	ldw	de,(hl)		; get link field
+	ldw	(ix),de		; dequeue packet
+	push	hl		; push dequeued I/O packet address
+	ex	(sp),ix		; push IX, pop packet address
+	push	bc
+	ld	bc,E.ABOP
+	ld	de,0
+	call	QSTORE		; store error code in user space
+	pop	bc
+	ex	(sp),ix		; push packet address, restore IX
+	pop	hl		; pop packet address into HL
+	ld	de,IOPKSZ	; packet size in DE
+	push	ix
+	push	bc
+	call	$FREE		; free I/O packet
+	pop	bc
+	ld	hl,T.IOC
+	add	hl,bc
+	dec	(hl)		; decrement task's outstanding I/O count
+	pop	ix
+	jr	ikl1		; and loop until all task's packets are freed
+
+ikl3:	pop	ix
+	ret
+
+; Queue IO.CLN packet. IX = task TCB, BC = FCB address, DE = UCB address.
+
+QIOCLN:	ld	a,TK.EIO
+	ld	(OIOFLG),a	; set outstanding I/O flag
+
+	ld	hl,U.ACP
+	add	hl,de
+	ldw	hl,(hl)
+	ld	a,h
+	or	l
+	ret	z		; return if no ACP assigned to this unit
+				;  (should not appen)
+	push	ix
+	push	de
+	push	bc
+	ld	bc,IOPKSZ	; packet size
+	call	$ALLOC		; allocate packet
+	pop	bc
+	pop	de
+	pop	ix
+	ret	c		; on error return
+
+	; setup IO.CLN packet
+
+	push	hl		; push packet address
+	inc	hl		; skip I.LNK
+	inc	hl
+	ld	a,(ix+T.PRI)
+	ld	(hl),a		; set I.PRI
+	inc	hl
+	xor	a
+	ld	(hl),IDAT	; set I.SIZE (note IDAT and not IOPKSZ)
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a		; no TCB I.TCB
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),e		; set I.UCB
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),IO.CLN	; set function code Q.FUNC
+	inc	hl
+	ld	(hl),a		; set subfunction Q.SUBF
+	inc	hl
+	ld	(hl),a		; no LUN Q.LUN
+	inc	hl
+	ld	(hl),a		; no event flag Q.EFN
+	inc	hl
+	ld	(hl),a		; don't wait Q.WAIT
+	inc	hl
+	ld	(hl),a		; no result address Q.IOSB
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a		; no AST
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),c		; set FCB Q.P1
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	(hl),e		; set UCB Q.P2
+	inc	hl
+	ld	(hl),d
+
+	ex	(sp),ix		; push TCB, pop packet address
+	ld	hl,U.ACP
+	add	hl,de
+	ld	hl,(hl)		; get TCB address of ACP task into HL
+	push	ix		; push packet address again
+	call	SEND
+	pop	hl		; pop packet address
+	pop	ix		; pop TCB
+	ret	nc		; return on success
+
+	; on error free packet
+
+	push	ix
+	ld	de,IOPKSZ	; DE = size
+	call	$FREE		; free I/O packet, address already in HL
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+OIOFLG:	ds	1		; outstanding I/O flag for IOKILL routine
+
+	end

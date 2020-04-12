@@ -1,0 +1,99 @@
+
+Syntax:
+
+  TKB [outfile[,symfile[,mapfile]]]=inpfile1,inpfile2,.../options
+
+If 'outfile' is not specified, the output file will have the same name as
+the first input object file, but with a TSK extension.
+
+For help on TKB option switches type
+
+  HELP TKB OPTIONS
+
+\OPT*IONS
+
+TKB accepts the following options:
+
+  /TASK=tttttt  - sets the task name to 'tttttt' (max 6 chars). If the TASK
+                  option is not specified, the task name will be set to the
+                  first six chars of the output file name.
+
+  /ID=tttttt    - sets the task ID to 'tttttt' (max 6 chars). If the ID option
+                  is not specified, the field will be set to all blanks.
+
+  /EXTTSK=nnnn  - specifies an additional amount of memory (in bytes) to
+                  allocate to MP/M and RSX180 tasks, as decimal number.
+
+  /PRI=nnn      - specifies the default task priority, as decimal number.
+                  Defaults to 50.
+
+  /PRIV         - indicates that the task is privileged. The switch can be
+                  negated like /NOPRIV or /-PRIV to indicate that the task
+                  is not privileged. Defaults to non-privileged.
+
+  /ASG=dev:lun  - sets the initial LUN assignment for the task. The argument
+                  is a comma-separated list of device name and LUNs. One
+                  device can be assigned to several LUNs by separating them
+                  by colons, or by specifying a range in the form n-m. The
+                  default assignment is equivalent to SY0:1-4,TI:5,CL:6
+
+  /XM           - extra memory; reduces buffer space and writes temporary
+                  data to disk.
+
+  /DSEG=hhhh    - data origin; sets memory origin for common and data area.
+
+  /CSEG=hhhh    - program origin; changes default (0100h) program origin
+                  address to hhhh.
+
+  /EPT=n        - entry point; set start address to label [or address] n.
+
+  /LOAD=hhhh    - change default load address of module to hhhh, default is
+                  0100h.
+
+  /ALIGN=nn     - align all modules and segments to nn-byte boundary (e.g.
+                  2=aligns to word boundary)
+
+  /OFMT=fmt     - select output file format, fmt can be:
+                    COM    - CP/M executable (default under CP/M)
+                    PRL    - CP/M Plus and MP/M page-relocatable
+                    RSP    - MP/M resident system process
+                    SPR    - MP/M system page relocatable file.
+                    SPR:B  - CP/M Plus system page relocatable with separate
+                             code and data segments
+                    RSX    - CP/M Plus RSX page relocatable file
+                    TSK    - RSX180 task file (default under RSX180).
+
+  /NOHDR        - suppress file header (TSK, PRL, RSP, etc.)
+
+  /PAR=name     - define partition name for RSX180 task file, default is GEN.
+
+  /PRI=n        - define RSX180 task priority, default is 50
+
+  /TASK=name    - define RSX180 task name.
+
+  /IDENT=id     - define RSX180 task identification code, defaults to the
+                  value stored in the object file.
+
+  /PRIV         - builds privileged RSX180 task.
+
+  /ACP          - builds RSX180 ACP task.
+
+  /CLI          - builds RSX180 CLI task.
+
+  /[NO]CKP      - enables/disables RSX180 task checkpointing.
+
+  /[NO]SHF      - enables/disables RSX180 task shuffling.
+
+  /Q            - lists symbols with leading question mark.
+
+  /S or /LB     - search preceding file as a library.
+
+  /TD=dir       - specifies drive and directory into which store intermediate
+                  (temporary) files.
+
+  /LD=dir       - specifies the source of RQST library files.
+
+  /UIC=[g,u]    - specifies the default UIC of the RSX180 task.
+
+  /DIR=dir      - specifies the default directory of the RSX180 task.
+

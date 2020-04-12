@@ -1,0 +1,1728 @@
+;**********************************************************************;
+;                                                                      ;
+;   File Structure Verification Utility for RSX180.                    ;
+;   Copyright (C) 2020, Hector Peraza.                                 ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.02'
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNDSK	equ	2
+
+EFN	equ	9
+
+S1.LI	equ	0		; list index file
+S1.DV	equ	1		; validate directories
+S1.ID	equ	2		; show program ID
+S1.FR	equ	3		; show available space on volume
+S1.LO	equ	4		; scan for lost files
+S1.RC	equ	5		; read check
+S1.RE	equ	6		; recover orphaned blocks
+S1.UP	equ	7		; update bitmap
+
+FVER.H	equ	5		; TODO: include SYSCONF.INC
+FVER.L	equ	0
+
+BMHSZ	equ	16
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,ADEC,HLDEC,LDEC,GCML,RCML
+	extrn	UCASE,ERRSTR,CVTWD,CVTLD,CPHLDE,CRLF,TTFLSH
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack
+	call	GETTOP		; get top of memory
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	VERIFY		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m4		; exit normally if yes
+
+	call	CMLERR		; else display error
+m3:	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m4:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'VFY -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'VFY -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Copy string @HL to @DE.
+
+STRCPY:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Convert device name in DE-C to string @HL
+
+CVTDEV:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	e,c
+	ld	d,0
+	xor	a
+	call	CVTWD
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+ISBLNK:	call	ISEOL
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+ISEOL:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+GETNS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process the command line and execute the specified action.
+
+VERIFY:	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	ld	hl,baddev
+	jp	c,ERROR		; on error, exit
+
+	ld	(dev),de	; save device name
+	ld	a,c
+	ld	(dev+2),a	; and unit
+
+	xor	a
+	ld	(optsw),a
+
+chkopt:	ld	de,(lnptr)	; check remainder of command line
+	call	GETNS		; skip any spaces
+	call	ISEOL		; end of command?
+	jp	z,VFY		; jump if yes
+	cp	'/'		; option switch?
+	jp	nz,CMDERR	; error if not
+	inc	de		; skip switch char
+	ld	a,(de)
+	call	ISEOL
+	jp	z,CMDERR
+	call	UCASE
+	ld	b,a		; first switch character
+	inc	de
+	ld	a,(de)
+	call	ISEOL
+	jp	z,CMDERR
+	call	UCASE
+	ld	c,a		; second switch character
+	inc	de
+	ld	(lnptr),de
+	ld	hl,swtab
+sw1:	ld	a,(hl)
+	or	a		; end of table?
+	jp	z,CMDERR	; error if yes, unknown switch
+	inc	hl
+	cp	b		; switch name matches?
+	jr	nz,sw2		; skip if not
+	ld	a,(hl)
+	cp	c
+	jr	nz,sw2
+	inc	hl
+	ld	b,(hl)		; get bit number
+	ld	a,80h
+	inc	b
+sw3:	rlca			; get bit into position
+	djnz	sw3
+	ld	hl,optsw
+	or	(hl)		; set switch bit
+	ld	(hl),a
+	jr	chkopt		; process next option switch
+sw2:	inc	hl
+	inc	hl
+	jr	sw1		; skip to next switch in table
+
+swtab:	db	'LI',S1.LI
+	db	'DV',S1.DV
+	db	'ID',S1.ID
+	db	'FR',S1.FR
+	db	'LO',S1.LO
+	db	'RC',S1.RC
+	db	'RE',S1.RE
+	db	'UP',S1.UP
+	db	0
+
+VFY:	ld	a,(optsw)
+	or	a		; option specified?
+	jp	z,VFYDF		; run a basic consistency check if not
+	bit	S1.LI,a		; /LI?
+	jp	nz,VFYLI	; list index file if yes
+	jp	CMDERR
+
+;-----------------------------------------------------------------------
+
+; Default test - Basic consistency check
+
+VFYDF:	call	ASNDEV		; assign device to LUN and get info
+	ret	c
+
+	ld	a,(luninf+3)
+	bit	US.MNT,a	; unit mounted?
+	ld	hl,emnt
+	call	nz,ERROR	; display warning if yes
+
+	ld	hl,-1
+	ld	(qio2+Q.BLK),hl	; invalidate inobuf
+
+	call	CHKID		; Read and check volume ID
+	ret	c
+
+	ld	hl,msg1
+	call	PUTSTR
+	call	prdevn		; output physical device name
+	call	CRLF
+	call	CHKBMP		; check allocation bitmap
+
+	ld	hl,(ixcnt)
+	ld	a,(ixcnt+2)
+	ld	b,a
+	call	CL2BK
+	ex	de,hl
+	ld	c,b
+	ld	hl,msg2
+	call	report		; output index file report
+	ld	hl,(bmcnt)
+	ld	a,(bmcnt+2)
+	ld	b,a
+	call	CL2BK
+	ex	de,hl
+	ld	c,b
+	ld	hl,msg3
+	call	report		; output bitmap file report
+	call	CRLF
+	ret
+
+baddev:	db	'Invalid device specification',0
+edevt:	db	'Invalid device type',0
+emnt:	db	'Warning - Checking mounted volume',0
+
+report:	call	PUTSTR
+	ld	hl,msg4
+	call	PUTSTR
+	push	hl
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	call	SUB24
+	call	prnt24		; output free blocks
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	push	hl
+	ex	de,hl
+	ld	b,c
+	call	prnt24		; output used blocks
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	call	prnt24		; output total blocks
+	ld	c,CR
+	jp	PUTCH
+
+prnt24:	push	de
+	push	bc
+	ex	de,hl		; get 24-bit value into LDE
+	ld	l,b
+	ld	h,0		; make it 32-bit
+	xor	a
+	call	LDEC		; output value
+	pop	bc
+	pop	de
+	ret
+
+prdevn:	ld	hl,luninf
+	ld	c,(hl)		; output physical device name
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	jp	PUTCH
+
+msg1:	db	CR,LF,LF,'Consistency check of index and bitmap on ',0
+msg2:	db	CR,LF,'Index  ',0
+msg3:	db	CR,LF,'Bitmap ',0
+msg4:	db	'indicates ',0,' blocks free, ',0,' blocks used out of ',0
+
+; List the index file
+
+VFYLI:	call	ASNDEV		; assign device to LUN and get info
+	ret	c
+
+  IF 0
+	ld	a,(luninf+3)
+	bit	US.MNT,a	; unit mounted?
+	ld	hl,emnt
+	call	nz,ERROR	; display warning if yes
+  ENDIF
+
+	ld	hl,-1
+	ld	(qio2+Q.BLK),hl	; invalidate inobuf
+
+	call	CHKID		; Read and check volume ID
+	ret	c
+
+	ld	hl,msg5
+	call	PUTSTR
+	call	prdevn		; output physical device name
+	call	CRLF
+
+	ld	de,(inodes)
+	ld	hl,1
+list:	ld	(ino),hl
+	push	de
+	call	RDINOD
+	ld	hl,(inode+IE.LCNT)
+	ld	a,h
+	or	l
+	ld	hl,0
+	or	a
+	call	nz,filerr	; list inode
+	pop	de
+	ld	hl,(ino)
+	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,list
+	ret
+
+msg5:	db	CR,LF,'Listing of index on ',0
+
+; Assign LUNDSK to device and get device info.
+
+ASNDEV:	ld	de,(dev)	; get device name
+	ld	a,(dev+2)	;  and unit
+	ld	c,a
+
+	ld	b,LUNDSK
+	SC	.ALUN		; assign LUN to device
+	jp	c,SYSERR
+
+	ld	hl,luninf
+	ld	c,LUNDSK
+	SC	.GTLUN		; get device info
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	ld	hl,edevt
+	jp	z,ERROR		; error if not
+
+	bit	DV.MNT,a	; device mountable?
+	jp	z,ERROR		; error if not
+
+;-----------------------------------------------------------------------
+
+; Read and check Volume ID block
+
+CHKID:	ld	hl,0
+	ld	de,1		; HLDE = 1
+	call	RDBLK		; read volume ID block
+	jp	c,SYSERR
+
+	; Volume ID check:
+	; 1) ensure block 0 passes P112 checksum test (if bootable)
+	; 2) ensure Volume ID is valid on block 1, else abort operation
+	; 3) ensure filesystem version number is valid, else abort operation
+
+	ld	hl,(iobuf+32)
+	ld	a,(iobuf+32+2)
+	ld	(nblks),hl	; set variables to be used by this and
+	ld	(nblks+2),a	;  other routines
+
+	ld	hl,(iobuf+36)
+	ld	(dfprot),hl
+
+	ld	hl,(iobuf+64)
+	ld	a,(iobuf+64+2)
+	ld	(ixblk),hl
+	ld	(ixblk+2),a
+
+	ld	hl,(iobuf+68)
+	ld	a,(iobuf+68+2)
+	ld	(bmblk),hl
+	ld	(bmblk+2),a
+
+	ld	a,(iobuf+48)
+	ld	(clfact),a
+
+	ld	hl,iobuf
+	ld	de,vid
+	ld	b,6
+chk1:	ld	a,(de)
+	cp	(hl)
+	jr	nz,chk2
+	inc	hl
+	inc	de
+	djnz	chk1
+	jr	chk3
+
+chk2:	; signature mismatch
+
+	ld	hl,ermsg1	; Invalid volume signature
+	jp	ERROR
+
+chk3:	ld	hl,(iobuf+8)
+	ld	(fvers),hl
+	ld	a,h
+	cp	FVER.H
+	jr	nz,chk4
+	ld	a,l
+	cp	FVER.L
+	jr	z,chk5
+
+chk4:	; filesystem version mismatch
+
+	ld	hl,ermsg2	; Invalid filesystem version
+	jp	ERROR
+
+chk5:	; check nblks
+
+ IF 0
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	ld	de,(devblk)
+	ld	a,(devblk+2)
+	ld	c,a
+	ld	a,b
+	or	h
+	or	l
+	jr	z,chk6		; error if nblks is zero
+	call	CMP24		;  or if larger than device size
+	jr	nc,chk7
+
+chk6:	ld	(nblks),de	; fix
+	ld	a,c
+	ld	(nblks+2),a
+	ld	hl,ermsg3
+	call	ERROR		; warning
+ ENDIF
+
+chk7:	; check ixblk
+
+	ld	de,(ixblk)
+	ld	a,(ixblk+2)
+	ld	c,a
+	call	chkrng		; check range
+	ld	hl,ermsg4
+	jp	c,ERROR
+
+	; check bmblk
+
+	ld	de,(bmblk)
+	ld	a,(bmblk+2)
+	ld	c,a
+	call	chkrng		; check range
+	ld	hl,ermsg5
+	jp	c,ERROR
+
+ IF 0
+	; save changes back
+
+	ld	hl,0
+	ld	de,1		; HLDE = 1
+	ld	a,(rdonly)
+	or	a
+	call	z,WRBLK
+	ret	c
+ ENDIF
+	; setup variables needed to access the bitmap file later on
+
+	ld	hl,(nblks)	; get volume size in blocks
+	ld	a,(nblks+2)
+	ld	b,a
+	call	BK2CL		; convert to clusters
+	ld	a,7
+	call	ADD24B
+	rr	b		; shift-in possible CY from addition
+	rr	h
+	rr	l
+	call	SHRBHL
+	call	SHRBHL
+	ld	a,BMHSZ
+	call	ADD24B
+	ld	(bmsize),hl	; bitmap bytes = (nclusters + 7) / 8 + BMHSZ
+	ld	a,b
+	ld	(bmsize+2),a
+
+	ld	de,511
+	call	ADD24W
+	ld	l,h
+	ld	h,b
+	call	SHRHL
+	ld	(bmblks),hl	; bitmap blocks = (bitmap bytes + 511) / 512
+
+	; read the first block of the index file
+
+	ld	hl,(ixblk+2)
+	ld	h,0
+	ld	de,(ixblk)
+	call	RDBLK
+	jp	c,SYSERR
+
+	ld	ix,iobuf+0	; point to INDEXF.SYS inode
+
+	ld	l,(ix+IE.USED)
+	ld	h,(ix+IE.USED+1)
+	ld	a,(ix+IE.USED+2)
+	ld	(ixblks),hl
+	or	a
+;;	jp	nz,...
+
+	add	hl,hl
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	add	hl,hl
+	adc	a,a
+	ld	(inodes),hl	; there are 8 inodes/block
+	or	a
+;;	jp	nz,...
+
+	; 'open' the master directory, so we can access it later on
+	; using file I/O routines (basically, we're 'mounting' the
+	; volume at this point).
+
+	ld	ix,inobuf+(5-1)*64 ; point to MASTER.DIR inode
+				   ; !!! assumes MASTER.DIR has not moved !!!
+	ld	a,(ix+IE.ATTR)
+	ld	(mdfcb+F.ATTR),a
+
+	push	ix
+	pop	hl
+	ld	de,IE.NAME
+	add	hl,de
+	ld	de,mdfcb+F.NAME
+	ld	bc,9+3+2
+	ldir			; copy file name, ext and vers
+
+	ld	a,(ix+IE.USER)
+	ld	(mdfcb+F.USER),a
+	ld	a,(ix+IE.GRP)
+	ld	(mdfcb+F.GROUP),a
+
+	ld	hl,5
+	ld	(mdfcb+F.INODE),hl
+
+	ld	l,(ix+IE.LCNT)
+	ld	h,(ix+IE.LCNT+1)
+	ld	(mdfcb+F.LCNT),hl
+
+	ld	l,(ix+IE.SEQN)
+	ld	h,(ix+IE.SEQN+1)
+	ld	(mdfcb+F.SEQNO),hl
+
+	ld	l,(ix+IE.ALOC)
+	ld	h,(ix+IE.ALOC+1)
+	ld	a,(ix+IE.ALOC+2)
+	ld	(mdfcb+F.NALOC),hl
+	ld	(mdfcb+F.NALOC+2),a
+
+	ld	l,(ix+IE.USED)
+	ld	h,(ix+IE.USED+1)
+	ld	a,(ix+IE.USED+2)
+	ld	(mdfcb+F.NUSED),hl
+	ld	(mdfcb+F.NUSED+2),a
+
+	ld	l,(ix+IE.LBCN)
+	ld	h,(ix+IE.LBCN+1)
+	ld	(mdfcb+F.LBCNT),hl
+
+	push	ix
+	pop	hl
+	ld	de,IE.BMAP
+	add	hl,de
+	ld	de,mdfcb+F.BMAP
+	ld	bc,6*3
+	ldir
+
+	xor	a		; return success
+	ret
+
+chkrng:	ld	hl,2
+	ld	b,0
+	call	CMP24
+	ret	c		; error if < 2
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	call	CMP24
+	ccf
+	ret			; error if >= nblks
+
+vid:	db	'VOL180'
+
+ermsg1:	db	'*Fatal* - Invalid volume signature',0
+ermsg2:	db	'*Fatal* - Invalid filesystem version',0
+ermsg3:	db	'Warning - Invalid volume size in home block, fixed.',0
+ermsg4:	db	'*Fatal* - Index file block number out of range',0
+ermsg5:	db	'*Fatal* - Bitmap file block number out of range',0
+ermsg6:	db	'*Fatal* - Master directory block number out of range',0
+
+mdname:	db	'MASTER   DIR'
+
+; Basic consistency check:
+;
+; 1) Loop through each index file entry and create a storage bitmap from
+;    scratch:
+;    a) when marking a block in the new bitmap as allocated, if the bit
+;       is already set that means the block is allocated (cross-linked)
+;       to another file (to find out the files this one is cross-linked
+;       to, the rescan will have to be restarted).
+;
+; 2) Compare the new bitmap to the one saved on disk:
+;    a) if there are less blocks allocated on the disk bitmap, report it
+;       (it won't be easy to find out affected files unless in step 1
+;       above each file is compared to the old bitmap as well).
+;    b) if there are more blocks in the old bitmap, report it and create
+;       a (possibly contiguous?) file to claim the orphaned blocks. When
+;       creating the new file, use the new bitmap for allocation of file
+;       allocation map blocks (in case the file could not be contiguous).
+;
+; 3) Save the new bitmap to the disk, overwriting the old one.
+
+; TODO: if bmsize > 16K, use virtual memory storage.
+
+CHKBMP:	call	FREALL		; free/init memory
+	ld	bc,(bmsize)
+	push	bc
+	call	ALLOC		; allocate bitmap buffer
+	pop	bc
+	jr	nc,bm0
+
+	ld	hl,nmmsg
+	jp	ERROR		; not enough memory, can't continue
+
+bm0:	ld	(bmbuf),hl
+	call	CLRMEM
+
+	ld	hl,0
+	xor	a
+	ld	(bmcnt),hl	; clear stats
+	ld	(bmcnt+2),a
+	ld	(ixcnt),hl
+	ld	(ixcnt+2),a
+
+	ld	hl,1		; inodes start at 1
+bm1:	ld	(ino),hl
+	call	RDINOD		; read index file entry
+	jr	nc,bm2
+
+	push	af
+	ld	de,cmdbuf
+	ld	hl,remsg
+	call	STRCPY
+	pop	af
+	call	ERRSTR
+	call	STRCPY
+	ld	hl,cmdbuf
+	scf
+	jp	filerr		; index file read error, can't continue
+
+bm2:	ld	hl,(inode+IE.LCNT)
+	ld	a,h
+	or	l		; entry in use?
+	jp	z,bm40		; skip if not
+
+	; inode is in use
+
+	ld	a,(inode+IE.ATTR)
+	and	FA.CTG		; contiguous file?
+	jr	z,bm30		; branch if not
+
+	; contiguous file: simply mark IE.ALOC bits starting from IE.BMAP[0]
+
+	ld	de,(inode+IE.BMAP)
+	ld	a,(inode+IE.BMAP+2)
+	ld	c,a
+	ld	hl,(inode+IE.ALOC)
+	ld	a,(inode+IE.ALOC+2)
+	ld	b,a
+;;	call	BK2CL
+;;	or	a
+;;	call	nz,INCBHL
+bm4:	ld	a,b
+	or	h
+	or	l
+	jp	z,bm40
+	call	setbm		; set bit in bitmap
+;;TODO: CDE += 1 << clfact
+	call	INCCDE
+	call	DECBHL
+	jr	bm4		; loop until all blocks processed
+
+bm30:	; non-contiguous file: walk the chain of allocated blocks
+
+	ld	hl,(inode+IE.ALOC)
+	ld	a,(inode+IE.ALOC+2)
+	ld	b,a
+	call	BK2CL
+	or	a
+	call	nz,INCBHL
+	ld	(blkcnt),hl
+	ld	a,b
+	ld	(blkcnt+2),a
+
+	ld	hl,inode+IE.BMAP; first, process IE.BMAP[0..4]
+	ld	b,5
+
+bm38:	ex	de,hl
+	ld	hl,(blkcnt)
+	ld	a,(blkcnt+2)
+	or	h
+	or	l
+	ex	de,hl
+	jp	z,bm40		; no (more) blocks allocated
+				; TODO: ensure IE.BMAP[(5-b)..5] = 0
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	a,c
+	or	d
+	or	e
+	call	nz,setbm
+	ex	de,hl
+	ld	hl,blkcnt
+	call	DEC24M
+	ex	de,hl
+	djnz	bm38
+
+	ld	e,(hl)		; get number of first alloc map block
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	ld	a,c
+	or	d
+	or	e		; set?
+	jp	z,bm40		; branch if not, no more blocks allocated
+
+	call	setbm		; set bit in bitmap for alloc map blk
+	ld	l,c		; HLDE = block number
+	ld	h,0
+	call	RDBLK		; read alloc map block
+	jr	nc,bm36
+
+	push	af
+	ld	de,cmdbuf
+	ld	hl,remsg
+	call	STRCPY
+	pop	af
+	call	ERRSTR
+	call	STRCPY
+	ld	hl,cmdbuf
+	or	a
+	call	filerr		; read error
+	jp	bm40		; can't continue with this file
+
+bm36:	ld	hl,(iobuf+3)
+	ld	a,(iobuf+3+2)
+	ld	(next),hl	; save pointer to next alloc block
+	ld	(next+2),a
+
+	ld	iy,6		; offset into block
+	jr	bm32
+
+bm31:	ld	hl,0
+	xor	a
+	ld	(next),hl
+	ld	(next+2),a
+
+	ld	iy,512		; point to end of block
+
+bm32:	ld	hl,(blkcnt)
+	ld	a,(blkcnt+2)
+	ld	b,a
+bm33:	ld	(blkcnt),hl	; store block count
+	ld	a,b
+	ld	(blkcnt+2),a
+	or	h
+	or	l
+	jr	z,bm40
+
+	push	iy
+	pop	de
+	ld	hl,510
+	call	CPHLDE		; block offset >= 510?
+	jr	c,bm34		; branch if not
+
+	; TODO: validate 'prev' pointer
+
+	ld	de,(next)
+	ld	a,(next+2)
+	ld	c,a
+	or	d
+	or	e
+	jr	nz,bm35
+
+	; this should have been fixed during index file check:
+	; IE.BMAP[5] = 0 when IE.ALOC >= 5 and file is not contiguous -
+	; the inode should be marked as deleted - then in the directory
+	; check pass the file will be reported and deleted as well
+
+	ld	hl,nlmsg
+	or	a
+	call	filerr		; null allocation block
+	jp	bm40		; can't continue processing this file
+
+bm35:	call	setbm		; set bit for next block in bitmap
+	ld	l,c		; HLDE = block number
+	ld	h,0
+	call	RDBLK
+	jr	nc,bm37
+
+	push	af
+	ld	de,cmdbuf
+	ld	hl,remsg
+	call	STRCPY
+	pop	af
+	call	ERRSTR
+	call	STRCPY
+	ld	hl,cmdbuf
+	or	a
+	call	filerr		; read error
+	jp	bm40		; can't continue with this file
+
+bm37:	ld	hl,(iobuf+3)
+	ld	a,(iobuf+3+2)
+	ld	(next),hl
+	ld	(next+2),a
+
+	ld	iy,6		; reset block offset
+
+bm34:	push	iy
+	pop	hl
+	ld	de,iobuf
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	inc	iy		; point to next block number in alloc map
+	inc	iy
+	inc	iy
+
+	ld	a,c
+	or	d
+	or	e
+	call	nz,setbm	; mark data block in bitmap
+
+	ld	hl,(blkcnt)
+	ld	a,(blkcnt+2)
+	ld	b,a
+	call	DECBHL		; decrement block count
+	jp	bm33		;  and loop
+
+bm40:	ld	hl,(ino)
+	inc	hl
+	ld	de,(inodes)
+	call	CPHLDE
+	jp	nc,bm1		; loop while inode <= inodes
+
+	; done gathering blocks, now compare bitmaps
+
+	ld	hl,(bmblk)
+	ld	a,(bmblk+2)
+	ld	(blkno),hl	; first bitmap block
+	ld	(blkno+2),a
+
+;!!!ix->3 bytes if virtual file (bitmap > 64k)
+	ld	ix,0		; reset bmbuf index
+	ld	iy,BMHSZ	; bitmap bits start after header
+
+	ld	hl,(bmblks)
+bm50:	ld	(blkcnt),hl	; note: 16 bits max
+	ld	a,h		; check bitmap block counter
+	or	l
+	ret	z		; done, return success
+
+	ld	de,(blkno)
+	ld	hl,(blkno+2)
+	ld	h,0
+	call	RDBLK
+	jr	nc,bm59
+
+	push	af
+	ld	de,cmdbuf
+	ld	hl,bmmsg
+	call	STRCPY
+	pop	af
+	call	ERRSTR
+	call	STRCPY
+	ld	hl,cmdbuf
+	jp	ERROR		; bitmap file read error, can't continue
+
+bm59:	ld	hl,(bmblk)
+	ld	a,(bmblk+2)
+	ld	b,a
+	ld	de,(blkno)
+	ld	a,(blkno+2)
+	ld	c,a
+	call	CMP24		; first bitmap block?
+	jr	nz,bm51		; branch if not
+
+	; first bitmap block, check header
+
+	ld	hl,(iobuf)
+	ld	a,(iobuf+2)
+	ld	b,a
+	ld	de,(nblks)
+	ld	a,(nblks+2)
+	ld	c,a
+	call	CMP24
+	jr	z,bm51		; header is correct
+
+	; printf("*** Block count in bitmap header wrong, fixing.\n");
+
+	; TODO: check cluster factor on bitmap header and
+	; VBN of index file bitmap
+
+	ld	(iobuf),de	; fix block count in header
+	ld	a,c
+	ld	(iobuf+2),a
+
+	; write changes back
+	; buf->modified = 1;
+
+bm51:	push	iy
+	pop	de
+	ld	hl,512
+	call	CPHLDE		; block index >= 512?
+	jr	nc,bm52		; branch if yes
+
+	push	ix
+	pop	de		; get bmbuf index into DE
+	ld	hl,(bmsize)
+	call	CPHLDE		; bmbuf index >= bmsize?
+	jp	nc,bm52		; branch if yes, we're done
+
+	ld	hl,(bmbuf)
+	add	hl,de		; index into bmbuf
+	ex	de,hl
+
+	push	iy
+	pop	hl
+	ld	bc,iobuf	; index into iobuf
+	add	hl,bc
+
+	ld	c,(hl)		; get bitmap byte from BITMAP.SYS
+	xor	a
+	ld	b,8
+cnt:	rl	c
+	adc	a,0		; count bitmap bits
+	djnz	cnt
+	push	hl
+	ld	hl,bmcnt
+	call	AD24BM		; update BITMAP.SYS used block count
+	pop	hl
+
+	ld	a,(de)
+	cp	(hl)		; all bits match?
+	jp	z,bm53		; branch if yes
+
+	ld	c,(hl)		; byte from bitmap block in C
+	ld	b,a		; byte from bmbuf in B
+	ld	e,80h		; mask
+	push	ix
+	pop	hl		; get bmbuf index into HL
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; convert index to block number for message
+bm54:	ld	a,b
+	xor	c
+	and	e		; bit matches?
+	jr	z,bm55
+
+	ld	a,b
+	and	e		; bit set in bmbuf?
+	jr	z,bm56
+
+	; printf("*** Allocated block %d appears free in bitmap.\n", blkno);
+
+	; TODO: which file?
+
+	; When scanning dirs we could also build a reverse lookup table
+	; inode->file name (or inode->file direntry [dirblk+ofs])
+
+	; For large devices, may require creating a vm array on another
+	; (scratch) disk
+
+	jr	bm57
+
+bm56:	; printf("*** Free block %d appears allocated in bitmap.\n", blkno);
+
+	; See note in the CHKDIR routine. The blocks might originate from
+	; an orphaned inode, in which case they should be assigned to a new
+	; file. Assignment should be done only *after* all unset bits are
+	; set in order to avoid damaging a block that is allocated to a file
+
+bm57:	push	hl
+	ld	hl,(errcnt)
+	inc	hl
+	ld	(errcnt),hl
+	pop	hl
+
+bm55:	inc	hl
+	rl	e		; shift mask
+	jr	nc,bm54		; loop until all bits tested
+
+	push	iy
+	pop	hl
+	ld	de,iobuf
+	add	hl,de
+	ld	(hl),b		; store corrected value
+
+	; buf->modified = 1;
+
+bm53:	inc	ix		; point to next byte in bmbuf
+	inc	iy		; point to next byte in iobuf
+	jp	bm51		; loop to process next bitmap byte
+
+bm52:	; save any changes here
+
+	ld	iy,0		; reset block index
+
+	ld	hl,blkno
+	call	INC24M
+
+	ld	hl,(blkcnt)
+	dec	hl		; decrement block count
+	jp	bm50		;  and loop
+
+nmmsg:	db	'Not enough memory',0
+ixmsg:	db	'Index File read error: ',0
+bmmsg:	db	'Bitmap File read error: ',0
+nlmsg:	db	'Null alloc block',0
+remsg:	db	'Read error: ',0
+
+; Set bitmap bit for block number in CDE
+
+setbm:	push	hl
+	push	bc
+	push	de
+
+ if 1
+	ex	de,hl
+	ld	b,c
+	call	BK2CL
+	or	a
+	jp	nz,sb4		; TODO: if NZ, check/set bit?
+	ex	de,hl
+	ld	c,b
+ endif
+
+	ld	a,e
+	and	7
+	ld	b,a
+
+	ld	a,01h		; so mask starts at 80h below
+	inc	b
+sb1:	rrca			; mask = 80h shr (blkno and 7)
+	djnz	sb1
+	push	af		; push mask
+
+	ld	b,3
+sb5:	srl	c		; byte position = blkno / 8
+	rr	d
+	rr	e
+	djnz	sb5
+
+	ld	hl,(bmsize)
+	ld	a,(bmsize+2)
+	ld	b,a
+	call	CMP24		; byte pos < bmsize?
+	jr	c,sb2		; branch if yes
+
+	pop	af
+	ld	de,cmdbuf	; else the block number is out of range
+	ld	hl,bmsg1	;  TODO: better compare the block number
+	call	STRCPY		;   to nblks, as the last bitmap byte may
+	ex	de,hl		;    be partially used.
+	pop	bc
+	pop	de
+	push	de
+	push	bc
+	ld	d,0
+	ld	a,'0'
+	call	CVTLD
+	ld	(hl),0
+	ld	hl,cmdbuf
+	or	a
+	call	filerr		; blkno out of range
+	jr	sb4
+
+sb2:	pop	af		; pop mask
+	ld	c,a
+	ld	hl,(bmbuf)
+	add	hl,de		; TODO: 24-bit if using virtual mem
+	ld	a,(hl)
+	and	c		; bit already set?
+	jr	z,sb3		; branch if not
+
+	ld	de,cmdbuf
+	ld	hl,bmsg2
+	call	STRCPY
+	ex	de,hl
+	pop	bc
+	pop	de
+	push	de
+	push	bc
+	ld	d,0
+	ld	a,'0'
+	call	CVTLD
+	ld	(hl),0
+	ld	hl,cmdbuf
+	or	a
+	call	filerr		; multiple allocation
+
+	; ++errcnt
+
+	jr	sb4
+
+sb3:	ld	a,(hl)
+	or	c		; set bit
+	ld	(hl),a
+	ld	hl,ixcnt
+	call	INC24M		; increment used block count
+sb4:	pop	de
+	pop	bc
+	pop	hl
+	ret
+
+bmsg1:	db	'Block out of range ',0
+bmsg2:	db	'Multiple allocation ',0
+
+filerr:	push	hl
+	push	af
+	ld	hl,fmsg1
+	call	PUTSTR
+	push	hl
+	ld	hl,(ino)
+	ld	a,'0'
+	call	HLDEC		; display file ID
+	ld	c,','
+	call	PUTCH
+	ld	hl,(inode+IE.SEQN)
+	ld	a,'0'
+	call	HLDEC		; display seq number
+	pop	hl
+	pop	af
+	jr	c,fe1
+	push	hl
+	ld	c,' '
+	call	PUTCH
+	ld	hl,inode+IE.NAME
+	ld	b,9
+	call	prnam		; display file name
+	ld	c,'.'
+	call	PUTCH
+	ld	b,3
+	call	prnam		; display extension
+	ld	c,';'
+	call	PUTCH
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	xor	a
+	call	HLDEC		; display file version
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	ld	c,'['
+	call	PUTCH
+	ld	a,(inode+IE.GRP)
+	call	ADEC		; display UIC
+	ld	c,','
+	call	PUTCH
+	ld	a,(inode+IE.USER)
+	call	ADEC
+	ld	c,']'
+	call	PUTCH
+fe1:	pop	hl
+	ld	a,h
+	or	l
+	scf
+	ret	z
+	call	CRLF
+	ld	c,TAB
+	call	PUTCH
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+prnam:	ld	a,(hl)
+	cp	' '
+	ld	c,a
+	call	nz,PUTCH
+	inc	hl
+	djnz	prnam
+	ret
+
+fmsg1:	db	CR,LF,'File ID ',0,'  Owner ',0
+
+;-----------------------------------------------------------------------
+
+; Disk I/O routines:
+
+; Read logical block (number in HLDE) into iobuf.
+
+RDBLK:	ld	(qio1+Q.BLK),de
+	ld	(qio1+Q.BLK+2),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	ld	(nread),hl
+	xor	a
+	ret
+
+; Read inode (number in HL) into inode buffer. Use a different disk I/O
+; buffer to reduce disk thrashing.
+
+RDINOD:	ld	a,h
+	or	l
+	ld	a,E.IDXE
+	scf
+	ret	z
+	dec	hl		; make inode number 0-based
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	e,h
+	and	1Fh
+	ld	d,a		; DE = inode / 8 = relative block number
+	ld	h,0
+	add	hl,hl		; HL = offset = (inode % 8) * 64
+	ld	c,l
+	ld	b,h
+	ld	hl,(ixblks)
+	call	CPHLDE
+	ccf
+	ld	a,E.IDXE
+	ret	c		; outside range
+	push	bc
+	ld	hl,(ixblk)
+	ld	a,(ixblk+2)
+	ld	b,a
+	call	ADD24W		; obtain absolute block number
+	ld	de,(qio2+Q.BLK)
+	ld	a,(qio2+Q.BLK+2)
+	ld	c,a
+	call	CMP24		; block already loaded?
+	ld	a,b
+	pop	bc
+	jr	z,rdi1		; branch if yes
+	ld	(qio2+Q.BLK),hl
+	ld	l,a
+	ld	h,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	hl,qio2
+	SC	.QIO		; else load block
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+rdi1:	ld	hl,inobuf
+	add	hl,bc		; point to inode in block
+	ld	de,inode
+	ld	bc,IESZ
+	ldir			; copy to inode buffer
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; HL = HL / 2
+
+SHRHL:	srl	h
+	rr	l
+	ret
+
+; BHL = BHL / 2
+
+SHRBHL:	srl	b
+	rr	h
+	rr	l
+	ret
+
+; Convert blocks in BHL to clusters. Returns remainder in A.
+
+BK2CL:	ld	a,(clfact)
+	or	a
+	ret	z
+	push	de
+	ld	e,a
+	ld	d,a
+	xor	a
+bc1:	srl	b		; clusters = blocks >> cluster_factor
+	rr	h
+	rr	l
+	rra
+	dec	d
+	jr	nz,bc1
+bc2:	rlca
+	dec	e
+	jr	nz,bc2
+	pop	de
+	ret
+
+; Convert clusters in BHL to blocks.
+
+CL2BK:	ld	a,(clfact)
+	or	a
+	ret	z
+cb1:	add	hl,hl		; blocks = clusters << cluster_factor
+	rl	b
+	dec	a
+	jr	nz,cb1
+	ret
+
+; Increase 24-bit value in BHL
+
+INCBHL:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+; Increase 24-bit value in CDE
+
+INCCDE:	inc	e
+	ret	nz
+	inc	d
+	ret	nz
+	inc	c
+	ret
+
+; Decrease 24-bit value in BHL
+
+DECBHL:	ld	a,l
+	dec	l
+	or	a
+	ret	nz
+	ld	a,h
+	dec	h
+	or	a
+	ret	nz
+	dec	b
+	ret
+
+; (HL) += A, sets CY on overflow
+
+AD24BM:	add	a,(hl)
+	ld	(hl),a
+	ret	nc
+	or	a
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	scf
+	ret
+
+; BHL += A, sets CY on overflow
+
+ADD24B:	add	a,l
+	ld	l,a
+	ret	nc
+	or	a
+	inc	h
+	ret	nz
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += DE, sets CY on overflow
+
+ADD24W:	add	hl,de
+	ret	nc
+	or	a
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += CDE, sets CY on overflow
+
+ADD24:	add	hl,de
+	ld	a,b
+	adc	a,c
+	ld	b,a
+	ret
+
+; BHL -= CDE, sets CY on borrow
+
+SUB24:	or	a
+	sbc	hl,de
+	ld	a,b
+	sbc	a,c
+	ld	b,a
+	ret
+
+; Compare two 24-bit values, returns CY if BHL > CDE
+
+CMP24:	ld	a,c
+	cp	b
+	ret	nz
+	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+; Increment 24-bit value @HL
+
+INC24M:	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+; Decrement 24-bit value @HL
+
+DEC24M:	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	dec	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Memory allocation routine, used by the bitmap verification code.
+
+EXTEND:	SC	.EXTSK
+	ret	c
+GETTOP:	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	ret	c
+	ld	hl,(gtkbuf+GT.END)
+	ld	(memtop),hl
+	ret
+
+; Allocate memory, BC = requested size.
+; Returns HL = block address, DE = new end of allocated region.
+
+ALLOC:	ld	hl,(endptr)
+	add	hl,bc
+	inc	hl
+	ld	de,(memtop)
+	call	CPHLDE		; CY if endptr + size >= memtop
+	jr	nc,av2
+av1:	push	hl
+	or	a
+	sbc	hl,de		; inc = endptr + size - memtop
+	call	EXTEND
+	pop	de
+	ld	hl,errmem
+	jp	c,ERROR		; not enough memory
+	ex	de,hl
+	ld	de,(memtop)
+	call	CPHLDE
+	jr	c,av1
+av2:	ld	de,(endptr)
+	dec	hl
+	ld	(endptr),hl
+	ex	de,hl		; old endptr in HL, new in DE
+	ret
+
+errmem:	db	'Not enough memory',0
+
+; Free all allocated memory
+
+FREALL:	ld	hl,($MEMRY)
+	ld	(endptr),hl
+	ret
+
+; Clear memory region. HL = address, BC = length
+
+CLRMEM:	ld	a,b
+	or	c
+	ret	z		; return if nothing to erase
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	(hl),0
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z		; return if len = 1 byte (already cleared)
+	ldir
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ		; buffer for task info
+
+GDAT:	GCML$	cmdbuf,80,'VFY',LUNCML,2
+
+cmdbuf:	ds	82		; command line buffer
+lnptr:	ds	2		; command line pointer
+dev:	ds	3		; device to check
+optsw:	ds	1		; option bits
+
+qio1:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<iobuf,512,,,>
+qio2:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<inobuf,512,,,>
+iosb:	ds	4
+
+fvers:	ds	2		; filesystem version
+nblks:	db	0,0,0		; total disk blocks
+bmblk:	db	0,0,0		; LBN of storage bitmap
+ixblk:	db	0,0,0		; LBN of index file
+dfprot:	dw	0		; default file protection
+clfact:	db	0		; cluster factor
+
+luninf:	ds	6		; LUN info buffer
+mdfcb:	ds	FCBSZ		; FCB for master file directory access
+cdfcb:	ds	FCBSZ		; FCB for user file directory access
+
+ixblks:	ds	2		; *current* index file size in blocks
+inodes:	ds	2		; inode capacity of index file
+bmsize:	ds	3		; bitmap file size in bytes
+bmblks:	ds	2		; bitmap file size in blocks
+
+errcnt:	ds	2		; error counter
+
+rdonly:	ds	1		; read-only mode flag
+
+iobuf:	ds	512		; disk I/O buffer
+inobuf:	ds	512		; disk I/O buffer for inode read/write
+inode:	ds	IESZ		; inode buffer
+nread:	ds	2		; valid bytes in iobuf
+
+ino:	ds	2		; current inode number
+blkno:	ds	3		; current block number
+next:	ds	3		; number of next alloc map block
+bmbuf:	ds	2		; address of bitmap buffer
+blkcnt:	ds	3		; block counter
+
+bmcnt:	ds	3		; used block count, according to bitmap
+ixcnt:	ds	3		; used block count, according to index file
+
+	public	$MEMRY
+$MEMRY:	ds	2
+memtop:	ds	2		; current top of available memory
+endptr:	ds	2		; current end of allocated memory
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

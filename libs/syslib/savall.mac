@@ -1,0 +1,57 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+	.z80
+
+	public	SAVALL
+
+	cseg
+
+; Save all registers, including AF, and restore them afterwards.
+
+SAVALL:	ex	(sp),hl		; push hl, pop ret address = func+3
+	push	ix
+	push	iy
+	push	de
+	push	bc
+	push	af
+	push	hl		; push <func+3>
+	ld	hl,restor
+	ex	(sp),hl		; push <restor>, pop <func+3>
+	push	hl		; push <func+3>
+	push	af
+	ld	hl,16		; af,func+3,restor,af,bc,de,iy,ix,hl,main+3
+	add	hl,sp		;                                 ^^
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; restore hl from stack
+	pop	af
+	ret			; co-program call to <func+3>
+restor:	pop	af
+	pop	bc
+	pop	de
+	pop	iy
+	pop	ix
+	pop	hl
+	ret
+
+	end

@@ -1,0 +1,73 @@
+                          Z280RC CF disk layout
+                          =====================
+
+This is what the 128MB CF delivered with the Z280RC normally contains:
+
+LBA            Prog    Load       Notes
+
+000000         CFMon   0000-01FF  boot loader, loads ZZMon
+000001-00000F  CP/M 3  1100-2CFF  CP/M 3 CPMLDR
+000040-00004F  SCM     0000-7FFF  Small Computer Monitor (SCM)
+000050-00005E  BASIC               Z80 MS BASIC (Grant Searle's adaptation)
+00005F                             SCM directory
+000080-000092  CP/M 2  DC00-FFFF  CCP+BDOS+BIOS, entry point E200
+0000F8-0000FF  ZZMon   B400-BFFF  entry point 0400
+
+000100-003FFF  A:                 8M CP/M disk A \  reserved track offset
+004000-007FFF  B:                 8M CP/M disk B  | in CP/M BIOS DPB is
+008000-00BFFF  C:                 8M CP/M disk C  | used to define the
+00C000-00FFFF  D:                 8M CP/M disk D /  partition start
+
+010000-03FFFF                     96M free
+
+Only the first 32M is used.
+
+Tony Nicholson's CP/M 3 BIOS defines an additional 4 partitions when built
+with the PARTN8 option set to TRUE:
+
+010000-013FFF  E:                 8M CP/M disk E
+014000-017FFF  F:                 8M CP/M disk F
+018000-01BFFF  G:                 8M CP/M disk G
+01C000-01FFFF  H:                 8M CP/M disk H
+
+020000-03FFFF                     64M free
+
+His port of UZI280 uses the remaining disk space:
+
+020000-02FFFF  /dev/wd0           32M
+030000-03FFFF  /dev/wd1           32M
+040000-04FFFF  /dev/wd2           32M, only for CF disks larger than 128M
+
+The DU driver of RSX280 can recognize up to 8 partitions, but only the
+first 7 ones are enabled. Since the default CF does not contain a partition
+table, the partition boundaries are fixed in the driver code:
+
+000100-003FFF  DU0:               8M, type = CP/M
+004000-007FFF  DU1:               8M, type = CP/M
+008000-00BFFF  DU2:               8M, type = CP/M
+00C000-00FFFF  DU3:               8M, type = CP/M
+010000-01FFFF  DU4:               32M, type = RSX180/RSX280
+020000-02FFFF  DU5:               32M, type = UZI
+030000-03FFFF  DU6:               32M, type = UZI
+
+Note that the RSX280 partition uses the space ocuppied by the additional
+CP/M disks E..F shown above, thus make sure your CP/M BIOS is built with
+the PARTN8 option set to FALSE. This was done so the original 128Mb CF
+could accomodate the three operating systems: CP/M, RSX280 and UZI280.
+
+
+Format of CP/M disks
+--------------------
+
+To simplify sector/track addressing, the logical track size is set to
+256 disk blocks (1024 CP/M sectors/track, 128K).
+
+The remaining parameters are:
+
+ - block size = 4096 (32 CP/M sectors)
+ - 63 tracks (62 tracks for disk A), thus approx 7.875 Mbytes per disk
+   (note: why not 64 and 63 tracks respectively? looks like the last
+   track is unused)
+ - 512 directory entries
+ - reserved track offsets for disks A..D: 1, 64, 128 and 192 respectively
+

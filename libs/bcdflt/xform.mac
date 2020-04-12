@@ -1,0 +1,32 @@
+	.Z80
+
+	public	XFORM
+
+	extrn	FSTOR,FLD0R,FLD1R,FADD,FSUB,FDIV
+	extrn	?FSCR,?PLARG
+
+; Compute FR0 = (FR0 - X) / (FR0 + X)
+
+; On entry, HL points to X. Used by LOG and ATN.
+
+	cseg
+
+XFORM:	push	hl
+	ld	hl,?PLARG
+	call	FSTOR		; ?PLARG <- FR0
+	pop	hl
+	push	hl
+	call	FLD1R		; FR1 <- x
+	call	FADD		; FR0 += x
+	ld	hl,?FSCR
+	call	FSTOR		; ?FSCR <- sum
+	ld	hl,?PLARG
+	call	FLD0R		; load old FR0
+	pop	hl
+	call	FLD1R		; FR1 <- x
+	call	FSUB		; FR0 -= x
+	ld	hl,?FSCR
+	call	FLD1R		; FR1 <- sum
+	jp	FDIV		; FR0 = (FR0 - x) / (FR0 + x)
+
+	end

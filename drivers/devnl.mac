@@ -1,0 +1,159 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DEV NL: null device driver.                                        ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	IOPKT.INC
+	include	QIO.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	ERRORS.INC
+
+	extrn	GETPKT,IODONE
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+DEVNL::	db	'NL',1
+	dw	ucb
+	jp	init
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+	dseg
+
+ucb:	dw	0		; end of list
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb		; pointer to status block
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	0		; device characteristics
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; no owner
+
+scb:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Initialization.
+
+init:	ld	iy,ucb
+	res	US.BSY,(iy+U.ST)
+	ld	iy,scb
+	xor	a
+	ld	(iy+S.ST),a
+	ld	(iy+S.CPKT),a
+	ld	(iy+S.CPKT+1),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O request handling, called by the kernel with IY = UCB.
+
+ioreq:	call	GETPKT		; dequeue I/O packet, return address in IX
+	ret	c		; return if unit busy or no work to do
+	set	US.BSY,(iy+U.ST)
+	ldw	hl,(ix+I.TCB)	; get TCB address of requesting task
+	ldw	hl,(hl+T.PCB)	; get PCB address
+	ld	a,(hl+P.BASE)	; get subpartition base
+	ld	(bank),a	; save it
+	ld	de,I.QDB
+	add	ix,de		; point to QDB
+	ldw	hl,(ix+Q.BUF)	; get buffer address
+	ld	(bufp),hl
+	ldw	bc,(ix+Q.LEN)	; get number of bytes to transfer
+	ld	(cnt),bc
+	ld	hl,0
+	ld	(cr),hl		; clear count of bytes processed
+	ld	a,(ix+Q.FUNC)	; check function code
+	cp	IO.RLB
+	jp	z,nlrlb
+	cp	IO.WLB
+	jp	z,nlwlb
+	jp	ierr		; free the packet and send error code to user
+
+;-----------------------------------------------------------------------
+
+; Timeout entry point. Not used.
+
+tmout:	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O kill point. Not used, since I/O processing for the null device
+; always ends immediately.
+
+iokill:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle read function.
+
+nlrlb:	ld	bc,E.EOF	; return end-of-file error, 0 bytes read
+	jr	iend1
+
+;-----------------------------------------------------------------------
+
+; Handle write function.
+
+nlwlb:	ld	hl,(cnt)
+	ld	(cr),hl
+	jp	iend		; write ignored, return success
+
+;-----------------------------------------------------------------------
+
+; I/O request end
+
+iend:	ld	bc,0
+	jr	iend1
+ierr:	ld	bc,E.BADOP	; error/success code in BC
+iend1:	ld	de,(cr)		; transfer count in DE
+	res	US.BSY,(iy+U.ST)
+	jp	IODONE		; store result and end operation
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+bufp:	ds	2	; buffer address in user space
+bank:	ds	1	; user bank
+cnt:	ds	2	; byte count (remaining)
+cr:	ds	2	; bytes processed
+
+	end

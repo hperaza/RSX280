@@ -1,0 +1,93 @@
+	.Z80
+
+	public	FDIV
+
+	extrn	MDSIGN,MDPREP,RORDBL,FNORMX,?ADDFR
+	extrn	FR0,FR1,FR2,?FRX,?EXP
+
+; Floating point division
+;
+; FR0 = FR0 / FR1
+
+	cseg
+
+FDIV:	ld	a,(FR1)		; check divisor
+	or	a		; zero?
+	scf
+	ret	z		;  then return with error
+	ld	a,(FR0)		; check dividend
+	or	a		; zero?
+	ret	z		;  nothing to do - result is already zero
+	call	MDSIGN		; HL points to FR1 on return
+	sub	(hl)		; subtract exponents
+	add	a,40h		; add bias
+	scf
+	ret	m		; return CY if overflow
+	call	MDPREP		; prepare operands
+	ld	b,5+1
+	jr	fdv3
+
+fdv1:	ld	hl,FR0
+	ld	c,12		; FR0 and ?FRX
+fdv2:	inc	hl
+	ld	a,(hl)
+	dec	hl
+	ld	(hl),a		; shift FR0-?FRX two decimal places left
+	inc	hl
+	dec	c
+	jr	nz,fdv2
+
+fdv3:	ld	hl,FR2+5
+	ld	de,?FRX+5
+	ld	c,6
+	or	a
+fdv4:	ld	a,(de)
+	sbc	a,(hl)
+	daa
+	ld	(de),a		; ?FRX -= FR2
+	dec	hl
+	dec	de
+	dec	c
+	jp	nz,fdv4
+	jp	c,fdv5
+	ld	hl,FR0+5
+	inc	(hl)
+	jp	nz,fdv3
+
+fdv5:	ld	de,?FRX+5
+	ld	hl,FR2+5
+	call	?ADDFR		; ?FRX += FR2
+	ld	a,(FR0+5)
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	ld	(FR0+5),a
+
+fdv6:	ld	hl,FR1+5
+	ld	de,?FRX+5
+	ld	c,6
+	or	a
+fdv7:	ld	a,(de)
+	sbc	a,(hl)
+	daa
+	ld	(de),a		; ?FRX -= FR1
+	dec	hl
+	dec	de
+	dec	c
+	jp	nz,fdv7
+	jp	c,fdv8
+	ld	hl,FR0+5
+	inc	(hl)
+	jp	nz,fdv6
+
+fdv8:	ld	de,?FRX+5
+	ld	hl,FR1+5
+	call	?ADDFR		; ?FRX += FR1
+	djnz	fdv1
+	call	RORDBL		; shift intermediate result right
+	ld	a,(?EXP)	; get the resulting exponent
+	ld	(FR0+0),a	;  into place
+	jp	FNORMX		; normalize thru ?FRX and return
+
+	end

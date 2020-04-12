@@ -1,0 +1,78 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+;  Get file size in bytes into HLDE.
+;  Called with IX = address of FIOBL structure.
+;  Assumes FRATTR has been called.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	FCSLIB.INC
+
+	public	FSIZE
+
+	cseg
+
+; TODO: return error if file not open or channel not assigned to file
+
+FSIZE:	ld	c,(ix+FC.FDB)	; get FDB address into BC
+	ld	b,(ix+FC.FDB+1)
+	ld	hl,F.ATTR
+	add	hl,bc
+	ld	a,(hl)
+	and	FA.CTG		; contiguous file?
+	ld	hl,F.NUSED
+	jr	nz,fsz1
+	ld	hl,F.NALOC
+fsz1:	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get size in blocks
+	ld	a,h
+	or	l
+	ld	de,0
+	ret	z		; size is 0 if nblocks is 0
+	dec	hl		; since last block may not be full
+	ex	de,hl		; DE = nblocks - 1
+	ld	hl,F.LBCNT
+	add	hl,bc
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	h,0
+	ld	l,d
+	ld	d,e
+	ld	e,0		; HLDE = (nblocks - 1) * 256
+	sla	d
+	rl	l
+	rl	h		; HLDE = (nblocks - 1) * 512
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	bc,0
+	add	hl,bc		; HLDE += lbcnt
+	xor	a		; return success
+	ret
+
+	end

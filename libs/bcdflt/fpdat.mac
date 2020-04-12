@@ -1,0 +1,74 @@
+	.Z80
+
+;-----------------------------------------------------------------------
+;
+; Z80 BCD floating point package.
+;
+; This an adaptation of the similar routines found in the ATARI 800XL
+; Floating Point and BASIC ROMs, originally written for the 6502.
+; Some minor inconsistencies were fixed in the conversion process.
+;
+; Floating point number representation:
+;
+;  byte 0   xx   excess 64 exponent + sign (hi-bit)
+;           xx \
+;           xx  \
+;           xx   > 10 BCD digits
+;           xx  /
+;  byte 5   xx /
+;
+; The decimal point is shifted to left of the MSD and the exponent is
+; adjusted accordingly. Therefore, the decimal point does not need to
+; be represented. The exponent is halved, so the number is actually
+; mantissa*10^(2*exp).
+;
+; The range of absolute values that can be represented is
+;   1.0E-98 <= x <= 9.99999999E+97
+;
+;-----------------------------------------------------------------------
+
+	dseg
+
+; Floating point storage variables
+
+	public	FR0,FR1,FR2,DEGRAD
+	public	FPpi,FPone,FPhalf,ILN10
+
+	public	?FRX,?EXP,?SIGN,?DIGRT,?FLAG
+	public	?LBUFF,?PLARG,?FSCR,?FSCR1
+
+DEGRAD:	db	0	; 0 = radians, 6 = degrees
+
+; do not change the order of the following FP registers
+
+FR0:	ds	6	; floating point register 0
+?FRX:	ds	6	; floating point extra register
+FR1:	ds	6	; floating point register 1
+FR2:	ds	6	; floating point register 2
+
+?EXP:	ds	1	; exponent value
+?SIGN:	ds	1	; sign of fp number
+?FLAG:	ds	1	; misc flag and/or temp storage
+?DIGRT:	ds	1	; digits to the right of decimal point
+
+	ds	2	; reserved for a leading zero and/or minus sign
+?LBUFF:	ds	20	; result buffer for FASC routine;
+			; up to 18 bytes are used for intermediate
+			; results by some of the computation routines
+
+?PLARG	equ	?LBUFF	; polynomial arguments
+?FSCR	equ	?LBUFF+6
+?FSCR1	equ	?LBUFF+12
+
+	cseg
+
+; some FP constans used by the math routines
+
+FPpi:	db	040h,003h,014h,015h,092h,065h	; pi
+
+ILN10:	db	03Fh,043h,042h,094h,048h,019h	;  0.4342944819 [ 1/ln(10) ]
+
+FPhalf:	db	03Fh,050h,000h,000h,000h,000h	;  0.5000000000
+FPone:	db	040h,001h,000h,000h,000h,000h	;  1.00000000
+
+	end

@@ -1,0 +1,220 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Index file I/O routines.
+
+	.Z280
+
+	include	VCB.INC
+	include	FCB.INC
+	include	BUFFER.INC
+	include	ERRORS.INC
+
+	public	NEWINO		; get new inode
+	public	RDINOD		; read inode
+	public	WRINOD		; write inode
+
+	extrn	LUNUCB,LUNVCB,GETBLK,RLSBLK,ADD24W,ALLIXE,FREIXE
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Read inode. Device UCB address in variable LUNUCB, HL = dest buffer,
+; BC = inode number (1-based).
+
+RDINOD:	push	iy
+	ld	(ubuf),hl	; remember buffer address
+	ld	iy,(LUNVCB)	; get VCB address
+
+	call	GETINO		; load index file block
+	jr	c,rdi1
+
+	ld	de,(ubuf)
+	ld	bc,IESZ
+	ldir			; copy inode to buffer
+
+	ld	hl,(buf)
+	call	RLSBLK
+	xor	a		; return success
+rdi1:	pop	iy
+	ret
+
+;-----------------------------------------------------------------------
+
+; Write inode. Device UCB address is in LUNUCB variable, HL = src buffer,
+; BC = inode number (1-based).
+
+WRINOD:	push	iy
+	ld	(ubuf),hl	; remember buffer address
+	ld	iy,(LUNVCB)	; get VCB address
+
+	push	bc
+	call	GETINO		; load index file block
+	pop	bc
+	jr	c,wri1
+
+	push	bc
+	ex	de,hl
+	ld	hl,(ubuf)
+	ld	bc,IESZ
+	ldir			; store inode into block
+
+	ld	hl,(buf)
+	push	hl
+	ld	bc,B.ST
+	add	hl,bc
+	set	BS.MOD,(hl)	; set modified flag
+	pop	hl
+	call	RLSBLK
+
+	ld	hl,(ubuf)
+	ld	a,(hl)		; free inode?
+	inc	hl
+	or	(hl)
+	pop	hl
+	call	z,FREIXE	; free index file entry on bitmap if yes
+
+wri2:	xor	a		; return success
+wri1:	pop	iy
+	ret
+
+;-----------------------------------------------------------------------
+
+; Ensure inode number in BC is within allowed range (1..MAXF), compute
+; block number and offset of index file where the inode is located and
+; load the corresponding index file block.
+
+; Note that a 16-bit VBN value is used, which is OK since the index file
+; can contain at most 65536 64-bit entries = 4M bytes / 512 = 8K blocks.
+
+GETINO:	ld	a,b
+	or	c
+	ld	a,E.IDXE
+	scf
+	ret	z
+	ld	l,c
+	ld	h,b
+	dec	hl		; make inode number 0-based
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	e,h
+	and	1Fh
+	ld	d,a		; DE = inode / 8 = relative block number
+	ld	h,0
+	add	hl,hl		; HL = offset = (inode % 8) * 64
+	ld	(offset),hl	; remember offset
+	ldw	hl,(iy+M.IXSZ)	; get size of index file in blocks
+	ld	a,h
+	or	l		; safety check
+	ld	a,E.DEVNM
+	scf
+	ret	z
+	ex	de,hl
+	cpw	hl,de		; CY if HL (nblks) > DE (VBN)
+	ex	de,hl
+	ccf
+	ld	a,E.IDXE
+	ret	c		; return if VBN is outside range
+	ldw	hl,(iy+M.IXLBN)	; get LBN of index file
+	ld	b,(iy+M.IXLBN+2)
+	ld	a,h
+	or	l
+	or	b		; safety check
+	ld	a,E.DEVNM
+	scf
+	ret	z
+	call	ADD24W		; obtain absolute block number
+	ld	(blkno),hl	; remember it
+	ld	a,b
+	ld	(blkno+2),a
+	ld	de,(LUNUCB)
+	call	GETBLK		; load block
+	ret	c
+	ld	(buf),hl
+	ld	bc,B.DATA
+	add	hl,bc		; point to data area
+	ld	de,(offset)	; get byte offset
+	add	hl,de		; index into buffer, point to inode
+	xor	a		; return success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find a free inode in index file, device UCB address in LUNUCB variable.
+; Return its 1-based number in HL and old seqno in BC.
+
+NEWINO:	call	ALLIXE		; allocate entry on index bitmap file
+	ret	c
+
+	push	iy
+	ld	iy,(LUNVCB)	; get VCB address
+
+	inc	hl		; make inode number 1-based
+	ld	c,l
+	ld	b,h
+	push	bc
+	call	GETINO		; load index file block containing the cached inode
+	pop	bc
+	jr	c,nwi1		; on error, return
+
+	ldw	de,(hl)		; get link count
+	ld	a,d
+	or	e		; paranoia check: free entry?
+	jr	z,nwi2		; if yes, return it
+
+	ld	hl,(buf)
+	call	RLSBLK		; else release block
+
+	pop	iy
+	jr	NEWINO		; and try again
+
+nwi2:	push	bc
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ldw	bc,(hl)		; fetch old seq number
+	ld	hl,(buf)
+	call	RLSBLK		; release block
+	pop	hl		; return inode number in HL
+	xor	a		; success
+nwi1:	pop	iy
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+blkno:	ds	3	; current index file block number
+offset:	ds	2	; offset within block
+buf:	ds	2	; buffer address returned by GETBLK
+ubuf:	ds	2	; caller's buffer address
+
+	end

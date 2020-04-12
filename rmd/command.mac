@@ -1,0 +1,139 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Command screen
+
+	.Z280
+
+	include	RMD.INC
+
+	public	COMND,COMNDL,CMDBUF,ERRCMD
+
+	extrn	ACTPG,RATE,CLS,PUTCUR,PUTSTR,GETLN,SKIPBL
+	extrn	STRCMP,GETDEC,ERROR
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+COMND:	call	CLS
+	GOTOXY	0,0
+	ld	hl,cmsg1
+	call	PUTSTR		; display header on top line
+
+	ld	hl,cmsg2
+	call	PUTSTR		; display the list of default commands
+	ld	ix,(ACTPG)
+	ldw	hl,(ix+4)
+	call	PUTSTR		; add any page-specific list of commands
+	ld	hl,cmsg3
+	call	PUTSTR		; display '<CR> to return'
+	ld	hl,crlf2
+	call	PUTSTR
+loop:	ld	hl,cmsg4
+	call	PUTSTR		; display prompt
+	call	getcmd		; get command
+	ld	a,b
+	or	c		; empty command?
+	ret	z		; return with CY clear if yes
+	ld	a,(de)
+	cp	CR
+	ret	z
+	ld	hl,loop
+	push	hl		; push return address
+COMNDL:	ld	ix,(ACTPG)
+	push	de
+	call	chkcmd		; process default commands
+	pop	de
+	ret	z		; return (loop) on success
+	jr	c,ERRCMD
+	ldw	hl,(ix+2)
+	call	jphl		; else pass the command to the active page
+	ret	nc
+ERRCMD:	ld	hl,errmsg
+	jp	ERROR
+
+jphl:	jp	(hl)
+
+chkcmd:	call	SKIPBL
+	ld	hl,cmsg2
+	ld	b,4
+	call	STRCMP		; is it RATE?
+	jr	z,cmd1		; jump if yes
+	or	0FFh		; else return NZ and CY clear
+	ret
+cmd1:	call	SKIPBL
+	ld	a,(de)
+	cp	'='		; '=' must follow
+	scf
+	ret	nz		; else return error
+	inc	de
+	call	SKIPBL
+	call	GETDEC		; get decimal value
+	ret	c		; on error, return
+	ld	a,h
+	or	a		; must be < 256
+	scf
+	ret	nz
+	ld	a,l
+	or	a		; if zero, default to 1
+	jr	nz,cmd2
+	inc	a
+cmd2:	ld	(RATE),a	; set replot rate
+	xor	a		; success
+	ret
+	
+getcmd:	ld	hl,CMDBUF
+	ld	de,70		; D = 0 (read with echo), E = max length
+	ld	bc,0
+	push	hl
+	call	GETLN
+	pop	hl
+	push	hl
+	add	hl,bc
+	ld	(hl),0
+	pop	de
+	ret
+
+cmsg1:	db	'The following commands are available for this page:',CR,LF
+	db	LF,LF,0
+
+cmsg2:	db	'RATE=s      to change replot rate to ''s'' seconds',CR,LF
+	db	0
+
+cmsg3:	db	CR,LF
+	db	'<CR> to return',CR,LF
+	db	0
+
+cmsg4:	db	CR,LF,'COMMAND > '
+	db	0
+
+crlf2:	db	CR,LF,LF,0
+
+errmsg:	db	'Invalid command',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+CMDBUF:	ds	72
+
+	end

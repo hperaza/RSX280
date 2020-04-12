@@ -1,0 +1,1268 @@
+;**********************************************************************;
+;                                                                      ;
+;   CCL-like command catch-all task for RSX280.                        ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	name	'CCL'
+	ident	'1.66'
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	LCB.INC
+	include	VCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+	include	SYSTEM.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+RPOI	equ	1		; use .RPOI instead of .RQST
+
+	extrn	PFN,PDN,PERROR,CRLF,UCASE,BCD2BIN,ADEC,ADEC2
+	extrn	HLDEC,LDEC,AHEX,NHEX,HLHEX,GCCL,PUTCH,PUTSTR
+	extrn	TTFLSH,TTLUN
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+CCL::	ld	sp,stack
+
+	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task info
+
+loop:	call	GCCL		; get MCR command line
+	ld	a,(hl)
+	call	iseol
+	jr	z,exit		; exit if no command line supplied
+	ld	(lnptr),hl
+	call	getcmd		; skip first name (task name)
+	ld	de,(lnptr)
+	call	getns		; skip blanks
+	ld	(lnptr),de
+	call	PARSE		; parse command and execute action
+	jr	loop
+
+exit:	ld	hl,EX.SUC	; return success
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Send command to MCR and wait until it is processed.
+
+SNDMCR:	ld	hl,buf
+	call	strlen
+  IF RPOI
+	ld	(hl),ESC	; ESC tells MCR not to redisplay the prompt
+  ELSE
+	ld	(hl),CR
+  ENDIF
+	inc	hl
+	ld	(hl),0
+	inc	c		; account for command terminator
+	ld	hl,buf
+	ld	(MCRTDB+TD.CMD),hl
+	ld	l,c
+	ld	h,0
+	ld	(MCRTDB+TD.CML),hl
+	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,MCRTDB
+  IF RPOI
+	SC	.RPOI
+	jp	c,SYSERR
+  ELSE
+	ld	e,11
+	ld	bc,exstat
+	SC	.RQST
+	jp	c,SYSERR
+	ld	e,11
+	SC	.STSE
+  ENDIF
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'CCL -- message'
+
+CMDERR:	ld	hl,snerr
+ERRCCL:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'CCL -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Parse the command line and execute the command.
+
+PARSE:	ld	hl,(lnptr)
+	ld	a,(hl)
+	cp	';'		; comment?
+	ret	z
+	call	getcmd		; get command name
+	ld	hl,cmdtab
+	call	fndcmd
+	or	a
+	ret	z
+	cp	0FFh
+	jr	z,tryext
+	dec	a
+	rlca
+	ld	e,a
+	ld	d,0
+	ld	hl,jmptab
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)
+
+; command not found, try to find a program with the same name
+; in the system directory
+
+tryext:	ld	hl,buf
+	ld	de,runcmd
+	call	cpstr
+	ld	de,cmdnam
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns		; any command tail?
+	jr	z,try1		; branch if not
+	push	de
+	ld	de,runarg
+	call	cpstr
+	pop	de
+	call	cpstr
+try1:	ld	(hl),0
+	jp	SNDMCR
+
+runcmd:	db	'RUN $',0
+runarg:	db	'/CMD=',0
+
+cmdtab:	db	'ASSIGN',0		; ASN
+	db	'CD',0,'CHDIR',0	; internal [SET /DIR]
+	db	'COPY',0		; PIP =
+	db	'DATE',0		; TIM
+	db	'DELETE',0		; PIP /DE
+	db	'DIRECTORY',0		; PIP /LI
+	db	'DISMOUNT',0		; DMO
+	db	'FREE',0		; PIP /FR
+	db	'HEY',0			; internal
+	db	'MD',0,'MKDIR',0	; UFD
+	db	'PURGE',0		; PIP /PU
+	db	'RD',0,'RMDIR',0	; PIP /DE
+	db	'RENAME',0		; PIP /RE
+	db	'SHOW',0		; internal
+	db	'SYNC',0		; internal
+	db	'TYPE',0		; PIP TI:=
+	db	'WHO',0			; DEV /LOG
+	db	0
+
+jmptab:	dw	doasgn,docd,docd,docpy,shdate,dodel
+	dw	dodir,dodsmt,dofree,dohey,domd,domd
+	dw	dopur,dormd,dormd,doren,doshow,dosync
+	dw	dotype,shlog
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	call	iseol
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Get string length into C
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	b,9
+getcm1:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get task name (6 chars) into cmdnam, padding with blanks if neccessary.
+
+gettn:	ld	b,6
+	call	getcm1
+	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getns:	ld	a,(de)
+	call	iseol
+	ret	z
+	cp	' '
+	ret	nz
+	inc	de
+	jr	getns
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	call	iseol
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret	z
+	ret
+gf1:	xor	a
+	ret
+
+; Return Z if char in A is end-of-line.
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Read a decimal number from input line into HL
+; Returns CY if the number contains invalid chars or if overflow.
+
+GETDEC:	ld	de,(lnptr)
+	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	jr	z,endnum	; note no CY
+	sub	'0'
+	jr	c,endnum	; note CY
+	cp	10
+	ccf
+	jr	c,endnum	; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+endnum:	ld	(lnptr),de
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+; The routine allows for partial matches.
+
+fndcmd:	ld	de,cmdnam
+	ld	a,(de)
+	or	a		; null command?
+	ret	z		; return 0 if yes
+	cp	'?'
+	jr	z,prhelp
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af		; save index
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)		; get command char
+	or	a		; end of command?
+	jr	z,fcmd3		; branch if yes
+	cp	(hl)		; matches table?
+	jr	nz,fcmd2	; branch if not
+	inc	hl		; else advance pointers
+	inc	de
+	jr	fcmd1		; and loop
+fcmd3:	inc	b		; this one matches
+	pop	af
+	ld	a,(hl)		;
+	or	a		; end of keyword in table?
+	ld	a,c		; remember this index
+	ret	z		; return if yes (exact match)
+	push	af
+fcmd2:	ld	a,(hl)		; no match or partial match,
+	inc	hl		;  skip to next table entry
+	or	a
+	jr	nz,fcmd2
+	inc	c		; increase index count
+	ld	a,(hl)		; end of table?
+	or	a
+	jr	nz,fcmd0	; loop if not
+	pop	af		; pop last match index
+	dec	b		; exactly one match?
+	ret	z		; return if yes
+	ld	a,0FFh		; else return error - ambiguous command
+	ret			;  or not found
+
+; Print command help (list commands or options)
+
+prhelp:	push	hl
+	ld	hl,opthdr
+	call	PUTSTR		; output header
+	pop	hl
+prh0:	call	CRLF
+	ld	b,5
+prh1:	ld	e,14		; E = field size
+	ld	a,(hl)
+	or	a
+	jr	z,prh4
+prh2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,prh3
+	ld	c,a
+	call	PUTCH
+	dec	e
+	jr	prh2
+prh3:	ld	c,' '
+	call	PUTCH
+	dec	e
+	jr	nz,prh3
+	djnz	prh1
+	jr	prh0
+prh4:	ld	a,b
+	cp	5		; 5 keywords per line (14*5 = 70)
+	call	nz,CRLF
+	call	TTFLSH
+	xor	a
+	ret
+
+opthdr:	db	CR,LF,'Available options:',CR,LF,0
+
+;-----------------------------------------------------------------------
+
+; ----- DIR command
+
+dodir:	ld	hl,buf
+	ld	de,piptsk
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	de,pipdir
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+piptsk:	db	'PIP ',0
+pipdir:	db	'/LI',0
+
+; ----- FREE command
+
+dofree:	ld	hl,buf
+	ld	de,piptsk
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	de,pipfre
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+pipfre:	db	'/FR',0
+
+; ----- TYPE command
+
+dotype:	ld	hl,buf
+	ld	de,piptyp
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+piptyp:	db	'PIP TI:=',0
+
+; ----- CHDIR command
+
+docd:	ld	de,(lnptr)
+	call	getns		; argument specified?
+	jr	nz,cd2		; change directory if yes
+	ld	hl,cdmsg	; else display current one
+	call	PUTSTR
+	ld	hl,cmdnam	; use cmdnam as dest buffer
+	ld	c,GD.TI
+	SC	.GDIR		; get current dir name
+	ld	a,(hl)		; current dir set?
+	or	a
+	jr	nz,cd0		; jump if yes
+	ld	hl,dnodir
+	call	PUTSTR
+	jr	cd1
+
+cd0:	call	pfn0
+cd1:	ld	c,CR
+	call	PUTCH
+	ret
+
+cd2:	ex	de,hl
+	ld	ix,fdb
+	call	PFN		; parse directory name
+	ld	(lnptr),hl
+	ld	a,E.BADF
+	jr	c,cd3
+	ld	a,(ix+F.ATTR)
+	and	FN.DIR		; directory field present?
+	jr	z,cd4		; branch if not, use filename field
+	ld	hl,fdb+F.DIR
+	ld	de,fdb+F.NAME
+	ld	bc,9
+	ldir			; else copy dirname to filename
+cd4:	ld	hl,mdname
+	ld	de,fdb+F.DIR
+	ld	bc,9
+	ldir			; directory is MASTER
+	ld	a,(ix+F.ATTR)
+	or	FN.DIR OR FN.NAME
+	ld	(ix+F.ATTR),a
+	ld	hl,dirext
+	call	addext		; add DIR extension
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	b,1
+	SC	.ALUN		; assign LUN
+	jr	c,cd3
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open directory
+	jr	c,cd3
+	ld	a,(iosb)
+	or	a
+	scf
+	jr	nz,cd3
+	ld	hl,qio2
+	SC	.QIO		; read attrib
+	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close directory
+	pop	af
+	jr	c,cd3
+	ld	a,(finfo+F.ATTR)
+	and	FA.DIR
+	ld	a,E.NODIR
+	scf
+	jr	z,cd3		; error if not a directory
+	ld	hl,fdb+F.NAME
+	ld	c,SD.TI
+	SC	.SDIR		; set directory
+	ret	nc
+cd3:	call	SYSERR
+	ret
+
+addext:	ld	a,(fdb+F.ATTR)
+	ld	c,a
+	and	FN.EXT
+	ret	nz
+	ld	a,c
+	or	FN.EXT
+	ld	(fdb+F.ATTR),a
+	ld	de,fdb+F.EXT
+	ld	bc,3
+	ldir
+	ret
+
+cdmsg:	db	CR,LF,'Current directory is ',0
+dnodir:	db	'not assigned',0
+mdname:	db	'MASTER   '
+dirext:	db	'DIR'
+
+; ----- MKDIR command
+
+domd:	ld	hl,(lnptr)
+	ld	ix,fdb
+	call	PFN
+	ld	a,E.BADF
+	jr	c,md1
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	a,(qio1+Q.LUN)
+	ld	b,a
+	SC	.ALUN		; assign LUN
+	jr	c,md1
+	ld	l,IO.CRE
+	ld	h,SF.DIR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; TODO: use UFD instead
+	jr	c,md1
+	ld	a,(iosb)
+	or	a
+	ret	z
+md1:	call	SYSERR
+	ret
+
+; ----- RMDIR command
+
+dormd:	ld	hl,(lnptr)
+	ld	ix,fdb
+	call	PFN
+	ld	a,E.BADF
+	jp	c,SYSERR
+	ld	e,(ix+F.DEV)
+	ld	d,(ix+F.DEV+1)
+	ld	c,(ix+F.UNIT)
+	ld	b,1
+	SC	.ALUN
+	jp	c,SYSERR
+	ld	hl,IO.DEL
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	ret	z
+	jp	SYSERR
+
+; ----- DELETE command
+
+dodel:	ld	de,pipdel
+del1:	push	de
+	ld	hl,buf
+	ld	de,piptsk
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	pop	de
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+pipdel:	db	'/DE',0
+
+; ----- PURGE command
+
+dopur:	ld	de,pippur
+	jr	del1
+
+pippur:	db	'/PU',0
+
+; ----- RENAME command
+
+doren:	ld	bc,pipren
+ren0:	ld	de,(lnptr)
+	call	getns		; skip blanks
+	or	a
+	jp	z,CMDERR
+	ld	l,e		; HL = ptr to old name
+	ld	h,d
+ren1:	call	getfs		; find delimiter
+	jr	z,ren2
+	inc	de
+	jr	ren1
+ren2:	or	a
+	jp	z,CMDERR
+	xor	a
+	ld	(de),a		; place a null at the end of the old name
+	inc	de
+	call	getns
+	jp	z,CMDERR
+	push	hl		; push ptr to old name
+	push	de		; push ptr to new name
+	ld	hl,buf
+	ld	de,piptsk
+	call	cpstr
+	pop	de
+	call	cpstr		; copy new name
+	ld	(hl),'='
+	inc	hl
+	pop	de
+	call	cpstr		; copy old name
+	ld	e,c
+	ld	d,b
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+pipren:	db	'/RE',0
+
+; ----- COPY command
+
+docpy:	ld	bc,pipcpy
+	jp	ren0		; continue via common code
+
+pipcpy:	db	'/NV/CD',0
+
+; ----- DISMOUNT command
+
+dodsmt:	ld	de,dmocmd
+	ld	hl,buf
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+dmocmd:	db	'DMO ',0
+
+; ----- SHOW TASKS: display status of all tasks in system
+
+shtsks:	ld	hl,buf
+	ld	de,tascmd
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+tascmd:	db	'TAS ',0
+
+	IF	0
+
+; ----- SET PRI <taskname> <new priority>
+
+setpri:	ld	hl,buf
+	ld	de,altp1
+	call	cpstr
+	push	hl
+	call	gettn
+	pop	hl
+	ld	de,cmdnam
+	ld	b,6
+stpr1:	ld	a,(de)
+	cp	' '
+	jr	z,stpr2
+	ld	(hl),a
+	inc	de
+	inc	hl
+	djnz	stpr1
+stpr2:	ld	de,altp2
+	call	cpstr
+	ld	de,(lnptr)
+	call	getns
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+altp1:	db	'ALT ',0
+altp2:	db	'/PRI=',0
+
+	ENDIF
+
+; ----- ASSIGN: assign logical device to physical, with no arguments
+;               show the current assignment table
+
+doasgn:	ld	hl,buf
+	ld	de,asncmd
+	call	cpstr
+	ld	de,(lnptr)
+	call	getfs
+	jp	z,asn1		; if no argument, then show device assignment
+	push	hl
+	ld	hl,(lnptr)
+	call	PDN		; get physical device name into DE-C
+	ld	(lnptr),hl
+	pop	hl
+	jr	c,nophd		; error if name invalid
+	call	cpdevn
+	ld	(hl),'='
+	inc	hl
+	push	hl
+	ld	hl,(lnptr)
+	call	PDN		; get logical device name into DE-C
+	ld	(lnptr),hl
+	pop	hl
+	call	cpdevn
+asn1:	ld	(hl),0
+	jp	SNDMCR
+
+nophd:	ld	hl,bpdmsg
+	jp	ERRCCL
+
+nolgd:	ld	hl,bldmsg
+	jp	ERRCCL
+
+cpdevn:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,c
+	call	ASTR
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),0
+	ret
+
+bpdmsg:	db	'Invalid physical device',0
+bldmsg:	db	'Invalid logical device',0
+
+asncmd:	db	'ASN ',0
+
+; ----- SHOW command
+
+doshow:	ld	hl,(lnptr)
+	call	getcmd		; get argument
+	ld	hl,scmdtb
+	call	fndcmd		; find in table
+	or	a
+	jr	z,shusg		; show usage if no arg present
+	jp	m,shusg		;  or if no match found
+	dec	a
+	rlca			; obtain address offset
+	ld	e,a
+	ld	d,0
+	ld	hl,shvtab
+	add	hl,de		; index into table
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; execute command
+
+shusg:	ld	hl,shumsg
+	call	PUTSTR
+	scf
+	ret
+
+scmdtb:	db	'ACTIVE',0
+	db	'DATE',0
+	db	'DEVICES',0
+	db	'LABEL',0
+	db	'LOGINS',0
+	db	'MEMORY',0
+	db	'MOUNTED',0
+	db	'TASKS',0
+	db	'VERSION',0
+	db	0
+
+shvtab:	dw	shact,shdate,shdev,shvlb,shlog,shmem,shmnt,shtsks,shver
+
+shumsg:	db	CR,LF,'Usage: SHOW [option]',CR,0
+
+; ----- SHOW DEVICES: show loaded physical devices and assignment table
+
+shdev:	ld	hl,buf
+	ld	de,devcmd
+	call	cpstr
+	ld	de,(lnptr)
+	call	getfs
+	jp	z,shdv1		; if no argument, then show device list
+	push	hl
+	ld	hl,(lnptr)
+	call	PDN		; get device name into DE-C
+	ld	(lnptr),hl
+	pop	hl
+	jr	c,nodev		; error if name invalid
+	call	cpdevn
+shdv1:	ld	(hl),0
+	jp	SNDMCR
+
+nodev:	ld	hl,bdvmsg
+	jp	ERRCCL
+
+bdvmsg:	db	'Invalid device name',0
+
+devcmd:	db	'DEV ',0
+
+; ----- SHOW VERSION
+
+shver:	ld	hl,vmsg1
+	call	PUTSTR
+	ld	hl,buf
+	ld	c,I.VERS
+	SC	.GIN
+	ld	a,(buf+1)
+	call	ADEC
+	ld	c,'.'
+	call	PUTCH
+	ld	a,(buf)
+	call	ADEC2
+	ld	hl,vmsg2
+	call	PUTSTR
+	ld	hl,GTKBUF+GT.VID
+	call	PRTN
+	ld	c,CR
+	call	PUTCH
+	ret
+
+vmsg1:	db	CR,LF,'RSX280 Version ',0
+vmsg2:	db	CR,LF,'CCL Version ',0
+
+; ----- SHOW LABEL: Show label for specified disk or SY:
+
+shvlb:	ld	de,(lnptr)
+	call	getns		; skip blanks
+	ex	de,hl
+	ld	de,'SY'		; default to SY0: logical device
+	ld	c,0
+	jr	z,shv1		; jump if no argument specified
+	call	PDN		; else parse device name
+	jp	c,mbaddv
+
+shv1:	push	bc
+	ld	c,1
+	SC	.SUPER
+	pop	bc
+	jp	c,SYSERR
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find physical name, if any
+	jr	c,shv5
+	KCALL	$REDIR		; follow redirect pointers
+	ex	de,hl		; get UCB address into DE
+	ld	hl,($MVTBL)
+shv2:	ld	a,h
+	or	l
+	ld	a,E.DEVNM
+	scf
+	jr	z,shv5
+	push	hl
+	inc	hl
+	inc	hl		; point to M.UCB
+	ld	a,(hl)
+	cp	e
+	jr	nz,shv3
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	z,shv4		; exit loop if found
+shv3:	pop	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	shv2		; else loop
+shv4:	KCALL	$UCBDN		; get device name into DE-C
+	call	CRLF
+	ld	b,c
+	ld	c,e
+	call	PUTCH		; display device name
+	ld	c,d
+	call	PUTCH
+	ld	a,b
+	call	ADEC		; display unit number
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	pop	hl
+	ld	bc,M.LABEL
+	add	hl,bc
+	call	PUTSTR		; print volume label
+	ld	c,CR
+	call	PUTCH
+	xor	a
+shv5:	call	c,SYSERR
+	ld	c,0
+	SC	.SUPER
+	ret
+
+mbaddv:	ld	hl,badvsp
+	jp	ERRCCL
+
+badvsp:	db	'Invalid device specification',0
+
+; ----- SHOW MOUNT: Show mounted devices
+
+shmnt:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+	ld	ix,$MVTBL	; IX = addr of ptr to head of mounted vol list
+shmn0:	ld	e,(ix)
+	ld	d,(ix+1)
+	ld	a,d
+	or	e
+	jr	z,shmn1		; return if no more entries
+	push	de
+	pop	ix
+	call	CRLF
+	ld	e,(ix+M.UCB)
+	ld	d,(ix+M.UCB+1)
+	KCALL	$UCBDN		; get device name into DE-C
+	ld	b,c
+	ld	c,e
+	call	PUTCH		; show device name
+	ld	c,d
+	call	PUTCH
+	ld	a,b
+	call	ADEC		; show unit number
+	ld	hl,mntm1
+	call	PUTSTR
+	ld	l,(ix+M.BLKS)
+	ld	h,(ix+M.BLKS+1)
+	push	hl
+	xor	a
+	call	HLDEC		; show number of blocks
+	ld	hl,mntm2
+	call	PUTSTR
+	pop	de
+	ld	h,0
+	ld	l,d
+	ld	d,e
+	ld	e,0
+	or	a
+	rl	d
+	rl	l
+	rl	h		; HLDE = NBLOCKS * 512
+	xor	a
+	call	LDEC		; show size in bytes
+	ld	hl,mntm3
+	call	PUTSTR
+	jr	shmn0		; loop until all entries processed
+shmn1:	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	ret
+
+mntm1:	db	': ',0
+mntm2:	db	' blocks (',0
+mntm3:	db	' bytes)',CR,0
+
+; ----- SHOW MEMORY: Show system and user used/free memory.
+
+shmem:	call	CRLF
+	ld	hl,buf
+	ld	c,I.SMEM
+	SC	.GIN
+
+	ld	hl,(buf)
+	xor	a
+	call	HLDEC		; show total memory
+	ld	hl,mmsg1
+	call	PUTSTR
+
+	ld	hl,(buf+2)
+	push	hl
+	xor	a
+	call	HLDEC		; show system memory
+	ld	hl,mmsg2
+	call	PUTSTR
+
+	pop	hl
+	ld	de,16		; $POLSZ## in K !!!
+	or	a
+	sbc	hl,de
+	xor	a
+	call	HLDEC		; show system code space
+	ld	hl,mmsg3
+	call	PUTSTR
+
+	ex	de,hl
+	xor	a
+	call	HLDEC		; show system data space
+	ld	hl,mmsg4
+	call	PUTSTR
+
+	ld	hl,(buf+4)
+	xor	a
+	call	HLDEC		; show available memory
+	ld	hl,mmsg5
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ret
+
+mmsg1:	db	'K Total, ',0
+mmsg2:	db	'K System (',0
+mmsg3:	db	'K code, ',0
+mmsg4:	db	'K data), ',0
+mmsg5:	db	'K Free',0
+
+; ----- SHOW TASKS: Show active tasks
+
+shact:	ld	hl,buf
+	ld	de,actcmd
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+actcmd:	db	'ACT',0
+
+; ----- SHOW DATE
+
+shdate:	ld	hl,buf
+	ld	de,dtcmd
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+dtcmd:	db	'TIM',0
+
+; ----- SHOW LOGINS
+
+shlog:	ld	hl,buf
+	ld	de,slcmd
+	call	cpstr
+	ld	(hl),0
+	jp	SNDMCR
+
+slcmd:	db	'DEV /LOG',0
+
+; ----- SYNC command
+
+dosync:	ld	hl,IO.FFS
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	jr	c,fs1
+	ld	a,(iosb)
+	or	a
+	ret	z
+fs1:	call	SYSERR
+	ret
+
+; ----- HEY command
+
+dohey:	call	gettn		; get task name
+	ld	hl,0
+	ld	(exstat),hl
+	ld	hl,cmdnam
+	ld	e,11
+	ld	bc,exstat
+	SC	.CONN
+	jp	c,SYSERR
+	ld	e,11
+	SC	.STSE
+	jp	c,SYSERR
+	ld	hl,eprfx
+	call	PUTSTR
+	ld	hl,heymsg	; Task...
+	call	PUTSTR
+	push	hl
+	ld	hl,cmdnam
+	call	PRTN
+	pop	hl
+	inc	hl
+	call	PUTSTR		; ...exited with status...
+	ld	de,(exstat)
+	call	PREXST
+	ld	c,CR
+	jp	PUTCH
+
+heymsg:	db	'Task "',0,'" exited with status = ',0
+
+PRTN:	ld	b,6
+prtn1:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	prtn1
+	ret
+
+PREXST:	ld	hl,sttbl
+	ld	b,(hl)
+	inc	hl
+pxs1:	ld	a,(hl)
+	inc	hl
+	cp	e
+	jp	z,PUTSTR	; display status string and return
+pxs2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,pxs2
+	djnz	pxs1
+	ex	de,hl
+	call	HLHEX		; not found, display hex value
+	ld	c,'H'
+	jp	PUTCH
+
+sttbl:	db	4
+	db	EX.WRN,'warning',0
+	db	EX.SUC,'success',0
+	db	EX.ERR,'error',0
+	db	EX.SEV,'severe',0
+
+;-----------------------------------------------------------------------
+
+; Print device name (HL = file info).
+
+PDEVNM:	ld	bc,F.DEV
+	add	hl,bc		; point to F.DEV
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ret
+
+; Print directory name (HL = file info), do not show the extension.
+
+PDNAME:	ld	bc,F.NAME
+	add	hl,bc		; point to F.NAME
+pfn0:	ld	c,'['
+	call	PUTCH
+	ld	b,9
+pfn1:	ld	a,(hl)
+	cp	' '
+	ld	c,a
+	call	nz,pfn2
+	inc	hl
+	djnz	pfn1
+	ld	c,']'
+	call	PUTCH
+	ret
+pfn2:	call	PUTCH
+	ret
+
+; Convert A to string @HL
+
+ASTR:	push	de
+	push	bc
+	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	ld	(hl),a
+	inc	hl
+	ld	(hl),0
+	pop	bc
+	pop	de
+	ret
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad4
+	inc	d
+	dec	d
+	jr	z,ad5
+ad4:	ld	(hl),c
+	inc	hl
+	ld	d,1
+ad5:	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ		; buffer for task info
+
+qio1:	QIOW$	IO.ACC,1,9,iosb,,<fdb>	; LUN 1 is assigned to SY: by TKB
+qio2:	QIOW$	IO.RAT,1,9,iosb,,<finfo,FINFSZ>
+iosb:	ds	4
+
+finfo:	ds	FINFSZ
+
+lnbuf:	ds	80
+lnptr:	ds	2
+cmdnam:	ds	9
+fdb:	ds	FNSZ
+
+MCRTDB:	db	'MCR...'	; task name
+	dw	buf		; address of command line
+	dw	0		; length of command line
+	db	0,0,0		; attr, user, grp (not used)
+	db	'TI',0		; terminal device and unit (not used)
+	dw	0,0		; no data block to send
+
+exstat:	ds	2
+buf:	ds	256
+
+	ds	256		; stack space
+stack	equ	$
+
+	end

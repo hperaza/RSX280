@@ -1,0 +1,1900 @@
+	.Z80
+
+	include	LINK.INC
+	include	THDR.INC
+	include	SYSFN.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+	extrn	LINK,InitSegs,DivRec,Compare,$EXT.Tab
+
+	extrn	OVflg,Linking
+	extrn	ReadFile,SolveLBRQ,StOVL0,Del$XX,Del$YY
+	extrn	Finish,PutOVL,B.opt,IrlMax
+	extrn	StOVLY,PrgOrig,DatOrig,LoadAddr
+	extrn	O.opt,O.sav,LAdr.sav,NextOVL
+	extrn	RemOVL,OVlvl,S.opt,A.opt,Q.opt,Y.opt
+	extrn	P.opt,D.opt,G.opt,MemSize,optGlabel,optGlen
+	extrn	symflg,mapflg,objflg,ovlflg
+	extrn	TSKnam,TSKid,TSKpar,TSKpri,TSKattr,LUNtbl
+
+	public	X$ABS$FIB,X$PRG$FIB,X$DAT$FIB,X$COM$FIB
+	public	Y$ABS$FIB,Y$PRG$FIB,Y$DAT$FIB,Y$COM$FIB
+	public	GetTop,IOBuf,IrlBuf,CmdPtr,CmdError
+	public	ProcessCommand,$OPNER,StrBuf,StrCpy
+
+	public	OpenF,CreateF,SeekF,CloseF,DiskRd,DiskWr
+	public	FCB,DeleteF,FExist,SetName,SetExt,AddExt,CopyFN
+	public	ChkExt,ModFCB,MainFCB,SavMain,SetLibDir,$REL,$IRL
+	public	$LIB,SymFCB,MapFCB,PrChar,Abort,ErrMsg,ErrFN
+
+	extrn	GCML,RCML,PUTCH,TTFLSH,PERROR,HLDEC,ADEC
+	extrn	UCASE,PFN,PDN
+
+LUNCML	equ	1
+
+LUNREL	equ	2
+LUNLIB	equ	3
+LUNOUT	equ	4
+
+LUNXA	equ	6
+LUNXP	equ	7
+LUNXD	equ	8
+LUNXC	equ	9
+
+LUNYA	equ	10
+LUNYP	equ	11
+LUNYD	equ	12
+LUNYC	equ	13
+
+LUNMAP	equ	14
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; ###########################
+; ##### LINK COLD ENTRY #####
+; ###########################
+
+MAIN::	ld	sp,stack	; setup stack
+	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK
+	ld	hl,($MEMRY)
+	ld	(IOBuf),hl	; setup I/O buffer
+	ld	de,BFlen3
+	add	hl,de		; command buffer is of variable size
+	ld	(CmdBuf),hl	;  and follows input buffer
+	ld	de,(IrlMax)
+	or	a
+	sbc	hl,de
+	ld	(IrlBuf),hl	; setup buffer for IRL index
+
+LnkExt:	ld	sp,stack	; reset stack
+	ld	hl,(CmdBuf)
+	ld	(CmdPtr),hl	; init command pointer
+	ld	(hl),'&'	; kludge
+cmd1:	ld	a,(hl)
+	or	a		; end of line?
+	jr	z,cmd2		; branch if yes
+	cp	'&'		; continuation marker?
+	call	z,GetCmd	; get another line if so
+	ld	hl,(CmdPtr)
+	inc	hl		; advance pointer
+	ld	(CmdPtr),hl
+	jr	cmd1		; and loop
+cmd2:	ld	hl,(CmdBuf)
+cmd3:	ld	a,(hl)		; skip initial blanks
+	inc	hl
+	cp	' '
+	jr	z,cmd3
+	cp	'&'
+	jr	z,cmd3
+	or	a
+	jr	z,LnkExt
+	xor	a		; clear MainFCB
+	ld	(MainFCB+F.ATTR+3),a ; +3 because extra LUN and recno fields
+	ld	a,.OT		; default to TSK type under RSX180
+	ld	(O.opt),a
+	call	LINK		; .. start processing
+	jr	LnkExt
+
+Exit:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+; Get top of available memory
+
+GetTop:	ld	hl,(GTKBUF+GT.END)
+	ret
+
+; Output string to device
+; ENTRY	Reg DE points to null-terminated string
+
+String:	ld	a,(de)
+	or	a		; end of string?
+	ret	z		; return if yes
+	call	PrChar		; output to device
+	inc	de
+	jr	String
+
+; Output string and abort LINK
+; ENTRY	Reg DE points to string
+
+Abort:	call	ErrMsg		; .. print
+abrt:	call	Del$XX
+	call	Del$YY
+	ld	hl,FCB
+	ld	a,(hl)		; get LUN
+	ld	(qio1+Q.LUN),a
+	ld	hl,IO.DEA	;!!!file may not be open yet! (e.g. not found)
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close input/output file
+	jp	LnkExt		; .. and stop
+
+; Output error message
+; ENTRY	Reg DE points to string
+
+ErrMsg:	push	de
+	ld	de,errpfx
+	call	String
+	pop	de
+	call	String
+	ld	a,CR
+	jp	PrChar
+
+errpfx:	db	CR,LF,'TKB -- ',0
+
+; Print file name and abort
+; ENTRY	Reg DE points to message
+;	Reg HL points to FCB
+
+ErrFN:	push	hl
+	push	de
+	ld	de,errpfx
+	call	String
+	pop	de
+	call	String		; output message
+	pop	hl
+	call	PrFN		; Print file name
+	ld	a,CR
+	call	PrChar
+	jp	abrt		; .. abort
+
+; Parse file name into a FCB
+; EXIT	CY set on error
+
+Parse:	ld	hl,(CmdPtr)
+	dec	hl
+skip:	inc	hl
+	ld	a,(hl)
+	cp	' '
+	jr	z,skip		; skip spaces
+;;	cp	','
+;;	jr	z,skip		; .. commas
+	cp	'('
+	jr	z,skip		; .. parenthesis
+;;	cp	'='
+;;	jr	z,skip		; .. assignment
+	cp	'&'
+	jr	z,skip		; .. continuation char
+	push	ix
+	ld	ix,FCB+3	; +3 to skip LUN and recno fields
+	call	PFN		; parse file name
+	pop	ix
+	ld	(CmdPtr),hl	; save pointer
+	ld	a,(hl)		; .. get next character
+	ld	(CmdChr),a	; .. save it
+	ret
+
+; Set up overlay
+; Check syntax if Linking = 0
+
+SetOVL:	ld	hl,OVflg
+	ld	(hl),TRUE	; Set overlay request
+	ld	a,(Linking)
+	or	a		; linking?
+	call	nz,InitSegs	; init segment tables if yes
+	call	GetFCB.opt	; Get FCB
+	ld	hl,FCB
+	ld	de,ModFCB
+	call	CopyFN		; copy FCB
+	ld	hl,ModFCB
+	ld	de,$OVL
+	call	AddExt		; set default .OVL extension if necessary
+  if 1
+	ld	hl,FCB
+	ld	de,SymFCB
+	call	CopyFN		; copy FCB
+  endif
+	ld	a,(Linking)	; test flag
+	or	a		; linking?
+	jr	z,stov1		; branch if not
+	ld	de,$LINKING	; else display message
+	call	String
+	ld	hl,ModFCB
+	call	PrFN		; output overlay file name
+	call	NL
+stov1:	call	GetChar
+	cp	'='		; Test assignment
+stov2:	jr	nz,stov4
+	call	NextChar
+	call	GetFCB.opt	; Get source if so
+stov4:	ld	a,(Linking)	; test flag
+	or	a		; linking?
+	call	nz,ReadFile	; read and link module if yes
+	call	GetChar
+	cp	'('		; Test parentheses
+	jr	z,stov3
+	cp	')'
+	jr	z,stov3		; exit loop if either ( or )
+	cp	','		; else must be comma
+	jr	z,stov2		; loop
+	jp	CmdError
+stov3:	ld	a,(Linking)	; test flag
+	or	a		; linking?
+	ret	z		; done if not
+	call	SolveLBRQ	; Solve externals
+	call	StOVL0 ;Set$OVLA0	; Set external ?OVLA0
+	ld	hl,O.opt
+	ld	(hl),.OY
+	call	Finish		; end section
+	jp	PutOVL		; Put overlay and return
+
+$LINKING:
+	db	CR,LF,LF,'Linking ',0
+
+; Process command.
+; ENTRY	A = 0 means check syntax only (scan for options)
+
+ProcessCommand:
+	ld	(Linking),a	; save flag
+	or	a
+	jr	z,pcmd0
+	;TODO: set default lib dir
+pcmd0:	ld	hl,(CmdBuf)
+	ld	(CmdPtr),hl	; reset command pointer
+	call	GetFCB.opt	; get filemame and options
+	ld	hl,FCB
+	ld	de,ModFCB
+	call	CopyFN		; copy FCB
+	call	GetChar
+	cp	','		; comma?
+	jr	nz,pcmd11	; branch if not
+	call	NextChar
+	call	GetFCB.opt	; else get symbol filename and options
+	ld	hl,FCB
+	ld	de,SymFCB
+	call	CopyFN		; copy FCB
+	ld	a,(SymFCB+F.ATTR+3)	; Test source file given
+	and	FN.DEV OR FN.NAME OR FN.EXT
+	add	a,0FFh
+	sbc	a,a
+	ld	(symflg),a
+	call	GetChar
+	cp	','		; comma?
+	jr	nz,pcmd11	; branch if not
+	call	NextChar
+	call	GetFCB.opt	; else get map filename and options
+	ld	hl,FCB
+	ld	de,MapFCB
+	call	CopyFN
+	ld	a,(MapFCB+F.ATTR+3)	; Test source file given
+	and	FN.DEV OR FN.NAME OR FN.EXT
+	add	a,0FFh
+	sbc	a,a
+	ld	(mapflg),a
+	call	GetChar
+pcmd11:	cp	'='		; .. test assignment
+	jp	nz,CmdError
+	call	NextChar
+	call	GetFCB.opt	; Get source if so
+	ld	a,(ModFCB+F.ATTR+3) ; Test source file given
+	and	FN.NAME
+	jr	nz,pcmd2	; .. yeap
+	ld	de,FCB+F.NAME+3	; +3 because of extra LUN and recno fields
+	push	de
+	ld	hl,ModFCB
+	ld	a,9
+	call	SetName
+	pop	de
+	ld	hl,SymFCB
+	ld	a,9
+	call	SetName
+	ld	a,1
+	ld	(symflg),a
+	jr	pcmd2
+
+pcmd1:	ld	hl,ModFCB
+	ld	de,$EMP
+	call	SetExt		; clear extension of file
+pcmd2:	ld	a,(Linking)	; test flag
+	or	a		; linking?
+	call	nz,ReadFile	; read and link module if yes
+	call	GetChar
+	or	a		; end of line?
+	jr	z,pcmd3
+	cp	'('
+	jr	z,pcmd3		; .. either EOL or (
+	cp	','		; must be comma
+	jp	nz,CmdError	; .. error if not
+	call	NextChar
+	call	GetFCB.opt	; get next
+	jr	pcmd2		; and loop
+
+pcmd3:	ld	a,(objflg)
+	ld	(ovlflg),a	; set overlay output flag
+	ld	a,(Linking)	; test flag
+	or	a		; linking?
+	jr	z,pcmd6		; skip if not (scan only)
+	ld	a,(OVflg)
+	or	a
+	call	nz,StOVLY ;Set$OVLAY	; Set external ?OVLAY
+	call	SolveLBRQ	; Solve externals
+	ld	a,(OVflg)
+	or	a
+	call	nz,StOVL0 ;Set$OVLA0	; Set external ?OVLA0
+	ld	a,(O.opt)
+	cp	.OR		; Test .RSP
+	jr	z,pcmd4
+	cp	.OS		; .. or .SPR
+	jr	nz,pcmd5
+pcmd4:	ld	hl,0		; load addr defaults to 0 for .RSP and .SPR
+	ld	(LoadAddr),hl
+pcmd5:	call	Finish		; end section
+	ld	a,(O.opt)
+	ld	(O.sav),a
+	ld	hl,(LoadAddr)
+	ld	(LAdr.sav),hl
+	call	PutOVL		; Put overlay
+pcmd6:	call	GetChar
+	cp	'('		; overlay follows?
+	jr	nz,pcmd10	; jump if not
+pcmd7:	call	NextChar
+	call	NextOVL		; Bump count
+	call	SetOVL		; Set up overlay
+pcmd8:	call	GetChar
+	cp	')'
+	jr	nz,pcmd9
+	call	NextChar
+	call	RemOVL		; done with current overlay
+	call	SkpBlank
+	jr	pcmd8		; loop
+
+pcmd9:	or	a
+	jr	z,pcmd10	; exit loop if end of command
+	cp	'('
+	jr	z,pcmd7		; loop if (
+	jp	CmdError	; else error
+
+pcmd10:	ld	a,(OVlvl)
+	or	a		; test balanced
+	ret	z
+	jp	CmdError	; should be
+
+; Get (next) command chunk
+
+GetCmd:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line
+	jr	c,mc2
+	ld	de,(CmdPtr)	; Get current pointer
+	inc	de
+mc3:	ld	a,(hl)
+	ld	(de),a		; copy line
+	or	a
+	ret	z
+	cp	CR		;!!!TODO: ESC, ^Z?
+	jr	z,mc4
+	inc	hl
+	inc	de
+	jr	mc3
+mc4:	xor	a
+	ld	(de),a
+	ret
+
+mc2:	cp	E.EOF
+	jp	z,Exit
+;;	call	CMLERR
+	ld	iy,GDAT
+	call	RCML
+	jr	GetCmd
+
+; Get UPPER case character
+; ENTRY	Accu holds character
+; EXIT	Accu holds UPPER case or CR if control char
+
+UPcase:	call	UCASE
+	cp	' '		; Test control
+	ret	nc
+	ld	a,CR		; .. return CR if so
+	ret
+
+; Echo command line up to error location and abort
+
+CmdError:
+	ld	de,$SNERR
+	call	ErrMsg
+	ld	a,LF
+	call	PrChar
+	ld	hl,(CmdBuf)
+	inc	hl		; skip first char (space or '&')
+echo1:	push	hl
+	ld	bc,(CmdPtr)	; display up to scanned position
+	or	a
+	sbc	hl,bc		; end reached?
+	pop	hl
+	jr	nc,echo3
+	ld	a,(hl)		; fetch char
+	push	hl
+	call	UPcase		; convert to uppercase
+	push	af
+	call	PrChar		; .. echo
+	pop	af
+	cp	'&'		; Test for continuation line
+	jr	nz,echo2
+	call	NL		; .. output newline
+	ld	a,'*'
+	call	PrChar
+echo2:	pop	hl
+	inc	hl		; bump pointer
+	jr	echo1		; process next
+echo3:	ld	a,'?'		; end with a question mark
+	call	PrChar
+	jp	LnkExt		; abort
+
+$SNERR:	db	'Command syntax error',0
+
+; Delimiter sets
+
+ParsDelTab:
+	db	CR,TAB,' /=.,:;()<>[]|',0
+..Pdel	equ	$-ParsDelTab
+
+; Check delimiter
+; ENTRY	Accu holds character to check
+; EXIT	Zero flag set if matches delimiter
+
+ChkDelim:
+	push	hl
+	push	bc
+	ld	bc,..Pdel	; set length
+	ld	hl,ParsDelTab
+	cpir			; compare
+	pop	bc
+	pop	hl
+	ret
+
+; Get character from command buffer
+; EXIT	Accu holds character
+;	Reg HL holds pointer
+
+GetChar:
+	ld	hl,(CmdPtr)	; Get pointer
+	ld	a,(hl)		; .. and character
+	ret
+
+; Get next character from command line
+; EXIT	CmdChr and Accu hold character
+
+NextChar:
+	push	hl
+	ld	hl,(CmdPtr)	; get command pointer
+next:	inc	hl
+	ld	a,(hl)		; get character
+	cp	'&'		; continuation marker?
+	jr	z,next		; ignore it
+	ld	(CmdPtr),hl	; update pointer
+	call	UPcase
+	ld	(CmdChr),a	; save UPPER case char
+	pop	hl
+	ret
+
+; Skip blanks
+; EXIT	Accu holds character
+
+SkpBlank:
+	call	NextChar	; Get character
+	cp	' '		; Test blank
+	jr	z,SkpBlank	; .. wait for none
+	ret
+
+; Check legal hex character
+; ENTRY	Accu holds character
+; EXIT	Carry flag set on error
+
+IsHex:	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	nc
+	cp	11h
+	ret	c
+	cp	17h
+	ccf
+	ret	c
+	sub	7
+	ret
+
+; Get hex value from command line
+; EXIT	Reg HL holds hex number
+
+GetHex:	ld	hl,0		; clear result
+	ld	a,(CmdChr)	; get character
+nxth:	or	a
+	call	ChkDelim	; delimiter?
+	ret	z		; return if yes
+	call	IsHex		; legal hex digit?
+	ret	c		; return with CY set if not
+	call	AddHexDigit	; add digit
+	ret	c
+	call	NextChar	; get next character
+	jr	nxth		; and loop
+
+AddHexDigit:
+	add	hl,hl		; old value *16
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; add digit
+	ret
+
+; Get decimal value from command line
+; EXIT	Reg HL holds decimal number
+
+GetDec:	ld	hl,0		; clear result
+	ld	a,(CmdChr)	; get character
+nxtd:	or	a
+	call	ChkDelim	; delimiter?
+	ret	z		; return if yes
+	sub	'0'		; legal decimal digit?
+	ret	c		; return with CY set if not
+	cp	9+1
+	ccf
+	ret	c
+	call	AddDecDigit	; add digit
+	ret	c
+	call	NextChar	; get next character
+	jr	nxtd		; and loop
+
+AddDecDigit:
+	ld	c,l
+	ld	b,h
+	add	hl,hl		; old value *10
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; add digit
+	ret
+
+; Check legal selected drive
+; EXIT	Carry set on invalid drive
+
+ChkLegDrv:
+	call	NextChar	; Get character
+	cp	'A'		; Test A..P
+	ret	c		; .. invalid
+	cp	'P'+1
+	ccf			; .. fix flag
+	ret
+
+; Get drive
+; EXIT	Accu holds drive code 01 ->> A
+
+GetDrv:	call	ChkLegDrv	; Test legal drive
+	jp	c,CmdError	; .. illegal
+SetDrv:	sub	'A'-1		; Fix 1 relative
+	ret
+
+; Get drive, allow byte bucket
+; EXIT	Accu holds drive code 01 ->> A or 'Z'
+
+GetDrvZero:
+	call	ChkLegDrv	; Test legal drive A..P
+	jr	nc,SetDrv	; .. yeap
+	cp	'Z'		; Test bucket
+	jp	nz,CmdError	; .. should be
+	ret
+
+; Get console device
+; EXIT	Accu holds X, Y or Z
+
+GetConsole:
+	call	NextChar
+	cp	'X'		; Test legal device code
+	jp	c,CmdError
+	cp	'Z'+1
+	jp	nc,CmdError
+	ret
+
+; Options table
+
+OptTab:	db	'ACP',0		; 1
+	db	'CKP',0		; 2 these
+	db	'CLI',0		; 3  can
+	db	'HDR',0		; 4   be
+	db	'PRIV',0	; 5    negated
+	db	'SHF',0		; 6
+	db	'XM',0		; 7
+
+	db	'ALIGN',0	; 8
+	db	'ASG',0		; 9 these
+	db	'CSEG',0	;10  are
+	db	'DIR',0		;11   followed
+	db	'DSEG',0	;12    by
+	db	'EPT',0		;13     =
+	db	'EXTTSK',0	;14
+	db	'IDENT',0	;15
+	db	'LD',0		;16
+	db	'LIBDIR',0	;17
+	db	'LOAD',0	;18
+	db	'OFMT',0	;19
+	db	'PAR',0		;20
+	db	'PRI',0		;21
+	db	'TASK',0	;22
+	db	'TD',0		;23
+	db	'TMPDIR',0	;24
+	db	'UIC',0		;25
+
+	db	'LB',0		;26
+	db	'Q',0		;27  ALL
+	db	'S',0		;28
+
+	db	0
+
+OptXtab:
+	dw	ACPopt,CKPopt,CLIopt,HDRopt,PRVopt,SHFopt
+	dw	Aopt,ALNopt,ASGopt,Popt,DIRopt,Dopt,Gopt
+	dw	Mopt,IDopt,LDopt,LDopt,Lopt,Oopt,PARopt
+	dw	PRIopt,NAMopt,TDopt,TDopt,UICopt,Sopt,Qopt
+	dw	Sopt
+
+  if 0
+OptXtab:
+	dw	+Sopt,+Popt,+Dopt,+Lopt,+Mopt,+Aopt
+	dw	+Qopt,+Gopt,Nopt,+Oopt,$opt,+Bopt
+	dw	+Yopt
+
+	dw	$Copt,$Iopt,$Lopt	; $ option args
+  endif
+
+; Sample options from command line
+
+ProcessOptions:
+	call	NextChar
+	cp	CR		; end of line?
+	ret	z		; return if yes
+	call	ChkNeg		; check for negated option
+	call	GetOpt		; get option name
+	ld	hl,OptTab
+	call	FndOpt		; find option in table
+	or	a
+	jp	z,CmdError	; error if not found
+	dec	a
+	cp	28
+	jp	nc,CmdError
+	cp	7		; options 1..7 can be negated
+	jr	c,opt1
+	ld	c,a
+	ld	a,(NegOpt)
+	or	a
+	jp	nz,CmdError
+	ld	a,c
+	cp	25		; options 8..25 are followed by '='
+	jr	nc,opt1
+	ld	a,(CmdChr)
+	cp	'='
+	jp	nz,CmdError
+	call	NextChar
+	ld	a,c
+opt1:	ld	hl,OptNext	; Set return address
+	push	hl
+	ld	hl,OptXTab
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; .. go
+
+OptNext:
+	ld	a,(CmdChr)
+	cp	'/'
+	jr	z,ProcessOptions
+	ret
+
+; Check for negated option
+
+ChkNeg:	xor	a
+	ld	(NegOpt),a
+	ld	a,(CmdChr)
+	cp	'-'
+	jr	z,n1
+	cp	'N'
+	ret	nz
+	ld	hl,(CmdPtr)
+	inc	hl
+	ld	a,(hl)
+	dec	hl
+	call	UPcase
+	cp	'O'
+	ret	nz
+	call	NextChar
+n1:	call	NextChar
+	ld	a,0FFh		; note all bits set
+	ld	(NegOpt),a
+	ret
+
+; Get option name from command line into (DE) buffer
+
+GetOpt:	ld	de,OptNam
+	call	GetNam
+	xor	a
+	ld	(de),a
+	ret
+
+GetNam:	ld	b,6
+get1:	call	ValidName
+	ret	c
+	ld	(de),a
+	inc	de
+	call	NextChar
+	djnz	get1
+get2:	call	ValidName
+	ret	c
+	call	NextChar
+	jr	get2
+
+PadNam:	inc	b
+	dec	b
+	ret	z
+	ld	a,' '
+pad:	ld	(de),a
+	inc	de
+	djnz	pad
+	ret
+
+ValidName:
+	ld	a,(CmdChr)
+	cp	'.'
+	ret	z
+	cp	'$'
+	ret	z
+	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret	nc
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+; Search for the option name (OptNam) in the options table (address in HL).
+; Returns A=0FFh if not found, or 0 if OptNam contains an empty string.
+; Otherwise returns the 1-based option sequence number in table.
+; The routine allows for partial matches.
+
+FndOpt:	ld	de,OptNam
+	ld	a,(de)
+	or	a		; null command?
+	ret	z		; return 0 if yes
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af		; save index
+fnd0:	ld	de,OptNam
+fnd1:	ld	a,(de)		; get command char
+	or	a		; end of command?
+	jr	z,fnd3		; branch if yes
+	cp	(hl)		; matches table?
+	jr	nz,fnd2		; branch if not
+	inc	hl		; else advance pointers
+	inc	de
+	jr	fnd1		; and loop
+fnd3:	inc	b		; this one matches
+	pop	af
+	ld	a,(hl)		;
+	or	a		; end of keyword in table?
+	ld	a,c		; remember this index
+	ret	z		; return if yes (exact match)
+	push	af
+fnd2:	ld	a,(hl)		; no match or partial match,
+	inc	hl		;  skip to next table entry
+	or	a
+	jr	nz,fnd2
+	inc	c		; increase index count
+	ld	a,(hl)		; end of table?
+	or	a
+	jr	nz,fnd0		; loop if not
+	pop	af		; pop last match index
+	dec	b		; exactly one match?
+	ret	z		; return if yes
+	ld	a,0FFh		; else return error - ambiguous command
+	ret			;  or not found
+
+Sopt:	ld	a,TRUE
+	ld	(S.opt),a	; S.earch
+	ret
+
+Aopt:	ld	a,TRUE
+	ld	(A.opt),a	; A.dditional memory
+	ret
+
+Qopt:	ld	a,FALSE
+	ld	(Q.opt),a	; Reset Q.uiet
+	ret
+
+Popt:	ld	a,TRUE
+	ld	(P.opt),a	; P.rogram origin
+	call	GetHex		; Get hex address
+	jp	c,CmdError	; error if not valid
+	ld	(PrgOrig),hl
+	ret
+
+Dopt:	ld	a,TRUE
+	ld	(D.opt),a	; D.ata origin
+	call	GetHex		; Get hex address
+	jp	c,CmdError	; error if not valid
+	ld	(DatOrig),hl
+	ret
+
+Lopt:	call	GetHex		; L.oad address
+	jp	c,CmdError	; error if not valid
+	ld	(LoadAddr),hl	; Set hex
+	ret
+
+Mopt:	call	GetHex		; M.emory size
+	jp	c,CmdError	; error if not valid
+	ld	(MemSize),hl	; Set hex
+	ret
+
+Gopt:	ld	a,TRUE
+	ld	(G.opt),a	; G.o
+	ld	bc,256*_LabLen	; B=_LabLen, C=0
+	ld	hl,optGlabel	; .. and pointer
+Gopt1:	call	NextChar	; Get character
+	call	ChkDelim	; Test delimiter
+	jr	z,Gopt2		; .. yeap
+	ld	(hl),a		; .. store
+	inc	hl
+	inc	c
+	djnz	Gopt1
+	jp	CmdError	; .. too long
+Gopt2:	ld	a,c
+	ld	(optGlen),a	; Set length
+	ret
+
+ALNopt:	call	GetDec		; Get decimal value
+	jp	c,CmdError	; error if not valid
+	ld	a,h
+	or	a
+	jp	nz,CmdError
+	ld	a,l
+	cp	16+1
+	jp	nc,CmdError
+	ld	(Y.opt),a	; set module alignment
+	ret
+
+Oopt:	call	GetOpt
+	ld	hl,$EXT.Tab
+	call	FndOpt		; get output format type
+	or	a
+	jp	z,CmdError
+	cp	0FFh
+	jp	z,CmdError
+	dec	a
+	cp	.OY
+	jp	z,CmdError
+	ld	(O.opt),a	; set output format
+	cp	.OS
+	ret	nz
+	ld	a,(CmdChr)	; if SPR format, check for B suboption
+	cp	':'
+	ret	nz
+	call	NextChar
+	cp	'B'
+	jp	nz,CmdError
+	ld	a,TRUE
+	ld	(B.opt),a	; B.IOS link
+	jp	NextChar	; get next character and return
+
+  if 0
+$opt:	call	SkpBlank
+	ld	de,$OptXtab
+	ld	hl,$OptTab+$OptLen-1
+	ld	bc,$OptLen
+	call	GetTab		; Get from table
+	push	de		; Set execution address
+	ret			; .. go
+
+$Copt:	call	GetConsole	; $C.onsole
+;;	ld	(mapflg),a	; Set character
+	ret
+
+$Iopt:	call	GetDrv		; $I.ntermediate
+;;	ld	(tmpdrv),a	; Set drive
+	ret
+
+$Lopt:	call	GetDrv		; $L.ibrary
+	;TODO: ... set lib dir
+	ret
+  endif
+
+PRVopt:	ld	c,1 SHL TA.PRV	; bit
+	ld	b,0FFh		; polarity
+	jr	SetAttr
+
+ACPopt:	ld	c,1 SHL TA.ACP
+	ld	b,0FFh
+	jr	SetAttr
+
+CKPopt:	ld	c,1 SHL TA.CKD
+	ld	b,0
+	jr	SetAttr
+
+CLIopt:	ld	c,1 SHL TA.CLI
+	ld	b,0FFh
+SetAttr:ld	hl,TSKattr
+	ld	a,(NegOpt)
+	xor	b
+	or	a
+	jr	nz,bset
+	ld	a,c
+	cpl
+	and	(hl)
+	ld	(hl),a
+	ret
+bset:	ld	a,c
+	or	(hl)
+	ld	(hl),a
+	ret
+
+PRIopt:	call	GetDec
+	jp	c,CmdError	; error if not valid
+	ld	a,h
+	or	a
+	jp	nz,CmdError
+	ld	a,l
+	ld	(TSKpri),a
+	ret
+
+SHFopt:
+	jp	CmdError
+
+DIRopt:
+LDopt:
+TDopt:
+UICopt:
+HDRopt:
+	jp	CmdError
+
+ASGopt:	call	PDN		; get device name
+	jp	c,CmdError	; error if invalid
+	ld	(CmdPtr),hl	; save pointer
+	ld	a,(hl)		; get next character
+	ld	(CmdChr),a	; save it
+	ld	(DevNam),de	; else save it
+	ld	a,c
+	ld	(DevNam+2),a
+asg1:	call	GetLUN		; get LUN
+	jp	c,CmdError
+	ld	b,a		;  into B
+	ld	de,(DevNam)	; get device name into DE
+	ld	a,(DevNam+2)
+	ld	c,a		; and unit number into C
+	call	SetLUN		; set LUN
+asg2:	ld	a,(CmdChr)	; get following char
+	cp	','		; comma means start of new device assignment
+	jr	z,asg4
+	cp	':'		; colon is LUN separator for same device
+	jr	z,asg5
+	cp	'-'		; dash is LUN range for same device
+	ret	nz		; else exit
+	call	NextChar
+	push	bc
+	call	GetLUN		; get target LUN
+	pop	bc
+	jp	c,CmdError
+	ld	l,a
+	ld	de,(DevNam)	; get device name into DE
+	ld	a,(DevNam+2)
+	ld	c,a		; and unit number into C
+asg3:	inc	b
+	ld	a,l
+	cp	b
+	jr	c,asg2
+	push	hl
+	call	SetLUN		; set LUN
+	pop	hl
+	jr	asg3
+asg4:	call	NextChar
+	jr	ASGopt
+asg5:	call	NextChar
+	jr	asg1
+
+GetLUN:	call	GetDec		; get LUN
+	jr	nc,gl1
+	ld	a,(CmdChr)
+	cp	'-'		; '-' is a valid delimiter here
+	scf
+	ret	nz
+gl1:	ld	a,h		; ensure is in range 1..16
+	or	a
+	scf
+	ret	nz
+	ld	a,l
+	or	a
+	scf
+	ret	z
+	dec	a
+	cp	16
+	ccf
+	ret
+
+SetLUN:	ld	l,b
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	push	bc
+	ld	bc,LUNtbl
+	add	hl,bc		; index into LUN table
+	pop	bc
+	ld	(hl),e		; assign device
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	(hl),0
+	ret
+
+PARopt:	ld	de,TSKpar
+	call	GetNam
+	jp	PadNam
+
+NAMopt:	ld	de,TSKnam
+	call	GetNam
+	jp	PadNam
+
+IDopt:	ld	de,TSKid
+	push	de
+	call	GetNam
+	call	PadNam
+	pop	hl
+	set	7,(hl)
+	ret
+
+; Get FCB and options
+
+GetFCB.opt:
+	ld	hl,S.opt
+	ld	(hl),FALSE	; clear S.earch lib
+	call	Parse		; parse
+	jp	c,CmdError	; .. error
+	call	skipbl		; skip any trailing blanks
+	cp	'/'		; test options
+	call	z,ProcessOptions; .. get them
+skipbl:	ld	a,(CmdChr)
+	cp	' '
+	ret	nz
+	jp	SkpBlank
+
+; !!!!!!!!!!!!!!!!!!!!!!!!
+; !!!!! OS interface !!!!!
+; !!!!!!!!!!!!!!!!!!!!!!!!
+
+; Output character to console
+; ENTRY	Accu holds character
+
+PrChar:	ld	c,a
+	jp	PUTCH
+
+; Delete file
+; ENTRY Reg DE points to FCB
+; EXIT	Accu holds -1 on error
+
+DeleteF:
+	ex	de,hl
+	ld	a,(hl)		; get LUN
+	ld	(qio1+Q.LUN),a
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(qio1+Q.P1),hl	; FDB
+	ld	hl,IO.DEL
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; delete file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Disk read
+; ENTRY	Reg BC holds number of bytes to read
+;	Reg DE holds FCB
+;	Reg HL holds disk buffer address
+
+DiskRd:	push	de
+	ld	(qio2+Q.BUF),hl
+	ex	de,hl
+	ld	a,(hl)		; get LUN
+	ld	(qio2+Q.LUN),a
+	inc	hl
+	ld	e,(hl)		; get recno
+	inc	hl
+	ld	d,(hl)
+	call	setrec
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	de,0		; number of records read
+rdloop:	ld	hl,qio2
+	SC	.QIO		; read 128-byte record
+	jr	c,rderr1
+	ld	a,(iosb)
+	or	a
+	jr	nz,rderr
+	inc	de
+	ld	hl,-128
+	add	hl,bc
+	jr	nc,ioend
+	ld	a,h
+	or	l
+	jr	nz,rdnext
+ioend:	pop	hl
+	inc	hl
+	ld	a,(hl)
+	add	a,e
+	ld	(hl),a
+	inc	hl
+	ld	a,(hl)
+	adc	a,d
+	ld	(hl),a
+	dec	hl
+	dec	hl
+	ex	de,hl		; HL = num recs, DE = FCB
+	xor	a
+	ret
+
+rdnext:	ld	c,l
+	ld	b,h
+	call	nxtrec
+	jr	rdloop
+
+rderr:	cp	E.EOF
+	jr	nz,rderr1
+	ld	a,d
+	or	e
+	jr	nz,ioend
+rderr1:	pop	hl		; HL = FCB address
+	ld	de,$RDERR	; error if file empty
+	jp	ErrFN		; abort
+
+; set QIO pointers to recno in DE
+
+setrec:	ld	a,e
+	and	3
+	rrca
+	rrca			; *64
+	ld	l,a
+	ld	h,0
+	add	hl,hl		; *128
+	ld	(qio2+Q.OFS),hl	; offset
+	srl	d
+	rr	e
+	srl	d
+	rr	e		; /4
+	ld	(qio2+Q.BLK),de	; blkno
+	ld	hl,128
+	ld	(qio2+Q.LEN),hl	; len
+	ret
+
+; move QIO pointers to next record
+
+nxtrec:	push	de
+	ld	hl,(qio2+Q.BUF)
+	ld	de,128
+	add	hl,de
+	ld	(qio2+Q.BUF),hl
+	ld	hl,(qio2+Q.OFS)
+	add	hl,de
+	ld	(qio2+Q.OFS),hl
+	pop	de
+	ld	a,h
+	cp	2
+	ret	c
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,(qio2+Q.BLK)
+	inc	hl
+	ld	(qio2+Q.BLK),hl
+	ret
+
+; Disk write
+; ENTRY	Reg BC holds number of bytes to write
+;	Reg DE holds FCB
+;	Reg HL holds disk buffer address
+
+DiskWr:	push	de
+	ld	(qio2+Q.BUF),hl
+	ex	de,hl
+	ld	a,(hl)		; get LUN
+	ld	(qio2+Q.LUN),a
+	inc	hl
+	ld	e,(hl)		; get recno
+	inc	hl
+	ld	d,(hl)
+	call	setrec
+	ld	hl,IO.WVB
+	ld	(qio2+Q.FUNC),hl
+	ld	de,0		; number of records written
+wrloop:	ld	hl,qio2
+	SC	.QIO		; write 128-byte record
+	jr	c,wrerr
+	ld	a,(iosb)
+	or	a
+	jr	nz,wrerr
+	inc	de
+	ld	hl,-128
+	add	hl,bc
+	jr	nc,wrend
+	ld	a,h
+	or	l
+	jr	nz,wrnext
+wrend:	jp	ioend
+
+wrnext:	ld	c,l
+	ld	b,h
+	call	nxtrec
+	jr	wrloop
+	
+wrerr:	pop	hl		; HL = FCB address
+	ld	de,$WRERR
+	jp	ErrFN		; .. abort on error
+
+$RDERR:	db	'Disk read error: ',0
+$WRERR:	db	'Disk write error: ',0
+
+; Print name of file
+; ENTRY	Reg HL points to FCB
+
+PrFN:	inc	hl		; skip LUN
+	inc	hl		; skip recno
+	inc	hl
+	push	hl
+	inc	hl		; skip link
+	inc	hl
+	ld	c,(hl)		; F.ATTR
+	pop	de
+	ld	a,c
+	and	FN.DEV
+	call	nz,PrDev
+	ld	hl,F.DIR
+	add	hl,de
+	ld	a,c
+	and	FN.DIR
+	call	nz,PrDir
+	ld	hl,F.NAME
+	add	hl,de
+	ld	a,c
+	and	FN.NAME
+	ld	b,9
+	call	nz,PrName
+	ld	a,'.'
+	call	CharOut
+	ld	hl,F.EXT
+	add	hl,de
+	ld	a,c
+	and	FN.NAME
+	ld	b,3
+	call	nz,PrName
+	ld	a,c
+	and	FN.VER
+	ret	z
+	ld	a,';'
+	call	CharOut
+	ld	hl,F.VER
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	xor	a		; no filler
+	jp	HLDEC
+
+PrDev:	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	call	CharOut
+	inc	hl
+	ld	a,(hl)
+	call	CharOut
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	a,':'
+	jp	CharOut
+	
+PrDir:	ld	a,'['
+	call	CharOut
+	ld	b,9
+	call	PrName
+	ld	a,']'
+	jp	CharOut
+
+PrName:	ld	a,(hl)
+	cp	' '
+	ret	z
+	call	CharOut
+	inc	hl
+	djnz	PrName
+	ret
+
+; Print character
+; ENTRY	Accu holds character
+
+CharOut:
+	push	bc
+	call	PrChar		; .. print
+	pop	bc
+	ret
+
+; Set file name
+; ENTRY	Reg HL holds FCB
+;	Reg DE holds name
+;	Accu holds name length
+
+SetName:
+	push	hl
+	ld	bc,F.NAME+3	; +3 because extra LUN and recno fields
+	add	hl,bc		; point to name field
+	ld	c,9
+	or	a		; check length
+	jr	z,n.fill	; jump if empty
+	ld	b,a
+n.cpy:	ld	a,(de)
+	ld	(hl),a
+	inc	de
+	inc	hl
+	dec	c
+	jr	z,n.setn
+	djnz	n.cpy
+n.fill:	ld	b,c
+n.f1:	ld	(hl),' '
+	inc	hl
+	djnz	n.f1
+n.setn:	pop	hl
+	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ld	a,(hl)
+	or	FN.NAME
+	ld	(hl),a
+	ret
+
+; Set library directory
+; ENTRY	Reg HL holds FCB
+
+SetLibDir:
+	;TODO: set lib dir...
+	ret
+
+; Add file extension if none has been specified
+; ENTRY	Reg HL holds FCB
+;	Reg DE holds extension
+
+AddExt:	push	hl
+	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ld	a,(hl)
+	and	FN.EXT
+	pop	hl
+	ret	nz
+	; continue below
+
+; Set file extension
+; ENTRY	Reg HL holds FCB
+;	Reg DE holds extension
+
+SetExt:	push	hl
+	ld	bc,F.EXT+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ex	de,hl
+	ld	bc,@ext
+	ldir
+	pop	hl
+	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ld	a,(hl)
+	or	FN.EXT
+	ld	(hl),a
+	ret
+
+; Check file extension
+; ENTRY	Reg HL point to FCB
+;	Reg DE points to extension
+; EXIT	Z flag set if match
+
+ChkExt:	ld	bc,F.EXT+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ld	b,@ext
+	jp	Compare
+
+; Save file name from FCB into MainFCB, if it has not been saved yet.
+
+SavMain:
+	ld	a,(MainFCB+F.ATTR+3) ; +3 because extra LUN and recno fields
+	or	a		; check if main FCB has been saved already
+	ret	nz		; return if yes
+	ld	hl,FCB
+	ld	de,MainFCB	; else save FCB
+	; continue below
+
+; Copy device, directory, filename and extension from one FCB to another
+; ENTRY	Reg HL holds source FCB
+;	Reg DE holds destination FCB
+
+CopyFN:	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
+	add	hl,bc
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	bc,2+3+9+9+3+2	; attr, dev, dir, name, ext, ver
+	ldir
+	ret
+
+; Create file
+; ENTRY	Reg HL points to FCB
+;	Reg DE contains requested contiguous file size in bytes
+;	       or 0 for non-contiguous
+
+CreateF:
+	push	hl
+	ld	hl,511
+	add	hl,de
+	sra	h
+	ld	e,h
+	ld	d,0		; DE = blocks to allocate
+	pop	hl
+	push	hl
+	push	de
+	ld	b,(hl)		; get LUN into B
+	ld	de,F.DEV+3	; +3 because of extra LUN and recno fields
+	add	hl,de
+	ld	e,(hl)		; get device name into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get unit number into C
+	SC	.ALUN		; assign LUN
+	pop	de
+	pop	hl
+	jr	c,Emake
+	push	hl
+	ld	a,(hl)		; get LUN
+	ld	(qio1+Q.LUN),a
+	inc	hl
+	xor	a
+	ld	(hl),a		; clear recno
+	inc	hl
+	ld	(hl),a
+	inc	hl		; point to FDB
+	ld	(qio1+Q.P1),hl
+	ld	hl,IO.CRE
+	ld	a,d
+	or	e
+	jr	z,nonctg
+	ld	h,SF.CTG	; set contiguous flag file accordingly
+nonctg:	ld	(qio1+Q.FUNC),hl
+	ld	(qio1+Q.P2),de
+	ld	hl,qio1
+	SC	.QIO		; create file
+	pop	hl
+	jr	c,Emake
+	ld	a,(iosb)
+	or	a
+	jp	z,GetFI		; get full filename info and return
+Emake:	ld	de,$MKERR
+	jp	Abort		; abort
+
+; Check if file exists and open it for read if it does.
+; ENTRY	Reg HL points to FCB
+; EXIT	Carry flag clear if file exists
+;	Carry flag set   if not
+
+FExist:	ld	c,0		; open file for read
+fopn:	push	hl
+	push	bc
+	ld	b,(hl)		; get LUN into B
+	ld	de,F.DEV+3	; +3 because of extra LUN and recno fields
+	add	hl,de
+	ld	e,(hl)		; get device name into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get unit number into C
+	SC	.ALUN		; assign LUN
+	pop	bc
+	pop	hl
+	ret	c
+	ld	a,(hl)		; get LUN (or TMPLUN)
+	ld	(qio1+Q.LUN),a
+	push	hl
+	inc	hl
+	xor	a
+	ld	(hl),a		; clear recno
+	inc	hl
+	ld	(hl),a
+	inc	hl		; point to FDB and/or filespec
+	ld	(qio1+Q.P1),hl
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR		; open for read
+	inc	c
+	dec	c		; check open mode
+	jr	z,fopn1		; branch if read mode
+	ld	h,SF.ACR OR SF.ACW OR SF.SHR	; else open for read/write
+fopn1:	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open file
+	pop	hl
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z		; CY clear on success
+	scf
+	ret
+
+; Seek file to specified position
+; ENTRY	Reg HL contains absolute record number (0..16383)
+;	Reg DE points to FCB
+;	Reg C  contains 1 if write mode, else 0
+; EXIT	CY set on error
+
+SeekF:	ex	de,hl
+	inc	hl		; skip LUN
+	ld	(hl),e		; store recno
+	inc	hl
+	ld	(hl),d
+	xor	a		; return success
+	ret
+
+; Open file
+; ENTRY	Reg HL points to FCB
+;	Reg C = 0 open for read, else open for read/write
+
+OpenF:	call	fopn		; open the file
+	jp	nc,GetFI	; on success get full filename info and return
+	ld	de,$OPNER
+	jp	ErrFN		; else abort
+
+; Close file
+; ENTRY	Reg HL points to FCB
+
+CloseF:	ld	a,(hl)		; get LUN
+	ld	(qio1+Q.LUN),a
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	jr	c,clse
+	ld	a,(iosb)
+	or	a
+	ret	z
+clse:	ld	de,$CLSER
+	jp	Abort		; abort
+
+$MKERR:	db	'No space',0
+$OPNER:	db	'No file: ',0
+$CLSER:	db	'Cannot close',0
+
+; Fill FCB with full file info
+; ENTRY	HL = FCB
+
+GetFI:	push	hl
+	ld	a,(hl)		; get LUN
+	ld	(qio2+Q.LUN),a
+	ld	hl,FINFO
+	ld	(qio2+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,IO.RAT
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO		; read file attributes
+	pop	de		; dst in DE
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	inc	de		; skip LUN
+	inc	de		; skip recno
+	inc	de
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FINFO+F.ATTR),a
+	ld	hl,FINFO
+	ld	bc,FNSZ
+	ldir
+	ret
+
+$OVL:	db	'OVL'
+$REL:	db	'OBJ'
+$IRL:	db	'IRL'
+$LIB:	db	'LIB'
+$EMP:	db	'   '
+
+; Output a newline
+
+NL:	ld	de,$CR.LF
+	jp	String
+
+$CR.LF:
+	db	CR,LF,0
+
+; Copy null-delimited string (HL) -> (DE)
+
+StrCpy:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	StrCpy
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+FCB:	db	LUNREL		; LUN
+	dw	0		; 128-byte recno
+	dw	0		; FDB
+	db	0
+	db	'SY',0
+	db	'         '
+	db	'         '
+	db	'   '
+	dw	0
+
+FINFO:	ds	FINFSZ
+
+GTKBUF:	ds	GTKSZ
+
+GDAT:	GCML$	StrBuf,128,'TKB',LUNCML,2
+
+StrBuf:	ds	130		; string buffer for command line and
+				;  message output
+
+CmdPtr:	ds	2
+CmdChr:	ds	1
+OptNam:	ds	6
+NegOpt:	ds	1
+DevNam:	ds	3
+
+qio1:	QIOW$	IO.ACC,0,9,iosb,,<,,>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,>
+iosb:	ds	4
+
+MainFCB:			; copy of main module FDB
+	db	LUNOUT
+	dw	0
+	dw	0
+	db	0
+	db	'SY',0
+	db	'         '
+	db	'         '
+	db	'   '
+	dw	0
+
+ModFCB:				; copy of current module FDB
+	db	LUNREL
+	dw	0
+	dw	0
+	db	0
+	db	'SY',0
+	db	'         '
+	db	'         '
+	db	'   '
+	dw	0
+
+SymFCB:				; copy of symbol FDB
+	db	LUNREL
+	dw	0
+	dw	0
+	db	0
+	db	'SY',0
+	db	'         '
+	db	'         '
+	db	'   '
+	dw	0
+
+MapFCB:				; copy of map FDB
+	db	LUNREL
+	dw	0
+	dw	0
+	db	0
+	db	'SY',0
+	db	'         '
+	db	'         '
+	db	'   '
+	dw	0
+
+$MEMRY::
+	ds	2
+
+IOBuf:	ds	2
+IrlBuf:	ds	2
+CmdBuf:	ds	2
+
+; Temporary file XX???.$$$ parameter blocks
+; 1 - ABSOLUTE
+
+X$ABS$FIB:
+	dw	0		; +0	Current pointer
+	dw	0		; +2	Max length
+	dw	0		; +4	Disk buffer length
+	dw	0		; +6	Disk buffer
+	dw	1		; +8	High boundary
+	ds	4		; +10	Low boundary
+	db	LUNXA		; +14	LUN
+	dw	0		; +15	128-byte recno
+	dw	0		; +17	FDB
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'XXABS    '
+	db	'$$$'
+	dw	0
+
+; 2 - CSEG
+
+X$PRG$FIB:
+	dw	0
+	dw	0
+	dw	0
+	dw	0
+	dw	1
+	ds	4
+	db	LUNXP
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'XXPROG   '
+	db	'$$$'
+	dw	0
+
+; 3 - DSEG
+
+X$DAT$FIB:
+	dw	0
+	dw	0
+	dw	0
+	dw	0
+	dw	1
+	ds	4
+	db	LUNXD
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'XXDATA   '
+	db	'$$$'
+	dw	0
+
+; 4 - COMMON
+
+X$COM$FIB:
+	dw	0
+	dw	0
+	dw	0
+	dw	0
+	dw	1
+	ds	4
+	db	LUNXC
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'XXCOMM   '
+	db	'$$$'
+	dw	0
+
+; Temporary YY???.$$$ parameter blocks
+; 1 - ABSOLUTE
+
+Y$ABS$FIB:
+	dw	0		; +0	Disk buffer address
+	dw	0		; +2	Current pointer
+	dw	BFlen1		; +4	Disk buffer size
+	db	0		; +6	File buffered flag
+	db	LUNYA		; +7	LUN
+	dw	0		; +8	128-byte recno
+	dw	0		; +10	FDB
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'YYABS    '
+	db	'$$$'
+	dw	0
+ 
+; 2 - CSEG
+
+Y$PRG$FIB:
+	dw	0
+	dw	0
+	dw	BFlen3
+	db	0
+	db	LUNYP
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'YYPROG   '
+	db	'$$$'
+	dw	0
+
+; 3 - DSEG
+
+Y$DAT$FIB:
+	dw	0
+	dw	0
+	dw	BFlen3
+	db	0
+	db	LUNYD
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'YYDATA   '
+	db	'$$$'
+	dw	0
+
+; 4 - COMMON
+
+Y$COM$FIB:
+	dw	0
+	dw	0
+	dw	BFlen1
+	db	0
+	db	LUNYC
+	dw	0
+	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'YYCOMM   '
+	db	'$$$'
+	dw	0
+
+	ds	200		; stack space
+stack	equ	$
+
+	end	MAIN

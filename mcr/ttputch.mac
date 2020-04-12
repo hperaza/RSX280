@@ -1,0 +1,141 @@
+;**********************************************************************;
+;                                                                      ;
+;   Replacement PUTCH routine for MCR and TKTN tasks - RSX180.         ;
+;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+; This routine is intended to replace the SYSLIB PUTCH routine in the
+; TKTN and MCR tasks, and therefore must be linked before the library.
+
+; Output character in C to the terminal specified by TTDEV. Like with
+; the SYSLIB routine, the character is buffered and will be eventually
+; output when the buffer is full or when explicitly flushed. Flushing
+; also happens automatically when a CR character is output.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+
+	public	PUTCH,TTFLSH,TTCLR
+
+	extrn	TTDEV,QIOBLK,QIOSB
+
+CR	equ	0Dh
+
+	cseg
+
+PUTCH:	push	hl
+	ld	hl,(BUFPTR)
+	ld	(hl),c		; store char in buffer
+	inc	hl		; advance pointer
+	ld	(BUFPTR),hl
+	pop	hl
+	ld	a,(BUFCNT)
+	inc	a		; increase byte counter
+	ld	(BUFCNT),a
+	cp	128		; buffer full?
+	jr	nc,TTFLSH	; output it if yes
+	ld	a,c
+	cp	CR		; CR?
+	ret	nz		; return if not, else flush buffer
+TTFLSH:	ld	a,(BUFCNT)
+	or	a		; check in case the function is called
+	ret	z		; separately
+	push	ix
+	push	bc
+	push	de
+	push	hl
+snd0:	ld	de,(TTDEV)
+	ld	a,(TTDEV+2)
+	ld	c,a
+	ld	b,5
+	SC	.ALUN		; assign LUN 5 to TTDEV
+	ld	ix,QIOBLK
+	ld	(ix+Q.FUNC),IO.WLB ; function code
+	ld	(ix+Q.SUBF),0	; subfunction code
+	ld	(ix+Q.EFN),3	; flag number
+	ld	(ix+Q.WAIT),1	; wait for completion
+	ld	hl,QIOSB
+	ld	(ix+Q.IOSB),l	; set result address
+	ld	(ix+Q.IOSB+1),h
+	ld	(ix+Q.LUN),5	; use LUN 5
+	ld	hl,BUF
+	ld	(ix+Q.BUF),l	; buffer address
+	ld	(ix+Q.BUF+1),h
+	ld	a,(BUFCNT)
+	ld	(ix+Q.LEN),a	; bytes to write
+	ld	(ix+Q.LEN+1),0
+	ld	hl,0
+	ld	(QIOSB+2),hl	; clear counter of bytes sent
+	ld	(ix+Q.AST),l	; no AST
+	ld	(ix+Q.AST+1),h
+
+	ld	hl,10		; timeout = 10 seconds
+	ld	d,2
+	ld	e,3		; EFN
+	ld	bc,0		; no AST
+	SC	.MRKT
+	push	ix
+	pop	hl
+	SC	.QIO		; output with timeout
+	push	af
+	ld	bc,0
+	ld	e,3
+	SC	.CMKT
+	pop	af
+;;	jr	c,snd1
+
+	ld	hl,(QIOSB+2)	; fetch byte count
+;;	ld	a,(QIOSB)	; fetch return code
+	ld	a,h
+	or	l		; anything sent?
+	jr	z,snd0		; keep trying if not
+	ld	a,(BUFCNT)
+	sub	l		; all bytes sent?
+	ld	(BUFCNT),a
+	ld	de,BUF
+	ld	(BUFPTR),de
+	jr	z,snd1		; return if yes
+	ld	c,a		; prepare counter of bytes to move
+	ld	b,0
+	ld	h,b		; just in case
+	add	hl,de		; HL = src (BUF+sent), DE = dst (BUF)
+	ldir			; shift buffer, we'll send the remainder later
+	jp	snd0		; ...or right now
+snd1:	pop	hl
+	pop	de
+	pop	bc
+	pop	ix
+	ret
+
+TTCLR:	push	hl
+	ld	hl,BUF
+	ld	(BUFPTR),hl
+	xor	a
+	ld	(BUFCNT),a
+	pop	hl
+	ret
+
+	dseg
+
+BUFCNT:	db	0		; note: initialized to zero!
+BUFPTR:	dw	BUF		; note: initialized to BUF!
+BUF:	ds	128
+
+	end

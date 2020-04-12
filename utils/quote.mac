@@ -1,0 +1,746 @@
+	TITLE	QUOTE
+
+	.Z180
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	CRLF,BCD2BIN,PUTSTR,EXIT
+
+	CSEG
+
+BEGIN:	ld	sp,stack
+
+	ld	hl,gtimbf
+	SC	.GDAT
+
+	ld	a,(gtimbf+4)	; hours
+	call	BCD2BIN
+	ld	l,a
+	ld	h,24
+	mlt	hl
+	ld	a,(gtimbf+5)	; minutes
+	call	BCD2BIN
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	ld	h,60
+	mlt	hl
+	ld	a,(gtimbf+6)	; seconds
+	ld	e,a
+	ld	d,0
+	add	hl,de
+
+	ld	a,h
+	and	7Fh
+	ld	h,a
+
+ if 0
+	ld	h,60
+	mlt	hl
+	ld	a,(ticks)
+	ld	e,a
+	ld	d,0
+	adc	hl,de
+ endif
+	ex	de,hl
+	ld	bc,NNN
+	call	DIV16
+	add	hl,hl
+	ld	de,TAB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CRLF
+	call	TXTOUT
+	ld	hl,EX.SUC
+	jp	EXIT
+
+; Output text, wrapping at word boundary if screen width is exceded
+
+TXTOUT:	ld	de,txtbuf
+	ld	b,78
+txt1:	call	addw		; add word
+	jr	z,txt2		; branch if end of text
+	jr	nc,txt1		; else loop while there is some space left
+txt2:	ld	a,b
+	cp	78
+	ret	z
+	push	hl
+	ex	de,hl
+	ld	(hl),CR		; append newline
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),0
+	ld	hl,txtbuf
+	call	PUTSTR		; output buffer
+	pop	hl
+	call	skipsp		; skip spaces
+	jr	nz,TXTOUT	; restart to output next segment
+	ret
+
+addw:	push	hl
+	push	de
+addw1:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	nz,addw2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw1
+	pop	de
+	pop	hl
+	scf
+	ret
+addw2:	ld	a,(hl)
+	or	a
+	jr	z,addw3
+	cp	' '
+	jr	z,addw3
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	addw2
+	pop	de
+	pop	hl
+	scf
+	ret
+addw3:	inc	sp
+	inc	sp
+	inc	sp
+	inc	sp
+	or	a
+	ret
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; DE = DE / BC, remainder in HL
+
+DIV16:	ld	hl,0
+	ld	a,16
+d0:	push	af
+	add	hl,hl
+	ex	de,hl
+	sub	a
+	add	hl,hl
+	ex	de,hl
+	adc	a,l
+	sub	c
+	ld	l,a
+	ld	a,h
+	sbc	a,b
+	ld	h,a
+	inc	de
+	jr	nc,d1
+	add	hl,bc
+	dec	de
+d1:	pop	af
+	dec	a
+	jr	nz,d0
+	ret
+
+TTE	MACRO	B,STRING
+S&B:	db	'&STRING'
+	db	0
+	ENDM
+
+TT	MACRO	B,STRING
+	TTE	%B,<STRING>
+$$	defl	$$+1
+	ENDM
+
+$$	defl	0
+
+TT $$,<Errors made in haste are repented in leisure.>
+TT $$,<I am not a crook. - Richard Nixon.>
+TT $$,<Let him who would move the world, first move himself. - Socrates.>
+TT $$,<The most important things in life aren''t things.>
+TT $$,<Work keeps at bay three great evils: boredom, vice, and need. - Voltaire.>
+TT $$,<If you would learn the secrets of nature, you must practice more humanity.>
+TT $$,<We grow neither better nor worse as we get old, but more like ourselves.>
+TT $$,<In great attempts, it is glorious even to fail. - Longinus.>
+TT $$,<Genius is fostered by industry. - Cicero.>
+TT $$,<There is nothing more requisite in business than dispatch. - Joseph Addison.>
+TT $$,<Self-appraisal will do more for you than self-praise will. - Frank Tyger.>
+TT $$,<If at first you do succeed, it can give you a false sense of importance.>
+TT $$,<Work is dull only to those who take no pride in it. - William Feather.>
+TT $$,<Grudges get heavier the longer they are carried. - P. K. Thomajan.>
+TT $$,<The world is full of thorns and thistles.  It''s all in how you grasp them.>
+TT $$,<Patience is the art of hoping. - Luc de Vauvenargues.>
+TT $$,<Time heals what reason cannot. - Seneca.>
+TT $$,<There is no greater cause of melancholy than idleness. - Robert Burton.>
+TT $$,<Be civil to all, sociable to many, familiar with few. - Benjamin Franklin.>
+TT $$,<Reprove privately, praise publicly. - Arnold Glasow.>
+TT $$,<Quick decisions are unsafe decisions. - Sophocles.>
+TT $$,<An ounce of application is worth a ton of abstraction. - Booker T. Washington.>
+TT $$,<The meek shall inherit the earth -- but not it''s mineral rights. - Paul Getty.>
+TT $$,<Problems that go away by themselves come back by themselves. - Marcy E. Davis.>
+TT $$,<Never ask a question you really don''t want to know the answer to. - Brozik.>
+TT $$,<If you look like your passport photo, you''re not well enough to travel.>
+TT $$,<There is more to life than increasing its speed. - Mahatma Gandhi.>
+TT $$,<The promised land always looks better from a distance. - Pat Healy.>
+TT $$,<The easiest way to refold a road map is differently. - Franklin P. Jones.>
+TT $$,<Tape doesn''t stick where (or when) you want it.  Tape only sticks to itself.>
+TT $$,<The middle of the road is the best place to get run over. - Alan C. Loughri.>
+TT $$,<The more you don''t know how to do, the less you have to do. - L. Rutherford.>
+TT $$,<Some people grow with responsibility -- others merely swell. - Abraham Sachar.>
+TT $$,<You are always doing something marginal when you boss drops by your desk.>
+TT $$,<Any given computer program will expand to fill all available memory.>
+TT $$,<Nothing in life is to be feared.  It is only to be understood. - M. Curie.>
+TT $$,<Don''t be irreplaceable.  If you can''t be replaced, you can''t be promoted.>
+TT $$,<Things are never as bad as they turn out to be. - Richard N. White.>
+TT $$,<Work automatically expands to fill the amount of time allotted to it.>
+TT $$,<If anything can go wrong, it will.>
+TT $$,<Nothing is ever as simple as it seems.>
+TT $$,<If one of anything is good, two must be twice as good.>
+TT $$,<Everything always costs more money than you have.>
+TT $$,<If you can name a disease, then you know what it is.>
+TT $$,<If you fool around with a thing long enough it will eventually break.>
+TT $$,<If you try to please everybody, someone is not going to like it.>
+TT $$,<Always take a job that is too big for you. - Harry Emerson Fosdick.>
+TT $$,<If everything is going well, you are probably overlooking something.>
+TT $$,<It is a fundamental law of human nature that nothing ever quite works out.>
+TT $$,<If you explain it so clearly that no one can misunderstand, someone will.>
+TT $$,<Whatever you want to do, you have to do something else first.>
+TT $$,<Common sense is genius dressed in its working clothes. - Ralph Waldo Emerson.>
+TT $$,<Don''t say you''re thinking when all you''re doing is exercising your memory.>
+TT $$,<The great need for anyone in authority is courage. - Alistair Cooke.>
+TT $$,<The CRAY II can execute an infinite loop in 15 seconds - Seymour Cray.>
+TT $$,<Morgen alles wieder schoen.>
+TT $$,<The game is not over until it''s over. - Yogi Berra.>
+TT $$,<Reading is to the mind what exercise is to the body. - Richard Steele.>
+TT $$,<It is curious what shifts we make to escape thinking. - Herman Melville.>
+TT $$,<Blessings are not valued until they are gone. - Thomas Fuller.>
+TT $$,<Either I will find a way or I will make one. - Philip Sidney.>
+TT $$,<A great man shows his greatness by the way he treats little men. - Thomas Carl.>
+TT $$,<You can''t expect to win unless you known why you lose. - Benjamin Lipson.>
+TT $$,<Enjoy present pleasures in such a way as not to injure future ones. - Seneca.>
+TT $$,<I am never less alone than when alone. - Scipio Africanus.>
+TT $$,<It is always well to moor your ship with two anchors. - Publilius Syrus.>
+TT $$,<Confidence without arrogance makes the successful executive. - Arnold Glasow.>
+TT $$,<The search for truth is really a lot of good fun. - Vernon Howard.>
+TT $$,<Give to the world the best you have and the best will come back to you.>
+TT $$,<Praise undeserved is satire in disguise. - Alexander Pope.>
+TT $$,<Calmness is only another word for confidence, and confidence is faith in action.>
+TT $$,<Abilities wither under faultfinding, blossom under encouragement. - Donald Lai.>
+TT $$,<A wise man sees as much as he ought, not as much as he can. - Michel de Montai.>
+TT $$,<The way to meet trouble is to face it. - Theodore N. Vail.>
+TT $$,<To profit from good advice requires more wisdom than to give it. - J. Collins.>
+TT $$,<The future ain''t what it used to be, and what''s more it never was.>
+TT $$,<Im Himmel gibt es kein wein und bier, warum trinken wir es hier!!!!>
+TT $$,<Fate laughs at probabilities. - Edward Bulwer-Lytton.>
+TT $$,<An ounce of performance is worth more than a pound of preachment. - E. Hubbard.>
+TT $$,<The only man who can''t change his mind is a man who hasn''t got one.>
+TT $$,<There is a woman at the beginning of all great things. - Alphonse de Lamartine.>
+TT $$,<All things are difficult before they are easy. - Thomas Fuller.>
+TT $$,<Those who can do, those who cannot teach.>
+TT $$,<If your conscience won''t stop you, pray for cold feet. - Leterman.>
+TT $$,<There is no excellency without difficulty. - Ovid.>
+TT $$,<Wisdom denotes the pursuing of the best ends by the best means. - F. Hutcheson.>
+TT $$,<Life offers itself equally to the small and the great, the weak and the strong.>
+TT $$,<If you don''t enjoy your own company, you''re probably right. - Arnold Glasow.>
+TT $$,<Make it your habit not to be critical about small things. - Edward Everett Hall.>
+TT $$,<Unreasonable haste is the direct road to error. - Moliere.>
+TT $$,<Always try to be a little kinder than is necessary. - James M. Barrie.>
+TT $$,<The day most wholly lost is the one on which one does not laugh. - N. Chamfor.>
+TT $$,<A little integrity is better than any career. - Ralph Waldo Emerson.>
+TT $$,<It''s great to be great, but it''s greater to be human. - Will Rogers.>
+TT $$,<Isn''t your life extremely flat with nothing whatever to grumble at?>
+TT $$,<Every man has a right to be conceited until he is successful. - Ben Franklin.>
+TT $$,<Will is character in action. - William McDougall.>
+TT $$,<Keep your mouth shut and your eyes open. - Samuel Palmer.>
+TT $$,<The next best thing to knowing something is knowing where to find it.>
+TT $$,<The only people who never fail are those who never try. - Ilka Chase.>
+TT $$,<Salud, amor y pesetas, y tiempo para gastarlos.>
+TT $$,<Teaching of others teacheth the teacher. - Thomas Fuller.>
+TT $$,<He that fails today may be up again tomorrow. - Miguel de Cervantes Saavedra.>
+TT $$,<Gnawing on bones of contention provides little nourishment. - Arnold Glasow.>
+TT $$,<Everything that looks to the future elevates human nature. - Walter Landor.>
+TT $$,<In great attempts it is glorious even to fail. - Longinus.>
+TT $$,<Experience dulls the edges of all our dogmas. - Gilbert Murray.>
+TT $$,<Success is not searching for you.  You must do the seeking. - Frank Tyger.>
+TT $$,<Doing little things well is a step toward doing big things better. - H. Banks.>
+TT $$,<A real friend is one who walks in when the rest of the world walks out. - W.W.>
+TT $$,<Real unselfishness consists in sharing the interests of others. - G. Santayana.>
+TT $$,<We should expect the best and the worst from mankind as from the weather.>
+TT $$,<An idea isn''t responsible for the people who believe in it. - Don Marquis.>
+TT $$,<The sure way to miss success is to miss the opportunity. - Philarete Chasles.>
+TT $$,<Persist, persevere and you will find most things attainable that are possible.>
+TT $$,<Skill and confidence are an unconquered army. - George Herbert.>
+TT $$,<Education is a better safeguard of liberty than a standing army. - E. Everett.>
+TT $$,<Do what you can, with what you have, where you are. - Theodore Roosevelt.>
+TT $$,<Every society honors its live conformists and its dead troublemakers.>
+TT $$,<Knowledge becomes power only when it is applied. - Martin S. Dangler.>
+TT $$,<Time is what we want most, but what alas!!!! we use worst. - William Penn.>
+TT $$,<When we are tired, we are attacked by ideas we conquered long ago. - Nietzsche.>
+TT $$,<Riches are gotten with pain, kept with care and lost with grief. - Thomas Fuller.>
+TT $$,<It''s not good enough to do our best; sometimes we have to do what''s required.>
+TT $$,<They must hunger in frost that will not work in heat. - John Heywood.>
+TT $$,<Hurry is the weakness of fools. - Baltasar Gracian.>
+TT $$,<Only people who possess firmness can possess genuine gentleness. - La Rochefou.>
+TT $$,<I am not concerned that I am not known; I seek to be worthy to be known.>
+TT $$,<Doubters do not achieve; skeptics do not contribute; cynics do not create.>
+TT $$,<Imagination is more important than knowledge. - Einstein.>
+TT $$,<This world belongs to the energetic. - Ralph Waldo Emerson.>
+TT $$,<Tolerate imperfection in others, never in yourself. - Frank Tyger.>
+TT $$,<To do a common thing uncommonly well brings success. - Henry J. Heinz.>
+TT $$,<Fidelity bought with money is overcome by money. - Seneca.>
+TT $$,<Nobody likes to think, and seldom does unless he''s paid for it. - W. Feather.>
+TT $$,<Character is a diamond that scratches every other stone. - Bartol.>
+TT $$,<Always do right. This will gratify some people and astonish the rest. - Twain.>
+TT $$,<Success is the child of audacity. - Benjamin Disraeli.>
+TT $$,<Despair is a form of laziness. - Peter Gay.>
+TT $$,<Opportunity wears many disguises, including trouble. - Frank Tyger.>
+TT $$,<If you don''t do your own thinking, someone else will do it for you. - De Bono.>
+TT $$,<Be bold, be bold and everywhere be bold. - Edmund Spenser.>
+TT $$,<Tell me to what you pay attention and I will tell you who you are.>
+TT $$,<Problems are opportunities and there are a lot of them around. - Arnold Glasow.>
+TT $$,<Originality is the art of concealing your source. - Franklin P. Jones.>
+TT $$,<Fortune favors the brave. - Terence.>
+TT $$,<If you would be remembered, do one thing superbly well. - Saunders Norvell.>
+TT $$,<There is a limit at which forbearance ceases to be a virtue. - E. Burke.>
+TT $$,<He who calculates is always in danger of miscalculating. - Theodor Fontane.>
+TT $$,<All experience is an arch to build upon. - Henry brooks Adams.>
+TT $$,<Miracles sometimes occur, but one has to work terribly hard for them. - Weizma.>
+TT $$,<Only a mediocre person is always at his best. - Somerset Maugham.>
+TT $$,<History is rapidly becoming a race between education and catastrophe. - H. G. Wells.>
+TT $$,<Life is a school of probability. - Walter Bagehot.>
+TT $$,<It is neither safe nor prudent to do aught against conscience. - Martin Luther.>
+TT $$,<If misery loves company, then triumph demands an audience. - Brian Moore.>
+TT $$,<The size of a man can be measured by the size of the thing that makes him angry.>
+TT $$,<Intelligent discontent is the mainspring of civilization. - Eugene V. Debs.>
+TT $$,<Humor is emotional chaos remembered in tranquility. - James Thurber.>
+TT $$,<The smallest good deed is better than the grandest good intention. - Dughet.>
+TT $$,<Courage is the first of human qualities because it guarantees all others.>
+TT $$,<My motto is "Content with little, yet wishing for more." - Lamb.>
+TT $$,<You cannot antagonize and influence at the same time. - Knox.>
+TT $$,<A true friend never gets in your way unless you happen to be going down.>
+TT $$,<Man does not live by bread alone, but by faith, by admiration, by sympathy.>
+TT $$,<What will the boaster produce, worthy of such inflated language? - Horace.>
+TT $$,<Even when the bird walks, one feels that it has wings. - Lemierre.>
+TT $$,<A belief is not true merely because it is useful. - Amiel.>
+TT $$,<I invent nothing. I rediscover. - Auguste Rodin.>
+TT $$,<Error of opinion may be tolerated where reason is left free to combat it.>
+TT $$,<No one grows old by living -- only by losing interest in living. - Marie Ray.>
+TT $$,<Opinions cannot survive if one has no chance to fight for them. - T. Mann.>
+TT $$,<Human history is, in essence, a history of ideas. - H. G. Wells.>
+TT $$,<Nothing is a waste of time if you use the experience wisely. - Rodin.>
+TT $$,<A leader is one who knows where he wants to go, and gets up and goes.>
+TT $$,<Little things annoy us: We can sit on a mountain but not on a tack. - Hubbard.>
+TT $$,<Originality is one thing which unoriginal minds cannot feel the use of. - Mill.>
+TT $$,<Truth, when not sought after, rarely comes to light. - Holmes.>
+TT $$,<Dreams are the touchstones of our characters. - Henry David Thoreau.>
+TT $$,<Sometimes one pays most for the things one gets for nothing. - A. Einstein.>
+TT $$,<It''s human to err, it''s humane to refrain from laughing.>
+TT $$,<What do we live for, if it is not to make life less difficult to each other?>
+TT $$,<Laughter is the tonic, the relief, the surcease for pain. - Charlie Chaplin.>
+TT $$,<A room hung with pictures is a room hung with thoughts. - Sir Joshua Reynolds.>
+TT $$,<Life is the art of drawing sufficient conclusions from insufficient premises.>
+TT $$,<Opportunities are never loss.  The other person takes those you miss.>
+TT $$,<Because of forgetting, the innocence of pleasure is perpetually reborn.>
+TT $$,<It is motive alone that gives character to the actions of men. - J de La Bruye.>
+TT $$,<It is the essence of genius to make use of the simplest ideas. - C. P. Peguy.>
+TT $$,<In most things success depends on knowing how long it takes to succeed.>
+TT $$,<Nothing you can''t spell will ever work. - Will Rogers.>
+TT $$,<The danger of a broad view is that it is often a shallow view. - Eddington.>
+TT $$,<One today is worth two tomorrows. - Benjamin Franklin.>
+TT $$,<The creation of a thousand forests is in one acorn. - Ralph Waldo Emerson.>
+TT $$,<The easiest person to deceive is one''s own self. - Bulwer Lytton.>
+TT $$,<Humankind cannot bear very much reality. - T. S. Eliot.>
+TT $$,<I know what pleasure is, for I have done good work. - Robert Louis Stevenson.>
+TT $$,<Good will cannot be purchased.  It must be earned. - Frank Tyger.>
+TT $$,<Ideas are a capital that bears interest only in the hands of talent. - Rivarol.>
+TT $$,<The trust which we put in ourselves causes us to feel trust in others.>
+TT $$,<What the mind of man can conceive and believe, it can achieve. - Jules Verne.>
+TT $$,<Motives are invisible...But they are the true test of character.>
+TT $$,<Rules make the learner''s path long; examples make it short and successful.>
+TT $$,<There would be little left of me if I were to discard what I owed to others.>
+TT $$,<The man who can master his time can master nearly everything. - B. Baurch.>
+TT $$,<Without a purpose, nothing should be done. - Marcus Aurelius.>
+TT $$,<Self-conquest is the greatest of all victories. - Plato.>
+TT $$,<Music washes away from the soul the dust of everyday life. - Auerback.>
+TT $$,<Every minute you are angry you have lost sixty seconds of happiness. - Emerson.>
+TT $$,<You get the best out of others when you give the best of yourself. - H. Firest.>
+TT $$,<We cannot be masters of business if the business is mastering us.>
+TT $$,<Make the most of yourself, for that is all there is to you. - Emerson.>
+TT $$,<A man who dares to waste one hour of life has not discovered the value of life.>
+TT $$,<I use not only the brains I have, but all I can borrow. - Woodrow Wilson.>
+TT $$,<The great use of a life is to spend it for something that outlasts it.>
+TT $$,<The good life is one inspired by love and guided by knowledge. - B. Russell.>
+TT $$,<Do not mistake activity for achievement. - Mabel Newcomber.>
+TT $$,<The only true pleasure is the pleasure of creative activity. - Tolstoy.>
+TT $$,<Inspiration is as good as many voyages...and much cheaper. - Anonymous.>
+TT $$,<Don''t do anything that will make your conscience uneasy. - William Feather.>
+TT $$,<We can never be too eager toward self-discovery. - Vernon Howard.>
+TT $$,<Those who haven''t met necessity don''t know their own strength.>
+TT $$,<I believe every human mind feels pleasure in doing good to another. - Jefferson.>
+TT $$,<If happiness could be bought, we''d be unhappy about the price. - H. L. Mencken.>
+TT $$,<The best way to get the best of the world is to make the world better. - Glasow.>
+TT $$,<Everyone complains of the badness of his memory, but nobody of his judgment.>
+TT $$,<The practical effect of a belief is the real test of its soundness. - Froude.>
+TT $$,<The world gets better every day -- then worse again in the evening. - Hubbard.>
+TT $$,<A committee is a group that keeps minutes and loses hours. - Milton Berle.>
+TT $$,<Character is much easier kept than recovered. - Thomas Paine.>
+TT $$,<When someone does something good, applaud.  You''ll make two people happy.>
+TT $$,<All that we sent into the lives of others comes back into our own. - Markham.>
+TT $$,<Jealousy is a tiger that tears not only its prey but also its own raging heart.>
+TT $$,<If the ear listens, the mind grows. - Frank Tyger.>
+TT $$,<We make money out of friends.  Our enemies will not do business with us.>
+TT $$,<We can never be too eager toward self-discovery. - Vernon Howard.>
+TT $$,<Persistent people begin their success where others end in failure. - Eggleston.>
+TT $$,<It is always the adventurers who accomplish great things. - Montesquieu.>
+TT $$,<Kindness is a language the dumb can speak, and the deaf can hear and understand.>
+TT $$,<No software project is ever finished.>
+TT $$,<If anything can go wrong, it will and at the worst possible time. - Murphy.>
+TT $$,<Murphy was an optimist. - O''Toole.>
+TT $$,<Every man has a scheme that will not work. - Howe.>
+TT $$,<Once you open a can of worms, the only way to recan them is to use a larger can.>
+TT $$,<An object will fall so as to do the most damage.>
+TT $$,<If a research project is not worth doing, it is not worth doing well.>
+TT $$,<If the facts do not conform to the theory, they must be disposed of. - Maier.>
+TT $$,<Inside every large problem is a small problem struggling to get out. - Hoare.>
+TT $$,<When in doubt, mumble. - Boren.>
+TT $$,<A man with one watch knows what time it is. A man with two is never sure.>
+TT $$,<Necessity is the mother of strange bedfellows. - Farber.>
+TT $$,<Every time you do it right, you''ve done it to the wrong thing. - Rick.>
+TT $$,<Always compete to win, unless your opponent is bigger than you.>
+TT $$,<Nothing will ever be attempted if all possible objections must be first overcome.>
+TT $$,<I like dreams of the future better than the history of the past. - Jefferson.>
+TT $$,<The only safe and sure way to destroy an enemy is to make him your friend.>
+TT $$,<A man''s life is dyed the color of his imagination.>
+TT $$,<A bee is never as busy as it seems; it''s just that it can''t buzz any slower.>
+TT $$,<Years wrinkle the skin, but to give up enthusiasm wrinkles the soul. - Ullman.>
+TT $$,<What we see depends mainly on what we look for. - John Lubbock.>
+TT $$,<An apology is a good way to have the last word.>
+TT $$,<Our lives can be an accident or an adventure.  The choice is ours. - N. Howe.>
+TT $$,<If you want to put the world right, start with yourself.>
+TT $$,<The thing wrong with doing nothing is that you never know when you are done.>
+TT $$,<Never let a fool kiss you or a kiss fool you. - Joey Adams.>
+TT $$,<Remember that what you are going to be tomorrow, you are becoming today.>
+TT $$,<We regret more things we didn''t do than things we did do.>
+TT $$,<Kindness causes us to learn, and to forget, many things. - Madame Swetchine.>
+TT $$,<If you never stick your neck out, you''ll never get your head above the crowd.>
+TT $$,<Our past is not our potential.>
+TT $$,<It is never too late to be what you might have been. - George Eliot.>
+TT $$,<A mistake is evidence that someone has tried to do something.>
+TT $$,<Think like a man of action, act like a man of thought. - Henry Bergson.>
+TT $$,<I am always ready to learn, although I do not always like being taught. Church.>
+TT $$,<Too many people keep looking forward to the good old days. - Arnold H. Glasow.>
+TT $$,<The past is but the beginning of a beginning. - H. G. Wells.>
+TT $$,<Live like you''re in love . . . and you will be.>
+TT $$,<The optimist is the one who can enjoy the scenery while taking a detour.>
+TT $$,<Success is temporary -- so is failure. - Barbara Roos.>
+TT $$,<Anger is momentary madness. - Horace.>
+TT $$,<Honesty pays, but it doesn''t seem to pay enough to suit a lot of people.>
+TT $$,<Skill and confidence are an unconquered army. - George Herbert.>
+TT $$,<When I am angry with myself, I criticize others. - E. W. Howe.>
+TT $$,<That which we call sin in others is experiment for us. - Ralph Waldo Emerson.>
+TT $$,<Our aspirations are our possibilities. - Robert Browning.>
+TT $$,<How cordially we dislike those people who criticize us "for our own good!!!!".>
+TT $$,<For those who keep trying, failure is temporary. - Frank Tyger.>
+TT $$,<Zeal without knowledge is sister of folly. - John Davies.>
+TT $$,<It is one''s duty to make the most of the best that is in him. - Duncan Stuart.>
+TT $$,<Tact is the art of making a point without making an enemy. - Howard W. Newton.>
+TT $$,<What is done hastily cannot be done prudently. - Publilius Syrus.>
+TT $$,<This is my work -- my blessing, not my doom. - Henry Van Dyke.>
+TT $$,<Riches are for spending. - Francis Bacon.>
+TT $$,<The great are only great because we are on our knees. - Pierre Proudhon.>
+TT $$,<If we are to preserve civilization, we must first remain civilized.>
+TT $$,<A society of sheep must in time beget a government of wolves. - Jouvenal.>
+TT $$,<He is great enough that he is his own master. - Joseph Hall.>
+TT $$,<Imperfection means perfection hid. - Robert Browning.>
+TT $$,<The best way I known of to win an argument is to start by being in the right.>
+TT $$,<When prosperity comes, do not use all of it. - Confucius.>
+TT $$,<Appreciation is always appreciated. - Arnold Glasow.>
+TT $$,<Be civil to all; sociable to many; familiar with few. - Benjamin Franklin.>
+TT $$,<Self-distrust is the cause of many of our failures. - Christian N. Bovee.>
+TT $$,<The most I can do for my friend is simply to be his friend. - H. D. Thoreau.>
+TT $$,<He who is cheated twice by the same man is half as bad as the rogue.>
+TT $$,<To conquer oneself is the best and noblest victory. - Plato.>
+TT $$,<Life offers itself equally to the small and the great, the weak and the strong.>
+TT $$,<Life consists not in holding good cards, but in playing those we do hold well.>
+TT $$,<All are not friends that speak us fair. - James Clarke.>
+TT $$,<Conversation is the image of the mind.  As the man is, so is his talk. - Syrus.>
+TT $$,<Wonder rather than doubt is the root of knowledge. - Abraham Joshua Heschel.>
+TT $$,<The road is a long one from the projection of a thing to its accomplishment.>
+TT $$,<Opportunity seems to knock some people cold. - William Feather.>
+TT $$,<To make headway, improve your head. - B. C. Forbes.>
+TT $$,<Sweetness and light are not necessarily consistent with productivity.>
+TT $$,<It''s dogged as does it. - Anthony Trollope.>
+TT $$,<Happiness is the overcoming of not unknown obstacles toward a known goal.>
+TT $$,<Money is always on the brain so long as there is a brain in reasonable order.>
+TT $$,<No man ever distinguished himself who could not bear to be laughed at.>
+TT $$,<If you want your judgment to be accepted, express it coolly and without passion.>
+TT $$,<He that stays in the valley shall never get over the hill. - John Ray.>
+TT $$,<Business is founded on confidence; success, on cooperation. - Patterson.>
+TT $$,<Assume a virtue if you have it not. - William Shakespeare.>
+TT $$,<You can never plan the future by the past. - Edmund Burke.>
+TT $$,<Blessings are valued until they are gone. - Thomas Fuller.>
+TT $$,<Stay on the right track long enough ... and the train will run over you.>
+TT $$,<One nice thing about following the narrow way -- there''s less traffic.>
+TT $$,<I am right and therefore shall not give up the contest. - R. B. Hayes.>
+TT $$,<Profitability is the sovereign criterion of the enterprise. - P. Drucker.>
+TT $$,<Let each of us become all that we are capable of being. - T. Carlyle.>
+TT $$,<An investment in knowledge always pays the best interest. - Franklin.>
+TT $$,<Enjoy present pleasures in such a way as not to injure future ones. - Seneca.>
+TT $$,<They are able because they think they are able. - Vergil.>
+TT $$,<The world turns aside to let any man pass who knows whither he is going.>
+TT $$,<We all like to see everybody make a little profit -- very little. - Hightower.>
+TT $$,<The art of pleasing consists in being pleased. - William Hazlitt.>
+TT $$,<The fellow who thinks he knows it all is especially annoying to those of us who do.>
+TT $$,<Beauty in things exists in the mind which contemplates them. - David Hume.>
+TT $$,<Until you try, you don''t know what you can do. - William Feather.>
+TT $$,<No one is free who commands not himself. - Epictetus.>
+TT $$,<High physical condition is vital to victory. - George S. Patton, Jr.>
+TT $$,<You can judge people by how much they do when they don''t need to.>
+TT $$,<A little rebellion is a medicine necessary for the sound health of government.>
+TT $$,<Opinions that are well rooted should grow and change like a healthy tree.>
+TT $$,<Wonder rather than doubt is the root of knowledge. - Abraham Joshua Heschel.>
+TT $$,<You grow up the day you have the first real laugh -- at yourself. - E. Barrymore.>
+TT $$,<There''s no discipline in life except necessity. - Arnold Glasow.>
+TT $$,<Optimism is a kind of heart stimulant -- the digitalis of failure. - Hubbard.>
+TT $$,<Patience is the companion of wisdom. - Saint Augustine.>
+TT $$,<All things excellent are as difficult as they are rare. - Baruch Spinoza.>
+TT $$,<Hope is brightest when it dawns from fears. - Sir Walter Scoot.>
+TT $$,<If we had no faults we should not take so much pleasure in noting those of others.>
+TT $$,<Any man that is afraid of being supplanted ought to be supplanted. - Wanamaker.>
+TT $$,<It''s good to have your feet on the ground, but keep them moving. - A. Glasow.>
+TT $$,<Seek not happiness too greedily, and be not fearful of unhappiness. - Lao-Tzu.>
+TT $$,<Faultfinding without suggestions for improvement is a waste of time. - Smedley.>
+TT $$,<For success, attitude is equally as important as ability. - Harry F. Banks.>
+TT $$,<Good will, like a good name, is got by many actions and lost by one. - Jeffrey.>
+TT $$,<I have simply tried to do what seemed best each day, as each day came. A. Lincoln.>
+TT $$,<Have something to say; say it, and stop when you''re done. - Tyron Edwards.>
+TT $$,<Think today and speak tomorrow. - H. G. Bohn.>
+TT $$,<To be angry is to revenge the faults of others on ourselves. - Pope.>
+TT $$,<When we build, let us think we build forever. - Ruskin.>
+TT $$,<Win without boasting.  Lose without excuse. - Albert Payson Ternune.>
+TT $$,<I make the most of all that comes, and the least of all that goes. - Teasdale.>
+TT $$,<The truth is always the strongest argument. - Sophocles.>
+TT $$,<The glow of one warm thought is to me worth more than money. - T. Jefferson.>
+TT $$,<The most valuable thing I have learned from life is to regret nothing. - Maugham.>
+TT $$,<When in doubt, tell the truth. - Mark Twain.>
+TT $$,<Perseverance is failing 19 times and succeeding the 20th. - J. Andrews.>
+TT $$,<Heroism is endurance for one moment more. - George Kennan.>
+TT $$,<The ideal of independence requires resistance to the herd spirit. - Mason.>
+TT $$,<To understand all makes us very indulgent. - Madame de Stael.>
+TT $$,<The measure of life is not length, but honesty. - John Lyly.>
+TT $$,<Our bitterest wine is always drained from crushed ideals. - A. Stringer.>
+TT $$,<What comes with ease goes with ease. - Arabian Proverb.>
+TT $$,<Slight not what is near though aiming at what''s far. - Euripides.>
+TT $$,<How glorious it is --and also how painful-- to be an exception. - A. de Musset.>
+TT $$,<The beginning is the most important part of the work. - Plato.>
+TT $$,<It is when you give of yourself that you truly give. - Gibran.>
+TT $$,<The beginnings and endings of all human undertakings are untidy. - Galsworthy.>
+TT $$,<No system is ever completely debugged.>
+TT $$,<A cynic is a man who knows the price of everything and the value of nothing.>
+TT $$,<Man is the only animal that blushes or needs to. - Mark Twain.>
+TT $$,<You can say too much even upon the best of subjects. - Proverb.>
+TT $$,<Never underestimate the power of human stupidity.>
+TT $$,<Always listen to experts.  They''ll tell you what can''t be done, and why. Then do it.>
+TT $$,<The worst day spent fishing is better than the best day spent working.>
+TT $$,<A poet who reads his verse in public may have other nasty habits.>
+TT $$,<An elephant: A mouse built to government specifications.>
+TT $$,<He who aims at nothing will always hit it.>
+TT $$,<Words often become the substitute of thought instead of its vehicle.>
+TT $$,<Many receive advice, only the wise profit by it. - Sykes.>
+TT $$,<You only lose you temper when you are not sure of your ground. - F. Dunn.>
+TT $$,<Tilting at windmills hurts you more than the windmills.>
+TT $$,<Felicity, not fluency of language, is a merit.>
+TT $$,<All things are difficult until we know how.>
+TT $$,<A committee is a life form with six or more legs and no brain.>
+TT $$,<Climate is what we expect, weather is what we get.>
+TT $$,<Don''t try to have the last word.  You might get it.>
+TT $$,<Real leaders are ordinary people with extraordinary determinations. - Garns.>
+TT $$,<Natural laws have no pity.>
+TT $$,<It is not only what we do; but what we don''t do for which we are accountable.>
+TT $$,<We would accomplish more things if we did not think of them as impossible.>
+TT $$,<Money is truthful.  If a man speaks of his honor, make him pay cash.>
+TT $$,<To be ruled entirely by circumstances is the equivalent of stagnation.>
+TT $$,<Prejudice is the reason of fools. - Voltaire.>
+TT $$,<Everything should be made as simple as possible but not simpler. - Einstein.>
+TT $$,<Truth will rise above falsehood as oil above water. - Cervantes.>
+TT $$,<If you want to lead, you should have someplace to go.>
+TT $$,<Discussion is an exchange of knowledge; argument an exchange of ignorance.>
+TT $$,<Is not life a hundred times too short for us to bore ourselves? - Nietzche.>
+TT $$,<The hardest thing to learn in life is which bridge to cross and which to burn.>
+TT $$,<True friendship comes when silence between two people is comfortable.>
+TT $$,<Not a shred of evidence exists in favor of the idea that life is serious.>
+TT $$,<Strength of mind is exercise, not rest. - Alexander Pope.>
+TT $$,<Enjoyment of the present is denied to those who worry too much about the future.>
+TT $$,<When the world is wrong, right your own self. - Neal Monroe.>
+TT $$,<All things are difficult before they are easy. - Thomas Fuller.>
+TT $$,<What we obtain too cheap, we esteem too lightly. - Thomas Paine.>
+TT $$,<An object in possession seldom retains the same charm that it had in pursuit.>
+TT $$,<Life is what happens while you''re making other plans. - John Lennon.>
+TT $$,<What passes for optimism is most often the effect of an intellectual error.>
+TT $$,<What goes around comes around. - South Central L. A. Proverb.>
+TT $$,<The secret of my vigor and activity is that I have managed to have a lot of fun.>
+TT $$,<You can often profit from being at a loss for words. - Frank Tyger.>
+TT $$,<One can resist the invasion of armies, but not the invasion of ideas. - V. Hugo.>
+TT $$,<Fear not for the future; weep not for the past. - Shelley.>
+TT $$,<Show yourself more human than critical and your pleasure will increase.>
+TT $$,<There''s no such thing as not enough time if you''re doing what you want to do.>
+TT $$,<The human race is governed by its imagination. - Napoleon.>
+TT $$,<All good things which exist are the fruits of originality. - John Stuart Mill.>
+TT $$,<Everyone desires long life, no one old age. - Jonathan Swift.>
+TT $$,<Human sympathy is more valuable than ideology. - Kenneth Clark.>
+TT $$,<We forfeit three-fourths of ourselves in order to be like other people.>
+TT $$,<Be a life long or short, its completeness depends on what it was lived for.>
+TT $$,<Doing what you like is freedom.  Liking what you do is happiness. - Frank Tyge.>
+TT $$,<Nothing is a repulsive as phoniness; conversely, nothing is as magnetic as reality.>
+TT $$,<Planning for happiness is rarely successful.  Happiness just happens. - R. Hall.>
+TT $$,<The future arrives before we expect it, but is seldom what we expect. - A. Glasow.>
+TT $$,<Seek respect from thyself, for it comes mainly from within. - Steven H. Coogle.>
+TT $$,<The noble soul has reverence for itself. - Friedrich Nietzsche.>
+TT $$,<Doubts and jealousies often beget the facts they fear. - Thomas Jefferson.>
+TT $$,<The larger part of goodness is the will to become good. - Seneca.>
+TT $$,<Quick sensitiveness is inseparable from a ready understanding. - Addison.>
+TT $$,<Most of us might live up our ideals if we knew what they were. - A. Glasow.>
+TT $$,<Complacency is the enemy of progress. - Dave Stutman.>
+TT $$,<The only worthy response to danger and failure is a renewed dedication to success.>
+TT $$,<Real happiness is cheap enough, yet how dearly we pay for its counterfeit.>
+TT $$,<All that is human must retrograde if it does not advance. - Edward Gibbon.>
+TT $$,<Good company and good discourse are the very sinews of virtue. - Izaak Walton.>
+TT $$,<We know the truth, not only by the reason, but also by the hear. - B. Pascal.>
+TT $$,<Labor to keep alive in your breast that little spark of celestial fire.>
+TT $$,<The reward of one duty done is the power to fulfill another. - George Eliot.>
+TT $$,<The only thing of consequence is what we do. - John Ruskin.>
+TT $$,<Style is the dress of the thoughts. - Earl of Chesterfield.>
+TT $$,<Curiosity is one of the permanent and certain characteristics of a vigorous mind.>
+TT $$,<Liberty of thought is the life of the soul. - Voltaire.>
+TT $$,<Prejudice consists of being down on what you are not up on. - Charles Sharp.>
+TT $$,<To believe in the heroic makes heroes. - Disraeli.>
+TT $$,<Results are the best proof of ability.>
+TT $$,<The heart has its reasons which reason doesn''t know.>
+TT $$,<Friendship is largely a matter of putting up with one another''s peculiarities.>
+TT $$,<The who forgive the most will be the most forgiven - or the most taken advantage of.>
+TT $$,<Imitators never quite catch up with the people they''re imitating.>
+TT $$,<Long-range goals keep us from being frustrated by short-range failures.>
+TT $$,<There is nothing so rare as a favor done without a purpose.>
+TT $$,<Success is a measure of one''s ability to turn work into adventure.>
+TT $$,<The future belongs to those who live intensely in the present.>
+TT $$,<True eloquence is saying all that''s necessary and no more.>
+TT $$,<Arrogance is a weak person''s substitute for strength.>
+TT $$,<Sarcasm is intellect on the offensive.>
+TT $$,<It is human nature to take credit for success and blame circumstances for failure.>
+TT $$,<We''d be better off if we didn''t forget favors sooner than we forgive wrongs.>
+TT $$,<Discontent is the first step in the progress of a person or a nation.>
+TT $$,<You never know what you can do until you try to undo what you''ve done.>
+TT $$,<Murphy''s Law is a superstition and must not guide our coding technique. - Alex.>
+TT $$,<You never know what is enough, until you know what is more than enough.>
+TT $$,<Blessed are the Quilters for they are the Piecemakers.>
+TT $$,<No one is totally worthless.  At least he can serve as a horrible example.>
+TT $$,<What? Me worry? - Alfred E. Newman.>
+TT $$,<God looks after drunks, children, and Americans. - James Truslow Adams.>
+TT $$,<The happiness of society is the end of government. - John Adams.>
+TT $$,<Never play cards with a man named Doc. Never eat at a place named Moms. - Algren.>
+TT $$,<Float like a butterfly, sting like a bee. - Muhammad Ali.>
+TT $$,<That''s one small step for a man, one giant leap for mankind. - Neil Armstrong.>
+TT $$,<There''s a sucker born every minute. - P. T. Barnum.>
+TT $$,<How were the receipts at Madison Square Garden. P. T. Barnum - last words.>
+TT $$,<Bigot, n. One who is obstinately and zealously attached to an opinion that you do not entertain. - Ambrose Bierce.>
+TT $$,<Rebel, n. A proponent of a new misrule who has failed to establish it. - Bierce.>
+TT $$,<They''ll nail anyone who scratched his ass during the national anthem. - Bogart.>
+TT $$,<The way to win an atomic war is to make sure it never starts. - Omar Bradley.>
+TT $$,<Nixon is a purposeless man, but I have great faith in his cowardice. - Breslin.>
+TT $$,<You can get much farther with a kind word and a gun than you can get with a kind word alone. - Al Capone.>
+TT $$,<I''m not the Carter who''ll never tell a lie. - Billy Carter.>
+TT $$,<I''m not from Washington and I''m not a lawyer. - Jimmy Carter.>
+TT $$,<Sometimes when I look at all my children, I say to myself, "Lillian you should have stayed a virgin." - Lillian Carter.>
+TT $$,<If you''ve got them by the balls, their minds and hearts will follow. - C. Colson.>
+TT $$,<When a great many people are unable to find work, unemployment results. - Calvin Coolidge.>
+TT $$,<Inflation has allowed every American to live in a more expensive neighborhood without moving. - Alan Cranston.>
+TT $$,<We''ve got them. - George Armstrong Custer (at the Little Big Horn)>
+TT $$,<No soldier starts a war-they only give their lives to it. - Francis P. Duffy.>
+TT $$,<Nice guys finish last. - Leo Durocher.>
+TT $$,<Genius is one percent inspiration and 99 percent perspiration. - Thomas Edison.>
+TT $$,<Don''t worry, Jim. If that comes up, I''ll just confuse them. - D. D. Eisenhower.>
+TT $$,<Ronald Reagan doesn''t dye his hair - he''s just prematurely orange. - G. Ford.>
+TT $$,<Praise the Lord and pass the ammunition. Howell Forgy - Army chaplain.>
+TT $$,<I git there fustest with the mostest men. - Nathan B. Forrest, Confederate Army.>
+TT $$,<God works wonders now and then: Behold!!!! a lawyer, an honest man. - B. Franklin.>
+TT $$,<We must all hang together, or most assuredly, we shall all hang separately. - Benjamin Franklin.>
+TT $$,<We ought to saw off the Eastern seaboard and float it out to sea. - B. Goldwater.>
+TT $$,<If there ever was an aviary over-stocked with jays it is that Yapp-town-on-the-Hudson called New York. - O. Henry.>
+TT $$,<Work and pray, live on hay, You''ll get pie in the sky when you die. - Joe Hill.>
+TT $$,<I do unto others what they do unto me, only worse. - Jimmy Hoffa.>
+TT $$,<A billion dollars is not what it used to be. - Bunker Hunt.>
+TT $$,<While you''re trying to save your face, you''re losing your ass. - L. B. Johnson.>
+TT $$,<Jerry Ford is so dumb he can''t fart and chew gum at the same time. - L B Johnson.>
+TT $$,<We have met the enemy and they are us. Walt Kelly - Pogo.>
+TT $$,<A neighborhood is where, when you go out of it, you get beat up. - M. Kempton.>
+TT $$,<Mankind must put an end to war, or war will put an end to mankind. - J. F. K.>
+TT $$,<If someone is going to kill me, they will kill me. - J. F. K. (before Dallas)>
+TT $$,<Give me the brand, and I''ll send a barrel to my other generals. - Lincoln.>
+TT $$,<It is fatal to enter any war without the will to win it. - Douglas MacArthur.>
+TT $$,<Instead of leading the world, America appears resolved to buy it. - Thomas Mann.>
+TT $$,<Nuts. Anthony C. McAuliffe (at the battle of the bulge.)>
+TT $$,<He slept more than any other President.  Nero fiddled, but Coolidge only snored. - H. L. Mencken.>
+TT $$,<The President has a big belly. His brains are not proportioned to it. - J. Sterling Morton on President Cleveland.>
+TT $$,<I am a man of a thousand faces, all of the blacklisted. - Zero Mostel.>
+TT $$,<Our national flower is the concrete cloverleaf. - Lewis Mumford.>
+TT $$,<Now I am become death, the destroyer of worlds. - J. Robert Oppenheimer.>
+TT $$,<Taxation without representation is tyranny. - James Otis.>
+TT $$,<How can they tell? Dorthy Parker upon being told Calvin Coolidge had died.>
+TT $$,<A man''s respect for law and order exists in precise relationship to the size of his paycheck. - Adam Powell.>
+TT $$,<All I know is just what I read in the papers. - Will Rogers.>
+TT $$,<The Income Tax has made more liars out of the American People than golf has. - Will Rogers.>
+TT $$,<The United States has never lost a war or won a conference. - Will Rogers.>
+TT $$,<I don''t make jokes - I just watch the government and report the facts. - W. Rogers.>
+TT $$,<The only thing we have to fear is fear itself. - Franklin Delano Roosevelt.>
+TT $$,<Would you buy a used car from this man? - Mort Sahl of Richard M. Nixon.>
+TT $$,<Sometime they''ll give a war and nobody will come. - Carl Sandburg.>
+TT $$,<America is the greatest of opportunities and the worst of influences. - George Santayana.>
+TT $$,<The way I see it, it doesn''t matter what you believe just so you''re sincere. Charles M. Schultz - Peanuts.>
+TT $$,<If I owned Texas and Hell, I would rent out Texas and live in Hell. - Philip H. Sheridan.>
+TT $$,<You really have to get to know Dewey to dislike him. - Robert A. Taft.>
+TT $$,<The mass of men lead lives of quiet desperation. - Henry David Thoreau.>
+TT $$,<A statesman is a politician who''s been dead 10 or 15 years. - Harry S Truman.>
+TT $$,<Irreverence is the champion of liberty and its only sure defense. - Mark Twain.>
+TT $$,<As long as I count the votes, what are you going to do about it. - "Boss" Tweed.>
+TT $$,<Did you ever have the measles, and if so, how many? - Artemus Ward.>
+TT $$,<No, NO!!!! Jimmy Stewart for governor, Regan for best friend. - Jack L. Warner.>
+TT $$,<The thing that impresses me most about America is the way parents obey their children. - Edward, Duke of Windsor.>
+TT $$,<Making the world safe for hypocrisy. - Thomas Wolfe.>
+
+NNN	defl	$$
+
+TENTE	MACRO	C
+	dw	S&C
+	ENDM
+
+TENT	MACRO	C
+	TENTE	%C
+$$$	defl	$$$+1
+	ENDM
+
+$$$	defl	0
+
+TAB:	REPT	$$
+	TENT	$$$
+	ENDM
+
+	DSEG
+
+gtimbf:	ds	8
+txtbuf:	ds	82
+
+	ds	256
+stack	equ	$
+
+	END	BEGIN

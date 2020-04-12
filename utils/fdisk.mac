@@ -1,0 +1,1779 @@
+;**********************************************************************;
+;                                                                      ;
+;  GIDE FDISK utility for the P112 - RSX180 version.                   ;
+;  Copyright (C) 2019-2020, Hector Peraza.                             ;
+;                                                                      ;
+;  This program is free software; you can redistribute it and/or       ;
+;  modify it under the terms of the GNU General Public License as      ;
+;  published by the Free Software Foundation; either version 2 of      ;
+;  the License, or any later version.                                  ;
+;                                                                      ;
+;  This program is distributed in the hope that it will be useful,     ;
+;  but WITHOUT ANY WARRANTY; without even the implied warranty of      ;
+;  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the       ;
+;  GNU General Public License for more details.                        ;
+;                                                                      ;
+;  You should have received a copy of the GNU General Public License   ;
+;  along with this program; if not, write to the Free Software         ;
+;  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.           ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z180
+
+	ident	'01.01'
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+; Partition units
+
+USECT	equ	0
+UZITRK	equ	1
+UCYLS	equ	2
+
+MAXENT	equ	8
+
+METSTD	equ	0
+METBP	equ	1
+
+LUN	equ	1
+
+	extrn	GCCL,UCASE,PUTCH,PUTSTR,PERROR,CRLF,ADEC,HLDEC,LDEC,AHEX
+	extrn	CVTBD,CVTWD,CPHLDE,TTFLSH,GETLN,PDN
+
+	extrn	MBBOOT,MBBTSZ,MSBOOT,MSBTSZ
+
+; Partition table structure
+
+PSTART	equ	0		; start (2 bytes)
+PSIZE	equ	2		; size (2 bytes)
+PTYPE	equ	4		; type (1 byte)
+PBOOT	equ	5		; boot flag (1 byte)
+
+PTSIZE	equ	6		; entry size
+
+; IDE identify command structure
+
+I_CFG	equ	0		; config (2 bytes)
+I_CYL	equ	2		; number of cylinders (2 bytes)
+I_CYL2	equ	4		; (2 bytes)
+I_HEADS	equ	6		; number of heads (2 bytes)
+I_BPTRK	equ	8		; bytes per track (2 bytes)
+I_BPSEC	equ	10		; bytes per sector (2 bytes)
+I_SPTRK	equ	12		; sectors per track (2 bytes)
+I_D1	equ	14		; (2 bytes)
+I_D2	equ	16		; (2 bytes)
+I_D3	equ	18		; (2 bytes)
+I_SERNO	equ	20		; serial number (20 bytes)
+I_CTRLT	equ	40		; control type (2 bytes)
+I_BFSIZ	equ	42		; buffer size (2 bytes)
+I_ECCB	equ	44		; ECC bytes (2 bytes)
+I_CTREV	equ	46		; control rev (8 bytes)
+I_CTMOD	equ	54		; control modl (40 bytes)
+I_SPINT	equ	94		; sectors per int (2 bytes)
+I_DWFLG	equ	96		; double word flag (2 bytes)
+I_WPROT	equ	98		; write protect (2 bytes)
+I_RES1	equ	100		; reserved 1 (2 bytes)
+I_PIOTM	equ	102		; PIO timing (2 bytes)
+I_DMATM	equ	104		; DMA timing (2 bytes)
+I_RES2	equ	106		; reserved 2 (2 bytes)
+I_CCYL	equ	108		; current cylinder (2 bytes)
+I_CHEAD	equ	110		; current head (2 bytes)
+I_CSPT	equ	112		; current SPT (2 bytes)
+
+;-----------------------------------------------------------------------
+
+; >FDI DU:
+; >FDI DU0: etc.
+
+MAIN::	ld	sp,stack
+	ld	hl,header
+	call	PUTSTR
+
+	call	GCCL		; get MCR command line
+	call	SKPNAM
+	or	a
+	ex	de,hl
+	ld	hl,nodev
+	jp	c,ERROR
+	ex	de,hl
+	call	PDN		; parse device name
+	ld	hl,baddev
+	jp	c,ERROR		; on error, exit
+
+	ld	(devnam),de	; save device name
+	ld	a,c
+	ld	(devnam+2),a	; and unit
+
+	ld	b,LUN
+	SC	.ALUN		; assign LUN to device
+	jp	c,SYSERR
+
+	ld	hl,luninf
+	ld	c,LUN
+	SC	.GTLUN		; get device info
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	ld	hl,edevt
+	jp	z,ERROR		; error if not
+
+	bit	DV.MNT,a	; device mountable?
+	jp	z,ERROR		; error if not
+
+	ld	hl,hdbuf
+	ld	de,0
+	ld	bc,0
+	call	RDBLK
+	jp	c,rderr
+
+	ld	hl,hdbuf+512
+	ld	de,0
+	ld	bc,1
+	call	RDBLK
+	jp	c,rderr
+
+	ld	hl,3
+	ld	(ptoffs),hl	; offset to partition table pointer
+	ld	hl,5
+	ld	(goffs),hl	; offset to disk geometry pointer
+	ld	hl,7
+	ld	(soffs),hl	; offset to signature
+	ld	a,METSTD
+	ld	(method),a
+	ld	a,UZITRK
+	ld	(units),a
+
+	call	RDGEOM		; read geometry
+	ld	hl,EX.SEV
+	jp	c,exit
+
+	call	RDPTBL		; read partition table
+	call	SHGEOM		; show geometry
+	call	SHOWBM		; show boot method
+
+mloop:	ld	hl,cmd
+	ld	(cmdptr),hl
+	ld	e,72
+	ld	d,0
+	ld	bc,prompt
+	call	GETLN
+	cp	E.EOF		; ^Z aborts
+	jp	z,quit
+	ld	hl,mloop
+	push	hl		; push return address
+	call	SKIPBL
+	or	a
+	ret	z
+	call	UCASE
+	cp	'B'
+	jp	z,TGBOOT	; toggle bootable flag
+	cp	'D'
+	jp	z,PDELET	; delete partition
+	cp	'L'
+	jp	z,LTYPES	; list partition types
+	cp	'M'
+	jp	z,TGMETH	; toggle method
+	cp	'N'
+	jp	z,ADDPAR	; add partition
+	cp	'P'
+	jp	z,SHOWPT	; show partitions
+	cp	'Q'
+	jp	z,quit		; quit
+	cp	'T'
+	jp	z,SETTYP	; set partition type
+	cp	'U'
+	jp	z,CHUNIT	; change units
+	cp	'V'
+	jp	z,PTVFY		; verify partition table
+	cp	'W'
+	ld	hl,menu
+	jp	nz,PUTSTR
+	call	WRPTBL		; write partition table
+	jp	quit		;  and quit
+
+rderr:	push	af
+	ld	hl,rdemsg
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	CRLF
+	ld	hl,EX.SEV
+	jr	exit
+
+ERROR:	call	PUTSTR
+	ld	hl,EX.SEV
+	jr	exit
+
+SYSERR:	call	PERROR
+	call	CRLF
+	ld	hl,EX.SEV
+	jr	exit
+
+quit:	ld	hl,EX.SUC
+exit:	call	TTFLSH
+	SC	.EXIT
+
+header:	db	CR,LF,'P112 FDISK version 1.1 (GIDE)',CR,LF,0
+prompt:	db	CR,LF,'Command (h for help): ',0
+menu:	db	CR,LF,LF
+	db	'Command  Action',CR,LF,LF
+	db	'   b     toggle a bootable flag',CR,LF
+	db	'   d     delete a partition',CR,LF
+	db	'   h     print this menu',CR,LF
+	db	'   l     list known partition types',CR,LF
+	db	'   m     toggle boot code method',CR,LF
+	db	'   n     add a new partition',CR,LF
+	db	'   p     print the partition table',CR,LF
+	db	'   q     quit without saving',CR,LF
+	db	'   t     change a partition''s system id',CR,LF
+	db	'   u     change display/entry units',CR,LF
+	db	'   v     verify the partition table',CR,LF
+	db	'   w     write table to disk and exit',CR,LF,0
+
+rdemsg:	db	CR,LF,'Could not read partition table: ',0
+nodev:	db	CR,LF,'Missing device specification',CR,LF,0
+baddev:	db	CR,LF,'Invalid device specification',CR,LF,0
+edevt:	db	CR,LF,'Invalid device type',CR,LF,0
+
+; Read disk geometry
+
+RDGEOM:	ld	hl,idbuf
+	call	IDENT		; read drive ID
+	jr	nc,rdg1
+	push	af
+	ld	hl,rgerr1
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	CRLF
+	xor	a
+	ld	(idok),a
+	scf
+	ret
+
+rdg1:	ld	ix,idbuf
+	ld	l,(ix+I_CYL)
+	ld	h,(ix+I_CYL+1)
+	ld	(icyls),hl
+	ld	a,(ix+I_HEADS)
+	ld	(iheads),a
+	ld	a,(ix+I_HEADS+1)
+	or	a
+	jr	nz,rdg4
+	ld	a,(ix+I_SPTRK)
+	ld	(isecs),a
+	ld	a,(ix+I_SPTRK+1)
+	or	a
+	jr	nz,rdg4
+	ld	a,1
+	ld	(idok),a
+	ld	a,(valid)
+	or	a
+	jr	nz,rdg2
+	ld	hl,(icyls)
+	ld	(hcyls),hl
+	ld	a,(iheads)
+	ld	(hheads),a
+	ld	a,(isecs)
+	ld	(hsecs),a
+	ret
+rdg2:	ld	hl,(icyls)
+	ld	de,(hcyls)
+	call	CPHLDE
+	jr	nz,rdg3
+	ld	hl,(iheads)	; note: iheads and isecs
+	ld	de,(hheads)	; note: hheads and hsecs
+	call	CPHLDE
+	ret	z
+rdg3:	ld	hl,rgerr2
+	call	PUTSTR
+;;	call	SHGEOM
+	xor	a
+	ret
+rdg4:	ld	hl,rgerr3
+	call	PUTSTR
+	xor	a
+	ld	(idok),a
+	scf
+	ret
+
+rgerr1:	db	CR,LF,'Could not read drive ID: ',0
+rgerr2:	db	CR,LF,'The disk geometry stored in the '
+	db	'partition table does not match',CR,LF
+	db	'the one reported by the disk.',CR,LF,0
+rgerr3:	db	CR,LF,'Disk too large',CR,LF,0
+
+; Read the partition table
+
+RDPTBL:	ld	a,1
+	ld	(valid),a
+	ld	hl,512
+	ld	(bootsz),hl
+
+	ld	hl,ptable
+	ld	bc,PTSIZE*MAXENT
+	call	CLRMEM		; clear table
+	
+	; do some validation checks first
+
+	ld	hl,hdbuf
+	ld	a,(hl)
+	cp	76h
+	jr	nz,rdp2
+
+	; looks like a new-style boot sector
+
+	inc	hl
+	ld	a,(hl)
+	cp	21h
+	jp	nz,rdp5
+
+	; check for a 'P112GIDE' signature
+
+	ld	hl,17
+	ld	(ptoffs),hl
+	ld	hl,19
+	ld	(goffs),hl
+	ld	hl,8
+	ld	(soffs),hl
+	ld	a,METBP
+	ld	(method),a
+	ld	hl,1024
+	ld	(bootsz),hl
+	ld	hl,(soffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	de,p112sg
+	ld	b,8
+	call	STNCMP		; check signature
+	jp	z,rdp5
+	xor	a
+	ld	(valid),a
+	ld	hl,rpmsg1
+	jp	PUTSTR		; output warning and return
+
+rdp2:	cp	0C3h
+	jr	nz,rdp4
+
+	; check for a 'P112GIDE' signature
+
+	ld	hl,3
+	ld	(ptoffs),hl
+	ld	hl,5
+	ld	(goffs),hl
+	ld	hl,7
+	ld	(soffs),hl
+	ld	a,METSTD
+	ld	(method),a
+	ld	hl,512
+	ld	(bootsz),hl
+	ld	hl,(soffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	de,p112sg
+	ld	b,8
+	call	STNCMP		; check signature
+	jr	z,rdp3
+	xor	a
+	ld	(valid),a
+	jr	rdp5
+
+rdp3:	; shouldn't we check for the version number as well?
+
+	; looks OK so far, let's do some safety checks
+
+	ld	hl,(ptoffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)		; get offset to partition table in boot sector
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,6
+	call	CPHLDE		; ensure pointer is within range
+	jr	nc,rdp4
+	ld	de,(bootsz)
+	dec	de
+	call	CPHLDE
+	jr	c,rdp4
+
+	ld	hl,(goffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)		; get offset to disk geometry in boot sector
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,6
+	call	CPHLDE		; ensure pointer is within range
+	jr	nc,rdp4
+	ld	de,(bootsz)
+	dec	de
+	call	CPHLDE
+	jr	nc,rdp5
+
+rdp4:	xor	a
+	ld	(valid),a
+
+rdp5:	; we should still check for a valid disk geometry definition
+
+	ld	a,(method)
+	cp	METSTD
+	jr	nz,rdp7
+
+	ld	hl,hdbuf
+	ld	bc,512
+	ld	e,0
+rdp6:	ld	a,(hl)		; compute checksum of the boot sector
+	add	a,e
+	ld	e,a
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,rdp6
+	sub	1
+	sbc	a,a		; must be zero for standard boot sector
+	ld	(valid),a
+
+rdp7:	ld	a,(valid)
+	or	a
+	ld	hl,rpmsg2
+	jp	z,PUTSTR	; display warning and return
+
+	ld	hl,(goffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)		; get offset to disk geometry in boot sector
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; index into boot sector
+	ld	e,(hl)		; fetch cylinders
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(hcyls),de
+	ld	a,(hl)		; fetch heads
+	inc	hl
+	ld	(hheads),a
+	ld	a,(hl)		; fetch sectors
+	ld	(hsecs),a
+
+	; we should still check for a valid disk geometry definition
+
+	ld	hl,(ptoffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)		; get offset to partition table in boot sector
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de
+	ld	de,ptable
+	ld	bc,PTSIZE*MAXENT
+	ldir			; copy partition table
+	ret
+
+p112sg:	db	'P112GIDE'
+
+rpmsg1:	db	CR,LF
+	db	'This disk seems to have a B/P BIOS boot record.',CR,LF
+	db	'It will be overwritten by this program, '
+	db	'proceed at your own risk.',CR,LF,0
+rpmsg2:	db	CR,LF,'This disk does not have a valid P112 partition '
+	db	'or boot record.',CR,LF,0
+
+; Compare string @HL with @DE, length B
+
+STNCMP:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	STNCMP
+	ret
+
+; Write the partition table back to disk
+
+WRPTBL:	ld	hl,hdbuf
+	ld	bc,1024
+	call	CLRMEM
+
+	ld	hl,MSBOOT
+	ld	bc,MSBTSZ
+
+	ld	a,(method)
+	cp	METSTD		; standard boot method?
+	jr	z,wpt1		; branch if yes
+
+	ld	hl,MBBOOT
+	ld	bc,MBBTSZ
+
+wpt1:	ld	de,hdbuf
+	ldir			; copy boot code
+
+	ld	hl,(ptoffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; point to partition table in boot code
+	ex	de,hl
+
+	ld	hl,ptable
+	ld	bc,PTSIZE*MAXENT
+	ldir			; copy the partition table
+
+	ld	hl,(goffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; point to disk geometry values
+	ex	de,hl
+
+	ld	hl,icyls	; hcyls
+	ld	bc,2+1+1
+	ldir			; copy disk geometry values
+
+	ld	a,(method)
+	cp	METSTD
+	jr	nz,wpt3
+
+	ld	hl,hdbuf
+	ld	bc,511
+	ld	e,0
+wpt2:	ld	a,(hl)
+	add	a,e		; compute checksum
+	ld	e,a
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,wpt2
+	ld	a,e
+	neg
+	ld	(hl),a		; block checksum must be zero for the P112
+
+wpt3:	ld	hl,hdbuf
+	ld	de,0
+	ld	bc,0
+	call	WRBLK		; write the master boot record
+	jr	c,wpt5
+
+	ld	a,(method)
+	sub	METSTD
+	jr	z,wpt4
+
+	ld	hl,hdbuf+512
+	ld	de,0
+	ld	bc,1
+	call	WRBLK
+	jr	c,wpt5
+
+wpt4:	ld	hl,wrdone
+	call	PUTSTR
+	xor	a
+	ret
+
+wpt5:	push	af
+	ld	hl,wrpte
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	CRLF
+	scf
+	ret
+
+wrdone:	db	CR,LF,'Done.',CR,LF,0
+wrpte:	db	CR,LF,'Could not write partition table: ',0
+    
+; Change units
+
+CHUNIT:	ld	a,(units)
+	inc	a
+	cp	3
+	jr	c,ch1
+	xor	a
+ch1:	ld	(units),a
+	rlca
+	ld	c,a
+	ld	b,0
+	ld	hl,chmsg
+	call	PUTSTR
+	ex	de,hl
+	ld	hl,utbl
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	PUTSTR
+	ex	de,hl
+	inc	hl
+	jp	PUTSTR
+	
+chmsg:	db	CR,LF,'Changing display/entry units to ',0,CR,LF,0
+utbl:	dw	u0,u1,u2
+u0:	db	'sectors',0
+u1:	db	'UZI180 tracks (16 sectors)',0
+u2:	db	'cylinders',0
+
+; Display partition table
+
+SHOWPT:	ld	hl,phdr
+	call	PUTSTR
+	ld	ix,ptable
+	ld	b,MAXENT
+sp1:	ld	a,(ix+PSIZE)
+	or	(ix+PSIZE+1)
+	jr	z,sp3
+	ld	a,MAXENT+1
+	sub	b
+	ld	l,a
+	ld	h,0
+	ld	a,' '
+	call	HLDEC
+	ld	a,6
+	call	sep
+	ld	l,(ix+PSTART)
+	ld	h,(ix+PSTART+1)
+	ld	a,' '
+	call	HLDEC		; start
+	ld	a,2
+	call	sep
+	ld	e,(ix+PSIZE)
+	ld	d,(ix+PSIZE+1)
+	add	hl,de
+	dec	hl
+	ld	a,' '
+	call	HLDEC		; end
+	ld	a,2
+	call	sep
+	ex	de,hl
+	ld	a,' '
+	call	HLDEC		; size
+	ld	a,2
+	call	sep
+	ex	de,hl
+	push	bc
+	ld	bc,8192
+	call	MULT16
+	ex	de,hl
+	ld	a,' '
+	call	LDEC		; bytes
+	ld	a,6
+	call	sep
+	ld	a,(ix+PBOOT)
+	or	a
+	ld	c,'Y'
+	jr	nz,sp2
+	ld	c,' '
+sp2:	call	PUTCH		; bootable flags
+	ld	a,5
+	call	sep
+	ld	c,(ix+PTYPE)
+	call	PRTYPE		; type
+	call	CRLF
+	pop	bc
+sp3:	ld	de,PTSIZE
+	add	ix,de
+	djnz	sp1
+	ret
+
+phdr:	db	CR,LF,LF
+	db	'Partition  Start    End   Size       Bytes  Bootable  Type'
+	db	CR,LF
+	db	'---------  -----  -----  -----  ----------  --------  ------'
+	db	CR,LF,0
+
+sep:	push	af
+	ld	c,' '
+	call	PUTCH
+	pop	af
+	dec	a
+	jr	nz,sep
+	ret
+
+; Show disk geometry
+
+SHGEOM:	ld	hl,gmsg1
+	call	PUTSTR
+
+	ld	a,(idok)
+	or	a
+	jr	z,sg1
+
+	ld	hl,gmsg2
+	ld	ix,icyls
+	call	report
+
+sg1:	ld	a,(valid)
+	or	a
+	jr	z,sg2
+
+	ld	hl,gmsg3
+	ld	ix,hcyls
+	call	report
+
+sg2:	ld	hl,gmsg5
+	jp	PUTSTR
+
+report:	call	PUTSTR
+	push	hl
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	xor	a
+	call	HLDEC
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	ld	a,(ix+2)
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+	ld	a,(ix+3)
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+
+	ld	hl,gmsg4
+	call	PUTSTR
+	push	hl
+	ld	e,(ix+0)
+	ld	d,(ix+1)
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	call	TSECS
+	ex	de,hl		; total sectors in HLDE
+	xor	a
+	push	hl
+	push	de
+	call	LDEC
+	pop	de
+	pop	hl
+	ex	(sp),hl
+	inc	hl
+	call	PUTSTR
+	ex	(sp),hl
+	ld	h,l		; *256
+	ld	l,d
+	ld	d,e
+	ld	e,0
+	sla	d		; *512
+	rl	l
+	rl	h
+	xor	a
+	call	LDEC
+	pop	hl
+	inc	hl
+	jp	PUTSTR
+
+gmsg1:	db	CR,LF,'Hard disk geometry:',CR,LF,0
+gmsg2:	db	CR,LF,'  As reported by the drive: ',0
+	db	' cylinders, ',0,' heads ',0,' sectors',CR,LF,0
+gmsg3:	db	CR,LF,'  As stored in the partition table: ',0
+	db	' cylinders, ',0,' heads ',0,' sectors',CR,LF,0
+gmsg4:	db	'  Capacity: ',0,' sectors (',0,' bytes)',CR,LF,0
+gmsg5:	db	CR,LF,'Display/entry units are in UZI180 tracks '
+	db	'(16 sectors or 8192 bytes)',CR,LF,0
+
+; Toggle boot code method
+
+TGMETH:	ld	a,(method)
+	cp	METBP
+	jr	z,tgm1
+	ld	hl,17
+	ld	(ptoffs),hl	; offset to partition table pointer
+	ld	hl,19
+	ld	(goffs),hl	; offset to disk geometry pointer
+	ld	hl,8
+	ld	(soffs),hl	; offset to signature
+	ld	a,METBP
+	ld	(method),a
+	jr	SHOWBM
+tgm1:	ld	hl,3
+	ld	(ptoffs),hl	; offset to partition table pointer
+	ld	hl,5
+	ld	(goffs),hl	; offset to disk geometry pointer
+	ld	hl,7
+	ld	(soffs),hl	; offset to signature
+	ld	a,METSTD
+	ld	(method),a
+	; continue below
+
+; Show current boot method
+
+SHOWBM:	ld	a,(method)
+	cp	METBP
+	ld	hl,mbp
+	jp	z,PUTSTR
+	ld	hl,mstd
+	jp	PUTSTR
+
+mbp:	db	CR,LF,'Using new-style boot sector code',CR,LF,0
+mstd:	db	CR,LF,'Using standard boot sector code',CR,LF,0
+
+; Add new partition
+
+ADDPAR:	ld	hl,1
+	ld	(fstfre),hl	; init first free cylinder
+
+	; search for an empty slot
+
+	ld	ix,ptable
+	ld	b,MAXENT
+adp1:	ld	l,(ix+PSIZE)
+	ld	h,(ix+PSIZE+1)
+	ld	a,h
+	or	l		; entry in use?
+	jr	z,adp2		; branch if not
+	ld	e,(ix+PSTART)
+	ld	d,(ix+PSTART+1)
+	add	hl,de		; else set first free cylinder
+	ld	(fstfre),hl	;  after the end of this one
+	ld	de,PTSIZE	
+	add	ix,de
+	djnz	adp1		; loop to check next entry
+
+	ld	hl,admsg1	; no free slot found, table is full
+	call	PUTSTR
+	ret
+
+adp2:	ld	a,MAXENT+1
+	sub	b
+	ld	b,a
+	call	GETPAR		; ask the user for a partition number
+	ret	c
+	ld	c,a		; remember it
+	ld	a,(ix+PSIZE)	; is the partition in use?
+	or	(ix+PSIZE+1)
+	jp	nz,aderr1	; if yes, display message and exit
+
+	ld	de,(icyls)
+	ld	bc,(iheads)
+	call	TSECS		; compute total sectors
+	ld	c,16
+	call	DIV328
+	call	DEC32
+	ld	(maxcyl),hl	; max cylinder = total sectors / 16 - 1
+
+	; get first cylinder
+
+	ld	hl,adprm1
+	ld	de,sbuf
+	call	STRCPY		; prepare prompt
+	push	hl
+	ld	hl,(fstfre)
+	ex	de,hl
+	xor	a
+	call	CVTWD		; start from first free cylinder
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	push	hl
+	ld	hl,(maxcyl)
+	ex	de,hl
+	xor	a
+	call	CVTWD		; until max cylinder
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	push	hl
+	ld	hl,(fstfre)
+	ex	de,hl
+	xor	a
+	call	CVTWD		; default is first free cylinder
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	ld	hl,cmd
+	ld	(cmdptr),hl
+	ld	e,72
+	ld	d,0
+	ld	bc,sbuf
+	call	GETLN		; get user response
+	cp	E.EOF		; ^Z aborts
+	scf
+	ret	z
+	call	SKIPBL
+	or	a		; empty response?
+	jr	z,adp3		; branch if yes, use default value
+	call	GETDEC		; else convert cylinder value
+	jp	c,rngerr
+	ex	de,hl
+	ld	hl,(maxcyl)
+	call	CPHLDE		; cylinder > max cyl?
+	jp	c,rngerr	; error if yes
+	jr	adp4		; branch to set start of partition
+
+adp3:	ld	hl,admsg3
+	call	PUTSTR		; using default value
+	ex	de,hl
+	ld	hl,(fstfre)
+	xor	a
+	call	HLDEC
+	ex	de,hl
+	inc	hl
+	call	PUTSTR
+adp4:	ld	(ix+PSTART),e	; store start of partition
+	ld	(ix+PSTART+1),d
+
+	; get last cylinder
+
+	ld	hl,adprm2
+	ld	de,sbuf
+	call	STRCPY		; prepare prompt
+	push	hl
+	ld	l,(ix+PSTART)
+	ld	h,(ix+PSTART+1)
+	inc	hl
+	ex	de,hl
+	xor	a
+	call	CVTWD		; min is start + 1
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	push	hl
+	ld	hl,(maxcyl)
+	ex	de,hl
+	xor	a
+	call	CVTWD		; max is maxcyl
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	push	hl
+	ld	hl,(maxcyl)
+	ex	de,hl
+	xor	a
+	call	CVTWD		; default is maxcyl
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	ld	hl,cmd
+	ld	(cmdptr),hl
+	ld	e,72
+	ld	d,0
+	ld	bc,sbuf
+	call	GETLN		; get user response
+	cp	E.EOF		; ^Z aborts
+	scf
+	ret	z
+	call	SKIPBL
+	or	a		; empty response?
+	jr	z,adp9		; branch if yes, use default value
+	ld	c,a		; remember relative flag
+	cp	'+'
+	jr	nz,adp6
+	inc	hl
+	ld	(cmdptr),hl
+adp6:	call	GETDEC		; get cylinder value
+	jp	c,rngerr
+	ld	a,c
+	cp	'+'		; relative cylinder?
+	jr	nz,adp8		; branch if not
+	ex	de,hl
+	call	SKIPBL		; get the char that follows
+	call	UCASE
+	cp	'M'		; Mbytes?
+	jr	nz,adp7		; branch if not
+
+	ld	bc,128
+	call	MULT16		; convert Mb to cylinders (1 cyl = 8Kb)
+	jr	adp11
+
+adp7:	cp	'K'		; Kbytes?
+	jr	nz,adp10	; branch if not
+
+	xor	a
+	srl	d		; convert Kb to cylinders
+	rr	e
+	rra
+	srl	d
+	rr	e
+	rra
+	srl	d
+	rr	e
+	rra
+	or	a
+	jr	z,adp10
+	inc	de
+	jr	adp10
+
+adp9:	ld	hl,admsg5
+	call	PUTSTR		; using default value
+	ex	de,hl
+	ld	hl,(maxcyl)
+	xor	a
+	call	HLDEC
+	ex	de,hl
+	call	PUTSTR
+	ex	de,hl
+adp8:	inc	hl
+	ld	e,(ix+PSTART)
+	ld	d,(ix+PSTART+1)
+	or	a
+	sbc	hl,de
+	jr	c,adp81		; size cannot be negative
+	jr	nz,adp11	; and cannot be zero
+
+adp81:	ld	hl,admsg4
+	call	PUTSTR
+	ret
+
+adp10:	ex	de,hl
+adp11:	ld	(ix+PSIZE),l	; store partition size
+	ld	(ix+PSIZE+1),h
+	ld	(ix+PBOOT),0	; clear boot flag
+	ld	(ix+PTYPE),0D8h	; default type is RSX180
+	call	CRLF
+	ret
+
+aderr1:	ld	hl,admsg2
+	call	PUTSTR		; partition is already defined
+	ld	a,c
+	inc	a
+	call	ADEC
+	inc	hl
+	jp	PUTSTR
+
+admsg1:	db	CR,LF,'The table is full. '
+	db	'You must delete some partition first.',CR,LF,0
+admsg2:	db	CR,LF,'Partition ',0,' is already defined. '
+	db	'Delete it before re-adding it.',CR,LF,0
+admsg3:	db	CR,LF,'Using default value ',0,CR,0
+admsg4:	db	CR,LF,'Last cylinder must be larger than first cylinder.'
+	db	CR,LF,0
+admsg5:	db	CR,LF,'Using default value ',0,CR,0
+
+adprm1:	db	CR,LF,'First cylinder (',0,'-',0,', default ',0,'): ',0
+adprm2:	db	CR,LF,'Last cylinder or +size or +sizeM or +sizeK '
+	db	'(',0,'-',0,', default ',0,'): ',0
+
+; Delete partition
+
+PDELET:	ld	b,1
+	call	GETPAR		; prompt for partition number
+	ret	c
+	ld	e,a		; save partition number in reg E
+	ld	l,(ix+PSIZE)
+	ld	h,(ix+PSIZE+1)
+	ld	a,h
+	or	l
+	jr	z,pd1
+	push	ix
+	pop	hl
+	ld	bc,PTSIZE
+	jp	CLRMEM		; delete partition
+
+pd1:	ld	hl,pderr
+	call	PUTSTR		; partition is already deleted
+	ld	a,e
+	inc	a
+	call	ADEC
+	inc	hl
+	jp	PUTSTR
+
+pderr:	db	CR,LF,'Partition ',0,' is already deleted.',CR,LF,0
+
+; Get partition number from user, starting from value in reg B.
+; Returns A = 0-based partition number, and IX = partition table entry
+; CY set on error.
+
+GETPAR:	ld	hl,gtprm
+	ld	de,sbuf
+	call	STRCPY		; prepare prompt
+	ld	a,b
+	ex	de,hl
+	call	CVTBD
+	ex	de,hl
+	inc	hl
+	call	STRCPY
+	ld	a,MAXENT
+	ex	de,hl
+	call	CVTBD
+	ex	de,hl
+	inc	hl
+	call	STRCPY
+gtp1:	push	bc
+	ld	hl,cmd
+	ld	(cmdptr),hl
+	ld	e,72
+	ld	d,0
+	ld	bc,sbuf
+	call	GETLN		; get user response
+	pop	bc
+	cp	E.EOF		; ^Z aborts
+	scf
+	ret	z
+	call	SKIPBL
+	or	a
+	jr	z,gtp1
+	call	GETDEC
+	ex	de,hl
+	ld	hl,pterr1
+	jr	c,gperr
+	dec	de		; make value 0-based
+	ld	a,d
+	or	a
+	jr	nz,rngerr
+	ld	a,e
+	cp	MAXENT
+	jr	nc,rngerr
+	ld	a,e
+	inc	a
+	cp	b
+	jr	c,rngerr
+	ld	a,e		; return partition number in A
+	ld	d,PTSIZE
+	mlt	de
+	ld	ix,ptable
+	add	ix,de		; index into table
+	or	a
+	ret
+rngerr:	ld	hl,pterr2
+gperr:	call	PUTSTR
+	scf
+	ret
+
+gtprm:	db	CR,LF,'Partition number (',0,'-',0,'): ',0
+pterr1:	db	CR,LF,'Invalid entry',CR,LF,0
+pterr2:	db	CR,LF,'Value out of range',CR,LF,0
+
+; Copy null-terminated string @HL to @DE
+
+STRCPY:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; List known partition types
+
+LTYPES:	call	CRLF
+	call	CRLF
+	ld	hl,etypes
+	ld	b,(hl)
+	inc	hl
+lt1:	ld	a,(hl)
+	inc	hl
+	call	AHEX
+	ld	a,2
+	call	sep
+	call	PUTSTR
+	inc	hl
+	call	CRLF
+	djnz	lt1
+	ret
+
+; Display partition type
+
+PRTYPE:	ld	hl,etypes
+	ld	b,(hl)
+	inc	hl
+prt1:	ld	a,(hl)
+	inc	hl
+	cp	c
+	jp	z,PUTSTR
+prt2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,prt2
+	djnz	prt1
+	jp	PUTSTR
+
+etypes:	db	6
+	db	000h,'Empty',0
+	db	052h,'CP/M',0
+	db	0B2h,'CP/M 3.0',0
+	db	0D1h,'UZI',0
+	db	0D2h,'UZI swap',0
+	db	0D8h,'RSX180',0
+	db	'Unknown',0
+
+; Set partition type
+
+SETTYP:	ld	b,1
+	call	GETPAR		; get partition number
+	ret	c
+	ld	(pnum),a	; save partition number
+	ld	l,(ix+PSIZE)
+	ld	h,(ix+PSIZE+1)
+	ld	a,h
+	or	l
+	jr	nz,st1
+	ld	hl,sterr1
+	call	PUTSTR
+	ld	a,(pnum)
+	inc	a
+	call	ADEC
+	inc	hl
+	jp	PUTSTR
+st1:	ld	hl,cmd
+	ld	(cmdptr),hl
+	ld	e,72
+	ld	d,0
+	ld	bc,stprm
+	call	GETLN
+	cp	E.EOF
+	ret	z
+	call	SKIPBL
+	or	a
+	jr	z,st1
+	call	UCASE
+	cp	'L'
+	jr	nz,st2
+	call	LTYPES
+	jr	st1
+st2:	call	GETHEX
+	ld	a,h		; code must be a single byte
+	or	a
+	jr	z,st3
+	ld	hl,sterr2
+	call	PUTSTR
+	jr	st1
+st3:	ld	(ix+PTYPE),l
+	ld	hl,stmsg
+	call	PUTSTR
+	ld	a,(pnum)
+	inc	a
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+	ld	a,(ix+PTYPE)
+	call	AHEX
+	inc	hl
+	call	PUTSTR
+	push	hl
+	ld	c,(ix+PTYPE)
+	call	PRTYPE
+	pop	hl
+	inc	hl
+	jp	PUTSTR
+
+sterr1:	db	CR,LF,'Partition ',0,' does not exist yet.',CR,LF,0
+sterr2:	db	CR,LF,'Invalid code',0
+stprm:	db	CR,LF,'Hex code (type L to list codes): ',0
+stmsg:	db	CR,LF,'Changed system type of partition ',0
+	db	' to ',0,' (',0,')',CR,LF,0
+
+; Toggle bootable flag
+
+TGBOOT:	ld	b,1
+	call	GETPAR		; prompt for partition number
+	ret	c		; on error, return
+	ld	e,a		; save partition number in reg E
+	ld	a,(ix+PSIZE)
+	or	(ix+PSIZE+1)
+	jr	nz,tgb1
+	ld	hl,sterr1
+	call	PUTSTR
+	ld	a,e
+	inc	a
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+	scf
+	ret
+tgb1:	ld	a,(ix+PBOOT)
+	sub	1
+	sbc	a,a
+	ld	(ix+PBOOT),a
+	call	CRLF
+	ret
+
+; Validate partition table
+
+PTVFY:	call	CRLF
+
+	; check for overlapping partitions
+
+	ld	hl,0
+	ld	(ovlaps),hl	; clear counter of overlapping sectors
+	ld	(ovlaps+2),hl
+
+	ld	b,MAXENT-1
+	ld	ix,ptable
+pvfy1:	ld	a,(ix+PSIZE)
+	or	(ix+PSIZE+1)
+	jp	z,pvfy31
+	ld	c,b
+	push	ix
+	pop	iy
+	ld	de,PTSIZE
+	add	iy,de
+pvfy2:	ld	a,(iy+PSIZE)
+	or	(iy+PSIZE+1)
+	jr	z,pvfy3
+
+	ld	l,(ix+PSTART)
+	ld	h,(ix+PSTART+1)
+	ld	e,(iy+PSTART)
+	ld	d,(iy+PSTART+1)
+	call	CPHLDE
+	jr	c,pvfy21	; branch if ix.start > iy.start
+
+	ld	e,(ix+PSIZE)	; partition @iy above @ix
+	ld	d,(ix+PSIZE+1)
+	add	hl,de		; find end cylinder
+	ld	e,(iy+PSTART)
+	ld	d,(iy+PSTART+1)
+	call	CPHLDE		; end @ix > start @iy?
+	jr	nc,pvfy3	; branch if not, no overlap
+	jr	pvfy22
+
+pvfy21:	ld	h,(iy+PSIZE)	; partition @ix above @iy
+	ld	l,(iy+PSIZE+1)
+	add	hl,de		; find end cylinder
+	ld	e,(ix+PSTART)
+	ld	d,(ix+PSTART+1)
+	call	CPHLDE		; end @iy > start @ix?
+	jr	nc,pvfy3	; branch if not, no overlap
+
+pvfy22:	or	a
+	sbc	hl,de		; find overlap size
+
+	push	bc
+	ex	de,hl
+	ld	bc,16
+	call	MULT16
+
+	ld	bc,(ovlaps)
+	add	hl,bc		; accum overlapping sectors
+	ld	(ovlaps),hl
+	ld	hl,(ovlaps+2)
+	adc	hl,de
+	ld	(ovlaps+2),hl
+
+	ld	hl,vfym1
+	call	PUTSTR		; partition @ix overlaps partition @iy
+	pop	bc
+	ld	a,MAXENT
+	sub	b
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+	ld	a,MAXENT+1
+	sub	c
+	call	ADEC
+	inc	hl
+	call	PUTSTR
+
+pvfy3:	ld	de,PTSIZE
+	add	iy,de
+	dec	c
+	jp	nz,pvfy2
+pvfy31:	ld	de,PTSIZE
+	add	ix,de
+	dec	b
+	jp	nz,pvfy1
+
+	; calculate the number of unallocated sectors
+
+	ld	hl,0
+	ld	(allocs),hl
+	ld	(allocs+2),hl
+	ld	ix,ptable
+	ld	b,MAXENT
+pvfy4:	push	bc
+	ld	e,(ix+PSIZE)
+	ld	d,(ix+PSIZE+1)
+	ld	bc,16
+	call	MULT16
+	ld	bc,allocs
+	call	ADD32		; accum allocated sectors
+	ld	de,PTSIZE
+	add	ix,de
+	pop	bc
+	djnz	pvfy4
+
+	or	a
+	ld	hl,(allocs)
+	ld	de,(ovlaps)
+	sbc	hl,de
+	ld	(allocs),hl	; alloc secs -= overlapping secs
+	ld	hl,(allocs+2)
+	ld	de,(ovlaps+2)
+	sbc	hl,de
+	ld	(allocs+2),hl
+
+	; NOTE: hdbuf[goffs] may not contain the correct geometry values
+	; until it has been written at least once! Thus, we should use
+	; here icyls, iheads and isecs instead.
+
+  IF 0
+	ld	hl,(goffs)
+	ld	de,hdbuf
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,de		; point to disk geometry in boot sector
+	ld	e,(hl)		; get cyls
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get heads
+	inc	hl
+	ld	b,(hl)		; get sectors
+  ELSE
+	ld	de,(icyls)
+	ld	bc,(iheads)
+  ENDIF
+	call	TSECS		; compute total sectors
+
+	or	a
+	ld	bc,(allocs)
+	sbc	hl,bc
+	ex	de,hl
+	ld	bc,(allocs+2)
+	sbc	hl,bc		; total secs - alloc secs, result in HLDE
+	jp	m,pvfy5
+
+	ld	a,h
+	or	l
+	or	d
+	or	e
+	jr	z,pvfy6
+
+	call	CRLF
+	xor	a
+	call	LDEC
+	ld	hl,vfym2
+	call	PUTSTR
+	jr	pvfy6
+
+pvfy5:	; this shouldn't happen, since ADDPAR takes care of not
+	; over-allocating sectors, but we could be dealing here
+	; with a wrong or corrupt partition table.
+
+	xor	a
+	ld	bc,0
+	ex	de,hl
+	sbc	hl,bc
+	ex	de,hl
+	sbc	hl,bc
+	call	CRLF
+	xor	a
+	call	LDEC
+	ld	hl,vfym3
+	call	PUTSTR
+
+pvfy6:	ld	de,(ovlaps)
+	ld	hl,(ovlaps+2)
+	ld	a,h
+	or	l
+	or	d
+	or	e
+	jr	z,pvfy7
+
+	call	CRLF
+	xor	a
+	call	LDEC
+	ld	hl,vfym4
+	call	PUTSTR
+
+pvfy7:	call	CRLF
+	ret
+
+vfym1:	db	CR,LF,'Partition ',0,' overlaps partition ',0,CR,0
+vfym2:	db	' unallocated sectors.',CR,0
+vfym3:	db	' overallocated sectors.',CR,0
+vfym4:	db	' overlapping sectors.',CR,0
+
+; Read a decimal value from input command, return value in HL.
+
+GETDEC:	ld	de,(cmdptr)
+	ld	hl,0
+gd1:	ld	a,(de)
+	sub	'0'
+	ccf
+	jr	nc,gd2
+	cp	9+1
+	jr	nc,gd2
+	push	bc
+	call	gd3
+	pop	bc
+	inc	de
+	jr	nc,gd1
+gd2:	ld	(cmdptr),de
+	ret
+
+gd3:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Read a hexadecimal value from input command, return value in HL.
+
+GETHEX:	ld	de,(cmdptr)
+	ld	hl,0
+gh1:	ld	a,(de)
+	call	UCASE
+	sub	'0'
+	ccf
+	jr	nc,gh3
+	cp	10
+	jr	c,gh2
+	cp	11h
+	ccf
+	jr	nc,gh3
+	cp	17h
+	jr	nc,gh3
+	sub	7
+gh2:	push	bc
+	call	gh4
+	pop	bc
+	inc	de
+	jr	nc,gh1
+gh3:	ld	(cmdptr),de
+	ret
+
+gh4:	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Skip blanks and get next character from command line
+
+SKIPBL:	ld	hl,(cmdptr)
+	call	skip
+	ld	(cmdptr),hl
+	ret
+
+skip0:	inc	hl
+skip:	ld	a,(hl)
+	cp	' '
+	jr	z,skip0
+	cp	TAB
+	jr	z,skip0
+	or	a
+	ret	z
+	cp	CR
+	ret	nz
+	xor	a
+	ld	(hl),a
+	ret
+
+; Skip name in command line
+
+SKPNAM:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip0		; skip trailing blanks and return
+	cp	TAB
+	jr	z,skip0
+	sub	CR
+	ret	z
+	inc	hl
+	jr	SKPNAM
+
+; Clear memory region. HL = address, BC = length.
+
+CLRMEM:	ld	a,b
+	or	c
+	ret	z
+	ld	(hl),0
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ldir
+	ret
+
+; Compute total number of sectors from cylinder value in DE, heads in C
+; and sectors/track in B. Returns value in DEHL.
+
+TSECS:	mlt	bc
+MULT16:	ld	hl,0		; DEHL = DE * BC
+	ld	a,16
+mu1:	add	hl,hl
+	rl	e
+	rl	d
+	jr	nc,mu2
+	add	hl,bc
+	jr	nc,mu2
+	inc	de
+mu2:	dec	a
+	jr	nz,mu1
+	ret
+
+; DEHL = DEHL / C, remainder in A.
+
+DIV328:	ld	b,32
+	xor	a
+dv1:	add	hl,hl
+	rl	e
+	rl	d
+	rla
+	cp	c
+	jr	c,dv2
+	inc	l
+	sub	c
+dv2:	djnz	dv1
+	ret
+
+; Decrement 32-bit value in DEHL
+
+DEC32:	ld	a,h
+	or	l
+	dec	hl
+	ret	nz
+	dec	de
+	ret
+
+; Add 32-bit value in DEHL to value @BC
+
+ADD32:	ld	a,(bc)
+	add	a,l
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,h
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,e
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,d
+	ld	(bc),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read physical block number in DEBC into buffer @HL
+
+RDBLK:	ld	(qio1+Q.BLK),bc
+	ld	(qio1+Q.BLK+1),de
+	ld	(qio1+Q.BUF),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Write physical block number in DEBC from buffer @HL
+
+WRBLK:	ld	(qio2+Q.BLK),bc
+	ld	(qio2+Q.BLK+1),de
+	ld	(qio2+Q.BUF),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Read IDE drive identification into buffer @HL
+
+IDENT:	ld	(qio3+Q.BUF),hl
+	ld	hl,qio3
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+cmdptr:	ds	2
+cmd:	ds	80
+sbuf:	ds	80
+
+devnam:	ds	3	; hard disk device name
+luninf:	ds	6	; buffer for device info
+
+hcyls:	ds	2	; ! do not ! disk geometry, as stored in ptable
+hheads:	ds	1	; ! change !
+hsecs:	ds	1	; ! order  !
+
+icyls:	ds	2	; ! do not ! disk geometry, as reported by the disk
+iheads:	ds	1	; ! change !
+isecs:	ds	1	; ! order  !
+
+fstfre:	ds	2	; first free cylinder
+maxcyl:	ds	2	; max cylinder number
+allocs:	ds	4	; total allocated sectors
+ovlaps:	ds	4	; number of overlapping segments
+
+units:	ds	1	; current units
+valid:	ds	1	; true if partition table is valid
+idok:	ds	1	; true if HD ident command succeeded
+
+pnum:	ds	1	; current partition number
+method:	ds	1	; current boot method
+ptoffs:	ds	2	; offset to partition table in master boot sector
+goffs:	ds	2	; offset to disk geometry in master boot sector
+soffs:	ds	2	; offset to signature in master boot sector
+bootsz:	ds	2
+
+idbuf:	ds	512	; buffer for ident command result
+hdbuf:	ds	1024	; new-style boot code is 2 sectors long
+
+ptable:	ds	PTSIZE * MAXENT
+
+qio1:	QIOW$	IO.RPB,LUN,1,iosb,,<hdbuf,512,0,0,>
+qio2:	QIOW$	IO.WPB,LUN,1,iosb,,<hdbuf,512,0,0,>
+qio3:	QIOW$	IO.IDN,LUN,1,iosb,,<idbuf,512,,,>
+iosb:	ds	4
+
+	ds	100
+stack	equ	$
+
+	end	MAIN

@@ -1,0 +1,32 @@
+	.Z80
+
+;-----------------------------------------------------------------------
+
+; Load CPU registers with test values and loop forever.
+; Used to test register display in RMD and TKTN.
+
+	cseg
+
+TEST1::	ld	sp,stack
+	ld	a,0A0h
+	ld	bc,0A1A2h
+	ld	de,0A3A4h
+	ld	hl,0A5A6h
+	ex	af,af'
+	exx
+	ld	a,0B0h
+	ld	bc,0B1B2h
+	ld	de,0B3B4h
+	ld	hl,0B5B6h
+	exx
+	ex	af,af'
+	ld	ix,8182h
+	ld	iy,8384h
+	jp	$
+
+	dseg
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	TEST1

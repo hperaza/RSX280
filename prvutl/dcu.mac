@@ -1,0 +1,234 @@
+;**********************************************************************;
+;                                                                      ;
+;   Disk Cache Usage task for RSX180.                                  ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.00'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	DCB.INC
+	include	PCB.INC
+	include	TCB.INC
+	include	BUFFER.INC
+	include	ERRORS.INC
+
+	extrn	PUTCH,PUTSTR,CRLF,ADEC,HLDEC,LDEC,PERROR,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+KCALL	macro	addr
+	call	$SWSTK
+	dw	addr
+	endm
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Display disk cache usage statistics
+
+DMPBUF::
+	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER		; switch to supervisor mode
+	jp	c,fatal
+
+	; dump SYSFCP buffer usage
+
+	ld	hl,header
+	call	PUTSTR		; display header
+	ld	hl,($FILBF)
+	xor	a
+	ld	(bufno),a
+loop:	push	hl
+	ex	de,hl
+	ld	hl,B.ST
+	add	hl,de
+	bit	BS.VAL,(hl)	; buffer valid (loaded)?
+	jr	z,skip		; skip if not
+	ld	a,(bufno)
+	ld	l,a
+	inc	a
+	ld	(bufno),a
+	ld	h,0
+	ld	a,' '
+	call	HLDEC		; display buffer number (1-based)
+	ld	c,TAB
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	hl,B.UCB
+	add	hl,de
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e		; display device name
+	call	PUTCH
+	ld	c,d
+	call	PUTCH
+	ld	a,b		; display unit
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,TAB
+	call	PUTCH
+	pop	de
+	ld	hl,B.BLKNO
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,' '
+	call	HLDEC		; display block number
+	ld	c,TAB
+	call	PUTCH
+	ld	hl,B.ACCS
+	add	hl,de
+	ld	l,(hl)
+	ld	h,0
+	ld	a,' '
+	call	HLDEC		; display access count
+	ld	hl,B.ST
+	add	hl,de
+	bit	BS.MOD,(hl)
+	ld	hl,yes
+	call	nz,PUTSTR	; display modified (write pending) state
+	call	CRLF
+skip:	pop	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	jp	nz,loop
+
+HIT	equ	0080h		; see SYSFCP's buffer.mac
+MISS	equ	HIT+4
+
+	; TODO: disable task dispatching and copy hit/miss counters to
+	; local memory.
+
+	ld	hl,acpnam
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNTSK		; find SYSFCP task
+	jr	c,finish
+
+	ex	de,hl
+	ld	hl,T.ST
+	add	hl,de
+	bit	TS.ACT,(hl)	; active?
+	jr	z,finish
+	inc	hl
+	bit	T2.OUT,(hl)	; resident?
+	jr	nz,finish
+
+	ld	hl,T.PCB
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,P.BASE
+	add	hl,de
+	ld	a,(hl)
+	ld	(bank),a	; get task bank
+
+	ld	hl,hitmis
+	call	PUTSTR
+	push	hl
+	ld	hl,HIT
+	call	get32
+	xor	a
+	call	LDEC		; display hit count
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	push	hl
+	ld	hl,MISS
+	call	get32
+	xor	a
+	call	LDEC		; display miss count
+	pop	hl
+	inc	hl
+	call	PUTSTR
+
+finish:	ld	c,EX.SUC
+	jp	quit
+
+fatal:	push	af
+	call	CRLF
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ld	c,EX.ERR
+quit:	ld	l,c		; exit code
+	ld	h,0
+	jp	EXIT
+
+get32:	ld	a,(bank)
+	ld	e,a
+	KCALL	$UGETW
+	push	bc
+	KCALL	$UGETW
+	ld	l,c
+	ld	h,b
+	pop	de
+	ret
+
+acpnam:	db	'SYSFCP'
+
+header:	db	CR,LF,TAB,'   DISK CACHE USAGE'
+	db	CR,LF,TAB,'   ================'
+	db	CR,LF
+	db	CR,LF,'Buffer',TAB,'Device',TAB,'Block',TAB,'Usage',TAB
+	db	      ' Write'
+	db	CR,LF,'  No.',TAB,' name',TAB,' No.',TAB,'count',TAB
+	db	      'pending'
+	db	CR,LF,'------',TAB,'------',TAB,'-----',TAB,'-----',TAB
+	db	      '-------'
+	db	CR,LF,0
+
+yes:	db	TAB,'  yes',0
+
+hitmis:	db	CR,LF,0,' hit(s), ',0,' miss(es).',CR,LF,0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+bank:	ds	1
+bufno:	ds	1
+
+	ds	128
+stack	equ	$
+
+	end	DMPBUF

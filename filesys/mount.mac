@@ -1,0 +1,624 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Volume mount/dismount.
+
+	.Z280
+
+	include	VCB.INC
+	include	BUFFER.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	ERRORS.INC
+	include	SYSCONF.INC
+	include	SYSTEM.INC
+
+	cseg
+
+	public	MOUNT		; mount volume
+	public	DISMNT		; dismount volume
+	public	FNDVCB		; find device in mounted volume list
+	public	GETFCB		; get new FCB
+	public	FREFCB		; free FCB
+
+	public	MDNAME,DIREXT
+
+	extrn	FRECNT,FCLOSE,V2LBN,GETBLK,RLSBLK,FLBUFS,INVBFS
+	extrn	LUNUCB,LUNVCB,CLRMEM,ADD24
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+; TODO:
+; - allow mounting R/O (better done via volume access permission bits)
+
+;-----------------------------------------------------------------------
+
+; Mount volume.
+
+MOUNT:	ld	hl,(LUNUCB)	; get UCB address
+	push	hl
+	pop	ix		; get UCB address into IX
+	bit	DV.MNT,(ix+U.CW); mountable?
+	ld	a,E.BADOP	; TODO: 'device not mountable' error
+	scf
+	ret	z
+
+	ex	de,hl
+	call	FNDVCB		; device already mounted?
+	jr	c,newm		; branch if not
+
+	bit	US.DMO,(ix+U.ST); unit being dismounted?
+	ld	a,E.DEVAM
+	scf
+	ret	z		; error if not: device already mounted
+
+	res	US.DMO,(ix+U.ST); else re-mount it
+	xor	a		; and return success
+	ret
+
+newm:	push	de
+	call	NEWVCB		; allocate new VCB (zeroed!)
+	pop	de
+	ret	c		; return on error (code already in A)
+
+	ld	(LUNVCB),hl	; save VCB address
+	inc	hl
+	inc	hl
+	ldw	(hl),de		; store UCB address
+
+  IF 0
+	ld	hl,($CTCB)
+	ldw	(ix+U.ACP),hl	; register with unit as ACP
+  ENDIF
+
+	ld	b,0
+	ld	hl,1		; block 1 = volume ID, UCB address still in DE
+	call	GETBLK		; read the volume ID block
+	jp	c,err2
+
+	ld	(buf),hl	; save pointer to buffer
+	ld	de,B.DATA
+	add	hl,de		; point to data area
+	push	hl
+
+	ld	de,vid
+	ld	b,6
+mnt1:	ld	a,(de)		; check the volume identifier
+	cp	(hl)
+	jp	nz,badv
+	inc	hl
+	inc	de
+	djnz	mnt1
+
+	pop	de
+	ld	hl,8
+	add	hl,de
+	ldw	hl,(hl)
+	ld	(fver),hl
+	ld	a,h		; check version
+	cp	FVER.H
+	jp	nz,badv1
+	ld	a,l
+	cp	FVER.L
+	jp	nz,badv1
+
+	ld	hl,16
+	add	hl,de
+	push	de		; get the volume label
+	push	hl
+	ld	hl,(LUNVCB)
+	ld	de,M.LABEL
+	add	hl,de
+	ex	de,hl
+	pop	hl
+	ld	bc,16
+	ldir			; copy the volume label
+	pop	de
+
+	ld	iy,(LUNVCB)
+
+	ld	hl,36
+	add	hl,de
+	ld	a,(hl)		; get default file protection bits
+	ld	(iy+M.DFPR),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.DFPR+1),a
+
+	ld	hl,32
+	add	hl,de
+	ld	a,(hl)		; get volume size in blocks
+	ld	(iy+M.BLKS),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.BLKS+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.BLKS+2),a
+
+	ld	hl,48
+	add	hl,de
+	ld	a,(hl)		; get cluster factor
+	ld	(iy+M.CLF),a
+
+	ld	hl,64
+	add	hl,de
+	ld	a,(hl)		; get LBN of index file
+	ld	(iy+M.IXLBN),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.IXLBN+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.IXLBN+2),a
+
+	ld	hl,68
+	add	hl,de
+	ld	e,(hl)		; get LBN of bitmap file
+	ld	(iy+M.BMLBN),e
+	inc	hl
+	ld	d,(hl)
+	ld	(iy+M.BMLBN+1),d
+	inc	hl
+	ld	c,(hl)
+	ld	(iy+M.BMLBN+2),c
+
+	ld	hl,(buf)
+	call	RLSBLK		; release the volume ID buffer
+
+	ex	de,hl
+	ld	b,c
+	ldw	de,(iy+M.UCB)
+	call	GETBLK		; read the first block of the bitmap file
+	jp	c,err2
+
+	ld	(buf),hl	; save pointer to buffer
+	ld	de,B.DATA
+	add	hl,de		; point to data area
+	ex	de,hl
+
+	ld	hl,8
+	add	hl,de
+	ldw	hl,(hl)		; get VBN of index file bitmap
+	ld	b,0
+	ldw	de,(iy+M.BMLBN)
+	ld	c,(iy+M.BMLBN+2)
+	call	ADD24		; compute LBN of index file bitmap
+	ldw	(iy+M.IBLBN),hl
+	ld	(iy+M.IBLBN+2),b
+
+	ld	hl,(buf)
+	call	RLSBLK		; release buffer
+
+	call	FRECNT		; compute free space and set M.FREE
+
+	ldw	hl,(iy+M.IXLBN)
+	ld	b,(iy+M.IXLBN+2)
+	ldw	de,(iy+M.UCB)
+	call	GETBLK		; read the first block of the index file
+	jp	c,err2
+
+	ld	(buf),hl	; save pointer to buffer
+	ld	de,B.DATA
+	add	hl,de		; point to data area
+	ex	de,hl
+
+	ld	hl,IE.ALOC
+	add	hl,de
+	ld	a,(hl)		; get size of index file in blocks
+	ld	(iy+M.IXSZ),a
+	inc	hl
+	ld	a,(hl)
+	ld	(iy+M.IXSZ+1),a
+	inc	hl
+	ld	a,(hl)
+	or	a
+	jp	nz,badv1	; index file size is always a 16-bit quantity
+
+	ld	hl,IESZ*(5-1)	; offset to inode of master directory
+	add	hl,de
+	ld	(mdino),hl	; save it
+
+	; open the master directory
+	; we cannot call FOPEN/MFOPEN at this point,
+	; so we use known values and hope they are OK
+
+	ld	hl,(LUNVCB)
+	call	GETFCB		; get a new FCB for the master directory
+	jp	c,err1		; on error, abort operation
+	ldw	(iy+M.MFCB),de	; save master directory FCB address in VCB
+
+	push	de
+	pop	ix		; get FCB address into IX
+
+	call	imdfcb		; init master dir FCB (dev, name, ext fields)
+
+	ld	hl,(mdino)
+	ld	a,(hl)
+	ld	(ix+F.LCNT),a	; setup link count field
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.LCNT+1),a	; setup link count field
+	inc	hl
+	ld	a,(hl)
+	or	FA.RD OR FA.WR OR FA.SHR
+	ld	(ix+F.ATTR),a	; setup attrib field
+	inc	hl
+	ld	a,(hl)
+;;	ld	(ix+F.CLF),a	; setup cluster factor
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.SEQNO),a	; setup sequence number field
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.SEQNO+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.USER),a	; setup user field
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.GROUP),a	; setup group field
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NALOC),a	; setup number of allocated blocks
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NALOC+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NALOC+2),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NUSED),a	; setup number of used blocks
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NUSED+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.NUSED+2),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.LBCNT),a	; setup last block byte count field
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.LBCNT+1),a
+	inc	hl
+	ld	bc,IE.PROT-IE.TCRE
+	add	hl,bc
+	ld	a,(hl)
+	ld	(ix+F.PROT),a	; setup protection bits
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.PROT+1),a
+	inc	hl
+	push	ix
+	pop	de
+	ex	de,hl
+	ld	bc,F.BMAP
+	add	hl,bc
+	ex	de,hl
+	ld	bc,6*3
+	ldir			; setup block map field
+
+	ld	hl,(buf)
+	call	RLSBLK		; release the buffer (index file block)
+
+	ld	hl,5		; master directory file ID
+	ldw	(ix+F.INODE),hl	; setup inode field
+	ld	hl,1
+	ldw	(ix+F.REFS),hl	; setup reference count field
+
+	xor	a
+	ld	(ix+F.CAVBN),a
+	ld	(ix+F.CAVBN+1),a
+
+	ld	l,(ix+F.BMAP+5*3)
+	ld	h,(ix+F.BMAP+5*3+1)
+	ld	b,(ix+F.BMAP+5*3+2)
+	ld	(ix+F.CALBN),l
+	ld	(ix+F.CALBN+1),h
+	ld	(ix+F.CALBN+2),b
+
+	ld	ix,(LUNUCB)	; get UCB address back into IX
+	set	US.MNT,(ix+U.ST); set mounted bit in status word
+	set	US.PUB,(ix+U.ST)
+	xor	a		; return success
+	ret
+
+badv:	pop	hl
+badv1:	ld	a,E.BADVT
+err1:	push	af
+	ld	hl,(buf)
+	call	RLSBLK
+	pop	af
+err2:	push	af
+	ld	iy,(LUNVCB)
+	ldw	de,(iy+M.UCB)
+	call	INVBFS		; invalidate all buffers for this device
+	push	iy
+	pop	hl
+	call	FREVCB		; free the VCB
+	ld	hl,0
+	ldw	(ix+U.ACP),hl	; unregister from unit
+	pop	af
+	scf
+	ret
+
+; Setup FCB for master directory access
+
+imdfcb:	ld	hl,MDNAME
+	ld	b,9
+	push	ix
+ini1:	ld	a,(hl)
+	ld	(ix+F.DIR),a	; directory and filename are the same
+	ld	(ix+F.NAME),a
+	inc	hl
+	inc	ix
+	djnz	ini1
+	pop	ix
+	ld	b,3
+	push	ix
+ini2:	ld	a,(hl)
+	ld	(ix+F.EXT),a	; set extension
+	inc	hl
+	inc	ix
+	djnz	ini2
+	pop	ix
+	ld	hl,1
+	ldw	(ix+F.VER),hl	; version 1
+	ret
+
+vid:	db	'VOL180'
+MDNAME:	db	'MASTER   '
+DIREXT:	db	'DIR'
+
+;-----------------------------------------------------------------------
+
+; Dismount volume.
+
+DISMNT:	ld	iy,(LUNVCB)	; get VCB address into IY
+	call	CHKOPN		; are files still open on volume?
+	jr	z,dsm1		; proceed to dismount if not
+
+	ld	ix,(LUNUCB)	; get UCB address into IX
+	bit	US.DMO,(ix+U.ST); unit being dismounted?
+	ld	a,E.DMOP	; error code = dismount in progress
+	scf
+	ret	nz		; return error if yes
+	set	US.DMO,(ix+U.ST); else flag volume as being dismounted
+	ld	a,E.DMOI	; error code = dismount initiated
+	scf
+	ret
+
+dsm1:	ldw	hl,(iy+M.MFCB)
+	ld	a,h
+	or	l
+	call	nz,FCLOSE	; close master directory file and release FCB
+	call	FLBUFS		; flush all buffers
+	ld	de,(LUNUCB)	; get UCB address
+	call	INVBFS		; invalidate all buffers for this device
+	push	de
+	pop	ix		; UCB address now in IX
+	res	US.MNT,(ix+U.ST); clear mounted bit in status word
+	res	US.DMO,(ix+U.ST); clear also 'dismount in progress' bit
+	ld	hl,0
+	ldw	(ix+U.ACP),hl	; clear U.ACP pointer
+	push	iy
+	pop	hl
+	call	FREVCB		; free the VCB
+	ret
+
+; Check for open files. Called with IY = VCB address.
+
+CHKOPN:	ldw	de,(iy+M.MFCB)	; get FCB address of master directory into DE
+	ldw	hl,(iy+M.FCBL)	; get FCB listhead
+chk1:	ld	a,h
+	or	l		; end of list?
+	ret	z		; return Z if yes, no files open
+	cpw	hl,de		; is this the master directory FCB?
+	ret	nz		; return NZ if not, files are open
+	ldw	hl,(hl)
+	jr	chk1		; else process next FCB in list
+
+;-----------------------------------------------------------------------
+
+; Allocate a new, zeroed mounted volume control block.
+;
+; Returns:
+;   HL = address of new VCB
+;   CY set if no kernel memory could be allocated.
+
+NEWVCB:	ld	bc,MNTSZ
+	KCALL	$ALLOC
+	ret	c		; error code already in A
+	push	hl
+	ld	bc,MNTSZ
+	call	CLRMEM
+	pop	hl
+	ld	ix,$MVTBL	; link new entry at the head of the list
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching for e.g. DCU task
+	ldw	bc,(ix)
+	ldw	(hl),bc		; set link field in new entry
+	ldw	(ix),hl		; set new list head
+	inc	a
+	ld	(SYSLVL),a	; enable task dispatching
+	xor	a
+	ret
+
+; Free the mounted volume control block. Assumes the device has been
+; dismounted.
+;
+; Input:
+;   HL = VCB address
+; Returns:
+;   CY set on failure and error code in A.
+
+FREVCB:	push	ix
+	ld	ix,$MVTBL
+frem1:	ldw	de,(ix)
+	ld	a,d
+	or	e
+	jr	z,frem2		; error, item not found in list (!!!)
+	cpw	hl,de
+	jr	z,frem3		; item found, unlink it
+	push	de
+	pop	ix
+	jr	frem1
+
+frem2:	pop	ix
+	ld	a,E.BADOP
+	scf
+	ret
+
+frem3:	ld	(SYSLVL),0
+	ex	de,hl
+	ldw	bc,(hl)
+	ldw	(ix),bc		; unlink item
+	ex	de,hl
+	ld	de,MNTSZ
+	KCALL	$FREE		; release memory
+	ld	(SYSLVL),1
+	pop	ix
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find the specified physical device in the mounted volume list.
+;
+; Input:
+;   DE = UCB address
+; Returns:
+;   HL = VCB address
+;   CY set if not found and error code in A
+; Preserves BC, DE, IX and IY.
+
+FNDVCB:	ld	hl,($MVTBL)
+fmnt1:	ld	a,h
+	or	l		; end of list?
+	ld	a,E.DEVNM
+	scf
+	ret	z		; return with error if yes
+	push	hl
+	inc	hl
+	inc	hl		; point to M.UCB field
+	ld	a,(hl)
+	cp	e
+	jr	nz,fmnt2
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jr	nz,fmnt2
+	pop	hl		; found
+	or	a
+	ret
+fmnt2:	pop	hl
+	ldw	hl,(hl)
+	jr	fmnt1
+
+;-----------------------------------------------------------------------
+
+; Allocate new, zeroed FCB.
+;
+; Input:
+;   HL = VCB address
+; Returns:
+;   DE = FCB address
+;   CY set if no kernel memory could be allocated.
+
+GETFCB:	push	hl
+	ld	bc,FCBSZ
+	KCALL	$ALLOC
+	pop	de
+	ret	c
+	push	hl
+	ld	bc,FCBSZ
+	call	CLRMEM
+	pop	hl
+	ex	de,hl		; DE = FCB address, HL = VCB address
+	ld	bc,M.FCBL
+	add	hl,bc		; point to FCB listhead
+	xor	a
+	ld	(SYSLVL),a
+	ldw	bc,(hl)		; add FCB to head of list
+	ex	de,hl
+	ldw	(hl),bc		; set link field in new FCB
+	ex	de,hl
+	ldw	(hl),de		; set new list head
+	inc	a
+	ld	(SYSLVL),a
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Free the FCB. Assumes the file has been closed.
+;
+; Input:
+;   DE = FCB address
+
+FREFCB:	ld	hl,(LUNVCB)	; get VCB address
+	ld	bc,M.FCBL
+	add	hl,bc		; point to head of FCB list
+ffcb1:	ld	c,l		; save prev ptr
+	ld	b,h
+	ldw	hl,(hl)		; get address of FCB
+	ld	a,h
+	or	l		; end of list?
+	scf
+	ret	z		; return error if yes
+	cpw	hl,de		; is this the FCB?
+	jr	nz,ffcb1	; loop if not to try next
+	xor	a
+	ld	(SYSLVL),a
+	ld	a,(de)
+	ld	(bc),a		; unlink the FCB
+	inc	de
+	inc	bc
+	ld	a,(de)
+	ld	(bc),a
+	ld	a,1
+	ld	(SYSLVL),a
+	ld	de,FCBSZ
+	KCALL	$FREE		; release FCB memory
+	ld	ix,(LUNUCB)
+	bit	US.DMO,(ix+U.ST); unit being dismounted?
+	ret	z		; return if not
+	call	DISMNT		; else attempt to dismount it
+	ret	c		; not dismounted yet
+  IF 0
+	...notify system console via TKTN or COT?
+  ENDIF
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+fver:	ds	2		; filesystem version
+buf:	ds	2		; pointer to volume ID buffer
+mdino:	ds	2		; pointer to inode of master directory
+
+	end

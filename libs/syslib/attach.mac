@@ -1,0 +1,70 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Attach task to the specified device (LUN in reg C).
+;  To attach to a terminal with unsolicited char ASTs, specify the AST
+;  routine address in DE, else set DE = 0.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+
+	public	ATTACH
+
+	extrn	QIOBLK,QIOSB
+
+	cseg
+
+ATTACH:	push	ix
+	push	bc
+	push	hl
+	ld	ix,QIOBLK
+	ld	a,d
+	or	e
+	ld	a,IO.ATT
+	ld	b,0
+	jr	z,att1
+	ld	b,TF.AST
+att1:	ld	(ix+Q.FUNC),a	; function code
+	ld	(ix+Q.SUBF),b	; subfunction code
+	ld	(ix+Q.LUN),c	; set LUN
+	ld	(ix+Q.EFN),3	; flag number
+	ld	(ix+Q.WAIT),1	; wait for completion
+	xor	a
+	ld	(ix+Q.AST),a	; no AST
+	ld	(ix+Q.AST+1),a
+	ld	(ix+Q.P1),e	; set the unsolicited char AST address
+	ld	(ix+Q.P1+1),d
+	ld	hl,QIOSB
+	ld	(ix+Q.IOSB),l	; set result address
+	ld	(ix+Q.IOSB+1),h
+	push	ix
+	pop	hl
+	SC	.QIO		; .QIOW
+	jr	c,att2		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+att2:	pop	hl
+	pop	bc
+	pop	ix
+	ret
+
+	end

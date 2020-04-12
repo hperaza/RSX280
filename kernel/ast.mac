@@ -1,0 +1,707 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('AST')
+	TITLE	'RSX280 AST Processing'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	AST queuing and dispatching routines.                          ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	ERRORS.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	AST.INC
+	include	Z280.INC
+
+	cseg
+
+	public	ASTDCL		; declare AST
+	public	ASTCTL		; enable/disable AST recognition
+	public	FNDAST		; find AST control block by type
+	public	ASTEXT		; exit from AST
+	public	QAST		; queue AST
+	public	DOAST		; execute AST
+	public	CLNAST		; AST cleanup on task exit
+
+	extrn	$CTCB,$ALLOC,$FREE,$UBANK,$SBANK,$MCOPY,$UPUTW
+	extrn	$FNTCB,$LKTCB,$RLIST,$WLIST,CKWMSK,TCONT,TNEXT
+	extrn	USRMAP
+
+;-----------------------------------------------------------------------
+
+; Declare an AST processing routine for the current task.
+; Call with interrupts disabled or when SYSLVL=-1.
+;
+; Input:
+;   DE = address of routine to call or zero to disable AST processing
+;        for the specified type.
+;   C  = AST type.
+; Returns:
+;   CY set on error, A = error code
+
+ASTDCL:	ld	a,c
+	call	chktyp
+	ld	a,E.INV
+	scf
+	ret	z
+	ld	ix,($CTCB)
+	push	de
+	call	FNDAST		; find specified AST control block
+	jr	c,adcl2		; branch if not found
+	push	de
+	pop	iy		; get ACB address into IY
+	pop	de		; pop routine address
+	ld	a,d
+	or	e		; disable this AST type?
+	jr	z,adcl1		; branch if yes
+	ldw	(iy+A.ADDR),de	; set new routine address
+	xor	a
+	ret			; return success
+
+adcl1:	ldw	de,(iy+A.LNK)
+	ldw	(hl),de		; unlink ACB
+	push	iy
+	pop	hl
+	ld	de,ACBSZ
+	push	ix
+	push	bc
+	call	$FREE		; free ACB
+	pop	bc
+	pop	de
+	ld	hl,T.ASTL
+	add	hl,de
+adcl4:	ldw	de,(hl)
+	ld	a,e
+	or	e		; end of list?
+	ret	z		; return success if yes
+	push	de
+	pop	iy
+	ld	a,(iy+A.TYP)
+	cp	c		; same type?
+	ex	de,hl
+	jr	nz,adcl4	; skip it if not
+	ex	de,hl
+	push	hl
+	push	bc
+	ldw	bc,(iy+A.LNK)
+	ldw	(hl),bc		; unlink AST event block
+	ld	c,(iy+A.SIZ)	; get size of data area into BC
+	ld	b,0
+	ld	hl,ACBSZ	; add header size
+	add	hl,bc
+	ex	de,hl		; block size in DE, AST block address in HL
+	call	$FREE		; free the AST block
+	pop	bc
+	pop	hl
+	jr	adcl4
+
+adcl2:	pop	de		; pop routine address
+	ld	a,d
+	or	e
+	ret	z		; AST type already disabled
+	push	de		; push routine address
+	push	bc		; push type
+	push	hl		; push prev ptr
+	ld	bc,ACBSZ
+	call	$ALLOC		; allocate new ACB
+	push	hl
+	pop	iy		; get ACB address into IY
+	ex	de,hl
+	pop	hl		; pop prev ptr
+	pop	bc		; pop type
+	jr	c,adcl3		; on error, return
+	ldw	(hl),de		; add ACB to list
+	xor	a
+	ld	(iy+A.LNK),a	; clear next ptr
+	ld	(iy+A.LNK+1),a
+	ld	(iy+A.TYP),c	; set type
+	pop	de
+	ldw	(iy+A.ADDR),de	; set routine address
+	ret			; return success
+
+adcl3:	pop	hl		; discard routine address
+	ret			; return error
+
+;-----------------------------------------------------------------------
+
+; Enable/Disable AST recognition.
+;
+; Input:
+;   C = 0 to disable, <>0 to enable
+
+ASTCTL:	ld	ix,($CTCB)
+	ld	a,c
+	or	a		; enable or disable?
+	jr	z,dsbl		; jump if disable
+	set	TA.AST,(ix+T.ATTR) ; enable ASTs
+	xor	a
+	ret
+dsbl:	res	TA.AST,(ix+T.ATTR) ; disable ASTs
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find specified AST block by type.
+;
+; Input:
+;   IX = task TCB address
+;   C  = AST type
+; Returns:
+;   DE = specified AST block, if found
+;   HL = pointer to prev link field
+;   CY set if the block was not found
+; Preserves BC, IX, IY.
+
+FNDAST:	push	ix
+	pop	de
+	ld	hl,T.SAST
+	add	hl,de		; HL = prev
+next:	ldw	de,(hl)		; get AST Control Block address into DE
+	ld	a,d
+	or	e
+	scf
+	ret	z		; not found
+	push	hl
+	ld	hl,A.TYP
+	add	hl,de
+	ld	a,(hl)
+	cp	c		; same type?
+	pop	hl
+	ret	z		; return success if yes
+	ex	de,hl
+	jr	next		; else try next
+
+;-----------------------------------------------------------------------
+
+; Append an AST event block to the specified task's AST queue and modify
+; task status to begin AST execution.
+;
+; Input:
+;   IX = task TCB address
+;   HL = pointer to arguments
+;   DE = routine address
+;   C  = argument length in bytes
+;   A  = AST type
+;
+; Note: Do not call from an interrupt routine. Device drivers must use
+; fork processing to send ASTs to requesting tasks.
+
+QAST:
+;;	bit	TA.AST,(ix+T.ATTR)
+;;	scf
+;;	ret	z
+	or	a
+	jp	m,qast1
+	call	chktyp		; check type
+	jr	z,qast1		; branch if no ACB required
+	push	hl
+	push	de
+	push	bc
+	ld	c,a
+	call	FNDAST		; find AST Control Block
+	push	de
+	pop	iy
+	ld	a,c
+	pop	bc
+	pop	de
+	pop	hl
+  IF 0
+	ret	c		; error if none defined
+  ELSE
+	ccf
+	ret	nc
+  ENDIF
+	ldw	de,(iy+A.ADDR)
+qast1:	ld	b,a
+	ld	a,d
+	or	e
+	scf
+	ret	z
+
+	push	hl
+	push	de
+	push	bc
+	ld	b,0
+	ld	hl,ACBSZ
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	push	ix
+	call	$ALLOC
+	pop	ix
+	push	hl
+	pop	iy
+	pop	bc
+	pop	de
+	pop	hl
+	ret	c
+
+	ld	(iy+A.TYP),b
+	ld	(iy+A.SIZ),c
+	ldw	(iy+A.ADDR),de
+	ld	a,c
+	or	a
+	jp	z,LNKAST
+	ex	de,hl
+	push	iy
+	pop	hl
+	ld	bc,A.DAT
+	add	hl,bc
+	ex	de,hl
+	ld	c,a
+	ld	b,0
+	ldir
+	jp	LNKAST
+
+chktyp:	cp	AST.IO
+	ret	z
+	cp	AST.UC
+	ret	z
+	cp	AST.CK
+	ret
+
+; Input:
+;   IX = task TCB
+;   IY = address of AST block to add to list
+; Preserves IX.
+
+LNKAST:	push	ix
+	ld	de,T.ASTL
+	add	ix,de
+lnk1:	ldw	de,(ix)		; get link field into DE
+	ld	a,d
+	or	e		; check if zero
+	jr	z,lnk2		; if yes, we reached the end of the list
+	push	de
+	pop	ix		; else go to next AST event block in list
+	jr	lnk1		; and try again
+
+; we arrive here with:
+;   IX = prev AST block in list, or list head ptr
+;   IY = address of AST block to add
+
+lnk2:	push	iy		; get address of AST block to insert
+	pop	hl		;  into HL
+	ldw	(ix),hl		; set prev pointer in list
+	ldw	(iy),de		; clear next field on inserted AST block
+	pop	ix
+	; continue below
+
+;-----------------------------------------------------------------------
+
+; Setup task for AST execution.
+;
+; Moves the task to the ready list and sets the TS.AST bit in T.ST.
+; The task will be resumed normally via SYSXIT.
+;
+; If the task is checkpointed, it will be kept in the wait list and the
+; partition wait queue checked. Eventually, the task will be assigned a
+; (sub)partition, loaded back into memory and resumed.
+;
+; Input:
+;   IX = TCB address
+
+SETAST:	bit	TS.AST,(ix+T.ST); is task already in AST mode?
+	jp	nz,ast0		; return success if yes
+
+	bit	TA.AST,(ix+T.ATTR) ; AST processing enabled?
+	scf
+	ret	z		   ; return error if not
+
+  IF 0
+	ldw	hl,(ix+T.ASTL)
+	ld	a,h		; check AST queue
+	or	l
+	scf
+	ret	z		; return error if empty
+  ENDIF
+
+	ldw	iy,(ix+T.CTX)	; get task context address into IY
+	ld	a,iyh
+	or	iyl
+	scf
+	ret	z		; error if not set
+
+	ld	a,(ix+T.ST)
+	ld	(ix+T.SVST),a	; save old task status (note has TS.AST clear)
+	ld	a,(ix+T.ST+1)
+	ld	(ix+T.SVST+1),a
+	ld	a,(ix+T.WAIT)
+	ld	(iy+TX.SWM),a	; save old wait mask
+	ld	a,(ix+T.WAIT+1)
+	ld	(iy+TX.SWM+1),a
+	ld	a,(ix+T.WAIT+2)
+	ld	(iy+TX.SWM+2),a
+	ld	a,(ix+T.WAIT+3)
+	ld	(iy+TX.SWM+3),a
+	xor	a
+	ld	(ix+T.WAIT),a	; clear wait mask
+	ld	(ix+T.WAIT+1),a
+	ld	(ix+T.WAIT+2),a
+	ld	(ix+T.WAIT+3),a
+	set	TS.ACT,a
+	set	TS.AST,a
+	ld	(ix+T.ST),a	; set new task status (note: TS.SUP is clear)
+	ld	a,(ix+T.SVST+1)
+	or	a		; was task runnable?
+	ret	z		; return success if yes
+	res	T2.STP,a
+	res	T2.SEF,a
+	res	T2.EFW,a
+	res	T2.WTD,a
+	ld	(ix+T.ST+1),a
+	or	a		; task runnable in new AST state?
+	jp	nz,TNEXT	; must be out of memory, try bringing it back
+	push	ix
+	pop	bc
+	call	$FNTCB		; locate task, returns IX=TCB and IY=prev
+	ret	c		; should not happen
+	ldw	bc,(ix+T.ACTL)	; unlink TCB
+	ldw	(iy),bc
+	ld	iy,$RLIST
+	ld	bc,T.ACTL
+	call	$LKTCB		; move task to ready list
+ast0:	xor	a		; task will be resumed normally via SYSXIT
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove an AST block from the current task's T.ASTL queue and deliver
+; it to the task.
+;
+; This routine is called from SYSXIT, meaning the task is runnable and
+; loaded in memory at this point.
+;
+; Any registers modified in AST mode must be saved/restored by the task.
+
+DOAST:	ld	ix,($CTCB)
+	ldw	iy,(ix+T.ASTL)
+	ld	a,iyh		; check AST queue
+	or	iyl
+	ret	z		; return if empty
+
+	ld	a,(iy+A.TYP)	; check type
+	cp	AST.ST OR 80h	; special AST status block?
+	jr	nz,ast1		; branch if not
+
+	ldw	bc,(iy+A.LNK)
+	ldw	(ix+T.ASTL),bc	; else unlink it from queue
+	ldw	hl,(iy+A.DAT)	; get ECB address
+	ldw	bc,(iy+A.DAT+2)	; get status
+	ld	a,($UBANK)
+	ld	e,a		; dst bank
+	di
+	call	$UPUTW		; store status
+	ei
+	ld	e,(iy+A.SIZ)
+	ld	d,0
+	ld	hl,ACBSZ	; add header size
+	add	hl,de
+	ex	de,hl		; DE = AST block size
+	push	iy
+	pop	hl		; HL = AST block address
+	call	$FREE		; free the AST block
+	jr	DOAST		; loop to dispatch next
+
+ast1:	call	SETAST		; switch task to AST mode if necessary
+	ret	c		; on error (e.g. ASTs disabled), return
+
+	bit	TS.AST,(ix+T.SVST) ; already executing an AST?
+	ret	nz		   ; return if yes
+	set	TS.AST,(ix+T.SVST) ; else set the status bit
+
+	ldw	iy,(ix+T.CTX)	; get task context address into IY
+
+	push	ix
+	ldw	hl,(ix+T.ASTL)	; get address of first AST block in list
+	push	hl		; save it
+	ldw	bc,(hl)
+	ldw	(ix+T.ASTL),bc	; unlink it from queue
+	inc	hl
+	inc	hl
+	ld	c,(hl)		; size of data area
+	ld	b,0
+	push	bc		; save it
+	inc	hl		; HL = src (type + data area)
+	inc	hl		; skip type
+	inc	bc		; include routine address (PC)
+	inc	bc
+	ld	a,($UBANK)
+	ld	e,a
+	call	STARG		; push PC and arguments
+	pop	de		; pop size of data area into DE
+	ld	hl,ACBSZ	; add header size
+	add	hl,de
+	ex	de,hl		; DE = AST block size
+	pop	hl		; HL = AST block address
+	call	$FREE		; free the AST block
+	pop	ix
+	xor	a		; return success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Exit from AST.
+;
+; Restores PC, status bits and the wait-for mask from saved values and
+; clears the TS.AST bit.
+;
+; If the task was/is not runnable (e.g. stopped, waiting, etc.), it
+; will be placed back in the wait list.
+
+ASTEXT:	ld	ix,($CTCB)
+	bit	TS.AST,(ix+T.SVST) ; AST under execution?
+	scf
+	ret	z		   ; return error if not
+	res	TS.AST,(ix+T.SVST) ; else clear the status bit
+
+	pop	bc		; discard SVRSLT return address!
+
+	ld	a,($UBANK)
+	ld	e,a
+	ld	bc,2
+	call	RMARG		; remove AST PC
+	bit	TA.AST,(ix+T.ATTR) ; AST processing still enabled?
+	jr	z,astx2		   ; exit AST mode if not
+
+	ldw	de,(ix+T.ASTL)
+astx1:	ld	a,d		; check AST queue
+	or	e
+	jr	z,astx2		; exit AST mode if empty
+	ld	hl,A.TYP
+	add	hl,de
+	ld	a,(hl)
+	cp	AST.ST OR 80h	; special AST status blocks do not count
+	ret	nz
+	ex	de,hl
+	ldw	de,(hl)
+	jr	astx1
+
+astx2:	ldw	iy,(ix+T.CTX)	; get address of task context block into IY
+	ld	a,(iy+TX.SWM)
+	ld	(ix+T.WAIT),a	; restore old wait mask
+	ld	a,(iy+TX.SWM+1)
+	ld	(ix+T.WAIT+1),a
+	ld	a,(iy+TX.SWM+2)
+	ld	(ix+T.WAIT+2),a
+	ld	a,(iy+TX.SWM+3)
+	ld	(ix+T.WAIT+3),a
+	ld	a,(ix+T.SVST)	; note TS.AST was cleared above
+	ld	(ix+T.ST),a	; restore old task status
+	ld	a,(ix+T.SVST+1)
+	res	T2.OUT,a	; clear T2.OUT and T2.CKP bit in case the task
+	res	T2.CKP,a	;  was checkpointed when the AST was queued
+	ld	(ix+T.ST+1),a
+	or	a		; task in running state?
+	ret	z		; return if yes (already in $RLIST)
+	push	ix
+	pop	bc
+	call	$FNTCB		; locate task, returns IX=TCB and IY=prev
+	ret	c		; should not happen
+	ldw	bc,(ix+T.ACTL)	; unlink TCB
+	ldw	(iy),bc
+	ld	iy,$WLIST
+	ld	bc,T.ACTL
+	call	$LKTCB		; move task back to wait list
+	bit	T2.EFW,(ix+T.ST+1) ; task waiting on flag?
+	jr	nz,astx3	   ; branch if yes
+	bit	T2.SEF,(ix+T.ST+1) ; task stopped for flag?
+	ret	z		   ; return if not
+astx3:	push	ix
+	pop	bc
+	call	CKWMSK		; check wait mask
+	ret	c		; return on error
+	ret	z		; return if no flag is set
+	jp	TCONT		; else wakeup task (BC = TCB)
+
+;-----------------------------------------------------------------------
+
+; Push AST arguments on task's stack.
+;
+; For compatibility with RSX180, the old AF is pushed on the stack
+; together with the old PC before any arguments are pushed.
+;
+; Input:
+;   IX = task TCB address
+;   E  = task bank
+;   HL = pointer to arguments
+;   BC = argument size in bytes (includes new PC)
+;
+; Note: arguments must be below the 8K window!
+
+STARG:	ld	(ARGS),hl
+	push	bc
+	ld	d,0
+	ld	b,16
+	call	USRMAP		; map task to user space
+	ldw	iy,(ix+T.CTX)
+	lda	iy,(iy+TX.REGS)	; point to saved register bank
+	ldw	hl,(ix+T.SP)	; get task SP
+	ldw	bc,(iy+18)
+	dec	hl
+	ld	a,b
+	ldup	(hl),a		; push old AF
+	dec	hl
+	ld	a,c
+	ldup	(hl),a
+	ldw	bc,(iy+24)
+	dec	hl
+	ld	a,b
+	ldup	(hl),a		; push old PC
+	dec	hl
+	ld	a,c
+	ldup	(hl),a
+	pop	bc
+	or	a
+	sbc	hl,bc
+	inc	hl		; PC will be saved in task context
+	inc	hl
+	ldw	(ix+T.SP),hl	; set new SP
+	push	hl
+	push	bc
+	ld	hl,(ARGS)
+	ldw	bc,(hl)		; get routine address
+	ldw	(iy+24),bc	; set new PC in register bank
+	ex	de,hl
+	pop	bc
+	pop	hl		; DE = args, HL = stack address
+	inc	de
+	inc	de
+	dec	bc
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+st1:	ld	a,(de)
+	ldup	(hl),a		; copy args
+	inc	hl
+	inc	de
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,st1
+	ret
+
+; Remove AST arguments from task's stack.
+;
+; Since all registers are saved on task's space, we will map an 8K window
+; at the top 8K area and relocate saved registers (the window size is 8K
+; in case the stack crosses a page boundary). Note that we only remove
+; the AST PC value, AST arguments have been removed by the AST routine.
+;
+; TODO: compare SP and abort the task on mismatch
+;
+; Input:
+;   IX = task TCB address
+;   E  = task bank
+;   BC = bytes to remove (includes old PC)
+
+RMARG:	push	bc
+	ld	d,0
+	ld	b,16
+	call	USRMAP		; map user task using user PDRs
+	pop	bc
+	ldw	iy,(ix+T.CTX)
+	lda	iy,(iy+TX.REGS)	; point to saved register bank
+	ldw	hl,(ix+T.SP)	; get task SP
+	add	hl,bc
+	dec	hl		; backup to PC
+	dec	hl
+	ldup	a,(hl)		; pop old PC
+	ld	c,a
+	inc	hl
+	ldup	a,(hl)
+	ld	b,a
+	inc	hl
+	ldw	(iy+24),bc	; restore original PC
+	ldup	a,(hl)		; pop old AF
+	ld	c,a
+	inc	hl
+	ldup	a,(hl)
+	ld	b,a
+	inc	hl
+	ldw	(iy+18),bc	; restore original AF
+	ldw	(ix+T.SP),hl	; restore original SP
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove all AST blocks from the specified task T.ASTL queue.
+; Called on task exit during cleanup.
+;
+; Input:
+;   IX = TCB
+; Preserves IX.
+
+CLNAST:	ldw	hl,(ix+T.ASTL)
+	ld	a,h
+	or	l
+  IF 0
+	ret	z		; return if queue empty.
+  ELSE
+	jp	z,CLNACB
+  ENDIF
+	push	ix
+	push	hl
+	ldw	de,(hl)
+	ldw	(ix+T.ASTL),de	; unlink the AST block
+	inc	hl
+	inc	hl
+	ld	e,(hl)		; get size of data area into DE
+	ld	d,0
+	ld	hl,ACBSZ	; add header size
+	add	hl,de
+	ex	de,hl		; block size in DE
+	pop	hl		; block address in HL
+	call	$FREE		; free the AST block
+	pop	ix
+	jr	CLNAST		; continue until all blocks are removed
+
+; Remove all AST control blocks from the specified task T.SAST queue.
+; Called on task exit during cleanup.
+;
+; Input:
+;   IX = TCB
+; Preserves IX.
+
+CLNACB:	ldw	hl,(ix+T.SAST)
+	ld	a,h
+	or	l
+	ret	z		; return if queue empty.
+	push	ix
+	ldw	de,(hl)
+	ldw	(ix+T.SAST),de	; unlink the AST block
+	ld	de,ACBSZ	; block size in DE, address in HL
+	call	$FREE		; free the AST block
+	pop	ix
+	jr	CLNAST		; continue until all blocks are removed
+
+	dseg
+
+ARGS:	ds	2
+
+	END

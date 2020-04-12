@@ -1,0 +1,251 @@
+;**********************************************************************;
+;                                                                      ;
+;   DY: 1.44M floppy boot loader, included in the INI task.            ;
+;   Copyright (C) 2004-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DY: 1.44M floppy boot loader                                       ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z180
+
+Z80182	equ	1
+	include	Z180.INC	; for boot loader
+
+	public	FDBOOT,FDBTSZ
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+dparm	equ	0Bh		; ROM BIOS disk param area
+himem	equ	0C200h		; loader execution address
+system	equ	100h		; system entry point
+cmdline	equ	80h		; command line for system (boot device)
+
+romdat	equ	0FE00h		; start of ROM data area
+romlen	equ	200h		; length of ROM data area
+tmpbuf	equ	8200h		; temp buffer to save ROM data
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+FDBOOT	equ	$
+
+	.phase	8000h
+
+boot:	jp	load
+
+	dw	ldr - boot + datofs
+
+load:	in0	a,(SCR)
+	res	3,a		; map ROM in, in case it was shadowed
+	out0	(SCR),a
+
+	ld	hl,romdat
+	ld	de,tmpbuf
+	ld	bc,romlen
+	ldir			; copy ROM data area
+
+	in0	a,(RAMLBR)
+	add	a,1Fh-1
+	in0	c,(RAMUBR)
+	cp	c		; require 128K minimum
+	jp	nc,nomem
+
+	ld	a,c		; use last memory page for loader
+	sub	0Fh
+	out0	(CBR),a		; remap common area
+
+	ld	hl,tmpbuf
+	ld	de,romdat
+	ld	bc,romlen
+	ldir			; restore ROM data
+
+	ld	hl,ldr
+	ld	de,himem
+	ld	bc,size
+	ldir			; now copy loader to high memory
+	jp	loader		; and execute it
+
+ldr:	.dephase
+	.phase	himem
+
+loader:	in0	a,(RAMLBR)	; use all the available RAM (even the
+	sub	8		;  shadowed ROM area), use a one-page sliding
+	out0	(BBR),a		;   window (8000-8FFF) to load the system
+
+	ld	de,blkbuf
+	ld	hl,1
+	call	ldblk		; load volume id
+
+	ld	hl,blkbuf
+	ld	de,vid
+	ld	b,6
+chkid:	ld	a,(de)		; check signature
+	cp	(hl)
+	jp	nz,badv
+	inc	hl
+	inc	de
+	djnz	chkid
+
+	ld	hl,(blkbuf+8)
+	ld	a,h
+	cp	5		; filesystem level must be 5
+	jp	nz,badv
+
+	ld	hl,(blkbuf+72)	; get LBN of system image file
+	ld	a,h
+	or	l
+	jp	z,noboot
+	exx
+	ld	hl,(blkbuf+76)	; get size of system image file
+	ld	a,h
+	or	l
+	exx
+	jp	z,noboot
+
+loopp:	ld	b,8		; blocks per page
+	ld	de,8000h	; start of page
+loop:	call	ldblk		; load block
+	inc	hl		; next block
+	exx
+	dec	hl		; decrement block count
+	ld	a,h		; exit loop if zero
+	or	l
+	exx
+	jr	z,gosys
+	djnz	loop		; continue until page is full
+	in0	a,(BBR)
+	inc	a		; next page
+	out0	(BBR),a
+	jr	loopp
+
+gosys:	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+	ld	a,0C0h		; keep loader mapped
+	out0	(CBAR),a
+	in0	a,(RAMLBR)
+	out0	(BBR),a		; map loaded system to base bank
+	ld	hl,cmdline+1
+	ld	(hl),'D'	; store boot device
+	inc	hl
+	ld	(hl),'Y'
+	inc	hl
+	ld	a,(bdev)
+	ld	(hl),a
+	inc	hl
+	ld	(hl),0
+	jp	system		; start system
+
+; Load absolute block number in HL to address in DE
+
+ldblk:	push	hl
+	push	bc
+	push	de
+	ld	ix,(dparm)
+	call	xlate		; translate block number to track and sector
+	ld	a,2		; read command
+	ld	b,1		; number of sectors
+	ld	d,0		; drive 0
+	ld	hl,blkbuf
+	rst	08h		; P112 disk services
+	jr	c,lderr
+	ld	hl,blkbuf
+	pop	de		; restore load address
+	ld	bc,512
+	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+	ldir
+	in0	a,(SCR)
+	res	3,a		; enable ROM
+	out0	(SCR),a
+	pop	bc
+	pop	hl
+	ret
+
+nomem:	ld	de,nmmsg
+	jr	error
+
+nmmsg:	db	'Not enough memory',CR,0
+
+lderr:	ld	de,errmsg
+	jr	error
+
+errmsg:	db	'Load error',CR,0
+
+noboot:	ld	de,nbmsg
+	jr	error
+
+nbmsg:	db	'No system image',CR,0
+
+badv:	ld	de,badvol
+error:	ld	hl,prefx
+	rst	20h
+	ex	de,hl
+	rst	20h
+	rst	38h
+
+prefx:	db	'BOOT -- ',0
+badvol:	db	'Invalid volume type',CR,0
+
+vid:	db	'VOL180'
+
+; input:  block number in HL
+; output: track/side in C, sector in E
+
+xlate:	ld	e,(ix+4)	; SPT
+	call	div
+	ld	c,l		; track
+	add	a,(ix+13)	; add 1st sector number
+	ld	e,a
+	ret
+
+; HL/E = HL remainder in A (E = 0..7Fh)
+
+div:	ld	b,16+1
+	xor	a
+div1:	adc	a,a
+	sbc	a,e
+	jr	nc,div0
+	add	a,e
+div0:	ccf
+	adc	hl,hl
+	djnz	div1
+	ret
+
+;-----------------------------------------------------------------------
+
+datofs	equ	$ - loader
+
+bdev:	db	0
+
+size	equ	$ - loader
+
+blkbuf	equ	$
+
+	.dephase
+
+FDBTSZ	equ	$ - FDBOOT
+
+	end

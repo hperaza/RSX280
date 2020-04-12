@@ -1,0 +1,265 @@
+MCE V4.29 - Command Line Editor options:
+- Support is included for the following options:
+  * Startup and exit messages
+  * VT2plus and VT4plus support
+  * MCE Init-files
+  * EDT-Keypad editing - default OFF
+  * Status line - default OFF
+  * Save "Old" Commands - default OFF
+  * Save Internal Commands - default OFF
+  * Auto Insert mode - default ON
+  * Compound Command lines
+  * Extended Prompt - default OFF
+  * User Prompt and Terminal Password Locking
+  * RT: and HT: detection (Message)
+- By default only commands which contain at least 3 characters are saved.
+  To change this use the "MCE CMSZ n" command (see INTERNAL)
+- By default the savebuffer can contain up to 30 command lines.
+  To change this value use the "MCE FISZ n" command (see INTERNAL)
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEA|KEYS*1
+MCE V4.29 - Command Line Editor Non-keypad editing and cursor movement commands
+
+ <LEFT>      or <CTRL/D> - Move Cursor Left
+ <RIGHT>     or <CTRL/F> - Move Cursor Right
+ <BACKSPACE> or <CTRL/H> - Move Cursor to Begin of Line
+ <CTRL/E>                - Move Cursor to End of Line
+ <TAB>       or <CTRL/I> - Move one Word to the right or move from EOL to BOL
+ <DELETE>                - Delete Character Left of Cursor
+ <CTRL/V>                - Delete Character at Cursor
+ <LINEFEED>  or <CTRL/J> - Delete Word Left of Cursor
+ <CTRL/W>                - Delete Word Right at Cursor
+ <CTRL/U>                - Delete from Cursor to Begin of Line
+ <CTRL/K>                - Delete from Cursor to End of Line
+ <CTRL/C>                - Delete whole line
+ <CTRL/R>                - Rewrite Line
+ <CTRL/A>    or  <F14>   - Switch between Overwrite and Insert mode
+
+ If the Extended Prompt is on, the current mode is shown by the first prompt
+ character: "+" Insert mode, "-" Overwrite mode.
+
+More help: KEYS2 COMMANDLINES TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEB|KEYS2
+MCE V4.29 - Command Line Editor non-keypad keys:
+
+Save and execute:
+ <RETURN>    or <ENTER>    - Execute command
+ <ESC><ESC>  or <DO>       - Execute command without waiting
+ <CTRL/X>                  - Execute cmd and leave FIFO-pointer where it is
+ <CTRL/N>                  - Save command without executing
+ <CTRL/T>                  - Enable output from other tasks: detach 10 sec.
+ <CTRL/P>                  - Enable output from other tasks: suspend MCE
+Non-keypad command buffer manipulation keys:
+ <PF4>       or <ESC>S     - Display contents of FIFO
+ <UP>        or <CTRL/B>   - Retrieve previous command
+ <DOWN>                    - Reverse of <UP> (next command)
+ <PF2> or <FIND> or <ESC>Q - Recall command previously requested (see RECALL)
+Non-keypad Help keys:
+ <HELP> or <CTRL/?>        - Gives HELP about MCE
+ <PRV-SCREEN>/<NXT-SCREEN> - Gives Previous/Next HELP screen
+Non-keypad command translation keys:
+ <PF1>       or <ESC>P     - Translate command without execution
+ <PF3>       or <ESC>R     - Show command translation Buffer
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEC|COM*MANDLINES
+MCE V4.29 - Command Line Editor command lines:
+ The maximum length of command lines is 78 characters.
+ If the command line starts with "MCE", an internal command is assumed. Other
+ command lines are checked for translation and the result is spawned to MCR.
+ Special action is performed with "BYE" (see INTERNAL.)
+ A command line can consist of a single command or can contain more commands
+ separated by " &". (Note the space to let PIP /TD&/LI still work.)
+ A command after a "&" is processed only if the previous one succeeded.
+ A compound command line may also contain internal commands mixed with
+ normal CLI commands. Only the first command is checked for translation.
+
+ Normally all command lines which contain 3 or more characters are saved
+ in the FIFO-buffer. This may be changed with "MCE CMSZ n" (see INTERNAL.)
+ When 30 entries are present, or when no buffer space is available to hold
+ more entries, the new command is saved and the oldest disappears.
+ Retrieved command lines from the FIFO are only saved again if they are
+ edited or when the saving is enabled by "MCE SVOL ON" (Save "OLD" commands)
+ and this command line is not the newest in the FIFO. This prevents filling 
+ up your FIFO with one command by continuously repeating the last command.
+ Internal commands are saved when this is enabled by "MCE SVIN ON"
+ (Save "INTERNAL" commands.)
+More help: KEYS TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCED|TRANS*1
+MCE V4.29 - Command Line Editor command translations:
+
+ A command may be defined with:
+        +>CNAM := <TRANSL_OF_COMMAND> [& <TRANSL_OF_COMMAND> [& .....]]
+ where CNAM is the command name which will be substituted by the text at the
+ right side of the ":=".
+ A command behind " &" will only be processed when the former was successful.
+ NOTE: The ":=" must be preceded and followed by at least a single space or TAB
+ e.g.:  +>HE := HELP PIP        ! 
+        +>HE                    ! Will request "HELP PIP"
+ With Keypad disabled <PF1> or <ESC>P translates the command without execution.
+
+ If you enter a predefined command followed by additional text, this additional
+ text will normally be appended as a whole.
+ e.g.:  +>HE /RE                ! Will request "HELP PIP /RE
+ or:    +>HE /RE<PF1>           ! Will be translated and displayed
+ result +>HELP PIP /RE
+
+ You can delete a command translation entry by redefining it to null.
+ e.g.:  +>HE :=                 ! Delete above definition
+
+More help: KEYS COMMANDLINES TRANS2 FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEE|TRANS2
+MCE V4.29 - Command Line Editor command translations (continued):
+
+ Abbreviate commands by separating the optional part with a "*"
+ e.g.:  +>HP*IP := HELP PIP
+ This command may now be requested with:
+        +>HP or HPI or HPIP  etc.
+
+ More sophisticated is the Parameter-Substitution, similar to the
+ indirect command file processor.
+ e.g.:  +>DIR*ECTORY := PIP 'P1'/LI
+        +>COP*Y := PIP 'P2'/NV/CD='P1'
+        +>DIR                   ! Will be translated into "PIP /LI"
+        +>DIREC FIL             ! Will be translated into "PIP FIL/LI"
+        +>COPY A.CMD [200,200]  ! Will simulate DCL COPY command
+ Note that command definitions may be performed from the command file
+        LB:[SYSTEM]MCEINI.CMD  and  SY:[CurDir]MCEINI.CMD
+ which will always be read when MCE is started.
+        [CurDir] = the default directory at the startup of MCE.
+ Files are read in the order they are mentioned above.
+
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEF|FUNC
+MCE V4.29 - Command Line Editor function keys:
+
+ You may request a command with function keys <PF1>, <PF2>, <PF3> or <PF4>
+ It is also possible to request commands with control keys (e.g. <CTRL/G>).
+ On a VT2xx/VT3xx/VT4xx/VT5xx-Keyboard you can also define the function keys
+ <F6>..<F20> and <FIND> <INSERT HERE> etc.  On a VT4xx also <F1>..<F5>
+ Define the command translation as "'key' := Command".
+ e.g.   +>PF2 := TIM            ! Redefine <PF2> function key
+        <PF2>                   !  to display the current time
+        +>F6 := ACT             ! Define F6 function key
+        <F6>                    !  to display the active tasks
+ The keys <FIND> etc. must be entered as F$a  where "a" is the  first char.
+ of the key function,  e.g.  "F$P" for <PREV-SCREEN>    (English text)
+ Define a control key as follows:
+ e.g.   +>^G := SET /DEF        ! Define <CTRL/G> key
+        <CTRL/G>                !  to display the current directory
+ Note that the following control-keys CANNOT be defined:
+ <CTRL/M> = <RETURN>,  <CTRL/O>,  <CTRL/Q>,  <CTRL/S>,  <CTRL/[> = <ESC>
+ Next to the rest of the Alphabetic characters the following keys can
+ be defined: <CTRL/\>,  <CTRL/]>,  <CTRL/^>,  <CTRL/?>
+More help: KEYS COMMANDLINES TRANS START EXIT INTERNAL RECALL KEYPAD
+\MCEG|START
+MCE V4.29 - Command Line Editor startup
+
+ Invoke MCE with command "MCE" (best done in LOGIN.CMD with ".XQT MCE").
+ A File of command definitions, MCR commands and/or internal commands will be
+ read at MCE startup time. The file may be specified in the form 
+ "MCE <startup_file>".
+ If no startup file is specified in the command line (the normal case),
+ files are read in this order:
+    LB:[SYSTEM]MCEINI.CMD,        followed by
+    SY:[CurDir]MCEINI.CMD,
+ [CurDir] is the default directory at the startup of MCE.
+ This algorithm divides command definitions into two groups:
+ A system-wide set in LB:[SYSTEM], followed by a user's private set.
+ Overriding the default filename in the command line when invoking MCE offers
+ the possibility to tailor an application specific command set.
+
+More help: KEYS COMMANDLINES TRANS FUNC EXIT INTERNAL RECALL KEYPAD
+\MCEH|EXIT
+MCE V4.29 - Command Line Editor exit
+
+  To exit MCE operations, use the "MCE EXIT" internal command.
+  or <CTRL/Y>
+  More about internal commands see help MCE INTERNAL.
+
+More help: KEYS COMMANDLINES TRANS FUNC START INTERNAL RECALL KEYPAD
+\MCEI|INT*ERNAL
+MCE V4.29 - Command Line Editor internal commands (MCE xxxx)
+   CLEA/PURG: Delete all commands in command FIFO/Translation buffer
+   CMSZ n   : Changes minimum command line length to be saved to "n"
+   ECHO     : Command lines are echoed on TI: (useful in Init-files)
+   EXIT     : MCE task exit (return to the normal command environment.)
+   FISZ n   : Changes FIFO-size to "n" (if enough memory)
+   FREE     : Display MCE Pool info (largest_block:Total_free_blocks:fragments)
+   INSE xx  : Auto Insert mode on/off       (xx = on / off)
+   KEYP xx  : Set Keypad editing on/off     (xx = on / off)
+   LOCK     : Terminal password Locking
+   LIST/RING: FIFO is a list/ring: UP and DOWN stop/roll at the end
+   OVER xx  : Auto Overwrite mode on/off    (xx = on / off)
+   PROM xx  : Extended Prompt on/off        (xx = on / off)
+   READ file: Read commands from specified file (same as CHAI file)
+   REPL file: Combines PURGe and READ.
+   STAT xx  : Status line on/off/show       (xx = on / off / "blank")
+   SVIN xx  : Save internal commands on/off (xx = on / off)
+   SVOL xx  : Save "old" commands on/off    (xx = on / off)
+   USPR xx  : Define User Prompt          |  INTERNAL2  gives you an 
+   VERS     : Show MCE Version            |  explanation of internal commands.
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL2 RECALL KEYPAD
+\MCEJ|INTERNAL2
+MCE V4.29 - Command Line Editor internal commands (continued)
+
+  Two command verbs are specially handled by MCE: "BYE" and "MCE".
+  "BYE" is sent to MCR and MCE exits immediately.
+  Note that you may define any other string (e.g. GOODBYE) to result
+  in BYE.
+  Commands starting with "MCE" are treated as internal commands and not passed
+  to MCR. Following the verb "MCE " a four-character action specifier
+  defines the action wanted.
+  The READ and REPLACE options, if no file is specified, follow the
+  the same filename convention as at startup: the Init-files
+  are read in, i.e. the command "MCE REPLace" produces a restart of MCE
+  (but the FIFO-buffer is kept).
+  When a space is given as filename, only SY:[CurDir]MCEINI.xxx is read.
+  [CurDir] is the default directory at the moment of the command.
+
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL RECALL KEYPAD
+\MCEK|RECALL
+MCE V4.29 - Command Line Editor recall function
+
+ Recalling a command is done by entering the first part of a command
+ which was previously executed, terminated by the function key <PF2>,
+ by <UP> if UPFInd is enabled, by <ESC>Q or by <FIND>.
+ This will find the last command already executed starting with the
+ string entered. The command may be edited or executed by pressing
+ the return key. A second <PF2> keystroke searches further back in the
+ FIFO. When no string is entered, the last defined string is taken.
+ Note that the function key <PF2> may not have any superimposed
+ translation defined (by defining "PF2 := ....."), for example:
+    +>DIR X.DAT        ! Previously entered command
+    +>DMP X.DAT        !     "          "      "
+
+    +>D<PF2>           ! Will recall the last command starting with "D":
+    						+>DMP X.DAT
+    +><PF2>            ! Will recall the for last command:
+    						+>DIR X.DAT
+    +>DI<PF2>          ! Will recall the command:
+    						+>DIR X.DAT
+
+More help: KEYS COMMANDLINES TRANS FUNC START EXIT INTERNAL KEYPAD
+\MCEL|KEY*PAD
+MCE V4.29 - Command Line Editor EDT-Keypad and Function keys:
+ +--------+-----------------+   +--------+--------+--------+--------+
+ |        |                 |   |\\\\\\\\|        |        | DelLin |
+ |  Help  |  Execute NoWait |   |\\Gold\\| KPHelp | Recall | ------ | <F11>
+ |        |                 |   |\\\\\\\\|        |        |\UndLin |  = ESC
+ +--------+--------+--------+   +--------+--------+--------+--------+
+ | (Find) | Insert | Re-    |   |        | ShoCmd | ShoFif | DelWrd | <F12>
+ | Recall |  Here  |  move  |   | Transl | ------ | ------ | ------ |  = BegLin
+ |        |        |        |   |        |\\Vers\\|\\Free\\|\UndWrd\|
+ +--------+--------+--------+   +--------+--------+--------+--------+ <F13>
+ |        |  Prev  |  Next  |   | Detach |        |  Cut   | DelChr |  = DelWrd
+ | Select |  Help  |  Help  |   | ------ |        | ------ | ------ |    Right
+ |        |(Screen)|(Screen)|   |\Suspnd\|        |\Paste\\|\UndChr\|
+ +--------+--------+--------+   +--------+--------+--------+--------+ <F14>
+          |  Prev  |            |        |  EOL   |        |        |  = Ins/Ov
+          | Command|            |  Word  | ------ | Do Stay| Enter  |
+          |        |            |        |\DelLin\|\       |        |
+ +--------+--------+--------+   +--------+--------+--------+ ------ |
+ |        |  Next  |        |   |    BegLine      | Select |\\\\\\\\|
+ |  <-    | Command|   ->   |   | --------------- | ------ |\\Save\\|
+ |        |        |        |   |\\\\ClrLine\\\\\\|\Reset\\|\\\\\\\\|
+ +--------+--------+--------+   +-----------------+--------+--------+

@@ -1,0 +1,188 @@
+	.Z80
+
+	ident	'M580'
+
+	include	SYSFN.INC
+	include	AST.INC
+
+ESC	equ	1Bh
+
+LUNTI	equ	5
+TTEFN	equ	10
+TMEFN	equ	11
+
+	public	INKEY,GETCH,DELAY,INIT,EXIT
+
+	extrn	ATTACH,DETACH,TTFLSH
+
+	cseg
+
+INIT:	ld	ix,ttq
+	call	qinit		; init input queue
+	xor	a
+	ld	(kstat),a
+	ld	(lastk),a
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign TI: to LUN 5
+	ld	de,TTAST	; attach with ASTs
+	ld	c,LUNTI
+	call	ATTACH
+	ret
+
+EXIT:	call	TTFLSH
+	ld	c,LUNTI
+	call	DETACH		; detach from terminal
+	ld	hl,0
+	SC	.EXIT
+
+TTAST:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	a,l		; get char into reg C
+	ld	hl,kstat
+	ld	c,a
+	ld	ix,ttq
+	cp	3		; ^C
+	jr	nz,ast1
+	ld	(hl),0		; kstat = 0
+	call	qinit		; reset queue
+	jr	ast3
+ast1:	cp	ESC
+	jr	nz,ast2
+	ld	(hl),1		; kstat = 1
+	jr	ast5
+ast2:	ld	a,(hl)
+	or	a
+	jr	z,ast3
+	ld	a,c
+	cp	'['		; trim cursor key seq down to a single char
+	jr	z,ast3
+	ld	(hl),0		; kstat = 0
+ast3:	ld	a,(hl)
+	or	a
+	jr	nz,ast5
+	ld	hl,lastk
+	call	qsize
+	jr	z,ast4
+	ld	a,(hl)
+	cp	c
+	jr	z,ast5
+ast4:	ld	(hl),c
+	call	qput		; store char in queue
+	ld	e,TTEFN
+	SC	.SETF		; and set event flag
+ast5:	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+INKEY:	push	ix
+	push	de
+	ld	ix,ttq
+	;di
+	call	qget
+	;ei
+	pop	de
+	pop	ix
+	ret
+
+GETCH:	push	ix
+	push	hl
+	push	de
+	push	bc
+	call	TTFLSH
+gc0:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag before accessing queue
+	ld	ix,ttq
+	;di			; prevent AST from modifying the queue
+	call	qget		; get char
+	;ei
+	jr	nc,gc1		; return if available
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for char
+	jr	gc0
+gc1:	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+DELAY:	push	hl
+	push	de
+	push	bc
+	ld	l,a		; HL = interval magnitude
+	ld	h,0
+	ld	d,1		; units = ticks
+	ld	e,TMEFN
+	ld	bc,0		; no AST
+	SC	.MRKT
+	ld	e,TMEFN
+	SC	.WTSE
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+qinit:	xor	a
+	ld	(ix+q.ipos),a
+	ld	(ix+q.opos),a
+	ret
+
+qput:	ld	a,(ix+q.ipos)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+q.opos)
+	scf
+	ret	z		; queue full
+	ld	(ix+q.ipos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+q.iob),c	; store char
+	pop	ix
+	or	a
+	ret
+
+qget:	ld	a,(ix+q.opos)
+	ld	e,a
+	sub	(ix+q.ipos)
+	scf
+	ret	z		; queue empty
+	ld	a,e
+	inc	a
+	and	3Fh
+	ld	(ix+q.opos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+q.iob)	; get char
+	pop	ix
+	or	a
+	ret
+
+qsize:	ld	a,(ix+q.opos)
+	sub	(ix+q.ipos)
+	ret	nc
+	ret	nz
+	add	a,64
+	ret
+
+	dseg
+
+q.ipos	equ	0	; queue structure offsets
+q.opos	equ	1
+q.iob	equ	2
+
+kstat:	ds	1
+lastk:	ds	1
+
+ttq:	ds	1	; ipos
+	ds	1	; opos
+	ds	64	; buf
+
+	end

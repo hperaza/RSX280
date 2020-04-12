@@ -1,0 +1,120 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'VER1.0'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	ERRORS.INC
+
+	extrn	PUTSTR,PUTCH,CRLF,ADEC,ADEC2,HLDEC,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+UPT::	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER
+	ld	hl,EX.SEV
+	jp	c,EXIT
+
+	ld	ix,UPTIME
+	ld	hl,uptmsg
+	call	PUTSTR
+	push	hl
+	ld	h,(ix+5)	; days
+	ld	l,(ix+4)
+	dec	hl
+	ld	a,h
+	or	l
+	inc	hl
+	push	af		; remember if days = 1
+	xor	a
+	call	HLDEC
+	pop	af
+	pop	hl
+	inc	hl
+	call	PSTR		; 'day' or 'days'
+	push	hl
+	ld	a,(ix+3)	; hours
+	dec	a
+	push	af
+	inc	a
+	call	ADEC
+	pop	af
+	pop	hl
+	inc	hl
+	call	PSTR		; 'hour' or 'hours'
+	push	hl
+	ld	a,(ix+2)	; minutes
+	dec	a
+	push	af
+	inc	a
+	call	ADEC
+	pop	af
+	pop	hl
+	inc	hl
+	call	PSTR		; 'minute' or 'minutes'
+	push	hl
+	ld	a,(ix+1)	; seconds
+	call	ADEC
+	ld	c,'.'
+	call	PUTCH
+	ld	a,(ix+0)	; ticks
+	call	ADEC2
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	ld	hl,EX.SUC
+	jp	EXIT
+
+PSTR:	push	af
+	CALL	PUTSTR
+	pop	af
+	inc	hl
+	call	z,skips
+	call	PUTSTR
+	ret
+
+skips:	inc	hl		; skip 's'
+	ret
+
+uptmsg:	db	CR,LF
+	db	'Up ',0
+	db	' day',0,'s, ',0
+	db	' hour',0,'s, ',0
+	db	' minute',0,'s and ',0
+	db	' seconds.'
+	db	CR,0
+
+	dseg
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	UPT

@@ -1,0 +1,67 @@
+	.Z80
+
+	public	FPI
+
+	extrn	ROLFR0
+	extrn	FR0
+
+; Floating Point -> Integer conversion
+;
+; Convert positve floating point number in FR0 to 2-byte
+; unsigned integer binary in FR0.
+;
+; Returns CY on error (overflow / underflow / negative)
+
+	cseg
+
+FPI:	ld	hl,0		; initialize integer to zero
+	ld	a,(FR0)		; check exponent and sign
+	or	a
+	scf
+	ret	m		; return error if negative number
+	cp	43h		; bias+3
+	ccf
+	ret	c		; return error if >= 1E6
+	sub	40h		; subtract bias
+	jr	c,fpi2		; jump if < 1.0
+	inc	a
+	add	a,a		; get number of decimal places
+	ld	c,a		;  into C
+
+	; convert
+
+fpi1:	add	hl,hl		; *2
+	ret	c
+	ld	e,l
+	ld	d,h
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,de		; *10
+	ret	c
+	push	hl
+	push	bc
+	call	ROLFR0		; shift mantissa one decimal place left
+	pop	bc		;  and get overflow digit
+	pop	hl
+	ld	e,a		;   into E
+	ld	d,0
+	add	hl,de		; add it to the integer
+	ret	c
+	dec	c
+	jr	nz,fpi1		; continue for all digits
+
+	; check for rounding required
+
+fpi2:	push	hl
+	call	ROLFR0		; get the number right of the decimal point
+	pop	hl
+	cp	5		; rounding needed?
+	jr	c,fpi3		; not if digit is less than 5
+	inc	hl		; else perform correction (add 1 to tound)
+fpi3:	ld	(FR0),hl	; store the integer into FR0
+	or	a		; and return with no error
+	ret
+
+	end

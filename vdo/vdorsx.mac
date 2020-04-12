@@ -1,0 +1,701 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	AST.INC
+	include	TCB.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	ERRORS.INC
+
+	public	SETUP,CHKINP,SYSXIT,GETCHR,PRINT,READF,WRITEF,SHDIR
+	public	CHKFIL,STACK,PRNTFN,SAVFCB,RESFCB,SETFN,GETTOP,CHGDRV
+	public	CLRFN
+
+	extrn	QCHECK,QGETC,QPUTC,ERRNUM,PUTCHR,PRINTX,GETCY,UPDST
+	extrn	ADEC,HLDEC,DPSTR,GETLINE,CHKERR,WAITK
+
+	extrn	TMPBUF,TERMH,CUR_Y
+
+	; SYSLIB calls
+
+	extrn	INIFCB,PFN,ATTACH,DETACH,PUTCH,TTFLSH,CVTBD
+
+	cseg
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+EOF	equ	1Ah
+
+lun	equ	1
+mktefn	equ	28		; event flag for timeout 
+astefn	equ	29		; event flag for AST console input
+
+;-----------------------------------------------------------------------
+
+; Input is not polled, but received via AST
+
+CHKINP:	ret
+
+; Setup unsolicited input AST and attach terminal
+
+SETUP:	ld	hl,tcksec
+	ld	c,I.TCKS
+	SC	.GIN		; get ticks/sec
+	ld	ix,srcfdb
+	call	INIFCB
+	ld	hl,iobuf
+	ld	e,126
+	SC	.GTCMD		; get command line
+	ld	e,(hl)
+	ld	d,0
+	inc	hl
+	ex	de,hl
+	add	hl,de
+	ld	(hl),0
+	ex	de,hl
+	call	skpnam		; skip our task name
+	call	SETFN		; store filename in current FDB
+	xor	a
+	ld	(astflg),a
+	ld	de,'TI'
+	ld	c,0
+	ld	b,5
+	SC	.ALUN		; assign LUN 5 to TI:
+	ld	de,ttast	; attach with ASTs
+	ld	c,5		; attach TI:
+	call	ATTACH
+	ret	c
+	ld	hl,qio4
+	SC	.QIO		; put terminal in binary mode
+	ret
+
+skpnam:	ld	a,(hl)
+	call	isblnk
+	ret	z
+	inc	hl
+	jr	skpnam
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret
+
+; Cleanup and exit to system
+
+SYSXIT:	call	TTFLSH
+	ld	c,5		; LUN 5 is TI:
+	call	DETACH		; detach from terminal
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+; Output character to printer
+
+PRINT:
+	scf
+	ret
+
+; Unsolicited input AST routine
+
+ttast:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	c,l
+	call	QPUTC		; store it
+	ld	hl,astflg
+	set	1,(hl)		; signal char arrived
+	ld	e,astefn
+	SC	.SETF		; and set event flag
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+; Mark-time AST routine
+
+tmast:	push	hl
+	push	de
+	ld	hl,astflg
+	set	0,(hl)		; signal timeout
+	ld	e,astefn
+	SC	.SETF		; and set event flag
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+; Get character from input queue, wait for character if queue is empty
+
+GETCHR:	push	hl
+	push	de
+	push	bc
+	call	TTFLSH		; ensure pending output gets displayed
+gc0:	ld	e,astefn
+	SC	.CLEF		; clear event flag (before accessing queue!)
+
+	;di
+	call	QCHECK		; check input queue
+	or	a		; buffer empty?
+	jr	z,gc1		; try console input if yes
+	call	QGETC		; else get byte from buffer
+	;ei
+	jr	gc_ret		; and return
+
+gc1:	ld	hl,astflg	; note ints still disabled
+	bit	0,(hl)		; timeout?
+	res	0,(hl)
+	;ei
+	jr	z,gc2
+
+	call	UPDST
+	call	TTFLSH
+	jr	gc3
+
+gc2:	ld	bc,0
+	ld	e,0
+	SC	.CMKT		; cancel any pending mark time events
+
+	ld	a,(tcksec)
+	rrca
+	rrca
+	and	3Fh		; 0.25s
+	ld	l,a
+	ld	h,0
+	ld	d,1		; units = ticks
+	ld	e,0		; no EFN
+	ld	bc,tmast	; AST routine address
+	SC	.MRKT
+
+gc3:	ld	e,astefn
+	SC	.WTSE		; wait for character or timeout
+	jr	gc0		; loop back to get char
+
+gc_ret:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Read file, HL = starting address, BC = length.
+
+READF:	push	bc
+	push	hl
+	ld	de,(srcfdb+F.DEV)
+	ld	a,(srcfdb+F.UNIT)
+	ld	c,a
+	ld	b,lun
+	SC	.ALUN
+	jp	c,rderr1
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,srcfdb
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO		; open file
+	jp	c,rderr1
+	ld	a,(iosb)
+	or	a
+	jp	nz,rderr1
+	ld	hl,qio2
+	SC	.QIO		; read attrib
+	jr	c,rderr
+	ld	a,(iosb)
+	or	a
+	jr	nz,rderr
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(srcfdb+F.ATTR),a
+	ld	hl,IO.RVB
+	ld	(qio3+Q.FUNC),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK),hl	; clear block number
+	ld	(qio3+Q.BLK+2),hl
+	ld	(qio3+Q.OFS),hl	; clear block offset
+	ld	hl,128
+	ld	(qio3+Q.LEN),hl
+	ld	hl,qio3
+	SC	.QIO		; read partial block
+	jr	c,rderr
+	ld	a,(iosb)
+	or	a
+	jr	nz,rderr
+	ld	bc,(iosb+2)
+	ld	a,b
+	or	c
+	jr	z,rderr
+	jr	rdf2
+rdf1:	call	nxtrec
+	ld	hl,qio3
+	SC	.QIO		; read next partial block
+	jr	c,rderr
+	ld	a,(iosb)
+	or	a
+	jr	nz,reof
+	ld	bc,(iosb+2)
+	ld	a,b
+	or	c
+	jr	z,reof
+rdf2:	call	CHKINP
+	pop	hl		; pop load address
+	ld	de,iobuf
+	ld	b,c		; read length in B
+rdf3:	ld	a,(de)
+	and	7Fh
+	cp	LF		; end of line?
+	jr	z,reol
+	inc	hl
+	ld	(hl),a
+	ex	(sp),hl		; HL = BC on stack
+	dec	hl
+	ld	a,h
+	or	l
+	ex	(sp),hl
+	jr	z,rovfl
+reol:	inc	de
+	djnz	rdf3
+	push	hl		; push new load address
+	jr	rdf1
+rderr:	call	close
+rderr1:	pop	hl
+	pop	bc
+	or	1
+	scf
+	ret
+reof:	call	close
+	pop	hl		; return last address in HL
+	pop	bc
+	or	1
+	ret
+rovfl:	push	hl
+	call	close
+	pop	hl
+	pop	bc
+	xor	a
+	ret
+
+close:	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+nxtrec:	ld	hl,(qio3+Q.OFS)
+	ld	de,128
+	add	hl,de
+	ld	(qio3+Q.OFS),hl
+	ld	a,h
+	cp	2
+	ret	c
+	ld	hl,0
+	ld	(qio3+Q.OFS),hl
+	ld	hl,(qio3+Q.BLK)
+	inc	hl
+	ld	(qio3+Q.BLK),hl
+	ret
+
+; Write to file, HL = starting address, BC = length
+
+WRITEF:	push	hl
+	add	hl,bc
+	ld	(hl),EOF
+	ld	a,(srcfdb+F.ATTR)
+	and	NOT FN.VER
+	ld	(srcfdb+F.ATTR),a
+	xor	a		; force new version
+	ld	(srcfdb+F.VER),a
+	ld	(srcfdb+F.VER+1),a
+	ld	de,(srcfdb+F.DEV)
+	ld	a,(srcfdb+F.UNIT)
+	ld	c,a
+	ld	b,lun
+	SC	.ALUN
+	jp	c,wrerr1
+	ld	hl,IO.CRE	; non-contiguous
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,srcfdb
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO		; create file
+	jp	c,wrerr1	; I/O error
+	ld	a,(iosb)
+	or	a
+	scf
+	jr	nz,wrerr1
+	ld	hl,qio2
+	SC	.QIO		; read attrib
+	jr	c,wrerr2
+	ld	a,(iosb)
+	or	a
+	jr	nz,wrerr2
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(srcfdb+F.ATTR),a
+	ld	hl,IO.WVB
+	ld	(qio3+Q.FUNC),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK),hl	; clear block number
+	ld	(qio3+Q.BLK+2),hl
+	ld	(qio3+Q.OFS),hl	; clear block offset
+	pop	hl
+	ld	de,iobuf
+	ld	b,128
+wrf1:	ld	a,(hl)
+	call	wrbyte
+	ld	a,(hl)
+	cp	CR		; CR?
+	jr	nz,wrf2
+	ld	a,LF		; add a LF
+	call	wrbyte
+	xor	a
+wrf2:	inc	hl
+	cp	EOF		; end of file?
+	jr	nz,wrf1
+	call	close		; close file
+	ret	nc
+wrerr:	ld	a,3		; I/O error
+	ld	(ERRNUM),a
+	ret
+
+wrerr2:	call	close
+wrerr1:	pop	hl
+	jr	wrerr
+
+wrbyte:	cp	EOF		; end of file?
+	jr	z,wrrec		; flush record and return if yes
+	ld	(de),a		; save byte in buffer
+	inc	de
+	dec	b		; end of record?
+	jr	z,wrrec		; save record if yes
+	or	a
+	ret			; else return char with CY clear
+wrrec:	push	hl
+	ld	a,128
+	sub	b
+	ld	l,a
+	ld	h,0
+	ld	(qio3+Q.LEN),hl
+	ld	hl,qio3
+	SC	.QIO		; write partial block
+	jr	c,wre1
+	ld	a,(iosb)
+	or	a
+	jr	nz,wre1
+	call	nxtrec		; prepare to write next record
+	call	CHKINP
+	pop	hl
+	ld	de,iobuf	; reset buffer pointer
+	ld	b,128		; and byte counter
+	ret			; success return
+wre1:	pop	hl
+	pop	de		; on error, discard return address
+	call	close		; close file
+	jr	wrerr		; and jump to error
+
+; Display filename
+
+PRNTFN:	call	CHKFIL
+	jr	nz,pfn1
+	call	PRINTX
+	db	'[Unnamed]',0
+	ret
+pfn1:	push	hl
+	push	bc
+	ld	hl,srcfdb+F.NAME
+	ld	b,9
+	call	pname		; output name
+	ld	a,'.'
+	call	PUTCHR
+	ld	b,3
+	call	pname		; output extension
+	ld	a,';'
+	call	PUTCHR
+	ld	hl,(srcfdb+F.VER)
+	xor	a
+	call	HLDEC		; output version number
+	pop	bc
+	pop	hl
+	ret
+
+pname:	ld	a,(hl)
+	cp	' '
+	call	nz,PUTCHR
+	inc	hl
+	djnz	pname
+	ret
+
+; Check if a filename has been specified
+
+CHKFIL:	ld	a,(srcfdb+F.ATTR)
+	or	a		; Z if no file has been specified
+	ret
+
+; Save current FCB
+
+SAVFCB:	ld	hl,srcfdb
+	ld	de,savfdb
+	ld	bc,FINFSZ
+	ldir
+	ret
+
+; Restore current FCB
+
+RESFCB:	ld	hl,savfdb
+	ld	de,srcfdb
+	ld	bc,FINFSZ
+	ldir
+	ret
+
+; Set file name in current FCB
+
+SETFN:	push	ix
+	ld	ix,srcfdb
+	call	PFN
+	pop	ix
+	ret
+
+; Clear current file name
+
+CLRFN:	xor	a
+	ld	(srcfdb+F.ATTR),a
+	ret
+
+; Change current device and directory
+
+CHGDRV:	call	PRINTX
+	db	'Current device is ',0
+	ld	hl,(curdev)
+	ld	a,l
+	call	putchr
+	ld	a,h
+	call	putchr
+	ld	a,(curdev+2)
+	call	adec
+	call	PRINTX
+	db	':, change it to: ',0
+sdsk1:	ld	hl,TMPBUF
+	ld	e,20
+	call	GETLINE
+	ld	hl,TMPBUF
+	ld	ix,dirfdb
+	call	PFN
+	jp	c,sdsk2
+	ld	a,(ix+F.ATTR)
+	ld	c,a
+	and	FN.DEV
+	jr	z,sdsk3
+	ld	l,(ix+F.DEV)
+	ld	h,(ix+F.DEV+1)
+	ld	(curdev),hl
+	ld	a,(ix+F.UNIT)
+	ld	(curdev+2),a
+sdsk3:	ld	a,c
+	and	FN.DIR
+	ret	z
+	ld	hl,dirfdb+F.DIR
+	ld	c,SD.TSK
+	SC	.SDIR
+	ret	nc
+sdsk2:	ld	a,1
+	ld	(errnum),a
+	jp	CHKERR
+
+; Show current directory
+
+fpln	equ	3		; files per line
+
+SHDIR:	call	PRINTX
+	db	CR
+	db	TAB,'Disk directory for ',0
+	ld	hl,curdir
+	ld	c,GD.TSK
+	SC	.GDIR		; get current directory
+	ld	hl,curdev
+	ld	de,TMPBUF	; prepare directory name string
+	ld	bc,2		; store device name
+	ldir
+	ld	a,(hl)
+	inc	hl
+	ex	de,hl
+	call	CVTBD		; store unit number
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),'['
+	inc	hl
+	ld	de,curdir
+	ld	b,9
+dir0:	ld	a,(de)
+	or	a
+	jr	z,dir1
+	cp	' '
+	jr	z,dir1
+	ld	(hl),a		; store directory name
+	inc	hl
+	inc	de
+	djnz	dir0
+dir1:	ld	(hl),']'
+	inc	hl
+	ld	(hl),0
+	ld	hl,TMPBUF
+	call	dpstr		; output current device and directory name
+	call	PRINTX
+	db	CR,0
+	ld	hl,TMPBUF
+	ld	ix,dirfdb
+	call	PFN		; convert to FNB
+	jp	c,dirend
+	ld	de,(dirfdb+F.DEV)
+	ld	a,(dirfdb+F.UNIT)
+	ld	c,a
+	ld	b,lun
+	SC	.ALUN		; assign LUN
+	jp	c,dirend
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,dirfdb
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO		; open directory
+	jp	c,dirend
+	ld	a,(iosb)
+	or	a
+	jp	nz,dirend
+	ld	hl,IO.RVB
+	ld	(qio3+Q.FUNC),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK),hl	; clear block number
+	ld	(qio3+Q.BLK+2),hl
+	ld	(qio3+Q.OFS),hl	; clear block offset
+	ld	hl,128
+	ld	(qio3+Q.LEN),hl
+	ld	a,fpln-1
+	ld	(dircnt),a	; clear files-per-line count
+dir2:	ld	hl,qio3
+	SC	.QIO		; read partial block
+	jp	c,dircls
+	ld	a,(iosb)
+	or	a
+	jr	nz,dircls
+	ld	bc,(iosb+2)
+	ld	a,b
+	or	c
+	jr	z,dircls	; dir EOF
+	ld	hl,iobuf
+dir21:	push	hl
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; unused entry?
+	jr	z,dir7		; skip it then
+	inc	hl
+	ld	a,(dircnt)
+	inc	a
+	ld	(dircnt),a
+	cp	fpln		; max files per row
+	jr	nz,dir3
+	call	PRINTX
+	db	CR,0
+	xor	a
+	ld	(dircnt),a
+	ld	a,(termh)
+	dec	a
+	ld	b,a
+	ld	a,(cur_y)
+	cp	b		; bottom of screen reached?
+	jr	nz,dir4
+	push	hl		; pause if yes
+	call	waitk		; waitk will reset cur_y to zero
+	pop	hl
+	jr	dir4
+dir3:	call	PRINTX		; display separator
+	db	' | ',0
+dir4:	ld	b,9+3
+dir5:	ld	a,(hl)		; display file name and extension
+	and	7Fh
+	call	putchr
+	inc	hl
+	dec	b
+	jr	z,dir6
+	ld	a,b
+	cp	3
+	jr	nz,dir5
+	ld	a,'.'
+	call	putchr
+	jr	dir5
+dir6:	ld	a,';'
+	call	putchr
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	HLDEC		; display version number
+dir7:	pop	hl
+	ld	bc,16
+	add	hl,bc		; point to next entry
+	ex	de,hl
+	ld	hl,(iosb+2)
+	or	a
+	sbc	hl,bc		; all entries processed?
+	ld	(iosb+2),hl
+	ex	de,hl
+	jr	z,dir71
+	jp	nc,dir21	; loop if not
+dir71:	call	nxtrec
+	jp	dir2		; else read next partial block
+dircls:	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close directory
+dirend:	call	PRINTX		; wait for a key and exit
+	db	CR
+	db	CR,0
+	ret
+
+; Get top of available memory
+
+GETTOP:	push	de
+	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	ld	hl,(gtkbuf+GT.END)
+	pop	de
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+gtkbuf:	ds	GTKSZ
+tcksec:	ds	2
+astflg:	ds	1
+
+srcfdb:	ds	FINFSZ
+savfdb:	ds	FINFSZ
+dirfdb:	ds	FINFSZ
+
+qio1:	QIOW$	IO.ACC,lun,9,iosb,,<srcfdb>
+qio2:	QIOW$	IO.RAT,lun,9,iosb,,<srcfdb,FINFSZ>
+qio3:	QIOW$	IO.RVB,lun,9,iosb,,<iobuf,128,0,0,0>
+qio4:	QIOW$	SF.SMC,5,9,iosb,,<ttchr,2>
+ttchr:	db	TC.BIN,1
+iosb:	ds	4
+iobuf:	ds	128
+
+dircnt:	ds	1
+
+curdev:	db	'SY',0		; current device
+curdir:	ds	9		; current directory
+
+	ds	128		; stack space
+stack	equ	$		; top of stack
+tstack	equ	$-2		; trap stack is a word lower
+
+	end

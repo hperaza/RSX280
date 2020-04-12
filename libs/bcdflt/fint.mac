@@ -1,0 +1,26 @@
+	.Z80
+
+	public	FINT
+
+	extrn	ISINT,ZFR0,FTRUNC
+	extrn	FR0
+
+; Obtain the integer part of a floating point number.
+; Note that this is not the same as FPI.
+
+	cseg
+
+FINT:	ld	hl,FR0
+	call	ISINT		; is result integer?
+	ret	nc		; return with no error if yes
+	ld	a,(FR0)		; get exponent of result
+	and	7Fh		; kill sign bit
+	sub	40h		; subtract bias
+	jp	c,ZFR0		; just clear number if < 1.0 (avoids -0.0)
+	inc	a
+	cp	6
+	ret	nc		; return if number >= 1E+10
+	ld	hl,FR0
+	jp	FTRUNC		; remove fractionary part
+
+	end

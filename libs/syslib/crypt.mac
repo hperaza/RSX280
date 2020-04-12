@@ -1,0 +1,198 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  TEA-based crypt routine.
+
+	.Z80
+
+	public	CRYPT
+
+	extrn	CPY32M,ADD32M,XOR32M,SHL32M,SHR32M
+
+	cseg
+
+; @HL = key, *DE = salt, returns @HL = 64-bit (8 bytes) hash
+
+CRYPT:	push	hl		; save pointer to key
+	push	de		; save pointer to salt
+
+	ld	hl,sum
+	ld	e,l
+	ld	d,h
+	ld	(hl),0
+	inc	de
+	ld	bc,29-1
+	ldir			; sum = v[0..1] = k[0..3] = 0
+
+	pop	hl		; get pointer to salt
+	push	hl
+	ld	de,k0		; k[0] == rkey[0]
+	ld	a,(hl)
+	ld	(de),a		; rkey[0] = salt[0]
+	inc	hl
+	inc	de
+	ld	a,(hl)
+	ld	(de),a		; rkey[1] = salt[1]
+	inc	de
+
+	pop	hl		; restore pointer to key,
+	ex	(sp),hl		;  keep pointer to salt on stack
+	ld	b,14		; rkey[2..15]
+
+m1:	ld	a,(hl)
+	or	a		; end of key string?
+	jr	z,m2		; exit loop if yes
+
+	ld	a,(de)
+	rlca
+	rlca
+	rlca
+	rlca			; (rkey[j] << 4) + (rkey[j] >> 4)
+	add	a,(hl)		;  + key[i]
+	ld	(de),a
+
+	inc	hl
+	inc	de
+	djnz	m1
+
+	ld	b,16		; wrap around rkey index
+	ld	de,k0		; k[0] == rkey[0]
+	jr	m1
+
+m2:	; apply cycles
+
+	ld	b,64		; number of cycles = 64 (2 rounds/cycle)
+
+m3:	push	bc
+
+	ld	de,delta
+	ld	hl,sum
+	call	ADD32M		; sum += delta
+
+	; v[0] += ((v[1] << 4) + k[0]) ^ (v[1] + sum) ^ ((v[1] >> 5) + k[1])
+
+	ld	de,v1
+	ld	hl,temp1
+	call	CPY32M
+	ld	hl,temp1
+	ld	b,4
+	call	SHL32M
+	ld	de,k0
+	ld	hl,temp1
+	call	ADD32M		; temp1 = (v[1] << 4) + k[0]
+
+	ld	de,v1
+	ld	hl,temp2
+	call	CPY32M
+	ld	de,sum
+	ld	hl,temp2
+	call	ADD32M		; temp2 = v[1] + sum
+
+	ld	de,temp2
+	ld	hl,temp1
+	call	XOR32M		; temp1 ^= temp2
+
+	ld	de,v1
+	ld	hl,temp2
+	call	CPY32M
+	ld	hl,temp2
+	ld	b,5
+	call	SHR32M
+	ld	de,k1
+	ld	hl,temp2
+	call	ADD32M		; temp2 = (v[1] >> 5) + k[1]
+
+	ld	de,temp2
+	ld	hl,temp1
+	call	XOR32M		; temp1 ^= temp2
+
+	ld	de,temp1
+	ld	hl,v0
+	call	ADD32M		; v[0] += temp1
+
+	; v[1] += ((v[0] << 4) + k[2]) ^ (v[0] + sum) ^ ((v[0] >> 5) + k[3])
+
+	ld	de,v0
+	ld	hl,temp1
+	call	CPY32M
+	ld	hl,temp1
+	ld	b,4
+	call	SHL32M
+	ld	de,k2
+	ld	hl,temp1
+	call	ADD32M		; temp1 = (v[0] << 4) + k[2]
+
+	ld	de,v0
+	ld	hl,temp2
+	call	CPY32M
+	ld	de,sum
+	ld	hl,temp2
+	call	ADD32M		; temp2 = v[0] + sum
+
+	ld	de,temp2
+	ld	hl,temp1
+	call	XOR32M		; temp1 ^= temp2
+
+	ld	de,v0
+	ld	hl,temp2
+	call	CPY32M
+	ld	hl,temp2
+	ld	b,5
+	call	SHR32M
+	ld	de,k3
+	ld	hl,temp2
+	call	ADD32M		; temp2 = (v[0] >> 5) + k[3]
+
+	ld	de,temp2
+	ld	hl,temp1
+	call	XOR32M		; temp1 ^= temp2
+
+	ld	de,temp1
+	ld	hl,v1
+	call	ADD32M		; v[1] += temp1
+
+	pop	bc
+	dec	b
+	jp	nz,m3
+
+	ld	hl,v0
+	ret
+
+delta:	db	0B9h,079h,037h,09Eh	; golden number derivative
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+sum:	ds	4
+
+v0:	ds	4	; v[0..1] data to be encrypted, 64-bit result
+v1:	ds	4	;  hash will be stored here
+
+k0:	ds	4	; k[0..3] key == rkey[0..15]
+k1:	ds	4
+k2:	ds	4
+k3:	ds	4
+
+temp1:	ds	4
+temp2:	ds	4
+
+	END

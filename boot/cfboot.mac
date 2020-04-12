@@ -1,0 +1,385 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 2004-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DU: CF hard disk secondary boot loader for the Z280RC board        ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+
+	public	HDBOOT,HDBTSZ
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+system	equ	100h		; system entry point
+cmdline	equ	80h		; system command line, to pass boot device
+
+; CF registers
+
+CFpage	equ	0		; CF I/O page
+CFdata	equ	0C0h		; data register
+CFerr	equ	0C2h		; error register
+CFscnt	equ	0C5h		; sector count
+CFlba1	equ	0C7h		; LBA  0..7
+CFlba2	equ	0C9h		; LBA  8..15
+CFlba3	equ	0CBh		; LBA 16..23
+CFlba4	equ	0CDh		; LBA 24..27
+CFcmd	equ	0CFh		; command/status
+CFboot	equ	0A0h		; boot flip/flop
+
+; Commands for IDE hard disk drives:
+
+CmdRd	equ	20h		; Read Sector
+CmdWr	equ	30h		; Write Sector
+CmdInit	equ	91h		; Initialize Drive Params
+
+;-----------------------------------------------------------------------
+
+; The secondary boot sector is loaded and executed at 0000H.
+;
+; The incoming machine state is:
+;	IX - Points to boot partition parameters:
+;		dw  start_cylinder
+;		dw  size
+;		db  type
+;		db  active_flags
+;	C  - Boot partition number
+;	SP - Valid stack frame
+;	MMU disabled.
+
+	cseg
+
+HDBOOT	equ	$
+
+	.phase	0000h
+
+boot:	jp	load
+
+	dw	ldr - boot + hddat
+
+load:	ld	hl,ldr+hddat	; copy parameters from primary loader
+	ld	a,(ix+0)	; partition start
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+1)
+	ld	(hl),a
+	ld	a,c		; partition number
+	ld	(ldr+datofs),a
+
+	iopage	MMUP
+
+ if 0
+	ld	a,16		; use system page 0 to load system
+	out	(PDR),a
+	ld	c,DSP
+	ld	hl,000Ah	; physical addr 0, valid, writable, cacheable
+	outw	(c),hl
+
+	ld	a,31		; use system page 15 for loader
+	out	(PDR),a
+	ld	c,DSP
+	ld	hl,080Ah
+	outw	(c),hl		; map top page to 80000h (512K max sys img sz)
+ else
+	ld	a,16
+	out	(PDR),a
+	ld	c,BMP
+	ld	hl,000Ah	; physical addr 0, valid, writable, cacheable
+	ld	b,15
+	ld	de,0010h
+m1:	outw	(c),hl		; initialize MMU system pages 0..14
+	add	hl,de
+	djnz	m1
+	ld	hl,080Ah	; map top page to 80000h (after first 512K)
+	outw	(c),hl
+
+	ld	a,16		; use system page 0 to load system
+	out	(PDR),a
+ endif
+
+	ld	c,MMCR
+	ld	hl,3BFFh
+	outw	(c),hl		; enable system address translate
+
+	ld	hl,ldr
+	ld	de,loader
+	ld	bc,size
+	ldir			; now copy the loader to high memory
+	jp	loader		; and continue from there
+
+ldr:
+	.dephase
+	.phase	0F000h
+
+loader:	ld	sp,0
+	ld	hl,blkbuf
+	ld	de,1
+	ld	c,0
+	call	ldblk		; load volume id
+
+	ld	hl,blkbuf
+	ld	de,vid
+	ld	b,6
+chkid:	ld	a,(de)		; check signature
+	cp	(hl)
+	jp	nz,badv
+	inc	hl
+	inc	de
+	djnz	chkid
+
+	ld	hl,(blkbuf+8)
+	ld	a,h
+	cp	5		; filesystem level must be 5
+	jp	nz,badv
+
+	ld	de,(blkbuf+72)	; get LBN of system image file
+	ld	a,d
+	or	e
+	jp	z,noboot
+	exx
+	ld	hl,(blkbuf+76)	; get size of system image file in blocks
+	ld	a,h
+	or	l
+	exx
+	jp	z,noboot
+
+;;	iopage	MMUP
+
+loopp:	ld	b,8		; blocks per page
+	ld	hl,0000h	; start of page 0
+loop:	ld	c,0	;!!fix!!
+	call	ldblk		; load block
+	inc	de		; next block
+	exx
+	dec	hl		; decrement block count
+	ld	a,h		; exit loop if reached zero
+	or	l
+	exx
+	jr	z,gosys
+	djnz	loop		; continue until page is full
+	push	hl
+	push	de
+	iopage	MMUP
+	ld	c,DSP
+	inw	hl,(c)
+	ld	de,0010h
+	add	hl,de		; next physical page
+	outw	(c),hl
+	pop	de
+	pop	hl
+	jr	loopp
+
+gosys:	iopage	MMUP
+
+; PDR still = 16 (logical system page 0)
+; use BMP to set PDRs 16..30 (we're executing on 31) to phys page 0..14
+; (start of system just loaded)
+
+	ld	b,15
+	ld	c,BMP
+	ld	hl,000Ah	; phys page 0, valid, writable, cacheable
+	ld	de,0010h
+x2:	outw	(c),hl		; map system, but keep loader mapped in
+	add	hl,de		;  (we're not done yet)
+	djnz	x2
+	ld	hl,cmdline+1
+	ld	(hl),'D'
+	inc	hl
+	ld	(hl),'U'
+	inc	hl
+	ld	a,(bdev)
+	ld	(hl),a
+	inc	hl
+	ld	(hl),0
+	jp	system		; start system
+
+; Load absolute block number in DE to address in HL
+
+ldblk:	push	bc
+	push	de
+	push	hl
+	call	hdread		; read a block from hard disk
+	jr	c,lderr
+	ld	hl,blkbuf
+	pop	hl		; restore load address
+	ld	de,512
+	add	hl,de		; advance pointer
+	pop	de
+	pop	bc
+	ret
+
+; Error message routines. Note relative addressing, as the routines can
+; be called from both low and high memory.
+
+nomem:	ld	de,nmmsg
+	jr	error
+
+nmmsg:	db	'Not enough memory',CR,LF,0
+
+lderr:	ld	de,errmsg
+	jr	error
+
+errmsg:	db	'Load error',CR,LF,0
+
+noboot:	ld	de,nbmsg
+	jr	error
+
+nbmsg:	db	'No system',CR,LF,0
+
+badv:	ld	de,badvol
+error:	ld	hl,prefx
+	call	StrOut
+	ex	de,hl
+	call	StrOut
+	di
+	halt
+
+; Output string via UART
+
+StrOut:	push	hl
+	iopage	UARTP
+	pop	hl
+s1:	in	a,(TCS)
+	rra
+	jr	nc,s1
+	ld	a,(hl)
+	or	a
+	ret	z
+	out	(TDR),a
+	inc	hl
+	jr	s1
+
+prefx:	db	CR,LF,'BOOT -- ',0
+badvol:	db	'Invalid volume type',CR,LF,0
+
+vid:	db	'VOL180'
+
+;-----------------------------------------------------------------------
+
+; CF I/O routines
+
+; Read the specified Block.
+; Enter: CDE = block number,
+;        HL  = load address.
+; Exit : CY set on errors.
+
+hdread:	push	hl
+	push	bc
+	iopage	CFpage
+	ld	bc,0		; Wait up to several seconds for drive ready
+WtLp:	in	a,(CFcmd)	; Get the Busy Bit
+	rla			; Is it BSY?
+	jr	nc,HdOp0	; ..jump if Not
+	push	bc		; Else Pause: Save overall Counter
+	ld	b,0		;  Set max loop delay
+hdel0:	djnz	hdel0		; ..pause..
+	pop	bc		;    restore regs
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,WtLp		;..loop if more time remains
+	pop	bc
+	pop	hl
+	scf
+	ret			; Else Return Timeout Error
+HdOp0:	pop	bc
+	ld	hl,hdoffs	; Fetch Track offset for this partition
+	ld	a,d
+	add	a,(hl)		; Add desired relative block #
+	ld	d,a
+	inc	hl
+	ld	a,c
+	adc	a,(hl)		;  to 24-bit resulting block Number
+	ld	c,a
+	ld	a,40h
+	out	(CFlba4),a	; set LBA mode
+	ld	a,e
+	out	(CFlba1),a	; set block number
+	ld	a,d
+	out	(CFlba2),a
+	ld	a,c
+	out	(CFlba3),a
+	pop	hl		; Restore Load Address
+	ld	a,0AAh
+	out	(CFerr),a	; Activate Retries w/pattern in GIDE Err Reg
+	ld	a,1		; One Block to Read
+	out	(CFsCnt),a	;   pass to GIDE
+	ld	b,5		; Give it a few tries
+HDOps0:	push	bc		; Save Count
+	call	GoGIDE		; Try Read Operation
+	pop	bc
+	ret	z		; ..quit if Ok
+	djnz	HDOps0		; Loop while tries remain
+	scf			; Else return Error
+	ret
+
+; Read a Sector from the Disk, or Disk Parameters to the Buffer
+;   The Target is (hopefully) still ready from initial test
+;   HL = load buffer
+
+GoGIDE:	ld	bc,CFdata	; Pre-load Data Reg Adr in C, 0 in B
+	ld	a,CmdRd
+	out	(CFcmd),a	; Start Operation
+	call	Wt_Rdy		; Wait for drive to become Ready
+HRead0:	in	a,(CFcmd)	; Get Status
+	bit	3,a		; Ready?
+	jr	z,HRead0	; ..loop if Not
+	inirw			; Read 512 bytes
+HdFini:	call	Wt_Rdy		; Wait for drive to become Ready
+HdFnQ:	in	a,(CFcmd)	; Restore byte
+	and	10001001B	; Busy, DRQ, or Error?
+	ret	z		; ..exit if Ok
+	scf			; Else Set Error Status
+	ret
+
+; Wait for Drive to become Ready (No Timeout)
+
+Wt_Rdy:	in	a,(CFcmd)	; Get Drive Status
+	rla			; Ready?
+	jr	c,Wt_Rdy	; ..loop if Not
+	ret
+
+;-----------------------------------------------------------------------
+
+; RAM variables:
+
+hddat	equ	$ - loader
+
+hdoffs:	dw	2000		; partition offset in 128K tracks
+
+datofs	equ	$ - loader
+
+bdev:	db	0
+
+size	equ	$ - loader
+
+blkbuf	equ	$
+
+	.dephase
+
+HDBTSZ	equ	$ - HDBOOT
+
+	end

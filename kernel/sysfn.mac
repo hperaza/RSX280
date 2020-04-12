@@ -1,0 +1,1283 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('SYSFN')
+	TITLE	'RSX280 System Function Call interface'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	System Function Call interface routines.                       ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	SYSFN.INC
+	include	SYSCONF.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	QCB.INC
+	include	LCB.INC
+	include	QIO.INC
+	include	AST.INC
+	include	TKN.INC
+	include	ERRORS.INC
+
+	public	SYSFN		; system call entry point
+
+	extrn	$ALLOC,$FREE,$MCOPY,$UBANK,$SBANK,NEWOCB,LNKOCB,$UPUTB
+	extrn	$CTCB,$CPCB,GETDT,SETDT,QIO,SEND,RECV,$FNDEV,$PLIST
+	extrn	GTARGS,SVRSLT,$ALUN,WTDAT,MRKT,CMKT,$HOSTN,$FNPAR
+	extrn	ASTDCL,ASTCTL,ASTEXT,TRQST,TKILL,TSTOP,TRESUM,ALTPRI
+	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
+	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
+	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; System call dispatcher.
+
+; Input:
+;   A = function code
+;   B,C,D,E,H,L = function arguments as required.
+;   IX and IY already saved by task manager (see SYSTRAP.INC)
+
+SYSFN:	ld	hl,SVRSLT
+	push	hl		; return via SVRSLT
+	call	GTARGS
+	cp	MAXFN+1
+	jr	nc,fnerr
+	push	hl		; save HL
+	ld	hl,fntab
+	add	a,a		; *2
+	add	hl,a
+	ldw	hl,(hl)		; function address in HL
+	ex	(sp),hl		; push function address, restore HL
+	ret			; exec function
+
+fnerr:	ld	a,E.BADOP
+	scf
+	ret
+
+fntab:	dw	EXIT		; exit task
+	dw	EXIF		; exit if event flag not set
+	dw	EMITST		; emit status
+	dw	QIO		; queue I/O packet
+	dw	UCONN		; connect to task
+	dw	UGTCMD		; get command line
+	dw	USEND		; send data
+	dw	URECV		; receive data
+	dw	WTDAT		; wait for data
+	dw	ASTDCL		; declare AST
+	dw	ASTCTL		; enable/disable ASTs
+	dw	ASTEXT		; exit AST routine
+	dw	ASGLUN		; assign device to LUN
+	dw	GETLUN		; get LUN info
+	dw	GETCD		; get current directory
+	dw	SETCD		; set current directory
+	dw	GDT		; get date and time
+	dw	SDT		; set date and time
+	dw	URQST		; request task
+	dw	RPOI		; request and pass offspring information
+	dw	UABORT		; abort task
+	dw	USTOP		; stop task
+	dw	URESUM		; resume task
+	dw	UCLRFL		; clear flag
+	dw	USETFL		; set flag
+	dw	UCHKFL		; check flag
+	dw	UFLGWT		; wait for flag
+	dw	UFLGST		; stop for flag
+	dw	UFWTLO		; wait for logical OR of flags
+	dw	UFSTLO		; stop for logical OR of flags
+	dw	SRUN		; run task at specified time
+	dw	CSRQ		; cancel scheduled task request
+	dw	MRKT		; mark time
+	dw	CMKT		; cancel mark time
+	dw	UEXTSK		; extend task
+	dw	UCHPRI		; change task priority
+	dw	TSUP		; enter supervisor mode
+	dw	GTTSK		; get task info
+	dw	GTPAR		; get partition info
+	dw	GIN		; get general info
+
+;-----------------------------------------------------------------------
+
+; Exit task if specified event flag is not set
+
+; Input:
+;   HL = exit code
+;   E  = event flag number
+
+EXIF:	push	hl
+	ld	bc,($CTCB)
+	call	CHKFLG		; flag set?
+	pop	hl
+	ret	nz		; return to task if yes
+	jp	EXIT		; else exit task
+
+;-----------------------------------------------------------------------
+
+; Run task at specified time.
+
+; Input:
+;   HL = address of task descriptor in user space, followed by
+;        schedule interval and reschedule interval (both in ticks
+;        and of doubleword size)
+; Returns:  
+;   CY flag set on error
+
+SRUN:	ld	de,TMPTDB	; DE = destination
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; set source bank
+	ld	a,($SBANK)
+	ld	d,a		; set dest bank
+	exx
+	ld	bc,TDBSZ+4+4	; read task descriptor + dtime + rsi
+	call	$MCOPY		;  from user space
+	ld	hl,TMPTDB
+	jp	TSRUN		; schedule task
+
+;-----------------------------------------------------------------------
+
+; Cancel scheduled task.
+
+; Input:
+;   HL = address of task name in user space
+; Returns:  
+;   CY flag set on error
+
+CSRQ:	call	UFNTSK		; get task name, find TCB
+	ret	c
+	push	hl
+	pop	ix
+	jp	TCSRQ		; remove scheduled task requests
+
+; Read TDB from user space into TMPTDB.
+
+GETTDB:	ld	de,TMPTDB	; DE = destination
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; set source bank
+	ld	a,($SBANK)
+	ld	d,a		; set dest bank
+	exx
+	ld	bc,TDBSZ
+	call	$MCOPY		; read task descriptor from user space
+	ld	hl,TMPTDB
+	ret
+
+;-----------------------------------------------------------------------
+
+; Request task and optionally connect to it.
+
+; Input:
+;   HL = address of task descriptor in user space
+;   E  = flag number to set when offspring emits status (ignored if BC=0)
+;   BC = address of ESB in user space to receive status info (request and
+;        connect), or zero (request only)
+; Returns:
+;   CY flag set on error
+
+; TODO:
+; - use $CTCB console and session values if user did not specify a TDB
+; - allow E.TACT error if and only if TD.SDAT is valid
+; - make sure that ESB is within the requesting task limits.
+
+URQST:	push	bc
+	push	de
+	call	GETTDB		; get TDB from user space
+	push	hl
+	call	GETCMD
+	pop	hl
+	call	nc,TRQST	; request the task, return TCB in IX
+	pop	de
+	pop	bc
+	jr	c,rq2		; on error, return
+
+	bit	TA.CLI,(ix+T.ATTR) ; is the requested task a CLI?
+	jr	nz,rqcli	   ; jump if yes
+;;	bit	TA.ACP,(ix+T.ATTR) ; or an ACP?
+;;	jr	nz,rqcli	   ; jump if yes
+
+	ld	hl,(CMDPTR)
+	ldw	(ix+T.CMD),hl	; link command line block to TCB
+	push	ix
+	pop	hl		; get offspring TCB address into HL
+	ld	a,b
+	or	c		; request and connect?
+	jr	z,rq1		; branch if not
+	call	$CONN		; else connect to task
+	ret	c
+rq1:	ld	bc,(TMPTDB+TD.SDAT)
+	ld	a,b
+	or	c		; anything to send?
+	ret	z		; return if not
+	ld	de,(TMPTDB+TD.SLEN)
+	jp	USEND1		; else send data
+
+rq2:	push	af
+	ld	hl,(CMDPTR)
+	call	FRECMD		; free command line block
+	pop	af
+	ret
+
+rqcli:	ld	l,c
+	ld	h,b
+	ld	a,h		; request and connect?
+	or	l
+	jr	z,rq3		; branch if not
+	push	ix
+	call	NEWOCB		; else create OCB
+	ex	(sp),ix		; push OCB, pop TCB
+	pop	hl		; HL = OCB address
+	ret	c
+rq3:	push	hl
+	call	QCLI		; send command to CLI
+	pop	hl
+	ret	nc		; return on success
+	push	af
+	ld	de,OCBSZ
+	call	$FREE		; else free the OCB
+	pop	af
+	ret			; and return error code
+
+; Request task and pass offspring information.
+
+; Input:
+;   HL = address of task descriptor in user space
+; Returns:
+;   CY flag set on error
+
+RPOI:	call	GETTDB		; get TDB from user space
+	push	hl
+	call	GETCMD
+	pop	hl
+	call	nc,TRQST	; request the task
+	jr	c,rq2		; on error return
+
+	bit	TA.CLI,(ix+T.ATTR)
+	jr	nz,rpcli	; branch if task is a CLI
+;;	bit	TA.ACP,(ix+T.ATTR)
+;;	jr	nz,rpcli	; or an ACP
+
+	ld	hl,(CMDPTR)
+	ldw	(ix+T.CMD),hl	; link command line block to TCB
+	ld	iy,($CTCB)	; get TCB of caller into IY
+	ldw	bc,(iy+T.OCBL)	; unlink OCBs from parent
+	ldw	(ix+T.OCBL),bc	;  and link them to offspring
+	xor	a
+	ld	(iy+T.OCBL),a
+	ld	(iy+T.OCBL+1),a
+	push	ix
+	pop	hl		; get offspring TCB into HL
+	bit	TA.MCR,(iy+T.ATTR)
+	jr	z,rq1
+	set	TA.MCR,(ix+T.ATTR) ; propagate TA.MCR bit
+	jr	rq1		; return via common code
+
+rpcli:	ld	iy,($CTCB)	; get TCB of caller into IY
+	ldw	hl,(iy+T.OCBL)	; get OCB pointer into HL
+	xor	a
+	ld	(iy+T.OCBL),a	; unlink OCBs from parent
+	ld	(iy+T.OCBL+1),a
+	push	hl
+	call	QCLI		; send command to CLI
+	pop	hl
+	ret	nc		; return on success
+	ld	iy,($CTCB)
+	ldw	(iy+T.OCBL),hl	; else relink the OCBs back to parent task
+	ret			; and return error code
+
+; Send command to CLI. Called with HL = OCB, IX = offspring (CLI) TCB.
+
+QCLI:	push	hl		; push OCB address
+	ld	iy,($CTCB)
+	ld	bc,(TMPTDB+TD.TI)
+	ld	a,b		; TI: override?
+	or	c
+	jr	z,qc1		; branch if not
+	bit	TA.PRV,(iy+T.ATTR)
+	jr	z,qc1		; else task must be privileged
+	ld	e,c
+	ld	d,b
+	ld	a,(TMPTDB+TD.TI+2)
+	ld	c,a
+	push	iy
+	ex	(sp),ix
+	call	$FNDEV		; get UCB of the specified device
+	pop	ix
+	ld	c,l
+	ld	b,h
+	jr	nc,qc2		; use it if valid
+qc1:	ldw	bc,(iy+T.TI)	; else use TI: from the invoking task
+qc2:	push	bc
+	pop	iy		; get UCB address into IY
+	pop	bc		; pop OCB address
+	ld	hl,(CMDPTR)	; pop address of command buffer
+	ld	de,0
+	ld	a,h
+	or	l
+	jr	z,qc3
+	ld	e,(hl)
+	inc	hl
+qc3:	call	QMCR1##		; send command to the CLI
+	jp	rq2		; free command line block and return
+
+; Get command line from user space, returns HL = pointer to allocated block
+; in system pool.
+
+GETCMD:	ld	hl,0
+	ld	(CMDPTR),hl
+	ld	hl,(TMPTDB+TD.CMD)
+	ld	a,h		; user supplied a command line?
+	or	l
+	ret	z		; return if not
+	ex	de,hl
+	ld	bc,(TMPTDB+TD.CML)
+	ld	a,b		; else check length
+	or	a
+	ld	a,E.BADOP	; error if too long
+	scf
+	ret	nz
+	ld	a,b
+	or	c
+	ret	z		; don't bother if zero
+	push	de		; save pointer to command line in user space
+	push	bc		; save command length
+	inc	bc		; add one extra byte for lenght field
+	call	$ALLOC		; allocate command line block
+	pop	bc		; pop length
+	pop	de		; pop src
+	ret	c		; return if alloc failed
+	ld	(CMDPTR),hl
+	ld	(hl),c		; store command length
+	inc	hl
+	ex	de,hl		; HL = src, DE = dst, BC = len
+uget:	exx
+	ld	a,($UBANK)
+	ld	e,a		; E' = src bank
+	ld	a,($SBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	call	$MCOPY		; copy command line block
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Connect to a task.
+
+; Input:
+;   HL = pointer to task name in user space
+;   E  = flag number to set when offspring emits status
+;   BC = address of ESB in user space to receive status info
+; Returns:
+;   CY flag set on error (task not found)
+
+UCONN:	call	UFNTSK		; get name from user space and find task
+	ret	c
+	jp	$CONN		; connect to the task
+
+;-----------------------------------------------------------------------
+
+; Abort a task.
+
+; Input:
+;   HL = pointer to task name in user space (null for current task)
+; Returns:
+;   CY flag set on error
+
+UABORT:	ld	e,TK.CLI	; reason: abort via directive
+	ld	a,h
+	or	l
+	ld	bc,($CTCB)
+	jp	z,TKILL		; abort the current task
+	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TKILL		; abort the task
+
+;-----------------------------------------------------------------------
+
+; Stop a task.
+
+; Input:
+;   HL = pointer to task name in user space (null for current task)
+; Returns:
+;   CY flag set on error
+
+USTOP:	ld	a,h
+	or	l
+	ld	bc,($CTCB)
+	jp	z,TSTOP		; stop the current task
+	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TSTOP		; stop the task
+
+;-----------------------------------------------------------------------
+
+; Resume a task.
+
+; Input:
+;   HL = pointer to task name in user space (null for current task)
+; Returns:
+;   CY flag set on error
+
+URESUM:	ld	a,h
+	or	l
+	ld	bc,($CTCB)
+	jp	z,TRESUM	; resume the current task
+	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TRESUM		; resume the task
+
+;-----------------------------------------------------------------------
+
+; Change task priority.
+
+; Input:
+;   HL = pointer to task name in user space (null for current task)
+;   E  = new priority
+;   D  = which priority to set: 0 = running, 1 = installed
+; Returns:
+;   CY flag set on error
+
+UCHPRI:	ld	a,h
+	or	l
+	ld	bc,($CTCB)
+	jp	z,ALTPRI	; change the priority of the current task
+	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	ALTPRI		; change task priority
+
+;-----------------------------------------------------------------------
+
+ASGLUN:	ld	ix,($CTCB)
+	jp	$ALUN
+
+;-----------------------------------------------------------------------
+
+USETFL:	ld	bc,($CTCB)
+	jp	SETFLG
+
+;-----------------------------------------------------------------------
+
+UCLRFL:	ld	bc,($CTCB)
+	jp	CLRFLG
+
+;-----------------------------------------------------------------------
+
+UCHKFL:	ld	bc,($CTCB)
+	jp	CHKFLG
+
+;-----------------------------------------------------------------------
+
+UFLGWT:	ld	bc,($CTCB)
+	jp	FLWAIT
+
+UFWTLO:	ld	de,DTBUF
+	push	de
+	ld	bc,4
+	call	uget		; read wait mask from user space
+	pop	de
+	ld	bc,($CTCB)
+	jp	FLWTLO
+
+;-----------------------------------------------------------------------
+
+UFLGST:	ld	bc,($CTCB)
+	jp	FLSTOP
+
+UFSTLO:	ld	de,DTBUF
+	push	de
+	ld	bc,4
+	call	uget		; read wait mask from user space
+	pop	de
+	ld	bc,($CTCB)
+	jp	FLSTLO
+
+;-----------------------------------------------------------------------
+
+UEXTSK:	ld	ix,($CTCB)	; get task TCB into IX
+	jp	EXTTSK
+
+;-----------------------------------------------------------------------
+
+; Copy command line to a buffer in user space.
+
+; Input:
+;   HL = buffer address in user space
+;   E  = size of buffer (max 255 bytes)
+
+UGTCMD:	ld	ix,($CTCB)
+	push	hl		; save user buffer address
+	ldw	hl,(ix+T.CMD)
+	ld	bc,0
+	ldw	(ix+T.CMD),bc	; unlink the block
+	ld	a,h		; check pointer
+	or	l		; valid?
+	jr	z,nulcmd	; skip if not
+	ld	a,(hl)		; else get command length
+	cp	e		; compare with user buffer length
+	jr	c,gcm1		; jump if command is shorter
+	ld	a,e		; else truncate to user-specified size
+gcm1:	ld	c,a		; get string length into BC (note B=0)
+nulcmd:	ex	de,hl		; src in DE
+	pop	hl		; dst in HL
+	push	de		; save src buf address
+	ld	a,($UBANK)
+	ld	e,a
+	ld	a,c
+	call	$UPUTB		; save length (reg C) to user space, HL = dst
+	pop	de		; DE = src
+	push	de
+	inc	de		; advance src to point to command chars
+	inc	hl		; advance dst ptr over copied length byte
+	ex	de,hl		; HL = src, DE = dst, BC = len
+	exx
+	ld	a,($SBANK)
+	ld	e,a		; E' = src bank
+	ld	a,($UBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	call	$MCOPY		; store string in user space
+	pop	hl		; restore command line block address
+	call	FRECMD		; free the command line block
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get date and time
+
+; Input:
+;   HL = address of 8-byte buffer to receive date/time information
+
+GDT:	push	hl
+	ld	hl,DTBUF	; temporary buffer
+	push	hl
+	call	GETDT
+	pop	hl
+	pop	de
+	ld	bc,8
+	exx
+	ld	a,($SBANK)
+	ld	e,a		; src bank
+	ld	a,($UBANK)
+	ld	d,a		; dst bank
+	exx
+	call	$MCOPY
+	xor	a
+	ret
+
+; Set date and time
+
+; Input:
+;   HL = address of 8-byte buffer with date/time information
+
+; TODO: check privileges
+
+SDT:	ld	de,DTBUF
+	push	de
+	ld	bc,8
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank
+	ld	a,($SBANK)
+	ld	d,a		; dst bank
+	exx
+	call	$MCOPY
+	pop	hl
+	call	SETDT
+	ret
+
+;-----------------------------------------------------------------------
+
+; Switch task to/from supervisor mode.
+
+TSUP:	ld	a,c
+	or	a
+	jp	z,TCLRSV
+	jp	TSETSV
+
+;-----------------------------------------------------------------------
+
+; Get task info.
+
+; Input:
+;   HL = task name (null for current task)
+;   DE = dest buf
+
+GTTSK:	ld	a,h
+	or	l
+	jr	nz,tinf1
+	ld	hl,($CTCB)
+	jr	tinf2
+tinf1:	push	de
+	call	UFNTSK		; find task by name
+	pop	de		; HL = TCB address = src, DE = dst
+	ret	c		; return error if task not found
+tinf2:	push	de
+	ld	de,GTBUF
+	ld	bc,T.ATTR
+	add	hl,bc
+	ld	bc,1+2+1+1
+	ldir			; copy T.ATTR, T.ST, T.DPRI and T.PRI
+	inc	hl
+	ld	bc,6+6
+	ldir			; copy T.NAME and T.VID
+	ld	bc,T.TI-T.CMD
+	add	hl,bc
+	call	tdev		; copy T.TI name
+	call	tdev		; copy T.LDEV name
+	ld	bc,4+2
+	ldir			; copy T.SBLK and T.NBLK
+	call	tpar		; copy partition name
+	inc	hl
+	inc	hl
+	ld	bc,8
+	ldir			; copy T.STRT, T.DEND, T.END and T.EPT
+	pop	de
+	ld	hl,GTBUF
+	ld	bc,GTKSZ	; BC = size
+tinf3:	exx
+	ld	a,($SBANK)
+	ld	e,a		; E' = src bank
+	ld	a,($UBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	call	$MCOPY
+	xor	a
+	ret
+
+tdev:	ldw	bc,(hl)
+	inc	hl
+	inc	hl
+	push	hl
+	ld	hl,U.UNIT
+	add	hl,bc
+	ld	a,(hl)		; get unit number
+	push	af
+	ld	hl,U.DCB
+	add	hl,bc
+	ldw	hl,(hl)
+	ld	bc,D.NAME
+	add	hl,bc
+	ldi			; store device name
+	ldi
+	pop	af
+	ld	(de),a		; store unit number
+	inc	de
+	pop	hl
+	ret
+	
+tpar:	ldw	bc,(hl)
+	inc	hl
+	inc	hl
+	push	hl
+	ld	hl,P.MAIN
+	add	hl,bc
+	ldw	bc,(hl)
+	ld	hl,P.NAME
+	add	hl,bc
+	ld	bc,6
+	ldir			; copy partition name
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get partition info.
+
+; Input:
+;   HL = addr of partition name in user space (null for current)
+;   DE = dest buf
+
+GTPAR:	ld	a,h
+	or	l
+	jr	nz,pt1
+	ld	ix,($CPCB)
+	ldw	hl,(ix+P.MAIN)
+	jr	pt2
+pt1:	push	de
+	call	UGTNAM		; get partition name
+	ld	bc,DTBUF
+	call	$FNPAR		; find partition by name
+	pop	de
+	ret	c		; return error if not found
+pt2:	ld	bc,PCBSZ	; BC = size
+	jp	tinf3		; return via common code
+
+;-----------------------------------------------------------------------
+
+; Get system info.
+
+; Input:
+;   HL = address of dest buffer in user space
+;   C  = info code
+
+GIN:	ld	a,c
+	cp	I.VERS
+	jr	z,sver
+	cp	I.SMEM
+	jr	z,smem
+	cp	I.USCB
+	jr	z,uscb
+	cp	I.TSCB
+	jr	z,tscb
+	cp	I.HOST
+	jp	z,hstn
+	cp	I.TCKS
+	jp	z,tcks
+	cp	I.FEAT
+	jp	z,feat
+	ld	a,E.INV
+	scf
+	ret
+
+; I.VERS:
+;   returns 2-byte system version number (minor, major)
+
+sver:	ld	bc,(SYSVER)
+storew:	ld	a,($UBANK)
+	ld	e,a
+	di
+	call	$UPUTW		; store version number
+	ei
+	xor	a
+	ret
+
+; I.SMEM:
+;   returns 3 words:
+;     +0: total memory in kB
+;     +2: memory taken by system
+;     +4: available memory in kB
+
+; TODO:
+; - loop over all main partitions and compute the sum of avail space
+;   (right now computes the free space of the first system-controlled
+;   partition, which is usually GEN). The value should be subtracted
+;   from the total system memory (also assumes that the system has been
+;   assigned a partition)
+
+smem:	push	hl
+	call	MSIZE##
+	ld	c,l
+	ld	b,h
+	pop	hl
+	call	storew		; store total amount of memory
+	push	hl
+	ld	iy,$PLIST
+sm1:	ldw	hl,(iy+P.LNK)
+	ld	a,h
+	or	l
+	jr	z,sm2
+	push	hl
+	pop	iy
+	bit	PA.SYS,(iy+P.ATTR)
+	jr	z,sm1
+	call	MAVAIL##
+sm2:	add	hl,hl		; convert pages to kbytes (kb = pages * 4)
+	add	hl,hl
+	ex	(sp),hl
+	push	hl
+	ld	hl,SYSEND##
+	ld	de,1000h
+	add	hl,de		; account for common area
+	ld	de,1023
+	add	hl,de		; round up
+	ld	c,h
+	ld	b,0
+	srl	c
+	srl	c		; convert to kB
+	pop	hl
+	call	storew		; store amount of memory taken by system
+	pop	bc
+	call	storew		; store amount of memory availabe to tasks
+	xor	a
+	ret
+
+; I.TSCB: called with DE-B = device
+
+tscb:	ld	c,b		; device name now in DE-C
+	ld	ix,($CTCB)
+	push	hl
+	call	$FNDEV
+	pop	de		; DE = dst, HL = UCB address
+	ret	c
+	jr	gtscb		; continue via common code
+
+; I.USCB:
+;   returns login control block
+
+uscb:	ex	de,hl		; DE = dst
+	ld	ix,($CTCB)
+	ldw	hl,(ix+T.TI)	; HL = terminal UCB address
+gtscb:	ld	bc,U.LCB
+	add	hl,bc
+	ldw	hl,(hl)		; get LCB address
+	ld	a,h
+	or	l
+	ld	a,E.SSNF
+	scf
+	ret	z		; error if not set
+	ld	bc,LCBSZ	; BC = size
+ucpy:	exx
+	ld	a,($SBANK)
+	ld	e,a		; E' = src bank
+	ld	a,($UBANK)
+	ld	d,a		; D' = dst bank
+	exx
+	call	$MCOPY
+	xor	a
+	ret
+
+; I.HOST:
+;   return 9-char host name
+
+hstn:	ex	de,hl
+	ld	hl,$HOSTN
+	ld	bc,9
+	jr	ucpy
+
+; I.TCKS:
+;   returns ticks per second (word)
+
+tcks:	ld	bc,TCKSEC
+	jp	storew
+
+; I.FEAT:
+;   returns feature bits (word)
+
+feat:	ld	a,($FEAT)
+	ld	c,a
+	ld	b,0
+	jp	storew
+
+;-----------------------------------------------------------------------
+
+; Find task by name.
+
+; Input:
+;   HL = address of task name in user space
+; Returns:
+;   HL = TCB address of task
+;   CY set on error and error code in A.
+
+UFNTSK:	push	de
+	push	bc
+	call	UGTNAM
+	ld	bc,DTBUF
+	call	$FNTSK
+	pop	bc
+	pop	de
+	ret
+
+; Get task or partition name (6 chars) from user space into DTBUF
+
+UGTNAM:	ld	de,DTBUF	; dst in DE, src in HL
+	ld	bc,6		; len in BC
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank in E'
+	ld	a,($SBANK)
+	ld	d,a		; dst bank in D'
+	exx
+	call	$MCOPY		; get task name from user space
+	ret
+
+;-----------------------------------------------------------------------
+
+; Send data to task.
+
+; Input:
+;   HL = buffer in user space
+;   DE = size
+;   BC = task name
+; Returns:
+;   CY set on error and error code in A.
+
+USEND:	push	hl		; push buf addr
+	ld	l,c
+	ld	h,b
+	call	UFNTSK		; find receiver task, return TCB in HL
+	pop	bc		; pop buf addr into BC
+	ret	c		; error if task not found
+USEND1:	push	bc		; push src = buf
+	push	de		; push size
+	push	hl		; push TCB
+	ld	bc,T.ATTR
+	add	hl,bc
+;;	bit	TA.CLI,(hl)	; is the task a CLI?
+;;	ld	a,E.BADOP
+;;	scf
+;;	jr	nz,usnd0	; error if yes, operation not permitted
+	bit	TA.ACP,(hl)	; neither it is allowed for ACPs
+	ld	a,E.BADOP
+	scf
+	jr	nz,usnd0
+	ld	hl,QHSZ		; add header size to data size
+	add	hl,de
+	ld	c,l
+	ld	b,h		; BC = size to allocate
+	call	$ALLOC		; allocate packet
+usnd0:	ex	(sp),hl		; push allocated packet address, pop TCB
+	pop	ix		; pop packet address
+	pop	bc		; pop size
+	pop	de		; pop src
+	ret	c		; error if not enough pool space
+	ld	iy,($CTCB)
+	ld	a,(iy+T.PRI)
+	ld	(ix+QU.PRI),a	; set QU.PRI
+	ldw	(ix+QU.SIZ),bc	; set packet size
+	ld	a,b
+	or	c
+	jr	z,usnd1
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; set src bank
+	ld	a,($SBANK)
+	ld	d,a		; set dst bank
+	exx
+	push	hl		; push TCB
+	ex	de,hl		; src in HL
+	push	ix
+	pop	de
+	push	hl
+	ld	hl,QU.DAT
+	add	hl,de
+	ex	de,hl		; dst in DE
+	pop	hl
+	call	$MCOPY		; len already in BC
+	pop	hl		; pop TCB
+usnd1:	push	ix
+	call	SEND
+	pop	ix
+	ret	nc		; return on success
+	push	af		; else remember error code
+	ldw	de,(ix+QU.SIZ)
+	ld	hl,QHSZ
+	add	hl,de
+	ex	de,hl		; DE = size
+	push	ix
+	pop	hl		; HL = addr
+	call	$FREE		; free packet
+	pop	af		; return error code with CY set
+	ret
+
+;-----------------------------------------------------------------------
+
+; Receive data.
+
+; Input:
+;   HL = buffer in user space
+;   DE = buffer size, not counting 2-byte length field
+; Returns:
+;   CY set on error and error code in A.
+
+URECV:	ld	a,d
+	or	e
+	ld	a,E.BADOP
+	scf
+	ret	z
+	push	hl		; push dest
+	push	de		; push size
+	call	RECV		; dequeue packet, returns addr in HL
+	pop	de		; size in DE
+	pop	bc		; dest in BC
+	ret	c		; return if list empty
+	push	hl
+	pop	ix		; IX = packet address
+	ldw	hl,(ix+QU.SIZ)	; get data size
+	push	hl		; save for later call to $FREE
+	ex	de,hl
+	cpw	hl,de		; compare with size of user's buffer
+	jr	c,urcv1		; jump if data size > user buffer space
+	ex	de,hl
+urcv1:	push	bc
+	ld	c,l		; BC now has min size of the two
+	ld	b,h
+	pop	hl
+	call	storew		; store length
+	push	hl
+	push	ix
+	pop	hl
+	ld	de,QU.DAT
+	add	hl,de		; src in HL
+	pop	de		; dst in DE
+	exx
+	ld	a,($UBANK)
+	ld	d,a		; dst bank in D'
+	ld	a,($SBANK)
+	ld	e,a		; src bank in E'
+	exx
+	push	bc
+	call	$MCOPY		; note this handles properly zero-byte counts
+	ld	iy,($CTCB)
+	bit	TA.CLI,(iy+T.ATTR) ; is the task a CLI?
+;;	jr	nz,urcv2	   ; jump if yes
+;;	bit	TA.ACP,(iy+T.ATTR) ; is the task an ACP?
+	jr	z,urcv3		   ; jump if not
+urcv2:	ld	e,(ix+QU.DAT+3)	; get OCB address from packet
+	ld	d,(ix+QU.DAT+4)	; TODO: ensure valid? (QSIZ >= 5, valid TCB field in OCB?)
+	push	de
+	ex	(sp),ix		;  into IX
+	push	iy
+	pop	hl		; get TCB address into HL
+	ld	a,d
+	or	e
+	call	nz,LNKOCB	; link the OCB
+	pop	ix
+urcv3:	pop	bc		; restore bytes copied
+	pop	hl		; restore saved packet size
+	ld	de,QHSZ
+	add	hl,de		; add header size
+	ex	de,hl		; get allocated size into DE
+	push	ix
+	pop	hl		; address in HL
+	push	bc
+	call	$FREE		; free allocated memory
+	pop	bc		; BC = bytes copied
+	xor	a		; return success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get LUN info. C = LUN, HL = result buffer address
+
+GETLUN:	dec	c		; 1..16 -> 0..15
+	ld	a,c
+	cp	16		; valid?
+	ld	a,E.INV
+	ccf
+	ret	c
+	ld	ix,($CTCB)
+	ex	de,hl		; dst in DE
+	ldw	hl,(ix+T.CTX)
+	ld	a,TX.LUT
+	add	hl,a		; HL = address of LUN table
+	ld	b,0
+	add	hl,bc
+	add	hl,bc
+	add	hl,bc
+	add	hl,bc		; *4
+	ldw	hl,(hl)
+	ld	a,h		; get UCB address into HL
+	or	l		; ensure valid UCB
+	ld	a,E.INV		; TODO: change this to 'LUN not assigned'
+	scf
+	ret	z
+	call	$REDIR		; follow any redirect links
+	push	hl
+	pop	ix		; UCB address now in IX
+	ldw	hl,(ix+U.DCB)
+	ld	bc,D.NAME
+	add	hl,bc
+	ldw	bc,(hl)
+	ex	de,hl		; dst in HL
+	ld	a,($UBANK)
+	ld	e,a
+	call	$UPUTW		; store device name
+	ld	a,(ix+U.UNIT)
+	call	$UPUTB		; store unit number
+	inc	hl
+	ld	a,(ix+U.ST)
+	call	$UPUTB		; store status
+	inc	hl
+	ldw	bc,(ix+U.CW)
+	call	$UPUTW		; store characteristics word
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get current dir name.
+; HL = address of buffer to receive the data, C = function code.
+
+GETCD:	ld	ix,($CTCB)
+	ld	a,c
+	cp	GD.TSK		; get task's current directory
+	jr	z,gcd0
+	cp	GD.TI		; get terminal's current directory
+	jr	z,gcd1
+	cp	GD.LOG		; get terminal's login directory
+	jr	z,gcd2
+	ld	a,E.INV
+	scf
+	ret
+
+gcd0:	ex	de,hl		; DE = dst
+	ldw	hl,(ix+T.CTX)
+	ld	bc,TX.DIR
+	add	hl,bc		; HL = src (current task directory)
+	jr	gcd4		; copy result and return
+
+gcd1:	ld	bc,L.CDIR
+	jr	gcd3
+
+gcd2:	ld	bc,L.NAME
+gcd3:	ex	de,hl		; DE = dst
+	push	bc
+	ldw	hl,(ix+T.TI)
+	ld	bc,U.LCB
+	add	hl,bc
+	ldw	hl,(hl)		; get LCB address
+	pop	bc		; BC = offset into LCB
+	ld	a,h
+	or	l
+	ld	a,E.SSNF
+	scf
+	ret	z		; error if LCB not set
+	add	hl,bc		; HL = src
+gcd4:	ld	bc,9
+	exx
+	ld	a,($SBANK)
+	ld	e,a		; src bank
+	ld	a,($UBANK)
+	ld	d,a		; dst bank
+	exx
+	call	$MCOPY		; copy name to user space
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set current dir name.
+; HL = address of dir name in user space, C = function code.
+
+SETCD:	ld	ix,($CTCB)
+	ld	a,c
+	cp	SD.TSK
+	jr	z,scd0
+	cp	SD.TI
+	jr	z,scd1
+	ld	a,E.INV
+	scf
+	ret
+
+scd0:	ex	de,hl
+	ldw	hl,(ix+T.CTX)
+	ld	bc,TX.DIR
+	add	hl,bc		; HL = current task dir field in context block
+	jr	scd2
+
+scd1:	ex	de,hl
+	ldw	hl,(ix+T.TI)
+	ld	bc,U.LCB
+	add	hl,bc
+	ldw	hl,(hl)		; get LCB of terminal
+	ld	a,h
+	or	l
+	ld	a,E.SSNF
+	scf
+	ret	z		; error if not set
+	ld	bc,L.CDIR
+	add	hl,bc
+scd2:	ex	de,hl		; src in HL, dst in DE
+	ld	bc,9
+	exx
+	ld	a,($UBANK)
+	ld	e,a		; src bank
+	ld	a,($SBANK)
+	ld	d,a		; dst bank
+	exx
+	call	$MCOPY		; copy name from user space
+	xor	a
+	ret
+
+;=======================================================================
+;
+; Handy routines called by privileged tasks (mostly MCR)
+;
+	public	$REMTK,$FIXTK,$UNFTK
+
+;-----------------------------------------------------------------------
+
+; Remove a task from the System Task Directory.
+
+; Input:
+;   HL = pointer to task name in user space
+; Returns:
+;   CY flag set on error (task not found)
+
+$REMTK:	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TREM		; remove the task
+
+;-----------------------------------------------------------------------
+
+; Fix task.
+
+; Input:
+;   HL = pointer to task name in user space
+; Returns:
+;   CY flag set on error
+
+$FIXTK:	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TFIX		; fix task
+
+;-----------------------------------------------------------------------
+
+; Unfix task.
+
+; Input:
+;   HL = pointer to task name in user space
+; Returns:
+;   CY flag set on error
+
+$UNFTK:	call	UFNTSK		; get name from user space and find task
+	ret	c
+	ld	c,l
+	ld	b,h
+	jp	TUNFIX		; unfix task
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+CMDPTR:	ds	2
+DTBUF:	ds	8
+GTBUF	equ	$
+TMPTDB:	ds	TDBSZ
+DTIME:	ds	4
+RSI:	ds	4
+	if	$-GTBUF LT GTKSZ
+	ds	GTBUF+GTKSZ-$
+	endif
+
+	end

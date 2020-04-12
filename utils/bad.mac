@@ -1,0 +1,596 @@
+;**********************************************************************;
+;                                                                      ;
+;   Bad Block Locator Utility for RSX180.                              ;
+;   Copyright (C) 2020, Hector Peraza.                                 ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.00'
+
+	include	SYSFN.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	FCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNDSK	equ	2
+
+S1.ALL	equ	0
+S1.LST	equ	1
+S1.MAN	equ	2
+S1.UPD	equ	3
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,HLDEC,TTFLSH,GCML,RCML
+	extrn	UCASE,CVTBD,CVTLD,CPHLDE
+
+KCALL	MACRO	addr
+	call	SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	PROCESS		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m4		; exit normally if yes
+
+	call	CMLERR		; else display error
+m3:	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m4:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'BAD -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'BAD -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Copy string @DE to @HL.
+
+STRCPY:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Convert device name in DE-C to string @HL
+
+CVTDEV:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	a,c
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ret
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+GETCMD:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	GETNS
+	call	GETNAM
+	ld	(lnptr),de
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+GETNAM:	call	GETFS
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+gn2:	call	GETFS
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+ISBLNK:	call	ISEOL
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+ISEOL:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+GETNS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+FNDCMD:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+; TODO:
+; - implement option switches
+; - if the unit has been initialized, update the BADBLK.SYS file.
+
+PROCESS:ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	ld	hl,baddev
+	jp	c,ERROR		; on error, exit
+
+	ld	(dev),de	; save device name
+	ld	a,c
+	ld	(dev+2),a	; and unit
+
+	xor	a
+	ld	(optsw),a	; clear all option bits
+
+chkopt:	ld	de,(lnptr)	; check remainder of command line
+	call	GETNS		; skip any spaces
+	call	ISEOL		; end of command?
+	jp	z,fndbad	; jump if yes
+	cp	'/'		; option switch?
+	jp	nz,CMDERR	; error if not
+	inc	de		; skip switch char
+	ld	(lnptr),de
+	call	GETCMD		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; error if yes
+	ld	hl,swtbl
+	call	FNDCMD		; search switch in table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,cmderr
+	dec	a
+	jp	z,optall	; /ALLOCATE
+	dec	a
+	jp	z,optlst	; /LIST
+	dec	a
+	jp	z,optman	; /MANUAL
+	dec	a
+	jp	z,optupd	; /UPDATE
+	jp	CMDERR
+
+swtbl:	db	'ALLOCATE',0
+	db	'LIST',0
+	db	'MANUAL',0
+	db	'UPDATE',0
+	db	0
+
+optall:	ld	hl,optsw
+	set	S1.ALL,(hl)
+	jp	chkopt
+
+optlst:	ld	hl,optsw
+	set	S1.LST,(hl)
+	jp	chkopt
+
+optman:	ld	hl,optsw
+	set	S1.MAN,(hl)
+	jp	chkopt
+
+optupd:	ld	hl,optsw
+	set	S1.UPD,(hl)
+	jp	chkopt
+
+baddev:	db	'Invalid device specification',0
+
+fndbad:	ld	de,(dev)	; get device name
+	ld	a,(dev+2)	;  and unit
+	ld	c,a
+
+	ld	b,LUNDSK
+	SC	.ALUN		; assign LUN to device
+	jp	c,SYSERR
+
+	ld	hl,luninf
+	ld	c,LUNDSK
+	SC	.GTLUN		; get device info
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	ld	hl,edevt
+	jp	z,ERROR		; error if not
+
+	bit	DV.MNT,a	; device mountable?
+	jp	z,ERROR		; error if not
+
+	ld	a,(luninf+3)
+	bit	US.MNT,a	; unit mounted?
+	ld	hl,emnt
+	jp	nz,ERROR	; error if yes
+
+	ld	hl,qio1
+	SC	.QIO		; attach to device
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,qio2
+	SC	.QIO		; sense disk characteristics
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,(iobuf)
+	ld	(nblks),hl	; store device size in blocks
+	ld	hl,(iobuf+2)
+	ld	(nblks+2),hl
+
+	ld	hl,bblist+4
+	ld	(bbptr),hl	; init bad block list pointer
+	xor	a
+	ld	(bbcnt),a	; reset bad block counter
+
+	ld	a,IO.RLB
+	ld	(qio3+Q.FUNC),a
+	ld	hl,0
+	ld	(qio3+Q.BLK),hl	; start from first block
+	ld	(qio3+Q.BLK+2),hl
+chk1:	ld	hl,qio3
+	SC	.QIO		; read block
+	jp	c,detach
+	ld	a,(iosb)
+	or	a		; check return code
+	jr	z,chk2		; branch on success
+	cp	E.IO
+	scf
+	jp	nz,detach	; exit if not an I/O error
+	call	report		; report bad block
+	ld	hl,qio3+Q.BLK
+	ld	de,(bbptr)
+	ld	bc,4
+	ldir			; store bad block number
+	ld	(bbptr),de
+	ld	hl,bbcnt
+	inc	(hl)		; increase bad block count
+	ld	a,(hl)
+	cp	512/4-4		; limit reached?
+	jr	nz,chk2
+	ld	hl,tomany
+	call	ERROR		; yes, too many bad blocks
+	jr	chk3
+chk2:	ld	hl,qio3+Q.BLK
+	call	inc32		; next block
+	ld	hl,nblks
+	call	dec32
+	ld	hl,nblks
+	call	tst32		; all blocks tested?
+	jr	nz,chk1		; loop if not
+	ld	a,(bbcnt)
+	or	a		; any bad blocks found?
+	jr	z,chk3		; return success if not
+	ld	l,a
+	ld	h,0
+	ld	(bblist+2),hl	; else store bad block count in header
+	ld	hl,0BADBh
+	ld	(bblist),hl	; and signature
+	call	total		; report total
+chk4:	ld	hl,qio3+Q.BLK
+	call	dec32		; point to last block of device
+	ld	a,IO.WLB
+	ld	(qio3+Q.FUNC),a
+	ld	hl,qio3
+	SC	.QIO		; write bad block map
+	jr	c,detach
+	ld	a,(iosb)
+	or	a		; success?
+	jr	z,chk3		; exit if yes
+	cp	E.IO		; I/O error?
+	scf
+	jr	nz,detach	; exit if not
+	jr	chk4		; else backup one block and try again
+
+chk3:	xor	a
+detach:	push	af
+	ld	hl,qio4
+	SC	.QIO		; detach from device
+	pop	af
+	jp	c,SYSERR
+	ret
+
+edevt:	db	'Invalid device type',0
+emnt:	db	'Volume is mounted',0
+tomany:	db	'Too many bad blocks',0
+
+inc32:	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+dec32:	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	dec	(hl)
+	ret
+
+tst32:	ld	a,(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	ret
+
+report:	ld	a,(optsw)
+	bit	S1.LST,a	; /LIST option?
+	ret	z		; return if not
+	ld	hl,cmdbuf
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	call	CVTDEV		; convert device name
+	ld	de,msg1
+	call	STRCPY		; copy message
+	ld	bc,(qio3+Q.BLK)
+	ld	de,(qio3+Q.BLK+2)
+	xor	a
+	call	CVTLD		; convert LBN
+	ld	(hl),0
+	ld	hl,cmdbuf
+	jp	ERROR		; output message
+
+msg1:	db	' Bad block found, LBN = ',0
+
+total:	ld	a,(optsw)
+	bit	S1.LST,a	; /LIST option?
+	ret	z		; return if not
+	ld	hl,cmdbuf
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	call	CVTDEV		; convert device name
+	ld	de,msg2
+	call	STRCPY		; copy message
+	ld	a,(bbcnt)
+	call	CVTBD		; convert bad block count
+	ld	(hl),0
+	ld	hl,cmdbuf
+	jp	ERROR		; output message
+
+msg2:	db	' Total bad blocks = ',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	cmdbuf,80,'BAD',LUNCML,2
+
+cmdbuf:	ds	82
+lnptr:	ds	2
+cmdnam:	ds	9
+dev:	ds	3		; device name and unit
+optsw:	ds	1
+luninf:	ds	6
+nblks:	ds	4		; disk size in blocks
+
+qio1:	QIOW$	IO.ATT,LUNDSK,9,iosb
+qio2:	QIOW$	IO.SEC,LUNDSK,9,iosb,,<iobuf,4>
+qio3:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<iobuf,512,,,>
+qio4:	QIOW$	IO.DET,LUNDSK,9,iosb
+iosb:	ds	4
+
+iobuf:	ds	512		; disk I/O buffer
+bblist:	ds	512		; list of bad blocks
+bbptr:	ds	2		; pointer to next entry in bad block list
+bbcnt:	ds	1		; bad block count
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

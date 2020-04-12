@@ -1,0 +1,171 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	cseg
+
+	include	PIP.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	public	PIPUNL
+
+	extrn	RFNB,CRFNB,NRPARM,SWBITS,SEARCH,SRCHDR
+	extrn	DIRFNB,SETDIR,SETNAM,SETEXT,SRCFDB,DSTFDB
+	extrn	NFILES
+
+	extrn	SYSERR,ERROR,ERRNF,VERR
+
+;-----------------------------------------------------------------------
+
+PIPUNL:	ld	hl,RFNB
+	ld	(CRFNB),hl
+
+loop:	ld	ix,(CRFNB)
+
+	ld	a,(ix+F.ATTR)	; check version
+	and	FN.VER		; explicit?
+	ld	hl,VERR
+	jp	z,ERROR		; error if not
+
+	ld	ix,(CRFNB)
+	ld	hl,dounlk	; HL = callback routine address
+	call	SEARCH		; search directories
+
+	call	c,SYSERR	; on error, display error and continue
+
+	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs in command line?
+	ret	z		; return if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else select next filespec
+	jr	loop		; and loop until all done
+
+;-----------------------------------------------------------------------
+
+; Unlock single file.
+
+dounlk:	ld	a,c
+	or	a		; first time call?
+	jr	nz,unlk1	; jump if not
+
+	ex	de,hl
+
+	ld	hl,0
+	ld	(NFILES),hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in finfo
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.DEV),a	; set also device name and unit
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	xor	a		; return success
+	ret
+
+unlk1:	dec	c		; matched entry?
+	jr	z,unlk2		; branch if yes
+
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	ret	nz		; return if set (note CY still clear)
+	ld	hl,(NFILES)
+	ld	a,h
+	or	l		; any files found?
+	call	z,ERRNF		; display warning if not
+	xor	a
+	ret
+
+unlk2:	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,SRCFDB
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	push	de
+	call	SETEXT
+	pop	de
+
+	ld	hl,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.VER),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.VER+1),a
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.ATTR),a
+
+	ld	de,(SRCFDB+F.DEV)
+	ld	a,(SRCFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNDST
+	SC	.ALUN		; assign LUN
+	jr	c,unlk3
+
+	ld	hl,qio1
+	SC	.QIO		; unlock the file
+	jr	c,unlk3
+	ld	a,(iosb)
+	or	a
+	ret	z		; return on success
+
+unlk3:	call	SYSERR		; else display error message
+	xor	a
+	ret			; and return success to process other files
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.UNL,LUNDST,9,iosb,,<SRCFDB>
+iosb:	ds	4
+
+	end

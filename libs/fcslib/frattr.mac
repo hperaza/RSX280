@@ -1,0 +1,60 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+;  Read file attributes.
+;  Called with IX = FIOBL address
+;  Updates FDB in FIOBL with file attributes
+
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	QIO.INC
+
+	public	FRATTR
+
+	extrn	QIOBLK,QIOSB
+
+	cseg
+
+FRATTR:	ld	a,(ix+FC.LUN)	; LUN
+	ld	(QIOBLK+Q.LUN),a
+	ld	l,(ix+FC.FDB)	; buf is FDB
+	ld	h,(ix+FC.FDB+1)
+	ld	(QIOBLK+Q.BUF),hl
+	ld	hl,FINFSZ	; len
+	ld	(QIOBLK+Q.LEN),hl
+	ld	hl,IO.RAT	; function code
+	ld	(QIOBLK+Q.FUNC),hl
+	ld	hl,0
+	ld	(QIOBLK+Q.AST),hl
+	ld	hl,QIOBLK
+	SC	.QIO		; .QIOW
+	ret	c		; if queuing failed
+	ld	bc,(QIOSB+2)
+	ld	a,(QIOSB)
+	or	a		; check result
+	ret	z
+	scf
+	ret
+
+	end

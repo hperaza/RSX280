@@ -1,0 +1,183 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Miscellaneous routines
+
+	.Z280
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	public	DIV8,DIV32,SHRHL,SHRBHL,STRCMP,GETDEC,SKIPBL,SKIPW
+	public	ISLETR
+
+	extrn	UCASE
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; HL = HL / C, remainder in A
+
+DIV8:	xor	a
+	ld	b,16
+dv81:	add	hl,hl
+	rla
+	jr	c,dv83
+	cp	c
+	jr	c,dv82
+dv83:	sub	c
+	inc	hl
+dv82:	djnz	dv81
+	ret	
+
+; Shift HL right
+
+SHRHL:	srl	h
+	rr	l
+	ret
+
+; Shift BHL right
+
+SHRBHL:	srl	b
+	rr	h
+	rr	l
+	ret
+
+; HL = HLDE / BC, remainder in DE
+
+DIV32:	ld	a,c
+	cpl
+	ld	c,a
+	ld	a,b
+	cpl
+	ld	b,a
+	inc	bc
+	ld	a,16
+dv2:	push	af
+	add	hl,hl
+	rra
+	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	nc,dv3
+	inc	hl
+dv3:	rla
+	jr	c,dv4
+	ld	a,l
+	add	a,c
+	ld	a,h
+	adc	a,b
+	jr	nc,dv5
+dv4:	add	hl,bc
+	inc	de
+dv5:	pop	af
+	dec	a
+	jr	nz,dv2
+	ex	de,hl
+	or	a
+	ret
+
+; Compare strings @HL and @DE ignoring case, length B
+
+STRCMP:	ld	a,(hl)
+	call	UCASE
+	ld	c,a
+	ld	a,(DE)
+	call	UCASE
+	cp	c
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	STRCMP
+	ret
+
+; Convert ASCII decimal number @DE to binary in HL
+
+GETDEC:	ld	hl,0
+newdig:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	CR
+	ret	z
+	cp	'='
+	ret	z
+	cp	':'
+	ret	z
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	c
+	call	adddig
+	ret	c
+	inc	de
+	jr	newdig
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Skip blanks
+
+SKIPBL:	ld	a,(de)
+	or	a		; end of line?
+	ret	z		; return if yes
+	cp	' '+1		; blank (space and below)?
+	ret	nc		; return if not
+	inc	de
+	jr	SKIPBL
+
+; Skip word
+
+SKIPW:	ld	a,(de)
+	or	a		; end of line?
+	ret	z		; return if yes
+	cp	' '+1		; blank (space and below)?
+	ret	c		; return if yes
+	cp	'/'
+	ret	z
+	inc	de
+	jr	SKIPW
+
+; Return CY clear if char in A is an uppercase letter
+
+ISLETR:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+	end

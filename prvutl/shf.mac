@@ -1,0 +1,236 @@
+;**********************************************************************;
+;                                                                      ;
+;   Simple Shuffler utility for RSX180.                                ;
+;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.00'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	PCB.INC
+	include	TCB.INC
+	include	ERRORS.INC
+
+KCALL	macro	addr
+	call	$SWSTK
+	dw	addr
+	endm
+
+;-----------------------------------------------------------------------
+
+; This task is requested by the kernel when space cannot be allocated
+; for tasks in the wait list of a system-controlled partition, and
+; attempts to gain space by compacting memory which is done by moving
+; tasks to the bottom of existing partition holes.
+
+	cseg
+
+START::	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,fatal
+
+again:	xor	a
+	ld	(wflag),a
+	ld	(SYSLVL),a	; disable task dispatching
+	ld	hl,($PLIST)	; get head of partition list
+scan:	ld	a,h
+	or	l		; end of list?
+	jp	z,finish	; exit loop if yes
+
+	push	hl
+	pop	iy
+	bit	PA.SYS,(iy+P.ATTR) ; system controlled partition?
+	jp	z,skip		   ; skip it if not
+
+	; pass 1 - try to compact memory
+
+	ld	l,(iy+P.WAIT)
+	ld	h,(iy+P.WAIT+1)
+	ld	a,h		; any tasks waiting?
+	or	l
+	jp	z,skip		; try next partition if not
+
+	xor	a
+	ld	(mflag),a	; clear tasks moved flag
+	inc	a
+	ld	(wflag),a	; set waiting tasks flag
+
+	ld	a,(iy+P.BASE)
+	ld	(base),a	; bottom of hole
+
+	ld	l,(iy+P.SUB)	; get address of first subpartition
+	ld	h,(iy+P.SUB+1)
+loop:	ld	a,h
+	or	l
+	jp	z,done		; exit loop if no subpartitions left
+
+	push	hl
+	pop	ix
+	ld	a,(base)
+	cp	(ix+P.BASE)	; already at the bottom of hole?
+	jr	z,next		; skip it if yes
+
+	ld	e,(ix+P.TCB)	; get TCB address of owner task
+	ld	d,(ix+P.TCB+1)
+	ld	hl,T.ATTR
+	add	hl,de
+	bit	TA.FIX,(hl)	; task fixed in memory?
+	jr	nz,next		; skip this subpartition if yes
+	bit	TA.CKD,(hl)	; checkpoint disabled?
+	jr	nz,next		; skip this subpartition if yes
+	ld	hl,T.ST
+	add	hl,de
+	bit	TS.CKR,(hl)	; checkpoint requested?
+	jr	nz,next		; skip this subpartition if yes
+	ld	hl,T.IOC
+	add	hl,de
+	ld	a,(hl)
+	or	a		; task has pending I/Os?
+	jr	nz,next		; skip this subpartition if yes
+
+	exx
+	ld	a,(base)
+	ld	d,a		; D' = dst bank
+	ld	e,(ix+P.BASE)	; E' = src bank
+	ld	(ix+P.BASE),a	; set new base
+	exx
+	ld	hl,T.END
+	add	hl,de
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	hl,0
+	ld	de,0
+	KCALL	$MCOPY		; relocate task
+	ld	a,1
+	ld	(mflag),a	; remember a task was moved
+
+next:	ld	a,(ix+P.BASE)
+	add	(ix+P.SIZE)
+	ld	(base),a	; set new bottom of hole
+	ld	l,(ix+P.LNK)	; get next subpartition in list
+	ld	h,(ix+P.LNK+1)
+	jr	loop		; and loop to process it
+
+done:	ld	a,(mflag)
+	or	a		; any tasks moved?
+	jp	nz,done2	; branch if yes
+
+  IF 0
+	; pass 2 - try to checkpoint any idling tasks
+
+	ld	e,(iy+P.WAIT)
+	ld	d,(iy+P.WAIT+1)
+p21:	ld	a,d		; any tasks waiting?
+	or	e
+	jp	z,skip		; try next partition if not
+
+	ld	hl,T.ST+1
+	add	hl,de
+	ld	a,(hl)
+	and	0+(1 SHL T2.SEF) OR (1 SHL T2.WTD) OR (1 SHL T2.STP)
+	jr	z,p22		; found a ready task waiting
+	ld	hl,T.LNK
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	jr	p21		; loop to check next task
+
+p22:	ld	l,(iy+P.SUB)	; get address of first subpartition
+	ld	h,(iy+P.SUB+1)
+loop2:	ld	a,h
+	or	l
+	jp	z,done2		; exit loop if no subpartitions left
+
+	push	hl
+	pop	ix
+
+	ld	l,(ix+P.LNK)
+	ld	h,(ix+P.LNK+1)
+	push	hl		; push address of next subpartition in list
+
+	ld	e,(ix+P.TCB)	; get TCB address of owner task
+	ld	d,(ix+P.TCB+1)
+	ld	hl,T.IOC
+	add	hl,de
+	ld	a,(hl)
+	or	a		; task has pending I/Os?
+	jr	nz,next2	; skip this subpartition if yes
+	ld	hl,T.ST+1
+	add	hl,de
+	ld	a,(hl)
+	and	0+(1 SHL T2.EFW) OR (1 SHL T2.WTD) OR (1 SHL T2.STP)
+	jr	z,next2		; skip this subpartition if the task is running
+
+	push	de
+	pop	ix
+	push	iy
+	KCALL	$CHKPT		; else try to checkpoint task
+	pop	iy
+
+next2:	pop	hl		; get next subpartition in list
+	jr	loop2		; and loop to process it
+  ENDIF
+
+done2:	push	iy
+	KCALL	$ASNTP		; try to assign waiting task to partition
+	pop	iy
+skip:	ld	l,(iy+P.LNK)	; next partition in list
+	ld	h,(iy+P.LNK+1)
+	jp	scan		; loop
+
+finish:	ld	a,1
+	ld	(SYSLVL),a	; enable task dispatching
+	ld	a,(wflag)
+	or	a		; were there any tasks waiting?
+	jr	z,exit		; exit if not
+
+	ld	hl,2		; else sleep for a couple of seconds
+	ld	d,2
+	ld	e,1
+	ld	bc,0
+	SC	.MRKT
+	jr	c,fatal
+	ld	e,1
+	SC	.WTSE
+	jp	again		; and try again
+
+fatal:	ld	hl,EX.SEV
+	SC	.EXIT
+
+exit:	ld	hl,EX.SUC
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+base:	ds	1
+wflag:	ds	1
+mflag:	ds	1
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,1661 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	cseg
+
+	include	PIP.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	FCSLIB.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	VCB.INC
+
+	public	PIPDIR
+	public	STRBUF,SETDEV,SETDIR,SETNAM,SETEXT
+
+	extrn	LFNB,RFNB,CRFNB,ASGN,NRPARM,SWBITS,SEARCH
+	extrn	FCREAT,FOPEN,FCLOSE,FSEEK,FREAD,FRDBLK,CVTBD
+	extrn	CVTWD,CVTLD,BCD2BIN,CVTBH,CPHLDE,SYSERR,CPSTR
+	extrn	FSIZE,ERRNF,SRCFBK,DSTFBK,SRCBUF,DSTBUF,NFILES
+	extrn	FPUTLN,?FINCB,ERRFNB
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+BMHSZ	equ	16
+
+; TODO:
+; - check for ambiguous switches
+; - left filespec, if specified, must not contain wildcards
+
+;-----------------------------------------------------------------------
+
+; Display the specified disk directory, or the current directory if
+; the filespec does not contain a directory.
+
+PIPDIR:	ld	a,(ASGN)
+	or	a		; an output file or device specified?
+	jr	nz,dir0		; jump if yes
+
+	ld	ix,LFNB		; else TI: is assumed
+	ld	(ix+F.DEV),'T'
+	ld	(ix+F.DEV+1),'I'
+	ld	(ix+F.UNIT),0
+	ld	(ix+F.ATTR),FN.DEV
+
+dir0:	ld	hl,LFNB
+	ld	de,(DSTFBK+FC.FDB)
+	ld	bc,FNSZ
+	ldir			; set FDB in DSTFBK
+	ld	hl,DSTBUF
+	ld	(DSTFBK+FC.BUF),hl
+	ld	ix,DSTFBK
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a		; non-contiguous file
+	call	FCREAT		; create output file on device
+	jp	c,SYSERR	; on error exit
+
+	ld	hl,0
+	ld	(ndirs),hl
+	ld	(tfiles),hl
+
+	ld	hl,tsize
+	call	CLR32		; clear total file size
+
+	ld	ix,RFNB
+	ld	(CRFNB),ix
+	call	OPNIXF		; open index file
+	jr	c,dir7
+
+	ld	a,(SWBITS)
+	bit	S1.LI,a		; /LI (or /BR, /FU) ?
+	jr	z,dir3		; skip directory display if not
+
+dir1:	ld	ix,(CRFNB)
+	ld	hl,dodir
+	call	SEARCH		; search for files
+	jr	c,dir6
+
+	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs?
+	jr	z,dir2		; exit loop if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else set pointer to next filespec
+	jr	dir1		; and loop to process it
+
+				; TODO: if next filespec points to another
+				; device we will have to close and open the
+				; idenx file again!
+
+dir2:	call	GTOTAL		; display grand total if required
+
+	ld	hl,(ndirs)
+	ld	a,h
+	or	l
+	jr	nz,dir3
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	call	z,ERRNF		; display error message if not set
+
+dir3:	ld	a,(SWBITS)
+	bit	S1.FR,a		; /FR?
+	jr	z,dir4		; skip if not
+
+	call	CLSIXF		; close index file
+
+  IF 0
+	ld	ix,(CRFNB)
+  ELSE
+	ld	ix,RFNB	;TODO: fix!
+  ENDIF
+	call	INOFRE		; collect inode usage
+	jr	c,dir6
+
+  IF 0
+	ld	ix,(CRFNB)
+  ELSE
+	ld	ix,RFNB	;TODO: fix!
+  ENDIF
+	call	DSKFRE		; compute free space, etc.
+	call	nc,DSKUSG	; display disk usage statistics
+	jr	dir5
+
+dir4:	call	CLSIXF		; close index file
+dir5:	ld	ix,DSTFBK
+	call	FCLOSE		; close output file or device
+	jp	c,SYSERR	; display any errors
+	ret
+
+dir6:	push	af
+	call	CLSIXF		; close index file
+	pop	af
+dir7:	call	SYSERR		; display error message
+	ld	ix,DSTFBK
+	call	FCLOSE		; close output file or device
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Callback function that displays the directory entry.
+
+dodir:	ld	a,c
+	or	a		; first time?
+	jr	nz,dpf0		; branch if not
+
+	push	hl
+	ld	hl,0
+	ld	(NFILES),hl	; else init file count
+	ld	hl,csize
+	call	CLR32		; clear file size accum
+	pop	hl
+	call	header		; and display header
+	ld	hl,STRBUF
+	ld	(lnptr),hl
+	ret
+
+dpf0:	dec	c		; matched entry?
+	jr	z,dpf		; branch if yes
+
+	ld	hl,(ndirs)	; else end of directory reached
+	inc	hl
+	ld	(ndirs),hl	; count directories
+	ld	hl,(tfiles)
+	ld	de,(NFILES)
+	add	hl,de
+	ld	(tfiles),hl	; update grand total of files
+	ld	de,(csize)
+	ld	hl,(csize+2)
+	ld	bc,tsize
+	call	ADD32		; update grand total file size
+
+	ld	a,(SWBITS)
+	bit	S1.BR,a		; brief mode?
+	call	z,WRSTR		; output a newline if not
+
+	call	TOTALS		; display summary
+	xor	a		; and return success
+	ret
+
+dpf:	push	ix
+	pop	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	(ino),de
+	inc	hl		; dirent+DE.ATTR
+
+	ld	de,(lnptr)
+	ld	bc,9
+	ldir			; output the file name
+	ld	a,'.'		; extension separator
+	ld	(de),a
+	inc	de
+	ld	bc,3
+	ldir			; output extension
+	ld	a,';'		; version separator
+	ld	(de),a
+	inc	de
+	ld	l,(ix+DE.VER)
+	ld	h,(ix+DE.VER+1)
+	xor	a		; (no filler)
+	ex	de,hl
+	call	CVTWD		; output version number
+	ex	de,hl
+
+	neg
+	add	a,5
+	jr	z,dpf4
+	ld	b,a
+	ld	a,' '		; left-justify version number
+dpf3:	ld	(de),a
+	inc	de
+	djnz	dpf3
+
+dpf4:	ld	a,(SWBITS)
+	bit	S1.BR,a		; brief mode?
+	jr	z,dpf8		; jump if not
+
+	xor	a		; clear CY (success) for 'ret nz' below
+	ld	(de),a
+	ld	(lnptr),de
+	ld	hl,fpln
+	dec	(hl)		; count files per line
+	ret	nz
+	ld	(hl),4
+	call	WRSTR		; output line
+	ld	(lnptr),hl
+	xor	a
+	ret
+
+dpf8:	push	de
+	ld	bc,(ino)
+	call	RDINOD
+	pop	de
+	ret	c
+
+	push	de
+	ld	hl,(inode+IE.USED) ; get number of used data blocks into BHL
+	ld	a,(inode+IE.USED+2)
+	ld	b,a
+	ld	de,(inode+IE.LBCN) ; get last block byte count into DE
+
+	ld	a,h
+	or	l
+	jr	nz,dpf1
+
+	ld	hl,0
+	ld	de,0		; if no blocks allocated, file size = 0
+	jr	dpf2
+
+dpf1:	push	de
+	call	DEC24		; otherwise compute size in bytes
+	ld	e,0
+	ld	d,l
+	ld	l,h
+	ld	h,b
+	sla	d
+	rl	l
+	rl	h		; (num blocks - 1) * 512
+	pop	bc
+	ld	a,c
+	add	a,e
+	ld	e,a
+	ld	a,b
+	adc	a,d
+	ld	d,a
+	ld	a,0
+	adc	a,l
+	ld	l,a
+	ld	a,0
+	adc	a,h
+	ld	h,a		; + last block byte count
+
+	ld	bc,csize
+	call	ADD32		; add to accum
+
+dpf2:	ld	c,e
+	ld	b,d
+	ex	de,hl		; value now in DEBC
+	pop	hl
+	ld	a,' '
+	call	CVTLD		; output the file size
+	ex	de,hl
+
+	ld	a,(inode+IE.ATTR)
+	call	ATRSTR		; display attributes (contiguous file, etc.)
+
+	ld	hl,inode+IE.TCRE
+	call	DTSTR		; display the file creation date and time
+
+	ld	a,(SWBITS)
+	bit	S1.FU,a		; full mode?
+	jr	z,dpf5		; jump if not
+
+	ex	de,hl
+
+	ld	(hl),' '
+	inc	hl
+	ld	(hl),'['
+	inc	hl
+	ld	a,(inode+IE.GRP)
+	call	CVTBD
+	ld	e,a
+	ld	(hl),','
+	inc	hl
+	ld	a,(inode+IE.USER)
+	call	CVTBD
+	add	a,e
+	ld	e,a
+	ld	(hl),']'
+	inc	hl
+
+	ld	a,7
+	sub	e
+	jr	z,dpf6
+	ld	b,a
+dpf7:	ld	(hl),' '
+	inc	hl
+	djnz	dpf7
+
+dpf6:	ld	(hl),'['
+	inc	hl
+	ld	de,(inode+IE.PROT)
+	call	FPSTR		; display file protection
+	ld	(hl),']'
+	inc	hl
+
+	ex	de,hl
+
+dpf5:	xor	a
+	ld	(de),a
+	call	WRSTR		; output line
+
+	ld	hl,(NFILES)
+	inc	hl		; increment file count
+	ld	(NFILES),hl
+
+	xor	a
+	ret			; and return success
+
+;-----------------------------------------------------------------------
+
+; Collect disk block usage statistics.
+
+DSKFRE:	xor	a
+	ld	hl,0
+	ld	(nblks),hl	; clear number of disk blocks
+	ld	(nblks+2),a
+	ld	(frebks),hl	; clear number of free disk blocks
+	ld	(frebks+2),a
+	ld	(maxctg),hl	; clear largest contiguous block sequence
+	ld	(maxctg+2),a
+
+	ld	e,(ix+F.DEV)
+	ld	d,(ix+F.DEV+1)
+	ld	a,(ix+F.UNIT)
+	ld	(bmfdb+F.DEV),de ; set device name in bitmap FDB
+	ld	(bmfdb+F.UNIT),a
+
+	ld	hl,bmfdb
+	ld	de,(SRCFBK+FC.FDB)
+	ld	bc,FNSZ
+	ldir
+	ld	hl,SRCBUF
+	ld	(SRCFBK+FC.BUF),hl
+	ld	ix,SRCFBK
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN		; open bitmap file
+	jr	nc,df0		; jump on success
+
+	ld	hl,bmfdb	; otherwise display error message
+	ld	(ERRFNB),hl
+	jp	SYSERR		; and return
+
+df0:	call	FRDBLK		; read first block
+	jp	c,df31
+	ld	(bufcnt),de	; remember number of bytes read
+	call	?FINCB		; prepare to read next block
+	ld	hl,BMHSZ
+	call	CPHLDE		; read successful?
+	ld	a,E.EOF
+	jr	c,df31		; branch if not
+
+	ld	a,(SRCBUF+4)
+	ld	(clfact),a	; cluster factor
+
+	ld	hl,(SRCBUF+0)
+	ld	a,(SRCBUF+2)
+	ld	(nblks),hl	; total blocks in volume
+	ld	(nblks+2),a
+	ld	b,a
+	call	BK2CL
+	ld	(ccnt),hl	; total clusters
+	ld	a,b
+	ld	(ccnt+2),a
+
+	ld	hl,(SRCBUF+8)
+	ld	(ixbvbn),hl	; VBN of index file bitmap
+
+	ld	hl,SRCBUF+BMHSZ	; skip header
+	ld	(bufptr),hl
+	ld	hl,(bufcnt)
+	ld	bc,-16
+	add	hl,bc
+	ld	(bufcnt),hl
+
+	ld	hl,ctgsz
+	call	CLR24		; clear contiguous block count
+
+	ld	c,0		; bit mask in C
+
+df1:	ld	a,c
+	or	a		; time to read next bitmap byte?
+	jr	nz,df5		; jump if not
+
+df2:	ld	hl,(bufcnt)
+	ld	a,h
+	or	l		; all bytes in buffer processed?
+	jr	z,df3		; read next block if yes
+	dec	hl
+	ld	(bufcnt),hl
+
+	ld	hl,(bufptr)
+	ld	a,(hl)		; else get next byte from buffer
+	ld	(bmp),a		; save bitmap byte
+	inc	hl
+	ld	(bufptr),hl
+	jr	df4
+
+df3:	ld	hl,SRCBUF
+	ld	(bufptr),hl
+	call	FRDBLK		; read next block
+	jr	c,df31
+	ld	(bufcnt),de	; remember number of bytes read
+	call	?FINCB
+	ld	a,d
+	or	e		; read successful?
+	jr	nz,df2		; loop if yes
+	ld	a,E.EOF
+
+df31:	ld	hl,bmfdb	; otherwise display error
+	ld	(ERRFNB),hl
+	call	SYSERR
+	jr	df71		; and return after closing bitmap file
+
+df4:	ld	c,80h		; reset mask to MSBit
+df5:	ld	a,(bmp)
+	and	c		; bitmap bit set?
+	jr	nz,df6		; jump if yes (used block)
+	ld	hl,ctgsz
+	call	INC24M		; otherwise increment count
+	jr	df61
+df6:	call	accst		; update usage statistics
+df61:	rr	c		; shift mask, note CY clear from above
+	ld	hl,(ccnt)
+	ld	a,(ccnt+2)
+	ld	b,a
+	call	DEC24		; decrement block count
+	ld	(ccnt),hl
+	ld	a,b
+	ld	(ccnt+2),a
+	or	h
+	or	l		; all bits counted?
+	jr	nz,df1		; loop if not
+
+df7:	call	accst		; update usage statistics
+	ld	hl,(frebks)
+	ld	a,(frebks+2)
+	ld	b,a
+	call	CL2BK		; convert result to blocks
+	ld	(frebks),hl
+	ld	a,b
+	ld	(frebks+2),a
+	ld	hl,(maxctg)
+	ld	a,(maxctg+2)
+	ld	b,a
+	call	CL2BK		; convert result to blocks
+	ld	(maxctg),hl
+	ld	a,b
+	ld	(maxctg+2),a
+df71:	push	af
+	call	FCLOSE		; close bitmap file
+	pop	af		; error/success code
+	ret
+
+accst:	push	bc
+	ld	hl,(maxctg)
+	ld	a,(maxctg+2)
+	ld	b,a
+	ld	de,(ctgsz)
+	ld	a,(ctgsz+2)
+	ld	c,a
+	call	CMP24		; CY if BHL > CDE
+	jr	c,ac1
+	ld	(maxctg),de	; update largest contiguous space
+	ld	a,c
+	ld	(maxctg+2),a
+ac1:	ld	hl,(frebks)
+	ld	a,(frebks+2)
+	ld	b,a
+	call	ADD24		; update number of free blocks
+	ld	(frebks),hl
+	ld	a,b
+	ld	(frebks+2),a
+	ld	hl,ctgsz	; reset contiguous block counter
+	call	CLR24
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; Open index file, called with IX = directory FDB.
+
+OPNIXF:	ld	e,(ix+F.DEV)
+	ld	d,(ix+F.DEV+1)
+	ld	a,(ix+F.UNIT)
+	ld	(ixfdb+F.DEV),de ; set device name in index file FDB
+	ld	(ixfdb+F.UNIT),a
+
+	ld	hl,ixfdb
+	ld	de,(SRCFBK+FC.FDB)
+	ld	bc,FNSZ
+	ldir
+	ld	hl,SRCBUF
+	ld	(SRCFBK+FC.BUF),hl
+	ld	ix,SRCFBK
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN		; open index file
+	ret	nc		; return on success
+	ld	hl,ixfdb	; otherwise display error message
+	ld	(ERRFNB),hl
+	jp	SYSERR		; and return
+
+; Close index file.
+
+CLSIXF:	ld	ix,SRCFBK
+	call	FCLOSE
+	ret
+
+; Read inode, BC = 1-based inode number.
+
+RDINOD:	ld	a,b
+	or	c
+	ld	a,E.INV
+	jr	z,rdi2
+	dec	bc
+	ld	de,0
+	ld	a,6		; inode size = 64 (2^6)
+rdi1:	sla	c		; DEBC = inode number * 64
+	rl	b
+	rl	e
+	rl	d
+	dec	a
+	jr	nz,rdi1
+	ld	ix,SRCFBK
+	call	FSEEK		; seek to inode start
+	jr	c,rdi2
+	ld	de,inode
+	ld	bc,IESZ
+	call	FREAD		; read inode
+	ret	nc
+rdi2:	ld	hl,ixfdb	; on error, display message
+	ld	(ERRFNB),hl
+	call	SYSERR		; and return with CY set
+	call	CLSIXF		; after closing index file [TODO: file is
+	scf			;  closed anyway in main loop above?]
+	ret
+
+;-----------------------------------------------------------------------
+
+IF 0
+
+; Collect inode usage statistics
+
+INOFRE:	ld	ix,SRCFBK
+	call	FSIZE		; get index file size
+	ret	c
+	ld	b,6
+ino1:	srl	h		; divide by 64 to get number of inodes
+	rr	l
+	rr	d
+	rr	e
+	djnz	ino1
+	ld	(numino),de	; store number of inodes
+	ld	bc,0
+	ld	(freino),bc	; clear free inode count
+	inc	bc		; inode numbers start at 1
+ino2:	push	de
+	push	bc
+	call	RDINOD
+	pop	bc
+	pop	de
+	ret	c
+	ld	hl,(inode+IE.LCNT)
+	ld	a,h
+	or	l		; inode in use?
+	jr	nz,ino3		; skip if yes
+	ld	hl,(freino)
+	inc	hl		; else update count
+	ld	(freino),hl
+ino3:	inc	bc
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,ino2		; loop until all scanned
+	ret
+
+ELSE
+
+; Collect inode usage statistics.
+
+INOFRE:	ld	e,(ix+F.DEV)
+	ld	d,(ix+F.DEV+1)
+	ld	a,(ix+F.UNIT)
+	ld	(bmfdb+F.DEV),de ; set device name in bitmap FDB
+	ld	(bmfdb+F.UNIT),a
+
+	ld	hl,bmfdb
+	ld	de,(SRCFBK+FC.FDB)
+	ld	bc,FNSZ
+	ldir
+	ld	hl,SRCBUF
+	ld	(SRCFBK+FC.BUF),hl
+	ld	ix,SRCFBK
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN		; open bitmap file
+	jr	nc,ino0		; jump on success
+
+	ld	hl,bmfdb	; otherwise display error message
+	ld	(ERRFNB),hl
+	jp	SYSERR		; and return
+
+ino0:	call	FRDBLK		; read first block
+	jp	c,ino31
+	ld	hl,BMHSZ
+	call	CPHLDE		; read successful?
+	ld	a,E.EOF
+	jp	c,ino31		; branch if not
+
+	ld	hl,(SRCBUF+8)
+;;	ld	(ixbvbn),hl	; VBN of index file bitmap
+	xor	a
+	add	hl,hl
+	adc	a,a		; *2
+	ld	d,a
+	ld	e,h
+	ld	b,l
+	ld	c,0		; *512
+	call	FSEEK
+	jr	c,ino31
+
+	call	FRDBLK		; read first index bitmap block
+	jr	c,ino31
+	ld	(bufcnt),de	; remember number of bytes read
+	call	?FINCB		; prepare to read next block
+	ld	hl,BMHSZ
+	call	CPHLDE		; read successful?
+	ld	a,E.EOF
+	jr	c,ino31		; branch if not
+
+	ld	hl,(SRCBUF+0)
+	ld	(numino),hl	; store number of inodes
+	ex	de,hl		; inode count in DE
+
+	ld	hl,SRCBUF+BMHSZ	; skip header
+	ld	(bufptr),hl
+	ld	hl,(bufcnt)
+	ld	bc,-16
+	add	hl,bc
+	ld	(bufcnt),hl
+
+	ld	hl,ctgsz
+	call	CLR24		; clear contiguous block count
+
+	ld	c,0		; bit mask in C
+	ld	hl,0		; free inode count in HL
+
+ino1:	ld	a,c
+	or	a		; time to read next bitmap byte?
+	jr	nz,ino5		; jump if not
+
+	push	hl		; push free inode count
+	push	de		; push total inode count
+
+ino2:	ld	hl,(bufcnt)
+	ld	a,h
+	or	l		; all bytes in buffer processed?
+	jr	z,ino3		; read next block if yes
+	dec	hl
+	ld	(bufcnt),hl
+
+	ld	hl,(bufptr)
+	ld	a,(hl)		; else get next byte from buffer
+	ld	(bmp),a		; save bitmap byte
+	inc	hl
+	ld	(bufptr),hl
+	jr	ino4
+
+ino3:	ld	hl,SRCBUF
+	ld	(bufptr),hl
+	ld	ix,SRCFBK
+	call	FRDBLK		; read next block
+	jr	c,ino31
+	ld	(bufcnt),de	; remember number of bytes read
+	call	?FINCB
+	ld	a,d
+	or	e		; read successful?
+	jr	nz,ino2		; loop if yes
+	ld	a,E.EOF
+
+	pop	de
+	pop	hl
+ino31:	ld	hl,bmfdb	; otherwise display error
+	ld	(ERRFNB),hl
+	call	SYSERR
+	jr	ino71		; and return after closing bitmap file
+
+ino4:	pop	de		; pop total inode count
+	pop	hl		; pop free inode count
+
+	ld	c,80h		; reset mask to MSBit
+ino5:	ld	a,(bmp)
+	and	c		; bitmap bit set?
+	jr	nz,ino6		; jump if yes (used entry)
+	inc	hl		; otherwise increment count
+ino6:	rr	c		; shift mask, note CY clear from above
+	dec	de		; decrement block count
+	ld	a,d
+	or	e		; all bits counted?
+	jr	nz,ino1		; loop if not
+
+ino7:	ld	(freino),hl	; store free inode count
+ino71:	push	af
+	ld	ix,SRCFBK
+	call	FCLOSE		; close bitmap file
+	pop	af		; error/success code
+	ret
+
+ENDIF
+
+;-----------------------------------------------------------------------
+
+; Display disk usage statistics.
+
+DSKUSG:	call	WRNL		; newline
+	ex	de,hl
+	ld	hl,fmsblk
+	push	hl
+	ld	hl,bmfdb
+	call	DVSTR		; device name
+	pop	hl
+	ex	de,hl
+	call	CPSTR
+	ex	de,hl
+
+	push	hl
+	ex	de,hl
+	ld	bc,(frebks)
+	ld	de,(frebks+2)
+	xor	a
+	ld	d,a
+	call	CVTLD		; free blocks
+	ex	de,hl
+	ld	hl,(frebks)
+	ld	a,(frebks+2)
+	ld	b,a
+	call	DEC24
+	ld	a,b
+	or	h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+
+	push	hl
+	push	de
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	ld	de,(frebks)
+	ld	a,(frebks+2)
+	ld	c,a
+	call	SUB24
+	ld	(frebks),hl
+	ld	a,b
+	ld	(frebks+2),a
+	xor	a
+	ld	d,a
+	ld	e,b
+	ld	c,l
+	ld	b,h
+	pop	hl
+	call	CVTLD		; used blocks
+	ex	de,hl
+	ld	hl,(frebks)
+	ld	a,(frebks+2)
+	ld	b,a
+	call	DEC24
+	ld	a,b
+	or	h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+
+	push	hl
+	ex	de,hl
+	ld	bc,(nblks)
+	ld	de,(nblks+2)
+	xor	a
+	ld	d,a
+	call	CVTLD		; total blocks
+	ex	de,hl
+	ld	hl,(nblks)
+	ld	a,(nblks+2)
+	ld	b,a
+	call	DEC24
+	ld	a,b
+	or	h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+
+	push	hl
+	xor	a
+	ld	(de),a
+	call	WRSTR		; output string
+	ex	de,hl
+
+	pop	hl
+	inc	hl
+	call	PLURAL
+	push	hl
+	ex	de,hl
+	ld	bc,(maxctg)
+	ld	de,(maxctg+2)
+	xor	a
+	ld	d,a
+	call	CVTLD		; largest number of contiguous blocks
+	ex	de,hl
+	ld	hl,(maxctg)
+	ld	a,(maxctg+2)
+	ld	b,a
+	call	DEC24
+	ld	a,b
+	or	h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+	xor	a
+	ld	(de),a
+	call	WRSTR
+	ex	de,hl
+
+	ld	hl,(freino)
+	xor	a
+	ex	de,hl
+	call	CVTWD		; free inodes
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	ld	hl,fhmsg
+	call	PLURAL
+
+	push	hl
+	push	de
+	ld	hl,(numino)
+	ld	de,(freino)
+	xor	a
+	sbc	hl,de
+	pop	de
+	ex	de,hl
+	call	CVTWD		; used inodes
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+
+	push	hl
+	ld	hl,(numino)
+	xor	a
+	ex	de,hl
+	call	CVTWD		; total inodes
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	pop	hl
+	inc	hl
+	call	PLURAL
+	xor	a
+	ld	(de),a
+	call	WRSTR
+	call	WRNL
+	ret
+
+fmsblk:	db	' has ',0,' block\s free, ',0
+	db	' block\s used out of ',0,'.',0
+	db	'Largest contiguous space = ',0,' block\s.',0
+
+	IF	0
+fmsbyt:	db	' has ',0,' byte\s free, ',0
+	db	' byte\s used out of ',0,'.',0
+	db	'Largest contiguous space = ',0,' byte\s.',0
+	ENDIF
+
+fhmsg:	db	' index file entr|y is|ies are| free, ',0
+	db	' entr|y|ies| used out of ',0,'.',0
+	
+;-----------------------------------------------------------------------
+
+; Display directory header. HL = finfo, which contains the necessary info.
+
+header:	ld	a,(SWBITS)
+	bit	S1.BR,a		; brief mode?
+	jr	z,hdr1		; jump if not
+
+	ld	a,4
+	ld	(fpln),a	; else init counter of files per line
+
+hdr1:	push	hl
+	call	WRNL		; newline
+	ld	de,hdr
+	call	CPSTR		; copy header
+	ex	de,hl
+	pop	hl
+	push	hl
+	call	DVSTR		; copy device name
+	pop	hl
+	call	DIRSTR		; copy directory name
+	xor	a
+	ld	(de),a
+	call	WRSTR		; output string
+	ld	hl,dtbuf
+	SC	.GDAT
+	ld	de,STRBUF
+	call	nc,DTSTR	; convert current date and time
+	xor	a
+	ld	(de),a
+	call	WRSTR		; output string
+	call	WRNL		; newline
+	xor	a		; return success code
+	ret
+
+hdr:	db	'Directory ',0
+
+;-----------------------------------------------------------------------
+
+; Display summary at the end of the directory listing.
+
+TOTALS:	ld	a,(SWBITS)
+	bit	S1.BR,a		; brief mode?
+	jr	z,tot1		; jump if not
+
+	ld	a,(fpln)
+	cp	4
+	call	nz,WRSTR	; output any remaining file names
+	call	WRNL		; newline
+	ret
+
+tot1:	ld	hl,STRBUF
+	ld	de,smsg0
+	call	CPSTR
+	ld	bc,(csize)
+	ld	de,(csize+2)
+	push	de
+	push	bc
+	xor	a
+	call	CVTLD		; display total file bytes
+	pop	bc
+	pop	de
+	call	DEC32
+	ld	a,d
+	or	e
+	or	b
+	or	c
+	ex	de,hl
+	ld	hl,smsg1
+	call	PLURAL
+	ld	hl,(NFILES)	; get file count into HL
+	xor	a
+	ex	de,hl
+	call	CVTWD		; display number of files
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	ld	hl,smsg2
+	call	PLURAL
+
+  IF 0
+	ex	de,hl
+
+	ld	de,(frebks)	; get free block count
+	ld	c,0		; compute free space size in bytes
+	ld	b,e
+	ld	e,d
+	ld	d,0
+	or	a
+	rl	b
+	rl	e
+	rl	d		; bytes free = blocks free * 512
+
+	push	de
+	push	bc
+	xor	a
+	call	CVTLD		; display value
+	pop	bc
+	pop	de
+	call	DEC32
+	ld	a,d
+	or	e
+	or	b
+	or	c
+	ex	de,hl
+	ld	hl,smsg3
+	call	PLURAL
+  ENDIF
+	xor	a
+	ld	(de),a
+	call	WRSTR
+	call	WRNL
+	ret
+
+smsg0:	db	'Total of ',0
+smsg1:	db	' byte\s in ',0
+smsg2:	db	' file\s.',0
+
+	IF	0
+smsg2:	db	' file\s, ',0
+smsg3:	db	' byte\s free.',0
+	ENDIF
+
+;-----------------------------------------------------------------------
+
+; Display grand total.
+
+GTOTAL:	ld	a,(SWBITS)
+	bit	S1.BR,a		; brief mode?
+	ret	nz		; return if yes
+
+	ld	hl,(ndirs)
+	ld	a,h
+	or	l
+	ret	z
+	dec	hl
+	ld	a,h
+	or	l
+	ret	z
+
+	ld	hl,STRBUF
+	ld	de,gtmsg0
+	call	CPSTR
+	ld	bc,(tsize)
+	ld	de,(tsize+2)
+	push	de
+	push	bc
+	xor	a
+	call	CVTLD		; total file bytes
+	pop	bc
+	pop	de
+	call	DEC32
+	ld	a,d
+	or	e
+	or	b
+	or	c
+	ex	de,hl
+	ld	hl,gtmsg1
+	call	PLURAL
+	ld	hl,(tfiles)	; get file count into HL
+	xor	a
+	ex	de,hl
+	call	CVTWD		; display number of files
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	ld	hl,gtmsg2
+	call	PLURAL
+	ld	hl,(ndirs)
+	xor	a
+	ex	de,hl
+	call	CVTWD
+	ex	de,hl
+	dec	hl
+	ld	a,h
+	or	l
+	ld	hl,gtmsg3
+	call	PLURAL
+	xor	a
+	ld	(de),a
+	call	WRSTR
+	call	WRNL
+	ret
+
+gtmsg0:	db	'Grand total of ',0
+gtmsg1:	db	' byte\s in ',0
+gtmsg2:	db	' file\s in ',0
+gtmsg3:	db	' director|y|ies|.',0
+
+;-----------------------------------------------------------------------
+
+; Set directory name in file descriptor block (IX = FDB).
+
+SETDIR:	ld	bc,F.DIR
+	ld	a,9
+sd0:	push	ix
+	pop	de
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	b,a
+sd1:	ld	a,(hl)
+	or	a
+	jr	z,sd2
+	cp	' '
+	jr	z,sd2
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	sd1
+sd2:	inc	b
+	dec	b
+	ret	z
+	ld	a,' '
+sd3:	ld	(de),a
+	inc	de
+	djnz	sd3
+	ret
+
+; Set file name in file descriptor block
+
+SETNAM:	ld	bc,F.NAME
+	ld	a,9
+	jr	sd0
+
+; Set extension in file descriptor block
+
+SETEXT:	ld	bc,F.EXT
+	ld	a,3
+	jr	sd0
+
+; Set device name and unit in file descriptor block
+
+SETDEV:	ld	a,(hl)
+	ld	(ix+F.DEV),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert device name (HL = file info) to string @DE
+
+DVSTR:	ld	bc,F.DEV
+	add	hl,bc		; point to F.DEV
+	ldi
+	ldi
+	ld	a,(hl)
+	ex	de,hl
+	call	CVTBD
+	ld	(hl),':'
+	inc	hl
+	ex	de,hl
+	ret
+
+; Convert directory name (HL = file info) to string @DE
+
+DIRSTR:	ld	bc,F.NAME
+	add	hl,bc		; point to F.NAME
+PRDIR:	ld	a,'['
+	ld	(de),a
+	inc	de
+	ld	b,9
+pdn1:	ld	a,(hl)
+	cp	' '
+	jr	z,pdn2
+	ld	(de),a
+	inc	de
+pdn2:	inc	hl
+	djnz	pdn1
+	ld	a,']'
+	ld	(de),a
+	inc	de
+	ret
+
+; Convert file date and time (HL = timestamp) to string @DE
+
+DTSTR:	push	hl
+	call	valdt		; validate date and time
+	pop	hl
+	ret	c		; return if error
+	call	DATSTR		; convert date
+	ld	a,' '		; separator
+	ld	(de),a
+	inc	de
+;;	ld	(de),a
+;;	inc	de
+	call	TIMSTR		; convert time
+	ret
+
+DATSTR:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ex	de,hl
+	ld	a,(de)		; day
+	call	CVTBH
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	ld	a,(de)		; month
+	call	BCD2BIN
+	dec	a
+	ld	c,a
+	add	a,a
+	add	a,c
+	ex	de,hl
+	push	hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	bc,3
+	ldir
+	pop	hl
+	ex	de,hl
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	dec	de
+	ld	a,(de)		; year
+	call	CVTBH
+	inc	de
+	ld	a,(de)
+	call	CVTBH
+	ex	de,hl
+	pop	hl
+	ret
+
+TIMSTR:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ex	de,hl
+	ld	a,(de)		; hour
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; sec
+	call	CVTBH
+	ex	de,hl
+	pop	hl
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+; Validate date (only day and month)
+
+valdt:	inc	hl
+	inc	hl
+	ld	c,12h+1		; month
+	call	vldt1		; check if in range
+	ret	c
+	ld	c,31h+1		; day
+vldt1:	ld	a,(hl)
+	inc	hl
+	or	a
+	scf
+	ret	z
+	cp	c
+	ccf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert 'C'ontiguous and 'L'ocked attrib bits to string @DE
+
+ATRSTR:	ex	de,hl
+	ld	c,a
+	ld	(hl),' '
+	inc	hl
+	ld	a,c
+	and	FA.CTG
+	ld	a,'C'
+	jr	nz,pa1
+	ld	a,' '
+pa1:	ld	(hl),a
+	inc	hl
+	ld	a,c
+	and	FA.LCK
+	ld	a,'L'
+	jr	nz,pa2
+	ld	a,' '
+pa2:	ld	(hl),a
+	inc	hl
+	ld	(hl),' '
+	inc	hl
+	ex	de,hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert file protection bits in DE to string @HL
+
+FPSTR:	ld	a,d
+	call	pp1
+	ld	(hl),','
+	inc	hl
+	ld	a,e
+pp1:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	pp2
+	ld	(hl),','
+	inc	hl
+	pop	af
+pp2:	and	0Fh
+	ld	b,a
+	ld	c,'R'
+	bit	3,b
+	call	nz,pp3
+	ld	c,'W'
+	bit	2,b
+	call	nz,pp3
+	ld	c,'E'
+	bit	1,b
+	call	nz,pp3
+	ld	c,'D'
+	bit	0,b
+	call	nz,pp3
+	ret
+pp3:	ld	(hl),c
+	inc	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Clear 32-bit number at (HL)
+
+CLR32:	xor	a
+	ld	(hl),a
+	inc	hl
+	; continue below
+
+; Clear 24-bit number at (HL)
+
+CLR24:	xor	a
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	ret
+
+; Add 32-bit number in HLDE to 32-bit accum at (BC)
+
+ADD32:	ld	a,(bc)
+	add	a,e
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,d
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,l
+	ld	(bc),a
+	inc	bc
+	ld	a,(bc)
+	adc	a,h
+	ld	(bc),a
+	ret
+
+; Decrement 32-bit number in DEBC
+
+DEC32:	ld	a,c
+	dec	c
+	or	a
+	ret	nz
+	ld	a,b
+	dec	b
+	or	a
+	ret	nz
+	ld	a,e
+	dec	e
+	or	a
+	ret	nz
+	dec	d
+	ret
+
+; Increase 24-bit value in BHL
+
+INC24:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+; Increase 24-bit value at (HL)
+
+INC24M:	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+; Decrease 24-bit value in BHL
+
+DEC24:	ld	a,l
+	dec	l
+	or	a
+	ret	nz
+	ld	a,h
+	dec	h
+	or	a
+	ret	nz
+	dec	b
+	ret
+
+; BHL += A, sets CY on overflow
+
+ADD24B:	add	a,l
+	ld	l,a
+	ret	nc
+	or	a
+	inc	h
+	ret	nz
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += DE, sets CY on overflow
+
+ADD24W:	add	hl,de
+	ret	nc
+	or	a
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += CDE, sets CY on overflow
+
+ADD24:	add	hl,de
+	ld	a,b
+	adc	a,c
+	ld	b,a
+	ret
+
+; BHL -= CDE, sets CY on borrow
+
+SUB24:	or	a
+	sbc	hl,de
+	ld	a,b
+	sbc	a,c
+	ld	b,a
+	ret
+
+; Compare two 24-bit values, returns CY if BHL > CDE
+
+CMP24:	ld	a,c
+	cp	b
+	ret	nz
+	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+; Convert blocks in BHL to clusters. Returns remainder in A.
+
+BK2CL:	ld	a,(clfact)
+	or	a
+	ret	z
+	push	de
+	ld	e,a
+	ld	d,a
+	xor	a
+bc1:	srl	b		; clusters = blocks >> cluster_factor
+	rr	h
+	rr	l
+	rra
+	dec	d
+	jr	nz,bc1
+bc2:	rlca
+	dec	e
+	jr	nz,bc2
+	pop	de
+	ret
+
+; Convert clusters in BHL to blocks.
+
+CL2BK:	ld	a,(clfact)
+	or	a
+	ret	z
+cb1:	add	hl,hl		; blocks = clusters << cluster_factor
+	rl	b
+	dec	a
+	jr	nz,cb1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Copy string @HL to @DE, handling escaped plural of words according
+; to flag in A.
+
+PLURAL:	ld	b,a
+pl1:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	'|'
+	jr	z,pl3
+	cp	'\'
+	jr	nz,pl2
+	inc	hl
+	inc	b
+	dec	b
+	jr	nz,pl2
+	inc	hl
+pl2:	ld	a,(hl)
+	ld	(de),a
+	inc	hl
+	inc	de
+	jr	pl1
+
+pl3:	inc	hl
+	inc	b
+	dec	b
+	jr	nz,pl4
+	call	pl6
+	call	pl5
+	jr	pl1
+pl4:	call	pl5
+	call	pl6
+	jr	pl1
+
+pl5:	ld	a,(hl)
+	inc	hl
+	cp	'|'
+	jr	nz,pl5
+	ret
+
+pl6:	ld	a,(hl)
+	inc	hl
+	cp	'|'
+	ret	z
+	ld	(de),a
+	inc	de
+	jr	pl6
+
+;-----------------------------------------------------------------------
+
+WRNL:	xor	a
+	ld	(STRBUF),a
+WRSTR:	ld	hl,STRBUF
+	push	hl
+	ld	ix,DSTFBK
+	call	FPUTLN
+	pop	hl
+	ld	(hl),0
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+bmfdb:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'MASTER   '
+	db	'BITMAP   ','SYS'
+	dw	0
+	db	0,0
+	dw	0
+
+ixfdb:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'MASTER   '
+	db	'INDEXF   ','SYS'
+	dw	0
+	db	0,0
+	dw	0
+
+fpln:	ds	1		; files per line in /BR mode
+bufcnt:	ds	2		; number of bytes read into buf
+bufptr:	ds	2		; pointer into buf
+bmp:	ds	1		; current bitmap byte
+ino:	ds	2		; inode number
+inode:	ds	IESZ		; buffer for index file entry
+ndirs:	ds	2		; number of directories
+tfiles:	ds	2		; grand total of files
+tsize:	ds	4		; grand total size
+csize:	ds	4		; cumulative file size for directory
+nblks:	ds	3		; total disk blocks
+frebks:	ds	3		; free disk blocks
+ctgsz:	ds	3		; size of current contiguous span
+maxctg:	ds	3		; largest number of contiguous clusters
+ccnt:	ds	3		; cluster count
+numino:	ds	2		; total inodes
+freino:	ds	2		; inodes free
+clfact:	ds	1		; cluster factor
+ixbvbn:	ds	2		; VBN of index file bitmap in bitmap file
+dtbuf:	ds	8		; date/time buffer
+lnptr:	ds	2		; pointer to output string
+
+STRBUF:	ds	132		; output string buffer
+
+	end

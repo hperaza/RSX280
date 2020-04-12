@@ -1,0 +1,65 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+EOF	equ	1Ah
+
+	public	FGETLN
+
+	extrn	FGETCH
+
+	cseg
+
+; HL = dest buf, B = length. Returns actual length in C.
+
+; TODO: when reading from terminal
+; - when reading from terminal, CR terminates line (LF ignored),
+;   else end of line is LF (CR stored).
+; - when reading from terminal, output a CR/LF before buffer read
+;   (done in FRDBLK?).
+
+FGETLN:	ld	c,0
+fln1:	call	FGETCH		; get char from file or device
+	jr	c,fln2		; on error, return
+	cp	LF
+	jr	z,fln1		; ignore LF
+	cp	CR
+	jr	z,fln2		; CR terminates line - note CY clear
+	ld	(hl),a		; else store char in buffer
+	cp	EOF
+	ld	a,E.EOF		; EOF also terminates input and sets EOF flag
+	scf
+	jr	z,fln2
+	inc	hl
+	inc	c
+	djnz	fln1		; and loop for more
+	scf			; error - line too long
+fln2:	ld	(hl),0
+	ret
+
+	end

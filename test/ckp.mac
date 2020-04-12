@@ -1,0 +1,197 @@
+	.Z80
+
+	ident	'1.1'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	extrn	GCCL,PUTCH,PUTSTR,EXIT,PERROR,UCASE
+
+KCALL	macro	addr
+	call	$SWSTK
+	dw	addr
+	endm
+
+;-----------------------------------------------------------------------
+
+; Program to force checkpointing of a task.
+
+	cseg
+
+START::	ld	sp,stack
+	call	GCCL		; get MCR command line
+	jp	c,err1
+	call	skpnam		; skip our task name
+	jp	z,err1
+	ld	de,tsknam
+	call	getnam		; get task name
+	ld	a,(tsknam)
+	cp	' '
+	jp	z,err1
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,err2
+
+	ld	hl,($TLIST)
+find:	ld	a,h
+	or	l		; end of list?
+	ld	a,E.TNF
+	jr	z,err2		; error if yes, task not found
+
+	push	hl
+	call	cmpnam		; compare names
+	pop	ix
+	jr	z,found
+
+	ld	l,(ix+T.TCBL)	; next in list
+	ld	h,(ix+T.TCBL+1)
+	jr	find		; loop
+
+found:	bit	TS.ACT,(ix+T.ST)
+	ld	a,E.TNAC
+	jr	z,err2		; error, task not active
+
+	KCALL	$CHKPT		; initiate checkpoint
+	jr	c,err2
+
+	ld	hl,EX.SUC	; success
+	jp	EXIT
+
+err1:	call	CMDERR
+	ld	hl,EX.SEV
+	jp	EXIT
+
+err2:	call	SYSERR
+	ld	hl,EX.SEV
+	jp	EXIT
+
+err3:	ld	hl,etnf
+	call	ERROR
+	ld	hl,EX.SEV
+	jp	EXIT
+
+; Compare task names
+
+cmpnam:	ld	de,T.NAME
+	add	hl,de
+	ld	de,tsknam
+	ld	b,6
+tcmp:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	tcmp
+	ret
+
+; Error display routines
+
+SYSERR:	push	af
+	ld	hl,prefx
+	call	PUTSTR
+	pop	af
+	call	PERROR		; display standard error message
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,prefx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+prefx:	db	CR,LF,'CKP -- ',0
+snerr:	db	'Syntax error',0
+etnf:	db	'Task not in system or not active',0
+
+; return Z if char in A is blank
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; skip blanks
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; skip name
+
+skpnam:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	jr	z,skipsp	; return via skipsp
+	inc	hl
+	jr	skpnam
+
+; compute string length
+
+strlen:	ld	bc,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	bc
+	jr	strl1
+
+; read task name
+
+getnam:	call	skipsp		; skip spaces
+	ld	b,6		; task name is 6 chars long
+gn1:	ld	a,(hl)		; get char
+	call	UCASE		; convert it to uppercase
+	call	isblnk		; end of name?
+	jr	z,gn2		; exit loop if yes
+	ld	(de),a		; else store char
+	inc	hl		; advance pointers
+	inc	de
+	djnz	gn1		; loop for more
+gn2:	inc	b
+	dec	b		; all chars stored?
+	jr	z,gn4		; jump if yes
+	ld	a,' '
+gn3:	ld	(de),a		; else pad with spaces
+	inc	de
+	djnz	gn3
+	ret
+gn4:	ld	a,(hl)		; skip any extra chars in src string
+	call	isblnk
+	ret	z
+	inc	hl
+	jr	gn4
+
+	dseg
+
+tsknam:	ds	6		; buffer for task name
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,18 @@
+	.Z80
+
+	public	FABS
+
+	extrn	FR0
+
+; Compute absolute value of FR0
+
+; FR0 = abs(FR0)
+
+	cseg
+
+FABS:	ld	a,(FR0)
+	and	7Fh		; simply kill the sign bit
+	ld	(FR0),a
+	ret
+
+	end

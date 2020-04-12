@@ -1,0 +1,446 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of VMR, an utility to configure the RSX180       ;
+;   system image. Copyright (C) 1985-2020, Hector Peraza.              ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   VMR - Symbol Table routines                                        ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	ERRORS.INC
+	include	VMR.INC
+
+	public	LDSYM,OPENF,READF,CLOSEF,GETDT,ADDEXT,ADDHLA
+
+	extrn	PFN,ERRMSG,UCASE,CPHLDE,BCD2BIN,CVTBH
+	extrn	IBUF,STRBUF,SYMTBL
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Load symbols symbol table
+
+LDSYM:	ld	de,SYMEXT
+	call	OPENF		; open symbol file
+	ret	c		; TODO: error!
+;;	ld	hl,ERRMS2
+;;	jp	c,FATAL
+	ld	(IBLKS),hl
+
+	ld	hl,-1
+	ld	(IBLKNO),hl	; reset block number for sequential read
+	ld	hl,0
+	ld	(ICNT),hl	; reset byte count
+
+lds1:	call	RDVAL		; get symbol value
+	jp	c,lds2
+	ld	(SVAL),hl	; store it
+
+	call	RDNAME		; get symbol name
+	jp	c,lds2
+	ld	a,c
+	or	a
+	jp	z,lds2		; exit loop if null name
+
+	ex	de,hl		; get ptr to name into DE
+	call	FNDSYM		; lookup symbol
+	jr	c,lds1		; loop if not found
+
+	ld	bc,(SVAL)
+	ld	(hl),c		; else set value
+	inc	hl
+	ld	(hl),b
+
+	ld	a,(de)
+	or	80h		; set flag
+	ld	(de),a
+
+	jp	lds1		; loop until all procesed
+
+lds2:	call	CLOSEF		; close symbol file
+
+	; validate symbols (ensure all resolved - none is null)
+
+	ld	hl,SYMTBL
+lds3:	ld	a,(hl)		; get length field
+	or	a		; end of table?
+	ret	z		; return if yes
+	bit	7,a		; flag set?
+	jr	z,undef		; error if not
+	and	7Fh		; mask length bits
+	add	a,3
+	call	ADDHLA		; move pointer to next table entry
+	jr	lds3		; and loop
+
+undef:	and	7Fh
+	inc	hl		; display 'undefined symbol' error message
+	push	hl
+	ld	de,STRBUF
+	ld	hl,SNFERR
+	ld	bc,SNFLEN
+	ldir
+	pop	hl
+	ld	c,a		; note B=0 from ldir above
+	ldir
+	xor	a
+	ld	(de),a
+	ld	hl,STRBUF
+	call	ERRMSG
+	scf
+	ret
+
+SYMEXT:	db	'SYM'
+
+SNFERR:	db	'Symbol not found: '
+SNFLEN	equ	$-SNFERR
+  
+; Read hex value from symbol file. Returns value in HL.
+
+RDVAL:	ld	hl,0
+	ld	b,4		; 4 hex digits
+rdv0:	call	IGETB		; get byte
+	ret	c
+	call	UCASE
+	sub	'0'		; convert to binary
+	cp	9+1
+	jr	c,rdv1
+	sub	'A'-'0'-10
+rdv1:	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; *16
+	call	ADDHLA		; +digit
+	djnz	rdv0
+	call	IGETB		; skip the space that follows
+	or	a
+	ret
+
+; Read symbol name from file. Returns ptr to string in HL, length in C.
+
+RDNAME:	ld	hl,SNAME
+	ld	c,0		; reset name length
+rdn0:	call	IGETB		; get byte
+	ret	c
+	cp	' '		; test for delimiter
+	jr	z,rdn1
+	cp	TAB
+	jr	z,rdn1
+	cp	CR
+	jr	z,rdn1
+	cp	LF
+	jr	z,rdn1
+	cp	EOF
+	jr	z,rdn1
+	ld	b,a
+	ld	a,c
+	cp	8		; 8 is max length
+	jr	nc,rdn0		; ignore extra
+	ld	(hl),b		; store char
+	inc	hl		; advance pointer
+	inc	c		; inc length
+	jr	rdn0		; loop
+rdn1:	ld	hl,SNAME	; return HL = str, len in C
+	cp	CR
+	call	z,IGETB		; skip LF after CR
+	or	a
+	ret
+
+; Find symbol in table. Called with DE = symbol name, length in C.
+; If found, returns HL = value field and DE = start of entry.
+
+FNDSYM:	ld	hl,SYMTBL
+fnd1:	ld	a,(hl)
+	or	a		; end of table?
+	scf
+	ret	z		; not found
+	and	7Fh		; mask length bits
+	cp	c		; same length?
+	jr	nz,fnd4		; skip if not
+	push	hl		; else compare names
+	push	de
+	ld	b,c
+	inc	hl
+fnd2:	ld	a,(de)
+	cp	(hl)
+	jr	nz,fnd3		; branch if no match
+	inc	hl
+	inc	de
+	djnz	fnd2
+	pop	de
+	pop	de		; return start of entry in DE
+	or	a
+	ret
+
+fnd3:	pop	de
+	pop	hl
+fnd4:	ld	a,(hl)
+	inc	hl
+	and	7Fh
+	call	ADDHLA		; skip name
+	inc	hl		; skip value
+	inc	hl
+	jr	fnd1
+
+; Get byte from input file
+
+IGETB:	push	hl
+	push	de
+	push	bc
+	ld	hl,(ICNT)
+	ld	a,h
+	or	l
+	jr	nz,ird1
+	ld	hl,(IBLKNO)
+	inc	hl
+	ld	(IBLKNO),hl
+	ld	de,(IBLKS)
+	call	CPHLDE
+	scf
+	jr	z,ird2
+	ld	de,IBUF
+	call	READF		; read next block
+	jr	c,ird2
+	ld	(ICNT),hl
+	ld	a,h
+	or	l
+	scf
+	jr	z,ird2
+	ld	hl,IBUF
+	ld	(IPTR),hl
+ird1:	ld	hl,(ICNT)
+	dec	hl
+	ld	(ICNT),hl
+	ld	hl,(IPTR)
+	ld	a,(hl)
+	inc	hl
+	ld	(IPTR),hl
+	or	a
+ird2:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Add file ext @DE to FCB @IX if necessary.
+
+ADDEXT:	ld	a,(ix+F.ATTR)
+	and	FN.EXT
+	ret	nz
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ret
+
+; Set file ext @DE into FCB @IX.
+
+SETEXT:	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ret
+
+;-----------------------------------------------------------------------
+
+; Open input file. Called with HL = filename, DE = extension.
+; Returns in HL the file size in blocks.
+
+OPENF:	ld	ix,IFDB
+	push	de
+	call	PFN
+	pop	de
+	ret	c
+	call	ADDEXT
+	ld	de,(IFDB+F.DEV)
+	ld	a,(IFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNFIL
+	SC	.ALUN
+	ret	c
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR ; note: shared mode
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,IFDB
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,IO.RAT
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,IFDB
+	ld	(qio2+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	hl,(IFDB+F.NUSED)
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret	
+
+CLOSEF:	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Read 512-byte block from input file, return actual number of
+; bytes read in HL. Called with HL = block number, DE = buffer address.
+
+READF:	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BUF),de
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert current date and time to string @DE
+
+GETDT:	ld	hl,-8
+	add	hl,sp		; allocate 8-byte buffer
+	ld	sp,hl
+	SC	.GDAT		; get system time
+	jr	c,DT1
+
+	ld	ix,0
+	add	ix,sp
+
+	ex	de,hl		; address to store date now in HL
+	ld	a,(ix+3)	; day
+	call	CVTBH
+	ld	a,(ix+2)	; month
+	call	BCD2BIN
+	dec	a		; make it base 0
+	add	a,a
+	add	a,a		; *4
+	ex	de,hl		; DE = dst
+	ld	hl,MONTHS
+	call	ADDHLA		; HL = src
+	ld	bc,5
+	ldir			; store month name and separators
+	ex	de,hl
+	ld	a,(ix+0)	; year
+	call	CVTBH
+	ld	a,(ix+1)	; year
+	call	CVTBH
+	ld	a,' '
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl		; address to store time
+
+	ld	a,(ix+4)	; hours
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+5)	; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	ld	a,(ix+6)	; sec
+	call	CVTBH
+	ex	de,hl
+
+DT1:	xor	a
+	ld	(de),a
+	ld	hl,8
+	add	hl,sp
+	ld	sp,hl		; cleanup stack
+	ret
+
+MONTHS:	db	'-Jan-Feb-Mar-Apr-May-Jun-Jul-Aug-Sep-Oct-Nov-Dec-'
+
+; HL += A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+SNAME:	ds	8		; symbol name
+SVAL:	ds	2		; symbol value
+
+IBLKS:	ds	2		; input file size in blocks
+IBLKNO:	ds	2
+ICNT:	ds	2
+IPTR:	ds	2
+
+IFDB:	ds	FINFSZ
+
+qio1:	QIOW$	IO.ACC,LUNFIL,EIO,iosb,,<IFDB>
+qio2:	QIOW$	IO.RVB,LUNFIL,EIO,iosb,,<,,,,>
+
+iosb:	ds	4
+
+	end

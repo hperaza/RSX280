@@ -1,0 +1,870 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Handling of Variables (Numeric, String, Logical).
+
+	.Z80
+
+	include	ICP.INC
+
+	IF	DEBUG
+	include SYSFN.INC	; for DBGRST
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	public	SHVARS,SHMEM,SHIOCH
+
+	extrn	PUTCH,PUTSTR,CRLF,HLDEC,HLHEX,HLNEG
+	ENDIF
+
+	public	CLRVAR,FNDVAR,GETVAR,SETNV,SETSV,SETLV,ALLOC
+	public	FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
+
+	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG
+	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR
+
+;-----------------------------------------------------------------------
+
+; Clear variables
+
+CLRVAR:	ld	hl,($MEMRY)
+	ld	(stvar),hl
+	ld	(hl),0FFh	; 0FFh is end of variables
+	ld	(endvar),hl
+	ld	hl,(MEMTOP)
+	ld	(hl),0FFh	; clear also the dynamic string storage
+	ld	(strbeg),hl
+	ret
+
+; Init file buffers
+
+INIBUF:	ld	hl,filchn
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	bc,2*MAXFIL-1
+	xor	a
+	ld	(hl),a
+	ldir
+	ret
+
+	IF	DEBUG	
+
+; Show variables
+
+SHVARS:	call	CRLF
+	ld	hl,(stvar)	; get start of variable area into HL
+v1:	ld	a,(hl)
+	inc	a		; end of variables?
+	ret	z		; return if yes
+	dec	a
+	push	af		; save variable type
+	inc	hl
+	call	PUTSTR		; display variable name
+	inc	hl
+	pop	af
+	push	af
+	call	vtype		; display variable type
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; get value into DE
+	inc	hl
+	pop	af		; restore variable type
+	bit	7,a		; numeric?
+	jr	nz,vnum
+	bit	6,a		; logical (boolean)?
+	jr	nz,vlog
+	ld	c,'"'
+	call	PUTCH
+	ex	de,hl
+	call	PUTSTR		; display the value
+	ex	de,hl
+	ld	c,'"'
+	call	PUTCH
+	call	CRLF
+	jr	v1
+vnum:	ex	de,hl
+	call	hlsdec		; display value as signed decimal
+	ex	de,hl
+	call	CRLF
+	jr	v1
+vlog:	ld	a,d
+	or	e
+	ld	c,'T'
+	jr	nz,vl1
+	ld	c,'F'
+vl1:	call	PUTCH
+	call	CRLF
+	jr	v1
+
+vtype:	call	print
+	db	' [',0
+	bit	7,a		; numeric?
+	ld	c,'N'
+	jr	nz,vt1
+	bit	6,a		; logical (boolean)?
+	ld	c,'L'
+	jr	nz,vt1
+	ld	c,'S'		; else is string
+vt1:	call	PUTCH
+	call	print
+	db	'] = ',0
+	ret
+
+; Show memory used by variables
+
+SHMEM:	call	CRLF
+	ld	hl,(MEMTOP)
+	ld	de,(strbeg)
+	or	a
+	sbc	hl,de
+	ld	de,(endvar)
+	add	hl,de
+	ld	de,(stvar)
+	or	a
+	sbc	hl,de
+	xor	a		; filler
+	call	HLDEC
+	call	print
+	db	' used, ',0
+	call	FREMEM
+	xor	a
+	call	HLDEC
+	call	print
+	db	' free',CR,LF,0
+	ret
+
+; Show I/O channel usage
+
+SHIOCH:	call	CRLF
+	ld	hl,filchn
+	ld	b,MAXFIL
+	ld	c,0
+sio1:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	call	print
+	db	'Channel #',0
+	push	hl
+	ld	l,c
+	ld	h,0
+	xor	a
+	call	HLDEC
+	call	print
+	db	' buf = ',0
+	ex	de,hl
+	call	HLHEX
+	call	CRLF
+	pop	hl
+	inc	c
+	djnz	sio1
+	ret
+
+print:	ex	(sp),hl
+	push	af
+	call	PUTSTR
+	pop	af
+	ex	(sp),hl
+	ret
+
+; Print HL as signed decimal number
+
+hlsdec:	ld	a,h
+	or	a
+	jp	p,hls1
+	ld	c,'-'
+	call	PUTCH
+	call	HLNEG
+hls1:	xor	a		; filler
+	jp	HLDEC
+
+	ENDIF
+
+; Get amount of free memory into HL
+
+FREMEM:	ld	hl,(strbeg)
+	ld	de,(endvar)
+	or	a
+	sbc	hl,de
+	dec	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	IF	0
+
+; Check for letter, returns CY clear on success
+
+isletr:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret	nc
+	cp	'a'
+	ret	c
+	cp	'z'+1
+	ccf
+	ret
+
+; Check for valid variable name character, returns CY set on bad character.
+
+isvok:	call	isletr
+	ret	nc
+	call	ISDIG
+	ret	nc
+	cp	'?'
+	ret	z
+	cp	'_'
+	ret	z
+	cp	'@'
+	ret	z
+	scf
+	ret
+
+	ENDIF
+
+; Compare strings (HL) and (DE).
+
+strcmp:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	strcmp
+
+; Return length of (HL) string in C.
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+; Check for available memory, BC = requested space.
+; If no space is available, garbage collection will be attempted.
+; Returns CY if not enough memory.
+; avail2 and avail4 are convenience entry points, they add 2 and 4 to BC
+; respectively before check.
+
+avail4:	inc	bc
+	inc	bc
+avail2:	inc	bc
+	inc	bc
+avail?:	push	hl
+	push	de
+	push	bc
+	ld	hl,(endvar)
+	add	hl,bc
+	inc	hl
+	ld	de,(strbeg)
+	call	CPHLDE		; returns CY if endvar + space >= strbeg
+	jr	nc,av1
+	push	hl
+	call	gbcol		; try garbage collection
+	pop	hl
+	ld	de,(strbeg)
+	call	CPHLDE
+	jr	nc,av1
+av2:	push	hl
+	ld	hl,2048		; didn't work, try extending task by 2K
+	call	EXTEND
+	pop	hl
+	jr	c,av1
+	push	hl
+	call	gbcol
+	pop	hl
+	ld	de,(strbeg)
+	call	CPHLDE
+	jr	c,av2
+av1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find variable, name is in (DE)
+; If found, return pointer to value in HL and type bits in A.
+; If not found, return CY and HL pointing to end of var area.
+
+FNDVAR:	ld	hl,(stvar)	; point to start of variables
+fv1:	ld	a,(hl)		; get length and type
+	inc	a		; end of variables?
+	scf
+	ret	z		; return CY if yes -> variable not found
+	dec	a
+	push	hl
+	inc	hl		; skip length byte
+	push	de
+	call	strcmp		; compare names
+	pop	de
+	jr	z,fv3		; jump if equal -> variable found
+	pop	hl
+fv2:	ld	a,(hl)
+	and	3Fh
+	inc	hl		; skip over length,
+	inc	hl		;  null terminator
+	inc	hl		;   and value
+	inc	hl
+	call	ADDHLA		; point to next variable
+	jr	fv1
+fv3:	pop	bc		; pop saved start of variable
+	ld	a,(bc)		; get length + type
+	and	0C0h		; leave type bits
+	inc	hl		; skip null terminator, point to value
+	ret			; and return with CY clear
+
+; Find variable and return value.
+; DE = var name, C = 0 for normal variables, <>0 for special.
+; Returns HL = ptr to string or numeric value (according to variable type)
+; and variable type in C. Returns CY set if variable not found.
+
+GETVAR:	or	a		; check 'special variable' flag
+	jp	nz,SPECV	; jump to SPECV if set
+	call	FNDVAR
+	ret	c
+	ld	c,a		; return variable type in C
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get value into HL
+	or	a		; clear CY
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set/add string variable.
+; DE = var name, DSPTR = value (already allocated dynamic string)
+; We can't pass the address of the string in HL, since the call to
+; 'avail?' may cause the garbage collection routine to be called,
+; which in turn rearranges memory and HL might no longer point to
+; the right place. Since 'DSPTR' is pointed to by the block just
+; allocated, its value will be updated during garbage collection.
+; Returns CY on error (no more space).
+
+SETSV:	call	FNDVAR
+	jr	c,sv0		; jump if not found
+	cp	V.STR		; else check type
+	jr	z,sv1		; jump if a string
+	jp	ERRSET		; else error - type mismatch
+
+sv0:	ex	de,hl		; create new string variable
+	push	hl
+	call	strlen		; obtain length of name
+	ld	b,0
+	push	bc
+	call	avail4		; enough memory? (+4 extra)
+	pop	bc
+	pop	hl
+	jr	c,sv2		; jump if not
+	ld	de,(endvar)	; get pointer to end of variable area
+	ld	a,c		; get length
+	ld	(de),a		; store it
+	inc	de
+	inc	bc		; include null byte
+	ldir			; store name
+	ex	de,hl
+	ld	(hl),0		; init value field
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	ld	(hl),0FFh	; set new end of variables
+	ld	(endvar),hl
+	dec	hl		; point back to value field
+	dec	hl
+sv1:	ld	de,(DSPTR)	; get address of string in dynamic area
+	ld	c,(hl)
+	ld	(hl),e
+	inc	hl
+	ld	b,(hl)		; get old value field of var into BC
+	ld	(hl),d		;  and store new value (string address)
+	dec	hl
+	ex	de,hl
+	dec	hl
+	ld	(hl),d		; link string to this var
+	dec	hl
+	ld	(hl),e
+	ld	a,b		; check old value filed
+	or	c
+	ret	z		; return if zero (new variable)
+	xor	a
+	dec	bc
+	ld	(bc),a		; else free the space taken by the old string
+	dec	bc
+	ld	(bc),a
+	ret			; return with CY clear
+
+sv2:	ld	hl,(DSPTR)
+	dec	hl
+	ld	(hl),0		; free the dyn allocated string
+	dec	hl
+	ld	(hl),0
+	jp	nomem		; and return with error
+
+; Set/add logical (boolean) variable.
+; DE = var name, HL = value (0 = false, else true)
+
+SETLV:	ld	c,V.LOG		; var type = boolean
+	jr	stnv1		; to common code
+
+; Set/add numeric variable.
+; DE = var name, HL = value
+
+SETNV:	ld	c,V.NUM		; var type = numeric
+stnv1:	push	hl		; push value
+	push	bc
+	call	FNDVAR
+	pop	bc
+	jr	c,nv0		; jump if not found
+	cp	c		; else check type
+	jr	z,nv1
+	pop	hl
+	jp	ERRSET		; error - type mismatch
+
+nv0:	ld	b,c		; get type into B
+	ex	de,hl		; get variable name into HL
+	push	hl
+	call	strlen		; obtain length of name
+	push	bc
+	ld	b,0
+	call	avail4		; check avail mem (+len +null +value)
+	pop	bc
+	pop	hl
+	jp	c,nomem0	; pop hl and return error
+	ld	de,(endvar)	; point to end of variable area
+	ld	a,c		; get name length into A
+	or	b		; add type bits
+	ld	(de),a		; store it
+	ld	b,0		; BC = length of name
+	inc	de
+	inc	bc		; include null byte
+	ldir			; store name
+	ex	de,hl
+	inc	hl
+	inc	hl
+	ld	(hl),0FFh	; set new end of variables
+	ld	(endvar),hl
+	dec	hl
+	dec	hl
+nv1:	pop	de		; pop value
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d		; store value
+	ret
+
+nomem0:	pop	bc
+nomem:	jp	ERRMEM
+
+ERRSET:	ld	hl,redef
+	jp	ERROR
+
+redef:	db	'Redefining symbol to different type',0
+
+; Allocate space and save a string into the dynamic area.
+; HL = string addr. Returns HL = new string addr (text field)
+
+ALLOC:	push	hl
+	call	strlen		; obtain string length
+	push	bc
+	ld	hl,(strbeg)	; get start of dynamic area into HL
+alc1:	ld	a,(hl)		; first, look for deleted entries
+	ld	c,a		; remember length
+	inc	a		; end of string space?
+	jr	z,alcnew	; alloc new string if yes
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; free block?
+	jr	z,alc3		; jump if yes
+alc2:	inc	hl
+	ld	b,0
+	inc	bc		; skip over null as well
+	add	hl,bc		; point to next entry
+	jr	alc1		; and loop
+alc3:	ld	a,c
+	pop	bc
+	cp	c		; compare sizes
+	jr	nc,alc4		; OK to use it
+	push	bc
+	ld	c,a
+	jr	alc2		; else try next entry
+alc4:	dec	hl
+alc5:	ld	de,DSPTR
+	ld	(hl),e		; init addr field to temporary pointer
+	inc	hl
+	ld	(hl),d
+	inc	hl		; point to text area
+	ld	(DSPTR),hl
+	pop	de		; pop string address into DE
+	push	hl		; remember text start address
+	ex	de,hl		; src in HL, dst in DE
+	ld	b,0
+	inc	bc		; include null byte
+	ldir			; copy the string
+	pop	hl		; pop start address
+	or	a		;  clear CY
+	ret			;   and return
+
+alcnew:	pop	bc		; pop length
+	ld	b,0
+	ld	e,c		; store string length temporarily in E
+	call	avail4		; check for available memory (returns BC += 4)
+	pop	hl
+	ret	c		; return with error if not enough memory
+	push	hl		; push string address
+	ld	hl,(strbeg)
+	or	a
+	sbc	hl,bc
+	ld	(strbeg),hl	; else set new start of dynamic region
+	ld	c,e		; get string length back into C
+	ld	(hl),c		; save length
+	inc	hl
+	jr	alc5		; go to common code: store string and return
+
+;-----------------------------------------------------------------------
+
+; Allocate file buffer structure, called with A = channel number.
+; On success, returns CY flag clear and HL = buffer addr.
+; On error (channel in use or not enough memory), returns CY set.
+
+ALLBUF:	ld	hl,filchn
+	add	a,a
+	call	ADDHLA		; index into channel table
+	ld	a,(hl)		; get entry (ptr to buffer)
+	inc	hl
+	or	(hl)		; null pointer means free entry
+	scf
+	ld	a,1
+	ret	nz		; else error - channel in use
+	ld	bc,FBFSZ
+	call	avail?		; check for available memory
+	ld	a,2
+	ret	c		; error - not enough memory
+	ld	de,(stvar)	; buffer starts where variables are now
+	ld	(hl),d		; set channel pointer
+	dec	hl
+	ld	(hl),e
+	push	de		; push buffer addr		
+	push	hl		; push channel table addr
+	ex	de,hl
+	add	hl,bc		; new start of variables
+	call	MOVARS		; move variables up
+	pop	de		; pop channel table addr into DE
+	pop	hl		; pop buffer addr
+	ld	(hl),e		; set back pointer
+	inc	hl
+	ld	(hl),d
+	dec	hl
+	or	a
+	ret
+
+; Free file buffer. Called with A = channel number
+
+FREBUF:	ld	hl,filchn
+	add	a,a
+	call	ADDHLA
+	ld	e,(hl)		; get buffer addr into DE
+	inc	hl
+	ld	d,(hl)
+	ld	a,d
+	or	e
+	ret	z		; error - channel not open, ignore
+	xor	a
+	ld	(hl),a		; clear table entry
+	dec	hl
+	ld	(hl),a
+	push	de		; dst
+	ld	hl,FBFSZ
+	add	hl,de		; point past end of this buffer
+	push	hl		; src
+	ex	de,hl
+	ld	hl,(stvar)
+	or	a
+	sbc	hl,de		; compute length of buffers above
+	ld	c,l
+	ld	b,h
+	pop	de		; src
+	pop	hl		; dst
+	jr	z,fb2		; no buffers above
+	ex	de,hl		; src in HL, dst in DE
+	push	bc
+	push	de
+	ldir			; move buffers down
+	pop	hl
+	pop	bc
+fb1:	ld	e,(hl)		; get back-pointer
+	inc	hl
+	ld	d,(hl)
+	dec	hl
+	ex	de,hl
+	ld	(hl),e		; update pointer in channel table
+	inc	hl
+	ld	(hl),d
+	ld	hl,FBFSZ
+	add	hl,de		; point to start of next buffer
+	ex	de,hl
+	ld	hl,-FBFSZ
+	add	hl,bc		; count down buffers
+	ld	c,l
+	ld	b,h
+	ex	de,hl
+	ld	a,b
+	or	c
+	jr	nz,fb1
+fb2:	call	MOVARS		; move variables down
+	ret
+
+; Get buffer address. Called with A = channel number.
+
+GETBUF:	ld	hl,filchn
+	add	a,a
+	call	ADDHLA
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Perform garbage collection. This is done in 2 passes:
+;  1. compress all entries towards low memory, removing deleted ones.
+;  2. move the compressed block back to high memory, adjusting pointers.
+
+gbcol:	ld	hl,(strbeg)	; HL = src pointer
+	ld	e,l		; DE = dst
+	ld	d,h
+gbc1:	ld	c,(hl)		; get length of field
+	inc	c		; end reached?
+	jr	z,gbc5		; exit pass 1 if yes
+	push	hl		; remember the start of this entry
+	dec	c
+	ld	b,0
+	inc	hl		; point to address field
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; is this a deleted entry?
+	jr	z,gbc4		; jump if yes
+	inc	hl		; else point to text
+	dec	b		; init char counter to -1
+gbc2:	ld	a,(hl)		; get char from string
+	inc	hl		; advance pointer
+	inc	b		; increment char counter
+	or	a		; end of string?
+	jr	nz,gbc2		; loop if not
+	ld	a,c		; get field length into A
+	sub	b		; string has same length? (all space used?)
+	jr	z,gbc3		; jump if yes
+	ld	c,a		; else save size diff in C
+	pop	hl		; pop entry start address
+	ld	(hl),b		; store new length
+	push	bc
+	ld	c,b
+	ld	b,0		; BC = string length
+	inc	bc		; +len
+	inc	bc		; +addr
+	inc	bc		;
+	inc	bc		; +null
+	ldir			; copy compressed entry
+	pop	bc
+	ld	b,0
+	add	hl,bc		; skip the unused bytes
+	jr	gbc1		;  and loop
+
+; entry fully used, copy it verbatim
+
+gbc3:	pop	hl		; pop entry start address
+	ld	b,0
+	inc	bc		; +len
+	inc	bc		; +addr
+	inc	bc		;
+	inc	bc		; +null
+	ldir			; copy entry to its new location
+	jr	gbc1		;  and loop to process next
+
+; deleted entry, just skip it
+
+gbc4:	pop	hl
+	inc	bc		; +len (B is already zero)
+	inc	bc		; +addr
+	inc	bc		;
+	inc	bc		; +null
+	add	hl,bc		; skip this entry, point to next
+	jr	gbc1		;  and loop
+
+; at this point everything is compressed in low memory, and now we'll move
+; the whole block back to the top.
+
+gbc5:	ld	hl,(MEMTOP)	; if src and dst pointers are the same at this
+	call	CPHLDE		;  point, then either there were no strings,
+	ret	z		;   or everything was already compressed!
+	ld	(hl),0FFh	; set new end of variables marker
+	ex	de,hl		; get end of region into HL
+	push	hl
+	ld	de,(strbeg)
+	or	a
+	sbc	hl,de		; compute block size
+	ld	c,l
+	ld	b,h		; block size in BC
+	pop	hl		; src in HL
+	dec	hl
+	ld	de,(MEMTOP)	; dst in DE
+	dec	de
+	lddr			; move the block up
+	inc	de
+	ld	(strbeg),de	; set new start of dynamic memory
+
+; the last step is to update the address field of all variables pointing
+; to strings in the dynamic region, here the addr field becomes handy.
+
+	ex	de,hl		; get start of dynamic region into HL
+	ld	b,0
+gbc6:	ld	c,(hl)		; check size field
+	inc	c		; end of region reached?
+	ret	z		; return if yes, job done
+	inc	hl		; point to address field
+	ld	e,(hl)		; get var address into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl		; point to text field,
+	ex	de,hl		;  variables point directly to text
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	ex	de,hl		; restore HL
+	add	hl,bc		;  point to next entry (BC = len+1, see above)
+	jr	gbc6		;   and loop
+
+;-----------------------------------------------------------------------
+
+; Move variable area and adjust pointers. This routine is called when
+; allocating/freeing file I/O buffers. Called with HL = new start of
+; variable area. Assumes that there is enough memory for the operation.
+
+MOVARS:	ex	de,hl		; DE = dst
+	ld	hl,(endvar)
+	ld	bc,(stvar)
+	or	a
+	sbc	hl,bc		; get block length
+	ld	c,l		; BC = len
+	ld	b,h
+	inc	bc		; include end marker
+	ld	hl,(stvar)	; HL = src
+	ld	(stvar),de	; set new start
+	ld	a,l		; src > dst?
+	sub	e
+	ld	a,h
+	sbc	a,d
+	jr	c,mv1		; branch if not
+	ldir			; else move down
+	dec	de
+	ld	(endvar),de	; set new end
+	jr	mv2
+
+mv1:	add	hl,bc
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	dec	hl		; point to end of block
+	dec	de
+	ld	(endvar),de	; set new end
+	lddr			; move up
+mv2:	ld	hl,(stvar)	; now scan all variables
+mv3:	ld	a,(hl)
+	inc	a		; end of table?
+	ret	z		; return if yes, we're done
+	dec	a
+	inc	hl		; skip length field
+	push	af		; save variable type
+	and	3Fh		; mask length bits
+	call	ADDHLA		; skip name
+	inc	hl		; skip trailing null
+	ld	c,l		; BC = address of value field
+	ld	b,h
+	ld	e,(hl)		; get value into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	pop	af		; restore variable type
+	and	0C0h		; check type
+	jr	nz,mv3		; skip if not string variable
+	ex	de,hl
+	dec	hl
+	ld	(hl),b		; else update pointer in dynamic area
+	dec	hl
+	ld	(hl),c
+	ex	de,hl
+	jr	mv3
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+errflg:	ds	1	; error flag
+
+DSPTR:	ds	2	; pointer to string being allocated in dynamic area
+stvar:	ds	2	; pointer to start of variable area
+endvar:	ds	2	; pointer to end of variable area
+strbeg:	ds	2	; pointer to start of dynamic string storage
+
+; The variable area grows from stvar up to the top of available memory.
+; The variables are stored using the following structure:
+;
+;   +---+----------+---+-----+-     -+---+----------+---+-----+---+
+;   |len|   name   | 0 |value|  ...  |len|   name   | 0 |value| FF|
+;   +---+----------+---+-----+-     -+---+----------+---+-----+---+
+;     ^                                                         ^
+;   stvar                                                    endvar
+;
+; The name field can be up to 12 characters. The length field has bit 7 set
+; to 1 if the variable is numeric, bit 6 set to 1 if logical, otherwise the
+; variable is string. The value is either a pointer to a string for text
+; variables (which points to a string in the dynamic storage region), or the
+; numeric value for numeric variables. Logical variables are just the same
+; as numeric ones, only the value is interpreted differently.
+;
+; From the top of memory down grows the dynamic string storage area.
+; Space is allocated in a first-fit fashion. Garbage collection happens
+; when no space can be allocated for a new string. Strings are stored
+; like this:
+;
+;   +---+------+---------+---+-     -+---+------+----------+---+---+
+;   |len| addr |   text  | 0 |  ...  |len| addr |   text   | 0 | FF|
+;   +---+------+---------+---+-     -+---+------+----------+---+---+
+;     ^                                                          ^
+;   strbeg                                                     memtop
+;
+; The length field here represents the size of the allocated space,
+; excluding the null terminator, and which is not necessarily the same
+; as the length of the string, since the space may have been freed and
+; reallocated to a smaller string (here the null terminator becomes useful).
+; The addr field points back to the value field of the associated variable,
+; and is set to zero when the space is freed.
+
+filchn:	ds	2*MAXFIL	; pointers to channel buffers
+
+	end

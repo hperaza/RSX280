@@ -1,0 +1,12 @@
+
+Syntax:
+
+  FMT ddn:[/option...]
+
+Formats the disk on drive ddn:. The program accepts the following option
+switches:
+
+  /VERIFY                 - enables verification of sectors after the format
+                            operation (default).
+  /NOVERIFY or /-VERIFY   - disables verification of sectors.
+

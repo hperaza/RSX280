@@ -1,0 +1,17 @@
+	*****************************************************
+	*                                                   *
+        *                 Welcome to RSX280                 *
+	*                                                   *
+	*              This is a beta release.              *
+	*     Many things are not working properly yet.     *
+	*                                                   *
+	*         This is file LB:[SYSTEM]LOGIN.TXT         *
+	*                                                   *
+	*  RSX180 is free software, and you are welcome to  *
+	*  redistribute it in accordance with the terms of  *
+	*  the GNU General Public License.                  *
+	*                                                   *
+	*  Type HELP LICENSE for more details.              *
+	*                                                   *
+	*****************************************************
+

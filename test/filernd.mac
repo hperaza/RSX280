@@ -1,0 +1,222 @@
+	.z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+	extrn	PFN,PUTCH,PUTSTR,PERROR,TTFLSH
+	extrn	HLHEX,AHEX,HLDEC,LDEC,CRLF
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Random file I/O test.
+
+RTEST:	ld	sp,stack
+
+	; create file
+
+	call	print
+	db	CR,LF,'Creating file',CR,LF,0
+
+	ld	hl,fname
+	ld	ix,fdb
+	call	PFN
+	ld	a,E.BADF
+	jp	c,error
+
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	ld	b,1		; lun in B
+	SC	.ALUN
+	jp	c,error
+
+	ld	hl,IO.CRE	; create non-contiguous file
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	jp	c,error
+	ld	a,(iosb)
+	or	a
+	jp	nz,error
+
+	ld	hl,0
+	ld	(fblks),hl	; initial file size is 0
+
+	ld	hl,blkseq
+	ld	b,num
+wloop:	ld	e,(hl)
+	ld	d,0
+	ex	de,hl
+	call	print
+	db	'Writing block ',0
+	call	HLHEX
+	call	CRLF
+	call	TTFLSH
+	ld	a,l
+	call	fill
+	call	wrblk
+	jp	c,error1
+	ex	de,hl
+	inc	hl
+	djnz	wloop
+
+	ld	hl,0
+	ld	b,num
+rloop:	call	print
+	db	'Reading block ',0
+	call	HLHEX
+	call	CRLF
+	call	TTFLSH
+	call	rdblk
+	jp	c,error1
+	call	dump
+	inc	hl
+	djnz	rloop
+
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	jp	c,error
+	ld	a,(iosb)
+	or	a
+	jp	nz,error
+
+	call	print
+	db	'End of test',CR,LF,0
+	jp	exit
+
+error1:	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	pop	af
+error:	push	af
+	call	CRLF
+	pop	af
+	call	PERROR
+	call	CRLF
+	call	TTFLSH
+exit:	ld	hl,EX.SUC
+	SC	.EXIT
+
+fname:	db	'TEST.DAT',0
+
+; Write blocks in random order to check that "holes" are handled correctly
+; by the filesystem task.
+
+blkseq:	db	0Eh,04h,05h,00h,0Dh,0Bh,02h,01h,03h,06h,07h,08h,09h,0Ah,0Ch
+num	equ	$-blkseq
+
+; display string following call on terminal
+
+print:	ex	(sp),hl
+	call	PUTSTR
+	call	TTFLSH
+	inc	hl
+	ex	(sp),hl
+	ret
+
+; fill buffer with constant
+
+fill:	push	hl
+	push	de
+	push	bc
+	ld	hl,buf
+	ld	(hl),a
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	bc,511
+	ldir
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; read file block number in HL
+
+rdblk:	push	hl
+	ld	a,IO.RVB
+	ld	(qio2+Q.FUNC),a
+	ld	(qio2+Q.BLK),hl
+	ld	hl,qio2
+	SC	.QIO
+	jr	c,r1
+	ld	a,(iosb)
+	or	a
+	jr	z,r1
+	scf
+r1:	pop	hl
+	ret
+
+; write to block number in HL
+
+wrblk:	push	hl
+	ld	a,IO.WVB
+	ld	(qio2+Q.FUNC),a
+	ld	(qio2+Q.BLK),hl
+	ld	hl,qio2
+	SC	.QIO
+	jr	c,r1
+	ld	a,(iosb)
+	or	a
+	jr	z,w1
+	scf
+w1:	pop	hl
+	ret
+
+; dump block contents on terminal
+
+dump:	push	hl
+	push	de
+	push	bc
+	ld	hl,0
+	ld	de,buf
+	ld	b,32
+d1:	push	bc
+	call	HLHEX
+	ld	c,' '
+	call	PUTCH
+	ld	b,16
+d2:	ld	a,(de)
+	call	AHEX
+	ld	c,' '
+	call	PUTCH
+	inc	de
+	inc	hl
+	djnz	d2
+	call	CRLF
+	pop	bc
+	djnz	d1
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+fmode	equ	SF.ACR OR SF.ACW
+
+qio1:	QIOW$	<<IO.ACC OR (fmode SHL 8)>>,1,9,iosb,,<fdb,0>
+qio2:	QIOW$	IO.RVB,1,9,iosb,,<buf,512,0,0,>
+iosb:	ds	4
+
+fdb:	ds	FDBSZ
+fblks:	ds	2
+buf:	ds	512
+
+	ds	256
+stack	equ	$
+
+	end	RTEST

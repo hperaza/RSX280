@@ -1,0 +1,506 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	include	FCB.INC
+
+	cseg
+
+	public	PFN,PDN,INIFCB
+
+	extrn	UCASE
+
+;-----------------------------------------------------------------------
+
+; Parse a file specification and setup FDB fields accordingly.
+; Input:
+;   HL = address of filespec string in the form 'dev:[dir]fname.ext;ver'
+;   IX = dest FDB address
+; Output
+;   FDB fields filled up according to the supplied filespec, with the
+;   F.ATTR field containing a bit mask representing which components
+;   of the filespec were found, and F.WLDC a bit mask telling which
+;   fields contained wildcards.
+;   CY set on error.
+
+PFN:	call	inifcb		; init FCB with defaults
+	call	skipbl
+	ld	de,buf
+	ld	b,9
+	call	getw		; get first component
+	cp	':'
+	jr	nz,pfn1
+
+	; set device name
+
+	ld	a,c
+	cp	2		; empty or too short device name?
+	jp	c,pferr		; exit with error if yes
+	inc	hl		; skip delimiter
+
+	push	hl
+	ld	hl,buf
+	ld	a,(hl)
+	call	isalpha
+	jp	c,pferr1
+	ld	(ix+F.DEV),a
+	dec	c
+	inc	hl
+	ld	a,(hl)
+	call	isalpha
+	jp	c,pferr1
+	ld	(ix+F.DEV+1),a
+	dec	c
+	inc	hl
+	ld	b,c
+	call	getnum
+	jp	c,pferr1
+	ld	a,d		; must be < 256
+	or	a
+	jp	c,pferr1
+	ld	(ix+F.UNIT),e
+	pop	hl
+
+	ld	c,FN.DEV	; signal device was specified
+	call	setbit
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get next component
+
+pfn1:	cp	'$'
+	jr	nz,pfn10
+
+	; $ is a shortcut for LB0:[SYSTEM]
+
+	inc	hl		; skip dollar sign
+	ld	a,c
+	or	a
+	jp	nz,pferr
+
+	ld	a,(ix+F.ATTR)
+	ld	b,a
+	and	FN.DEV
+	jr	nz,pfn15
+
+	ld	a,b
+	or	FN.DEV
+	ld	(ix+F.ATTR),a
+
+	ld	(ix+F.DEV),'L'
+	ld	(ix+F.DEV+1),'B'
+	ld	(ix+F.UNIT),0
+
+pfn15:	ld	de,sysdir
+	ld	b,6
+	jr	pfn11
+
+pfn10:	cp	'['
+	jr	nz,pfn2
+
+	; set directory name
+
+	inc	hl		; skip delimiter
+	ld	a,c
+	or	a
+	jp	nz,pferr
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get directory name
+	cp	']'
+	jp	nz,pferr
+	ld	a,c
+	or	a		; empty directory name?
+	jp	z,pferr		; exit with error if yes
+	inc	hl		; skip delim
+
+	ld	de,buf
+	ld	b,c
+pfn11:	push	ix
+pfn12:	ld	a,(de)
+	call	UCASE
+	ld	(ix+F.DIR),a	; copy to dest
+	inc	de
+	inc	ix
+	djnz	pfn12
+	pop	ix
+
+	ld	c,FN.DIR	; signal directory was specified
+	call	setbit
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get next component
+
+pfn2:	; set file name
+
+	ld	a,c
+	or	a
+	jr	z,pfn22
+
+	push	hl
+	push	ix
+	ld	b,c
+	ld	hl,buf
+pfn21:	ld	a,(hl)
+	call	UCASE
+	ld	(ix+F.NAME),a	; copy to dest
+	inc	hl
+	inc	ix
+	djnz	pfn21
+	pop	ix
+	pop	hl
+
+	ld	c,FN.NAME	; signal file name was specified
+	call	setbit
+
+pfn22:	ld	a,(hl)
+	cp	'.'
+	jr	nz,pfn4
+
+	inc	hl		; skip delimiter
+	ld	de,buf
+	ld	b,3
+	call	getw
+
+	; set extension
+
+	ld	a,c
+	or	a
+	jr	z,pfn32
+
+	push	hl
+	push	ix
+	ld	b,c
+	ld	hl,buf
+pfn31:	ld	a,(hl)
+	call	UCASE
+	ld	(ix+F.EXT),a	; copy to dest
+	inc	hl
+	inc	ix
+	djnz	pfn31
+	pop	ix
+	pop	hl
+
+pfn32:	ld	c,FN.EXT	; signal file extension was specified
+	call	setbit
+
+pfn4:	ld	a,(hl)
+	cp	';'		; version number specified?
+	jr	z,pfn5		; jump if yes
+	or	a		; else return success
+	ret
+
+pfn5:	inc	hl		; skip delimiter
+	call	setflg		; set wilcard flag
+	ld	a,(hl)
+	cp	'*'		; * in version field means any version
+	inc	hl		; skip *
+	jr	z,pfn6		; signal version was explicit
+
+	xor	a
+	ld	(wcflg),a	; clear wildcard flag
+	dec	hl		; back to start of number
+
+	ld	de,buf
+	ld	b,9
+	call	getw
+
+	ld	a,c
+	or	a
+	jr	z,pferr
+
+	push	hl
+	ld	hl,buf
+	ld	b,c
+	call	getnum
+	pop	hl
+	jr	c,pferr
+	ld	(ix+F.VER),e
+	ld	(ix+F.VER+1),d
+
+pfn6:	ld	c,FN.VER	; signal file version was specified
+	call	setbit
+
+	xor	a		; return success
+	ret
+
+pferr1:	pop	hl
+pferr:	scf
+	ret
+
+sysdir:	db	'SYSTEM'
+
+setbit:	ld	a,(ix+F.ATTR)
+	or	c
+	ld	(ix+F.ATTR),a
+	ld	a,(wcflg)
+	and	c
+	or	(ix+F.WLDC)
+	ld	(ix+F.WLDC),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse a device name and return device/unit values in DE-C.
+; Input:
+;   HL = address of device spec string in the form 'dev:'
+; Output
+;   DE = device name, C = unit number, HL pointing past delimiter
+;   B = 1 if explicit unit number specified (e.g. TT1:) else 0 (e.g. TT:)
+;   CY set on error
+
+PDN:	call	skipbl
+	ld	de,buf
+	ld	b,9
+	call	getw		; get device name into buf
+	cp	':'
+	scf
+	ret	nz
+
+	ld	a,c
+	cp	2		; empty or too short device name?
+	ret	c		; exit with error if yes
+	inc	hl		; skip delimiter
+
+	push	hl
+	ld	hl,buf
+	ld	a,(hl)
+	call	isalpha
+	jr	c,pdret
+	ld	e,a
+	dec	c
+	inc	hl
+	ld	a,(hl)
+	call	isalpha
+	jr	c,pdret
+	ld	d,a
+	dec	c
+	ld	b,0
+	jr	z,pdret
+	inc	hl
+	push	de
+	ld	b,c
+	call	getnum
+	ld	c,e
+	ld	b,d
+	pop	de
+	jr	c,pdret
+	ld	a,b
+	or	a
+	scf
+	jr	nz,pdret
+	ld	b,1
+	xor	a
+pdret:	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Init FCB (IX = FCB)
+
+INIFCB:	ld	(ix+F.ATTR),0
+	ld	(ix+F.DEV),'S'
+	ld	(ix+F.DEV+1),'Y'
+	ld	(ix+F.UNIT),0
+	ld	b,9
+	push	ix
+ini1:	ld	(ix+F.DIR),' '
+	ld	(ix+F.NAME),' '
+	inc	ix
+	djnz	ini1
+	pop	ix
+	ld	b,3
+	push	ix
+ini2:	ld	(ix+F.EXT),' '
+	inc	ix
+	djnz	ini2
+	pop	ix
+	xor	a
+	ld	(ix+F.VER),a
+	ld	(ix+F.VER+1),a
+	ld	(ix+F.WLDC),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Skip blanks
+
+skp:	inc	hl
+skipbl:	ld	a,(hl)
+	cp	' '
+	jr	z,skp
+	cp	9
+	jr	z,skp
+	ret
+
+; Get word (max B chars) until delimiter found, C = word length
+
+getw:	xor	a
+	ld	(wcflg),a	; clear wildcard flag
+	ld	c,a
+gw0:	ld	a,(hl)
+	call	isdelim
+	ret	z
+	ld	(de),a
+	call	iswildc		; test for wildcard
+	call	z,setflg
+	inc	hl
+	inc	de
+	inc	c
+	djnz	gw0
+gw1:	ld	a,(hl)
+	call	isdelim
+	ret	z
+	inc	hl
+	jr	gw1
+
+setflg:	ld	a,0FFh		; all bits set
+	ld	(wcflg),a
+	ret	
+
+isdelim:
+	cp	' '
+	ret	z
+	cp	9
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'$'
+	ret	z
+	cp	'['
+	ret	z
+	cp	']'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	','
+	ret	z
+	cp	'='
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'('
+	ret	z
+	cp	')'
+	ret	z
+	cp	'|'
+	ret	z
+iseol:	cp	0Dh
+	ret	z
+	cp	0Ah
+	ret	z
+	or	a
+	ret
+
+iswildc:
+	cp	'*'
+	ret	z
+;;	cp	'?'
+;;	ret	z
+	cp	'%'
+	ret
+
+isalpha:
+	call	UCASE
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+isnum:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+; Parse number from input string (HL) length B. Returns value in DE.
+; CY set on error.
+
+getnum:	ld	de,0
+	ld	a,b
+	or	a
+	ret	z
+	ld	a,(hl)
+	cp	'+'
+	jr	z,gn0
+	cp	'-'
+	jr	nz,gn1
+	push	hl
+	ld	hl,negde
+	ex	(sp),hl		; negate DE before return
+gn0:	inc	hl		; skip sign
+	dec	b
+	scf
+	ret	z
+gn1:	ld	a,(hl)		; get char
+	call	isnum
+	ret	c		; error if not a digit
+	push	bc
+	ex	de,hl
+	call	adddig		; else add it to accum
+	ex	de,hl
+	pop	bc
+	ret	c
+	inc	hl
+	djnz	gn1
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	sub	'0'
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+negde:	ld	a,d
+	cpl
+	ld	d,a
+	ld	a,e
+	cpl
+	ld	e,a
+	inc	de
+	ret
+
+	dseg
+
+buf:	ds	9		; name buffer
+wcflg:	ds	1		; set if wilcards found in current field
+
+	end

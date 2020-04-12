@@ -1,0 +1,43 @@
+
+Command line syntax:
+
+   MAC [objfile],[lstfile]=srcfile[/option][/option...]
+
+where objfile, lstfile and srcfile are file specifications for the output
+object file, output listing file and input source file respectively. All
+file names should follow the standard RSX180 conventions for file names and
+extensions, and can specify also a device name.
+
+The default extensions are as follows:
+
+   .OBJ  for the relocatable object file
+   .LST  for the listing file
+   .MAC  for the source file
+
+For help on option switches type HELP MAC SWITCHES
+
+\OPT*IONS|SW*ITCHES
+
+MAC accepts the following option switches:
+
+   /L                Force generation of a listing file.
+
+   /Dsymbol[=value]  Define symbol and optionally assign a value. The value
+                     is a numeric constant, and defaults to zero.
+
+   /Sn               Set the maximum symbol name length stored in the object
+                     file. The value of n can be anywhere from 5 to 8, and
+                     defaults to 6.
+
+   /Zn               Select the initial target CPU type, n can be 0 for Z80
+                     (default), 1 for Z180 and 2 for Z280.
+
+   /M                Initialize block data areas defined by the DEFS or DS
+                     pseudo-op to zeros. If the switch is not specified, the
+                     space is not guaranteed to contain zeros.
+
+   /U                Treat all undefined symbols as External.
+
+More than one switch can be used, but each must be preceded by a slash.
+All switches are optional.
+

@@ -1,0 +1,87 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	include	FCSLIB.INC
+
+CR	equ	0Dh
+
+	public	FPUTCH
+
+	extrn	FWRBLK,CPHLDE,?FINCB
+
+	cseg
+
+FPUTCH:	push	hl
+	push	de
+	push	bc
+	ld	c,a
+	ld	e,(ix+FC.CUR)
+	ld	d,(ix+FC.CUR+1)
+	ld	hl,512
+	call	CPHLDE		; FC.CUR < 512?
+	jr	c,fpc1		; branch if yes
+	bit	FS.BM,(ix+FC.MODE)
+	jr	z,fpc0
+	call	FWRBLK		; write block
+				; TODO: if file is open in r/w mode and this
+				; is not the last block, read-in next block
+				; before modifying it
+	jr	c,fpc3
+fpc0:	ld	de,0
+	ld	(ix+FC.CNT),e
+	ld	(ix+FC.CNT+1),d
+	call	?FINCB		; next block
+	;TODO: read block if R/W mode
+fpc1:	ld	l,(ix+FC.BUF)
+	ld	h,(ix+FC.BUF+1)
+	add	hl,de		; index into buffer
+	ld	(hl),c		; store char
+	set	FS.BM,(ix+FC.MODE)
+	inc	de
+	ld	(ix+FC.CUR),e
+	ld	(ix+FC.CUR+1),d
+	ex	de,hl
+	ld	e,(ix+FC.CNT)
+	ld	d,(ix+FC.CNT+1)
+	call	CPHLDE		; FC.CUR > FC.CNT?
+	jr	nc,fpc4		; branch if not
+	ld	(ix+FC.CNT),l	; else update FC.CNT
+	ld	(ix+FC.CNT+1),h
+fpc4:	ld	a,c
+	cp	CR		; carriage return?
+	jr	nz,fpc2		; return if not
+	bit	FM.TT,(ix+FC.MODE)
+	jr	z,fpc2
+	call	FWRBLK		; if output is tty, then flush buffer
+	ld	de,0
+	ld	(ix+FC.CNT),e
+	ld	(ix+FC.CNT+1),d
+	ld	(ix+FC.CUR),e
+	ld	(ix+FC.CUR+1),d
+fpc2:	xor	a
+fpc3:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+	end

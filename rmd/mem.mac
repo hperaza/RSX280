@@ -1,0 +1,1317 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Dynamic Memory display page
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+
+	public	MEMPG
+
+	extrn	VPUTC,VPUTS,VPUTN,VXY,VGETXY,VGETC,VHLDEC,VRPAD
+	extrn	HEADER,SHRHL,DIV32,SKIPBL,UCASE,ISLETR,STRCMP
+	extrn	GETDEC
+
+	extrn	DSKFRE,DEVTBL,POOLST
+
+	cseg
+
+dskupd	equ	30		; update disk free info every 30 secs
+poolupd	equ	3		; update pool info every 3 secs
+
+st_act	equ	0
+st_fix	equ	1
+st_new	equ	2
+st_dev	equ	3
+
+;-----------------------------------------------------------------------
+
+MEMPG:	dw	dproc		; address of display procedure
+	dw	setup		; address of setup procedure
+	dw	hlptxt		; address of help text
+
+; This is the main memory display procedure. It is called with a code
+; in register A:
+;   0 means redraw everything
+;   1 means draw only what has changed from the previous call
+
+; Note that 'page' size here means 256 bytes, and not the Z280 4K page.
+
+dproc:	push	af
+	call	HEADER
+	pop	af
+
+	or	a		; check redraw flag
+	jr	nz,m1
+
+	call	init
+
+	xor	a
+	ld	(ntasks),a
+
+	ld	a,dskupd
+	ld	(dskcnt),a
+
+	ld	a,poolupd
+	ld	(pcnt),a
+
+	call	ruler		; draw memory locations ruler and ticks
+	call	DSKFRE		; show disk free space
+	call	POOLST		; show pool statistics
+	call	pars		; show table with partition names
+	call	shwerr		; show I/O error count
+
+m1:	call	shwcur		; show current running task
+	call	updtsk		; update task display
+	call	pars
+	call	inout		; show swapped-in/out tasks
+
+	ld	hl,dskcnt
+	dec	(hl)
+	jr	nz,m3
+	ld	(hl),dskupd
+	call	DSKFRE		; update disk info
+	call	shwerr
+
+m3:	ld	hl,pcnt
+	dec	(hl)
+	jr	nz,m4
+	ld	(hl),3
+	call	POOLST		; update pool info
+m4:	ret
+
+init:	ld	hl,($MEMSZ)	; in kbytes
+	add	hl,hl
+	add	hl,hl
+	ld	(mpages),hl	; in pages
+
+	ld	hl,(mtop)
+	ld	a,h
+	or	l
+	ret	nz
+	ld	hl,(mpages)
+	ld	(mtop),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process setup command @DE
+
+setup:	call	init		; preserves DE
+
+	call	SKIPBL
+	ld	hl,hbot
+	ld	b,6
+	push	de
+	call	chkcmd		; check for BOTTOM command
+	pop	de
+	jr	c,st1
+	add	hl,hl
+	add	hl,hl		; convert to page
+	ex	de,hl
+	ld	hl,(mpages)
+	ld	bc,-64
+	add	hl,bc
+	cpw	hl,de
+	jr	nc,stb1		; jump if <= mpages-64
+	ex	de,hl		; else force mpages-64
+stb1:	ld	(mbot),de
+	ld	hl,64
+	add	hl,de
+	ld	de,(mtop)
+	ex	de,hl
+	cpw	hl,de
+	ret	nc		; return with CY clear if mbot+64 <= mtop
+	ld	(mtop),de	; else adjust mtop
+	xor	a
+	ret
+
+st1:	ld	hl,htop
+	ld	b,3
+	push	de
+	call	chkcmd		; check for TOP command
+	pop	de
+	jr	c,st2
+	add	hl,hl
+	add	hl,hl		; convert to page
+	ld	de,64
+	ex	de,hl
+	cpw	hl,de
+	ex	de,hl
+	jr	c,stt0		; jump if > 64
+	ex	de,hl		; else force 64
+stt0:	ld	de,(mpages)
+	ex	de,hl
+	cpw	hl,de
+	ex	de,hl
+	jr	nc,stt1		; jump if <= mpages
+	ex	de,hl		; else force mpages
+stt1:	ld	(mtop),hl
+	ld	bc,-64
+	add	hl,bc
+	ex	de,hl
+	ld	hl,(mbot)
+	ex	de,hl
+	cpw	hl,de
+	ret	nc		; return with CY clear if mtop-64 >= mbot
+	ld	(mbot),hl	; else adjust mbot
+	xor	a
+	ret
+
+st2:	ld	hl,hlptxt
+	ld	b,4
+	call	STRCMP		; check for FREE command
+	scf
+	ret	nz
+	call	GETDEC		; get entry number
+	ret	c
+	ld	a,h		; must be 1..4
+	or	a
+	scf
+	ret	nz
+	ld	a,l
+	cp	4+1
+	ccf
+	ret	c
+	call	SKIPBL
+	ld	a,(de)
+	cp	'='		; '=' must follow
+	scf
+	ret	nz
+	inc	de
+	ld	ix,DEVTBL
+st3:	dec	l
+	jr	z,st4
+	inc	ix
+	inc	ix
+	inc	ix
+	jr	st3
+st4:	call	SKIPBL
+	ld	a,(de)		; get device name
+	call	UCASE
+	call	ISLETR
+	ret	c
+	ld	l,a
+	inc	de
+	ld	a,(de)
+	call	UCASE
+	call	ISLETR
+	ret	c
+	ld	h,a
+	inc	de
+	push	hl
+	call	GETDEC
+	pop	bc
+	ret	c
+	ld	a,(de)
+	cp	':'
+	scf
+	ret	nz
+	ld	a,h
+	or	a
+	scf
+	ret	nz
+	ldw	(ix+0),bc
+	ld	(ix+2),l
+	xor	a
+	ret
+
+chkcmd:	call	STRCMP		; command name matches?
+	scf
+	ret	nz		; return with CY set if not
+	call	SKIPBL
+	ld	a,(de)
+	cp	'='		; '=' must follow
+	scf
+	ret	nz		; else return error
+	inc	de
+	call	SKIPBL
+	call	GETDEC		; get decimal value
+	ret			; return status in CY flag
+
+;-----------------------------------------------------------------------
+
+; Help text to append to the setup command screen
+
+hlptxt:	db	'FREEn=ddn:  to change free entry ''n'' (1-4) to ddn:',CR,LF
+hbot:	db	'BOTTOM=x    to set bottom of display to ''x''K bytes',CR,LF
+htop:	db	'TOP=x       to set top of display to ''x''K bytes',CR,LF
+	db	0
+
+;-----------------------------------------------------------------------
+
+; Draw 'ruler' of memory locations on the screen with tick values and
+; partition letters.
+
+ruler:	VGTOXY	0,13
+	ld	c,'*'
+	call	line		; draw top axis (64 stars)
+	VGTOXY	0,14
+	ld	c,'-'
+	call	line		; draw top line for partition letters
+	VGTOXY	0,15
+	ld	c,'-'
+	call	line		; draw bottom line for partition letters
+	VGTOXY	0,16
+	ld	c,'*'
+	call	line		; draw bottom axis (64 stars)
+
+	ld	hl,(mtop)	; get number of 4K pages to display into HL
+	ld	de,(mbot)
+	or	a
+	sbc	hl,de
+	ld	(tkincr),hl	; use full value as tick increment value to
+				;  prevent cumulative rounding errors
+	ld	de,0		; tick increment accum
+	ld	b,8
+ds1:	ld	l,13		; draw ticks, upper line
+	call	tick
+	djnz	ds1
+
+	ld	b,8
+ds2:	ld	l,16		; draw ticks, lower line
+	call	tick
+	djnz	ds2
+
+	; show partition names - right know we simply show known segments
+
+	ld	hl,0
+	ld	c,'E'		; kernel
+	call	par
+
+	ld	hl,($POOL)
+	ld	c,'P'		; start of POOL
+	call	par
+
+	ld	hl,SYSCOM
+	ld	c,'C'		; system common
+	call	par
+
+	ld	hl,0100h
+	call	p2xy
+	ld	c,'D'		; system common
+	call	par0
+	ret
+
+	; draw partition letter
+
+par:	push	bc
+	call	adr2xy
+	pop	bc
+par0:	jr	nc,par1
+	ret	p
+par1:	call	VXY
+	call	VPUTC
+	ret
+
+	; draw tick
+
+tick:	ld	a,8
+	sub	b
+	rlca
+	rlca
+	rlca			; x = i*8
+	and	0F8h
+	ld	h,a
+	call	VXY		; position cursor
+	ld	l,e
+	ld	h,d
+	add	hl,hl		; tick accum / 16 = *16 / 256
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	l,h
+	and	0Fh
+	ld	h,a
+	push	bc
+	ld	bc,(mbot)
+	add	hl,bc		; add bottom page
+	pop	bc
+	call	SHRHL		; convert to kbytes
+	call	SHRHL
+	xor	a		; no filler
+	call	VHLDEC		; place tick mark label
+	ld	hl,(tkincr)
+	add	hl,de
+	ex	de,hl
+	ret
+
+; Draw a string (line) of 64 chars, char in reg C
+
+line:	ld	b,64
+stln1:	call	VPUTC
+	djnz	stln1
+	ret
+
+; Convert partition memory address into coordinates
+
+adr2xy:	ld	l,h		; convert address to 256-byte page
+	ld	h,0
+p2xy:
+  IF 1
+	xor a
+  ENDIF
+	call	pg2x		; page to coord x
+	ld	h,l
+	ld	l,14
+	ret	m
+	ret	c
+	ld	a,h
+	cp	64
+	ccf
+	ret	nc
+	sub	64
+	ld	h,a
+	inc	l
+	ret
+
+;-----------------------------------------------------------------------
+
+; Display a single task on the screen.
+
+; HL - task data addr:
+;        db  attrib
+;        dw  start
+;        dw  size
+;        db  'tsknam'
+; start and size are in 256-byte pages
+
+shwtsk:	call	setbkt		; set brackets according to task attrib
+	inc	hl		; skip attrib
+	ldw	de,(hl)		; DE = start address
+	inc	hl
+	inc	hl
+	ex	de,hl
+	ld	(start),hl
+	ex	de,hl
+	ldw	de,(hl)		; DE = size
+	inc	hl
+	inc	hl
+	ld	(pname),hl
+	ex	de,hl
+	ld	(size),hl
+
+	call	tskmtr		; compute task metrics
+	ld	a,(cw)
+	or	a
+	ret	z
+
+	cp	2
+	jr	nc,sh0
+	ld	a,2
+	ld	(cw),a		; w = width of displayed task; min width = 2
+sh0:	ld	hl,(y0)		; H = x0, L = y0
+	call	VXY
+	inc	h		; ++x0
+	ld	(y0),hl
+
+	ld	a,(tf)
+	and	1
+	ld	a,(tchar)
+	jr	nz,sh1		; skip left bracket
+	ld	a,(brckts)	; get left bracket
+sh1:	ld	c,a
+	call	VGETC
+	cp	'>'		; do not overwrite the right bracket of
+	jr	z,sh91		;  an existing task
+	cp	')'
+	jr	z,sh91
+	cp	']'
+	jr	nz,sh9
+sh91:	ld	c,a
+sh9:	call	VPUTC
+
+	ld	a,(cw)		; for (i = 1; i < w-1; ++i)
+	dec	a
+	dec	a
+	jr	z,sh2
+	ld	b,a
+
+sh4:	ld	hl,(y0)		; H = x0, L = y0
+	ld	a,h
+	cp	64
+	jr	c,sh3		; note - no need to call VXY if same line
+	sub	64
+	ld	h,a		; if x0 >= 64 then x0 -= 64; y0 = 17
+	ld	l,17
+	call	VXY
+sh3:	inc	h		; ++x0
+	ld	(y0),hl
+	ld	a,(tchar)
+	ld	c,a
+	call	VGETC
+	cp	'>'		; do not overwrite the right bracket of
+	jr	z,sh81		;  an existing task
+	cp	')'
+	jr	z,sh81
+	cp	']'
+	jr	nz,sh8
+sh81:	ld	c,a
+sh8:	call	VPUTC
+	djnz	sh4
+
+sh2:	ld	hl,(y0)
+	ld	a,h
+	cp	64
+	jr	c,sh5
+	sub	64
+	ld	h,a		; if x0 >= 64 then x0 -= 64; y0 = 17
+	ld	l,17
+	ld	(y0),hl
+	call	VXY
+sh5:	ld	a,(tf)
+	and	2
+	ld	a,(tchar)
+	jr	nz,sh51		; skip right bracket
+	ld	a,(brckts+1)	; get right bracket
+sh51:	ld	c,a
+	call	VPUTC
+
+sh21:	ld	de,(yn)
+	ld	hl,(pname)
+	ex	de,hl
+	ld	b,6
+sh7:	call	VXY
+	inc	l		; ++yn
+	ld	a,(de)
+	and	7Fh
+	ld	c,a
+	call	VPUTC		; show task name
+	inc	de
+	djnz	sh7
+	ret
+
+; Set chars and brackets for displaying task
+
+setbkt:	ld	a,'-'
+	ld	de,'<>'
+	bit	st_fix,(hl)	; fixed task?
+	jr	z,sbkt		; jump if not
+	ld	a,'='
+	bit	st_act,(hl)	; active fixed task?
+	jr	nz,sbkt		; jump if yes
+	ld	de,'[]'
+	bit	st_dev,(hl)	; device driver?
+	jr	z,sbkt		; jump if not
+	ld	de,'()'
+sbkt:	ld	(tchar),a
+	ld	(brckts),de
+	ret
+
+; Compute all the metrics needed to display a task:
+; - starting x and y coordinates
+; - width
+; - cropped width in case the task is partially displayed due to
+;   custom BOTTOM and/or TOP user commands
+; - flags indicating which part of the task is cropped (start, end, or
+;   even both)
+; - task name coordinates
+; All units are in display coordinates (x=0..63, y=12 or 17). If the
+; task is fully outside the display range, the cropped width will be
+; set to zero.
+
+tskmtr:	xor	a
+	ld	(cw),a		; assume worst-case scenario
+	ld	(tf),a		; clear flags
+	ld	hl,(start)
+  IF 0
+	xor	a
+  ENDIF
+	call	pg2x
+	ld	(sx),hl		; remember starting coordinate (0..127)
+	ld	(yn),hl
+	jr	nc,tm1
+	ret	p		; return if task fully above displayed range
+
+	ld	a,(tf)
+	or	1		; left corner outside display
+	ld	(tf),a
+
+tm1:	ld	hl,(start)
+	ld	de,(size)
+	add	hl,de
+  IF 1
+	ld	a,1
+  ENDIF
+	call	pg2x		; compute end coordinate (0..127)
+	ld	(ex),hl
+	jr	nc,tm2
+	ret	m		; return if task fully below displayed range
+
+	ld	a,(tf)
+	or	2		; right coordinate outside display
+	ld	(tf),a
+
+tm2:	ld	de,(sx)
+	or	a
+	sbc	hl,de		; task width = end coord - start coord
+	ld	(tw),hl
+
+	ld	a,(tf)
+	and	1		; left corner off?
+	jr	z,tm3		; jump if not
+
+	ld	de,(sx)		; else crop width left
+	add	hl,de		; cropped width = width + (-start coord)
+	ld	de,0
+	ld	(sx),de		; set start coordinate to zero
+
+tm3:	ld	a,(tf)
+	and	2		; right corner off?
+	jr	z,tm4		; jump if not
+
+	ex	de,hl		; get (cropped) width into DE
+	ld	hl,128
+	ld	bc,(ex)
+	or	a
+	sbc	hl,bc		; compute by how much task overflows
+	add	hl,de		;  and crop width right
+
+tm4:	ld	a,l
+	ld	(cw),a		; store cropped width
+
+	ld	hl,(sx)
+	ld	a,l		; x0
+	cp	64
+	ld	l,12		; y0 = 12
+	jr	c,tm5		; if x0 >= 64 then x0 -= 64; y0 = 17
+	sub	64
+	ld	l,17
+tm5:	ld	h,a
+	ld	(y0),hl		; H = x0, L = y0
+
+	; compute task name coordinates
+
+	ld	hl,(tw)		; get full task width
+	call	SHRHL		; find middle
+	ld	de,(yn)		; get original x coordinate
+	add	hl,de
+	ld	a,h
+	or	a
+	jp	p,tm6		; jump if result positive
+
+	ld	h,0
+	ld	l,12-6
+	ld	(yn),hl		; else force first column
+	ret
+
+tm6:	ld	a,l
+	cp	128
+	jr	c,tm7		; jump if in 0..127 range
+
+	ld	h,63
+	ld	l,17+1
+	ld	(yn),hl		; else force last column
+	ret
+
+tm7:	ld	h,l		; H = xn
+	ld	l,12-6		; L = yn
+	ld	a,h
+	cp	64
+	jr	c,tm8
+	sub	64
+	ld	h,a		; if x0 >= 64 then x0 -= 64; y0 = 17+1
+	ld	l,17+1
+tm8:	ld	(yn),hl
+	ret
+
+; Convert page number to x coordinate; the coordinate is in the range
+; 0..127 (top and bottom part of the display combined). Return CY set
+; if the page number falls outside the displayed range.
+
+pg2x:	ld	de,(mbot)
+	or	a
+	sbc	hl,de
+	jr	nc,wpg2x
+	push	af
+	neg	hl
+	pop	af
+	call	wpg2x
+	neg	hl
+	or	0FFh		; set M flag
+	scf
+	ret
+
+wpg2x:	call	SHRHL
+	ld	c,a
+	ld	a,0
+	rra
+	ld	e,a
+	ld	a,c
+	ld	d,l
+	ld	l,h
+	ld	h,0		; HLDE = HL * 128
+	push	hl
+	ld	hl,(mtop)
+	ld	bc,(mbot)
+	or	a
+	sbc	hl,bc		; get display range in pages
+	ld	c,l		;  into BC
+	ld	b,h
+	pop	hl
+  IF 1
+	or	a
+	jr	z,x1
+	dec	bc
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	inc	bc
+	jr	nc,x1
+	inc	hl
+x1:
+  ENDIF
+	call	DIV32		; x = pages * 128 / display_range
+	ld	a,h
+	or	a
+	scf
+	ret	nz
+	ld	a,l
+	cp	128
+	ccf			; P flag set on CY
+	ret	c
+	xor	a
+	ret			; P and no CY
+
+;-----------------------------------------------------------------------
+
+; Erase task from the screen.
+
+; HL - task data addr:
+;        db  attrib   (not used)
+;        dw  start
+;        dw  size
+;        db  'tsknam' (not used)
+; start and size are in 256-byte pages
+
+rmtsk:	inc	hl		; skip attrib
+	ldw	de,(hl)
+	inc	hl
+	inc	hl
+	ld	(start),de
+	ldw	de,(hl)
+	ld	(size),de
+
+	call	tskmtr		; compute task metrics
+	ld	a,(cw)
+	or	a
+	ret	z
+
+	cp	2
+	jr	nc,rmt0
+	ld	a,2
+	ld	(cw),a		; width = size * 128 / memsize; min width = 2
+
+rmt0:	ld	hl,(y0)
+	call	VXY
+	inc	h
+	ld	(y0),hl
+	ld	c,' '
+	call	VPUTC
+
+	ld	a,(cw)		; for (i = 1; i < w-1; ++i)
+	dec	a
+	dec	a
+	jr	z,rmt2
+	ld	b,a
+
+rmt4:	ld	hl,(y0)
+	ld	a,h
+	cp	64
+	jr	c,rmt3
+	sub	64
+	ld	h,a		; if x0 >= 64 then x0 -= 64; y0 = 17
+	ld	l,17
+	call	VXY
+rmt3:	inc	h
+	ld	(y0),hl
+	ld	c,' '
+	call	VPUTC
+	djnz	rmt4
+
+rmt2:	ld	hl,(y0)
+	ld	a,h
+	cp	64
+	jr	c,rmt5
+	sub	64
+	ld	h,a		; if x0 >= 64 then x0 -= 64; y0 = 17
+	ld	l,17
+	ld	(y0),hl
+	call	VXY
+rmt5:	ld	c,' '
+	call	VPUTC
+
+	ld	hl,(yn)
+	ld	b,6
+rmt7:	call	VXY
+	inc	l		; ++y0
+	ld	c,' '
+	call	VPUTC
+	djnz	rmt7
+	ret
+
+;-----------------------------------------------------------------------
+
+; Show current running task. Strictly speaking, "current" is always
+; this task (RMD), so we pick the next one from the list.
+
+shwcur:	VGTOXY	0,1
+	ld	hl,rmsg
+	call	VPUTS
+	xor	a
+	ld	(SYSLVL),a	; critical section
+	ld	hl,($RLIST)	; list of ready tasks
+	ldw	hl,(hl+T.ACTL)	; fetch the second entry
+	inc	a		; (the first one is always us)
+	ld	(SYSLVL),a	; re-enable task dispatching
+	ex	de,hl
+	ld	a,d
+	or	e		; null task?
+	ld	hl,idle		; then say system is idle
+	jr	z,sc1
+	ld	hl,T.NAME	; point to name field
+	add	hl,de		; DE = running task name
+sc1:	ld	b,6
+	call	VPUTN		; display running task name
+	ret
+
+rmsg:	db	'Running ',0
+idle:	db	'*IDLE*',0
+
+;-----------------------------------------------------------------------
+
+; Show memory partition info.
+
+pars:	VGTOXY	69,2
+	ld	hl,parmsg
+	call	VPUTS
+
+	ld	d,68
+	ld	e,4
+	ld	ix,$PLIST
+sp1:	ldw	hl,(ix)
+	ld	a,h
+	or	l
+	ret	z
+	ex	de,hl
+	call	VXY
+	ex	de,hl
+	push	hl
+	pop	ix
+	ld	bc,P.NAME
+	add	hl,bc
+	ld	b,6
+	call	VPUTN
+	ld	c,':'
+	call	VPUTC
+	bit	PA.SYS,(ix+P.ATTR)
+	ld	c,'D'
+	jr	nz,sp2
+	ld	c,'T'
+sp2:	call	VPUTC
+	inc	e
+	jr	sp1
+
+parmsg:	db	'PARS',0
+
+;-----------------------------------------------------------------------
+
+; Update task display
+
+updtsk:	xor	a
+	ld	(numin),a
+	ld	(numout),a
+
+	ld	hl,0
+	ld	(szin),hl
+	ld	(szout),hl
+
+	call	clrtsk		; mark all tasks as non-existing...
+
+IF 1
+	; collect device-driver info
+
+	ld	hl,($PHYDV)
+updd1:	ld	a,h
+	or	l		; end of list?
+	jp	z,upd0		; exit loop if yes
+
+	push	hl
+	pop	ix
+
+	ldw	hl,(ix+D.UCBL)
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.PSE,(hl)
+	jr	nz,updd3	; skip if pseudo-device
+
+dd_attr	equ	(1 SHL st_dev) OR (1 SHL st_fix)
+	ld	a,dd_attr
+	ld	(tmpent),a	; set device attribs
+
+	ld	l,(ix+D.BANK)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; bank << 4
+	ld	a,(ix+D.START+1)
+	add	hl,a		; + hi(start) = base page
+	ld	(tmpent+1),hl	; base
+
+  IF 1
+	ldw	hl,(ix+D.LNK)
+	ld	a,h
+	or	l
+	jr	z,xx1
+	ldw	hl,(hl+D.START)
+	jr	xx2
+xx1:	ldw	hl,(ix+D.START)
+	ld	de,256
+	add	hl,de
+xx2:
+	ldw	de,(ix+D.START)
+	or	a
+	sbc	hl,de		; HL = size
+	ld	de,255		; for rounding to the upper page
+	add	hl,de
+	ld	l,h
+	ld	h,0
+  ELSE
+	ld	l,(ix+D.SIZE)
+	ld	h,0
+	add	hl,hl		; convert 4K page to 256-byte page
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; *16
+  ENDIF
+	ld	(tmpent+3),hl	; size
+
+	ld	hl,tmpent+5	; name
+	ld	a,(ix+D.NAME)
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+D.NAME+1)
+	ld	(hl),a
+	inc	hl
+	ld	(hl),':'
+	inc	hl
+	ld	b,3
+upddn:	ld	(hl),' '
+	inc	hl
+	djnz	upddn
+
+	call	fndent		; find entry in buffer, return addr in HL
+	jr	z,updd2		; jump if found
+
+	call	addent		; else add new entry
+	jr	updd3
+
+updd2:	set	st_new,(hl)	; flag as existing
+
+updd3:	ldw	hl,(ix+D.LNK)
+	jp	updd1
+
+ENDIF
+
+	; collect task info
+
+upd0:	ld	hl,($TLIST)
+
+upd1:	ld	a,h
+	or	l		; end of list?
+	jp	z,upd6		; exit loop if yes
+
+	push	hl
+	pop	ix
+	call	setatt		; set task attrib
+
+	bit	st_act,a	; task active?
+	jr	nz,upd2		; branch if yes
+
+	bit	st_fix,a	; task fixed?
+	jp	z,upd5		; skip if not
+
+upd2:	ldw	hl,(ix+T.PCB)
+	push	hl
+	pop	iy
+
+	bit	T2.OUT,(ix+T.ST+1)
+	jr	z,upd3
+
+	inc	(numout)
+	ld	a,(iy+P.SIZE)	; num of 4K pages
+	add	a,a
+	add	a,a		; *4
+	ld	hl,(szout)
+	add	hl,a
+	ld	(szout),hl
+
+	bit	PS.BSY,(iy+P.STAT)
+	jr	nz,upd31
+	jr	upd5		; skip display
+
+upd3:	inc	(numin)
+upd31:	ld	a,(iy+P.SIZE)	; num of 4K pages
+	add	a,a
+	add	a,a		; *4
+	ld	hl,(szin)
+	add	hl,a
+	ld	(szin),hl
+	ld	l,(iy+P.BASE)
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; base page << 4
+	ld	a,(ix+T.STRT+1)
+	add	hl,a		; + hi(start) = base page
+	ld	(tmpent+1),hl	; base
+
+	ld	l,(iy+P.SIZE)
+	ld	h,0
+	add	hl,hl		; convert 4K page to 256-byte page
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; *16
+	ld	(tmpent+3),hl	; size
+
+	push	ix
+	pop	hl
+	ld	de,T.NAME
+	add	hl,de
+	ld	de,tmpent+5	; name
+	ld	bc,6
+	ldir
+
+	call	fndent		; find entry in buffer, return addr in HL
+	jr	z,upd4		; jump if found
+
+	call	addent		; else add new entry
+	jr	upd5
+
+upd4:	set	st_new,(hl)	; flag as existing
+
+upd5:	ldw	hl,(ix+T.TCBL)
+	jp	upd1		; loop
+
+upd6:	call	rmuset		; remove unset tasks from display
+	call	shtsks		; update display of all remaining tasks
+	ret
+
+; Get task attributes and set bits accordingly
+
+setatt:	xor	a		; clear attrib
+	bit	TS.ACT,(ix+T.ST)
+	jr	z,sa1
+	set	st_act,a	; set 'active' attrib
+sa1:	bit	TA.FIX,(ix+T.ATTR)
+	jr	z,sa2
+	set	st_fix,a	; set 'fixed' attrib
+sa2:	ld	(tmpent),a
+	ret
+
+; Compare entries pointed by HL and DE, return Z if they match.
+
+; Compare only start and size, and if these match copy the name of the
+; new task over. This saves a redisplay of a task in the case only attrib
+; change.
+
+cmpent:	inc	hl
+	inc	de
+	ld	b,4		; compare start/size
+comp1:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	comp1
+	ld	bc,-5
+	add	hl,bc
+	ex	de,hl
+	add	hl,bc
+	ld	bc,11		; copy entry, including new attrib
+	ldir
+	ex	de,hl
+	xor	a
+	ret
+
+; If an entry matching tmpent exists in tasktbl, return Z and initial
+; entry address in HL
+
+fndent:	ld	a,(ntasks)
+	or	a
+	jr	z,fnd2
+	ld	b,a
+	ld	hl,tasktbl
+fnd1:	ld	de,tmpent
+	push	hl
+	push	bc
+	call	cmpent		; compare entries @HL and @DE
+	pop	bc
+	pop	hl
+	ret	z
+	ld	de,11		; 1+2+2+6
+	add	hl,de
+	djnz	fnd1
+fnd2:	or	0FFh
+	ret
+
+; Add tmpent to tasktbl and mark it as new task
+
+addent:	ld	hl,tmpent
+	set	st_new,(hl)	; flag as existing
+
+	ld	a,(ntasks)
+	cp	MAXTSKS
+	ret	nc		; too many tasks
+
+	ld	l,a
+	ld	h,0
+	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ld	e,l
+	ld	d,h
+	add	hl,hl		; *4
+	add	hl,hl		; *8
+	add	hl,de		; *10
+	add	hl,bc		; *11
+	ld	de,tasktbl
+	add	hl,de
+	ld	de,tmpent
+	ld	bc,11		; 1+2+2+6
+	ex	de,hl
+	ldir
+	ld	hl,ntasks
+	inc	(hl)
+	ret
+
+; Remove unset entries and erase them from display
+
+rmuset:	ld	a,(ntasks)
+	or	a
+	ret	z
+
+	ld	b,a
+	ld	hl,tasktbl
+rmve1:	bit	st_new,(hl)
+	jr	nz,keep		; flag is set, so keep this...
+
+	push	hl
+	push	bc
+
+	call	rmtsk		; erase from display
+
+	pop	bc
+	pop	de
+	push	de
+	push	bc
+
+	ld	hl,11		; 1+2+2+6 = entry size
+	add	hl,de		; HL = next entry addr, DE = current
+rmve2:	push	bc
+	ld	bc,11		; TODO: move all this in one go
+	ldir
+	pop	bc
+	djnz	rmve2
+
+	pop	bc
+	pop	hl
+
+	ld	a,(ntasks)
+	or	a
+	jr	z,rmve4
+	dec	a
+	ld	(ntasks),a
+	jr	rmve4
+
+keep:	ld	de,11		; 1+2+2+6
+	add	hl,de
+rmve4:	djnz	rmve1
+	ret
+
+; Show all tasks
+
+shtsks:	ld	a,(ntasks)
+	or	a
+	ret	z
+	ld	b,a
+	ld	de,tasktbl
+shn1:	push	de
+	push	bc
+	ex	de,hl
+	call	shwtsk		; and show it
+	pop	bc
+	pop	de
+	ld	hl,11		; 1+2+2+6
+	add	hl,de
+	ex	de,hl
+	djnz	shn1
+	ret
+
+; Clear flags (mark as non-existing) of all tasks in table.
+
+clrtsk:	ld	a,(ntasks)
+	or	a
+	ret	z
+	ld	b,a
+	ld	hl,tasktbl
+	ld	de,11		; 1+2+2+6 = entry size
+clrf1:	res	st_new,(hl)
+	add	hl,de
+	djnz	clrf1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Show swapped in/out tasks.
+
+inout:
+  IF 0
+	VGTOXY	0,6
+	ld	b,4
+	ld	c,' '		; see if we have enough space
+ino1:	call	VGETC
+	cp	c
+	ret	nz
+	call	VPUTC		; advance cursor
+	djnz	ino1
+  ELSE
+	ld	hl,(mbot)
+	ld	a,h
+	or	l
+	ret	nz
+	ld	de,(mtop)
+	ld	hl,400*4	; ~400K in pages
+	cpw	hl,de
+	ret	c
+  ENDIF
+	VGTOXY	0,6
+	ld	hl,msgin	; 'IN:'
+	call	VPUTS
+	VGTOXY	0,7
+	ld	a,(numin)	; how many tasks in memory
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	VHLDEC		; display value
+	call	rpad		;  left-justified
+	VGTOXY	0,8
+	ld	hl,(szin)	; total size of tasks in memory
+	xor	a
+	call	VHLDEC		; display value
+	ld	c,'K'
+	call	VPUTC
+	call	rpad		; left-justify
+	VGTOXY	0,9
+	ld	hl,msgout	; 'OUT:'
+	call	VPUTS
+	VGTOXY	0,10
+	ld	a,(numout)	; how many tasks out of memory
+	ld	l,a
+	ld	h,0
+	xor	a
+	call	VHLDEC		; display value
+	call	rpad		;  left-justified
+	VGTOXY	0,11
+	ld	hl,(szout)	; total size of out-of-memory tasks
+	xor	a
+	call	VHLDEC		; display value
+	ld	c,'K'
+	call	VPUTC
+rpad:	ld	d,0		; left column is always 0
+	ld	e,5		; field width
+	call	VRPAD
+	ret
+
+msgin:	db	'IN:',0
+msgout:	db	'OUT:',0
+
+;-----------------------------------------------------------------------
+
+; Show I/O error count
+
+shwerr:	VGTOXY	68,18
+	ld	hl,esmsg
+	call	VPUTS
+	VGTOXY	68,19
+	ld	hl,($ERSEQ)	; in SYSDAT
+	xor	a
+	call	VHLDEC
+	ret
+
+esmsg:	db	'ERRSEQ',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+mpages:	ds	2		; total memory pages
+
+mbot:	dw	0		; bottom limit of region to display
+mtop:	dw	0		; top limit of region to display
+
+y0:	ds	1		; task display Y coordinate
+x0:	ds	1		; task display X coordinate
+yn:	ds	1		; task name display Y coordinate
+xn:	ds	1		; task name display X coordinate
+tw:	ds	2		; task display width
+cw:	ds	1		; cropped task width
+sx:	ds	2		; starting task coordinate
+ex:	ds	2		; end task coordinate
+tf:	ds	1		; task corner flags
+tchar:	ds	1		; char used to represent task
+brckts:	ds	2		; brackets used to represent task
+pname:	ds	2		; pointer to task name
+start:	ds	2		; task base address
+size:	ds	2		; task size
+
+tkincr:	ds	2		; ruler tick increment
+dskcnt:	ds	1		; disk info refresh counter
+pcnt:	ds	1		; pool info refresh counter
+
+ntasks:	ds	1		; number of tasks currently in memory
+numin:	ds	1		; number of swapped-in tasks
+numout:	ds	1		; number of swapped-out tasks
+szin:	ds	2		; total size of swapped-in tasks
+szout:	ds	2		; total size of swapped-out tasks
+
+tmpent:	ds	11		; temp task info entry:
+				;    db  attrib
+				;    dw  start
+				;    dw  size
+				;    db  'tsknam' (6 chars)
+
+MAXTSKS	equ	255		; max tasks in memory: 1M/4K = 256
+
+tasktbl:ds	11*MAXTSKS	; space to store task information
+
+	end

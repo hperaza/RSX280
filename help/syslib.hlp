@@ -1,0 +1,352 @@
+
+                            Syslib function calls
+                            ---------------------
+
+	ADEC	ADEC2	AHEX	ATTACH	BCD2BIN	BIN2BCD	CHDIR	CLRMEM
+	CPHLDE	CRLF	DETACH	FCLOSE	FCREAT	FDEL	FFLUSH	FOPEN
+	FPOS	FREAD	FREN	FSEEK	FSIZE	FSYNC	FWRITE	FRATTR
+	FWATTR	GETCH	GETCML	GETLN	HLDEC	HLHEX	INIFCB	LDEC
+	MKDIR	PDN	PERROR	PFN	PUTCH	PUTSTR	RMDIR	SLEEP
+	TTFLSH	TTCLR	TTLUN	UCASE
+
+For help on a specific function type HELP SYSLIB function_name
+
+\ATTACH
+
+ATTACH	Attach the specified device, optionally with unsolicited character
+	AST.
+
+	  Input:
+	    C = LUN
+	    B = nonzero to attach with AST, zero otherwise
+	  Returns:
+	    CY on error and error code in A
+	  Destroys:
+	    A
+	  Calls/uses:
+	    .QIO, QIOBLK
+
+\CRLF
+
+CRLF	Output newline on terminal.
+
+	  Input:
+	    None
+	  Returns:
+	    None
+	  Destroys:
+	    A
+	  Calls:
+	    PUTCH
+
+\DETACH
+
+DETACH
+
+\GETCH
+
+GETCH
+
+\GETCML
+
+GETCML
+
+\GETLN
+
+GETLN
+
+\PUTCH
+
+PUTCH	Output character to terminal
+
+	  Input:
+	    C = character to output
+	  Returns:
+	    None
+	  Destroys:
+	    A
+	  Calls:
+	    TTFLSH
+	  Notes:
+	    - Buffered output. The character will be output when the buffer
+	      is full or explicitely flushed by calling TTFLSH. Flushing
+	      also happens when a CR character is output.
+            - Assumes terminal is assigned to LUN 5.
+
+\PUTSTR
+
+PUTSTR	Output null-terminated string to terminal.
+
+	  Input:
+	    HL = address of string to output
+	  Returns:
+	    HL pointing to the null terminator
+	  Destroys:
+	    A
+	  Calls:
+	    PUTCH
+	  Notes:
+	    - Buffered output, see PUTCH.
+            - Assumes terminal is assigned to LUN 5.
+
+\PERROR
+
+PERROR	Output system error message to terminal
+
+	  Input:
+	    A = system error code
+	  Returns:
+	    None
+	  Destroys:
+	    A
+	  Calls:
+	    PUTSTR
+
+\SLEEP
+
+SLEEP	Sleep for the specified time
+
+	  Input:
+	    DE = number of ticks
+	  Returns:
+	    CY set on error and error code in A
+
+\TTFLSH
+
+TTFLSH	Flush output buffer
+
+	  Input:
+	    None
+	  Returns:
+	    None
+	  Destroys:
+	    A
+	  Calls/uses:
+	    .QIO, QIOBLK
+
+\TTCLR
+
+TTCLR	Resets the output buffer. Any characters in the buffer will be lost.
+
+	  Input:
+	    None
+	  Returns:
+	    None
+	  Destroys:
+	    A
+	  Calls/uses:
+	    None.
+
+\TTLUN
+
+TTLUN	(Variable) LUN used by terminal output routines GETLN, GETCH, PUTCH,
+	PUTSTR, ADEC, HLDEC, etc.). Defaults to 5.
+
+
+\FOPEN
+
+FOPEN
+
+\FCREAT
+
+FCREAT
+
+\FCLOSE
+
+FCLOSE
+
+\FREAD
+
+FREAD
+
+\FWRITE
+
+FWRITE
+
+\FPOS
+
+FPOS
+
+\FSEEK
+
+FSEEK
+
+\FSIZE
+
+FSIZE
+
+\FDEL
+
+FDEL
+
+\FRATTR
+
+FRATTR
+
+\FWATTR
+
+FWATTR
+
+\FREN
+
+FREN
+
+\FFLUSH
+
+FFLUSH
+
+\FSYNC
+
+FSYNC
+
+\PFN
+
+PFN	Parse filename and setup FCB/FDB fields accordingly.
+
+	  Input:
+	    HL = address of filespec string in the form
+                 'dev:[dir]fname.ext;ver'
+	    IX = destination FCB address
+	  Returns:
+	    CY set on error and error code in A.
+	    HL pointing to the first delimiter character
+	    FCB fields setup, the F.ATTR field containing a bit mask
+            representing which filespec components were specified.
+	  Destroys:
+	    A, BC, DE
+	  Calls:
+	    INIFCB, UCASE
+
+\PDN
+
+PDN	Parse device name and return device/unit values in DE-C.
+
+	  Input:
+	    HL = address of device spec string in the form 'dev:'
+	  Returns:
+	    DE = device name
+	    C  = unit number
+	    HL pointing past delimiter
+	    CY set on error and error code in A
+	  Destroys:
+	    A
+	  Calls:
+	    UCASE
+
+\INIFCB
+
+INIFCB	Initializes device, directory and name fields of a FCB/FDB.
+
+	  Input:
+	    IX = address of FCB/FDB
+	  Returns:
+	    FCB initialized
+	  Destroys:
+	    B
+	  Calls:
+	    None
+	  Notes:
+	    Sets initial device name to SY0:; directory, filename
+	    and extension to all blanks.
+
+\CHDIR
+
+CHDIR	Change current directory
+
+\MKDIR
+
+MKDIR
+
+\RMDIR
+
+RMDIR
+
+\ADEC
+
+ADEC	Display value in A as unsigned decimal without leading zeros.
+
+	  Input:
+	    A = value to display
+	  Returns:
+	    None.
+	  Destroys:
+	    A
+	  Calls:
+	    PUTCH
+
+\ADEC2
+
+ADEC2	Display value in A (0..99) as two-digit unsigned decimal number.
+
+	  Input:
+	    A = value to display
+	  Returns:
+	    None.
+	  Destroys:
+	    A
+	  Calls:
+	    PUTCH
+
+\BCD2BIN
+
+BCD2BIN	Convert BCD number in A to binary.
+
+	  Input:
+	    A = BCD value
+	  Returns:
+	    A = binary value
+	  Destroys:
+	    A
+	  Calls:
+            None
+
+\BIN2BCD
+
+BIN2BCD	Convert binary number in A (0..99) to two BCD digits.
+
+	  Input:
+	    A = binary value
+	  Returns:
+	    A = BCD value
+	  Destroys:
+	    A
+	  Calls:
+            None
+
+\CLRMEM
+
+CLRMEM
+
+\CPHLDE
+
+CPHLDE
+
+\HLDEC
+
+HLDEC
+
+\HLHEX
+
+HLHEX
+
+\AHEX
+
+AHEX
+
+\LDEC
+
+LDEC
+
+\UCASE
+
+UCASE	Convert character to uppercase
+
+	  Input:
+	    A = character to convert
+	  Returns:
+	    A = uppercase version of the character
+	  Destroys:
+	    A
+	  Calls:
+            None
+

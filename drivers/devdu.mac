@@ -1,0 +1,835 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DEV DU: CF disk driver (Z280RC version)                            ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	IOPKT.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	SYSCONF.INC
+	include	ERRORS.INC
+
+	extrn	GETPKT,IODONE,$ERSEQ,$UPUTW,$MCOPY,$SBANK
+
+; This driver assumes that the hard disk has been partitioned using the
+; FDISK utility. The initialization routine validates the partition table
+; and sequentially assigns partitions to units. Hard-disk geometry tables
+; are updated, device unit numbers enabled or disabled accordingly.
+;
+; Partition units are in 256-sector logical tracks (128K).
+
+; IDE Task File Register definitions
+
+IdePage	equ	0		; CF I/O page
+IdeDat	equ	0C0h		; Data Register
+IdeErr	equ	0C2h		; Error Register
+IdeSCnt	equ	0C5h		; Sector Count
+IdeLA1	equ	0C7h		; LBA  0..7
+IdeLA2	equ	0C9h		; LBA  8..15
+IdeLA3	equ	0CBh		; LBA 16..23
+IdeLA4	equ	0CDh		; LBA 24..27
+IdeCmd	equ	0CFh		; Command / Status
+
+; IDE Hard Disk commands
+
+CmdHome	equ	10h		; Recalibrate
+CmdRd	equ	20h		; Read Sector
+CmdWr	equ	30h		; Write Sector
+CmdInit	equ	91h		; Initialize Drive Params
+CmdId	equ	0ECh		; Read ID
+
+; Error codes
+
+TIMOUT	equ	80h		; timeout accessing hard disk
+WPRT	equ	02h		; write attempted on write-protected volume
+
+; Misc equates
+
+HDTMO	equ	1 * TCKSEC	; GIDE command timeout
+
+; Device-dependent UCB parameters
+
+UX.BFP	equ	UCBSZ + 0	; address of buffer in user space (2 bytes)
+UX.BNK	equ	UX.BFP + 2	; user bank (1 byte)
+UX.CNT	equ	UX.BNK + 1	; byte count (2 bytes)
+UX.PBAS	equ	UX.CNT + 2	; partition base (2 bytes)
+UX.PSIZ	equ	UX.PBAS + 2	; partition size (2 bytes)
+
+DSBLWR	equ	0	; disable write function (used during debug)
+
+; TODO:
+; - retry up to 5 times on error?
+
+; Macro: wait for ready (Non-Busy) signal active with timeout
+
+WaitRdy	macro	onerr
+	local	wait
+	ld	hl,dcnt
+	ld	(hl),HDTMO
+wait:	ld	a,(hl)
+	or	a
+	jr	z,onerr
+	in	a,(IdeCmd)
+	rla
+	jr	c,wait
+	endm
+
+; Macro: wait for DRQ signal with timeout
+
+WaitDrq	macro	onerr
+	local	wait
+	ld	hl,dcnt
+	ld	(hl),HDTMO
+wait:	ld	a,(hl)
+	or	a
+	jr	z,onerr
+	in	a,(IdeCmd)
+	bit	3,a
+	jr	z,wait
+	endm
+
+;-----------------------------------------------------------------------
+
+	CSEG
+
+; Device descriptor table - must be at the start of the file
+
+DEVDU::	db	'DU',8		; device name and number of units
+	dw	UCBDU0		; address of UCB list
+	jp	INIT		; entry points
+	jp	IOREQ
+	jp	IOKILL
+	jp	TMOUT
+
+	DSEG
+
+UCBDU0:	dw	UCBDU1		; link to next UCB
+	db	0		; unit 0
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU1:	dw	UCBDU2		; link to next UCB
+	db	1		; unit 1
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU2:	dw	UCBDU3		; link to next UCB
+	db	2		; unit 2
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU3:	dw	UCBDU4		; link to next UCB
+	db	3		; unit 3
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU4:	dw	UCBDU5		; link to next UCB
+	db	4		; unit 4
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU5:	dw	UCBDU6		; link to next UCB
+	db	5		; unit 5
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU6:	dw	UCBDU7		; link to next UCB
+	db	6		; unit 6
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+UCBDU7:	dw	0		; link to next UCB
+	db	7		; unit 7
+	db	(1 SHL US.OFL)	; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	dw	0		; UX.BFP
+	db	0		; UX.BNK
+	dw	0		; UX.CNT
+	dw	0		; UX.PBAS
+	dw	0		; UX.PSIZ
+
+SCB:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+	CSEG
+
+;-----------------------------------------------------------------------
+
+INIT:	ld	(DUDCB),de	; store DCB address
+	ld	iy,UCBDU0
+ini1:	call	uinit		; initialize unit
+	ldw	iy,(iy+U.LNK)
+	ld	a,iyh
+	or	iyl
+	jr	nz,ini1
+	xor	a
+	ld	(dcnt),a
+	ld	hl,(DUDCB)
+	ld	de,D.TCNT
+	add	hl,de
+	ld	de,1		; arrange for the timeout entry to be
+	ldw	(hl),de		;  called each clock tick
+	call	GINIT		; read partition table and setup device units
+	ld	a,(ERFLAG)	; return with GINIT error/success code
+	or	a
+	ret
+
+; init single unit
+
+uinit:	res	US.BSY,(iy+U.ST); clear busy bit
+	ldw	ix,(iy+U.SCB)
+	xor	a
+	ld	(ix+S.ST),a	; clear status byte
+	ld	hl,0
+	ldw	(ix+S.CPKT),hl	; clear current packet address
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle I/O request. Called by the kernel with IY = UCB address.
+
+IOREQ:	call	GETPKT		; dequeue I/O packet, return address in IX
+	ret	c		; return if unit busy or no work to do
+	set	US.BSY,(iy+U.ST); set busy bit
+	ldw	bc,(ix+I.TCB)	; get TCB address of requesting task into BC
+	ld	hl,T.PCB
+	add	hl,bc		; index into PCB field
+	ldw	de,(hl)		; get PCB address into DE
+	ld	hl,P.BASE
+	add	hl,de		; index into subpartition base
+	ld	a,(hl)
+	ld	(iy+UX.BNK),a	; save it into UX.BNK
+	ld	de,I.QDB
+	add	ix,de		; point to QDB area of I/O packet
+	ldw	de,(ix+Q.BUF)	; get buffer address
+	ld	(iy+UX.BFP),de	;  into UX.BFP
+  IF 1
+	ld	hl,T.ATTR
+	add	hl,bc
+	bit	TA.PRV,(hl)	; task privileged?
+	jr	z,iorq0		; branch if not
+	ld	hl,T.ST
+	add	hl,bc
+	bit	TS.SUP,(hl)	; task in supervisor mode?
+	jr	z,iorq0		; branch if not
+	ld	a,40h
+	dec	a
+	cp	d		; UX.BFP in kernel space?
+	jr	nc,iorq0	; branch if not
+	ld	a,($SBANK)
+	ld	(iy+UX.BNK),a	; else adjust bank
+iorq0:
+  ENDIF
+	ldw	hl,(ix+Q.LEN)	; get byte count
+	ldw	(iy+UX.CNT),hl	;  into UX.CNT
+	ldw	de,(ix+Q.BLK)	; get 32-bit block number
+	ldw	hl,(ix+Q.BLK+2)
+	ld	(LBN),de	;  into variable LBN
+	ld	(LBN+2),hl
+	xor	a
+	ld	(ERFLAG),a	; clear error bits
+	ld	a,(ix+Q.FUNC)	; check function code
+	cp	IO.IDN
+	jp	z,HDIDN
+	cp	IO.RPB
+	jp	z,HDRPB
+	cp	IO.WPB
+	jp	z,HDWPB
+	bit	US.OFL,(iy+U.ST); check unit status
+	ld	bc,E.OFL	; error if unit offline
+	jp	nz,iorq1
+	cp	IO.RLB
+	jp	z,HDRLB
+	cp	IO.WLB
+	jp	z,HDWLB
+	cp	IO.SEC
+	jp	z,HDSEC
+	ld	bc,E.BADOP	; error code = invalid operation
+iorq1:	ld	de,0
+	jp	iend1		; free packet and return error code
+				;  (exit via IODONE)
+
+;-----------------------------------------------------------------------
+
+; Cancel current I/O operation.
+
+IOKILL:	; disk I/O operations are normally allowed to complete.
+	ret
+
+;-----------------------------------------------------------------------
+
+; End I/O operation:
+
+iend:	ld	a,(ERFLAG)	; get error bits
+	add	a,0FFh
+	sbc	a,a		; set all bits if nonzero
+	and	E.IO
+	ld	c,a		; error/success code in BC
+	ld	b,0
+	call	getcnt		; transfer count in DE
+iend1:	res	US.BSY,(iy+U.ST)
+	jp	IODONE		; store result and end operation
+
+getcnt:	ld	a,c
+	or	a
+	ld	de,512
+	ret	z
+	ld	de,0
+	ret
+
+;-----------------------------------------------------------------------
+
+; Sense characteristics (right now returns the partition size in blocks)
+
+HDSEC:	ld	de,4
+	call	CHKLEN		; ensure user buffer can hold a long word
+	jp	c,iend
+	ld	hl,(iy+UX.PSIZ)	; get partition size
+	ld	c,h		; convert from 128K tracks to blocks
+	ld	h,l		; *16 with 20-bit result in CHL
+	ld	l,0
+	ld	b,0
+	push	bc		; push hi-word
+	push	hl		; push lo-word
+	ldw	hl,(iy+UX.BFP)
+	ld	e,(iy+UX.BNK)
+	pop	bc
+	call	$UPUTW		; store lo-word
+	pop	bc
+	call	$UPUTW		; store hi-word
+	ld	de,4
+	ld	bc,E.OK
+	jp	iend1		; finish operation
+
+;-----------------------------------------------------------------------
+
+; Read drive identification information to memory buffer UX.BFP in bank
+; UX.BNK.
+
+HDIDN:	call	IDENT		; read drive identification
+	jr	HDRD1		; finish via common code
+
+; Read physical block (number in LBN) from specified unit (IY = UCB) to
+; memory buffer UX.BFP in bank UX.BNK.
+
+HDRPB:	ld	hl,(LBN)
+	ld	(PBN),hl	; set PBN variable
+	ld	hl,(LBN+2)
+	ld	(PBN+2),hl
+	jr	HDRD		; continue via common code
+
+; Read logical block (number in LBN) from specified unit (IY = UCB) to
+; memory buffer UX.BFP in bank UX.BNK.
+
+HDRLB:	call	CHKBLK		; ensure blkno is within partition limits
+	jp	c,iend		;  and that user buffer is large enough
+	call	L2PBN		; compute physical block number
+HDRD:	call	DSKRD		; read one physical block from hard disk
+HDRD1:	jp	c,iend		; finish operation if there were errors
+	exx
+	ld	a,($SBANK)
+	ld	e,a		; set src bank for $MCOPY
+	ld	d,(iy+UX.BNK)	; set dst bank
+	exx
+	ld	hl,hdbuf
+	ldw	de,(iy+UX.BFP)
+	ld	bc,512
+	call	$MCOPY		; copy block to user space
+	jp	iend		; and finish operation
+
+; Write physical block (number in LBN) from memory buffer UX.BFP, bank
+; UX.BNK to specified unit (IY = UCB).
+
+HDWPB:	ld	hl,(LBN)
+	ld	(PBN),hl	; set PBN variable
+	ld	hl,(LBN+2)
+	ld	(PBN+2),hl
+	jr	HDWR		; continue via common code
+
+; Write logical block (number in LBN) from memory buffer UX.BFP, bank
+; UX.BNK to specified unit (IY = UCB).
+
+HDWLB:	call	CHKBLK		; ensure blkno is within partition limits
+	jp	c,iend		;  and that user buffer is large enough
+	call	L2PBN		; compute physical block number
+HDWR:	exx
+	ld	e,(iy+UX.BNK)	; src bank
+	ld	a,($SBANK)
+	ld	d,a		; dst bank
+	exx
+	ldw	hl,(iy+UX.BFP)
+	ld	de,hdbuf
+	ld	bc,512
+	call	$MCOPY		; get block from user space
+	call	DSKWR		; write to physical block
+	jp	iend		; finish operation
+
+; Ensure block number is within partition boundaries, and that the user
+; buffer is large enough.
+
+CHKBLK:	ld	de,512
+	call	CHKLEN		; at least one full block
+	ret	c
+	xor	a
+	ldw	de,(iy+UX.PSIZ)
+	ld	b,0
+	ld	c,d		; convert 128K "tracks" to 512-byte blocks
+	ld	d,e		;  (multiply by 256)
+	ld	e,0		; 20-bit partition size in blocks in BCDE
+	call	CMPBLK		; LBN must be < UX.PSIZ*16
+	ccf
+	ret	nc
+	ld	a,2
+	jp	SETERR
+
+CMPBLK:	ld	hl,LBN+3
+	ld	a,(hl)
+	cp	b
+	ret	nz		; CY if LBN < part. size in BCDE (OK)
+	dec	hl
+	ld	a,(hl)
+	cp	c
+	ret	nz
+	dec	hl
+	ld	a,(hl)
+	cp	d
+	ret	nz
+	dec	hl
+	ld	a,(hl)
+	cp	e
+	ret
+
+; Ensure user buffer is large enough. Called with DE = length.
+
+CHKLEN:	ldw	hl,(iy+UX.CNT)
+	cpw	hl,de		; CY if buf size < length
+	ret	nc
+	ld	a,3
+	jp	SETERR
+
+; Convert logical block number in LBN to physical block number in PBN.
+
+L2PBN:	ldw	hl,(iy+UX.PBAS)	; get track offset for this logical unit
+	ld	c,h		; form 20-bit value into CHL
+	ld	h,l		;  multiply by 256
+	ld	l,0		;   with 20-bit result
+	ld	de,(LBN)	; get relative block number (0-based)
+	add	hl,de		; add desired relative block number
+	ld	(PBN),hl
+	ld	a,(LBN+2)
+	adc	a,c		; to 20-bit resulting block number
+	ld	l,a
+	ld	h,0
+	ld	(PBN+2),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read one physical sector from hard disk.
+
+; Input:
+;   IY  = UCB address
+;   PBN = Physical block number
+; Output:
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL and BC
+
+DSKRD:	call	HDPREP		; prepare task file registers
+	ret	c
+	WaitRdy	rderr
+	ld	a,CmdRd
+	out	(IdeCmd),a	; command: read sector data
+	WaitDrq	rderr		; wait for DRQ to become active
+	ld	hl,hdbuf	; get address of local buffer
+	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
+	inirw			; read 512 data bytes (256 words)
+	WaitRdy	rderr
+	in	a,(IdeCmd)	; check final drive status
+	and	10001001b	; Busy, DRQ, or Error?
+	jp	SETERR
+
+rderr:	ld	a,1
+	jp	SETERR
+
+;-----------------------------------------------------------------------
+
+; Write one physical sector to hard disk.
+
+; Input:
+;   IY  = UCB address
+;   PBN = Physical block number
+; Output:
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL, BC and DE.
+
+DSKWR:
+  IF NOT DSBLWR
+	call	HDPREP		; prepare task file registers
+	ret	c
+	WaitRdy	wrerr
+	ld	a,CmdWr
+	out	(IdeCmd),a	; command: write sector data
+	WaitDrq	wrerr		; wait for data requested
+	ld	hl,hdbuf	; get destination address
+	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
+	otirw			; write 512 data bytes (256 words)
+	WaitRdy	wrerr
+   if 1
+	WaitRdy	wrerr
+   endif
+	in	a,(IdeCmd)	; check final drive status
+	and	10001001b	; Busy, DRQ, or Error?
+	jp	SETERR
+  ENDIF
+
+wrerr:	ld	a,1
+	jp	SETERR
+
+;-----------------------------------------------------------------------
+
+; Prepare hard disk for data transfer. The physical sector address
+; is written to the appropriate IDE registers.
+
+HDPREP:	iopage	IdePage
+
+	WaitRdy	prerr
+
+	ld	hl,PBN		; point to physical block number (0-based)
+	ld	a,40h
+	out	(IdeLA4),a	; set LBA mode
+	ld	a,(hl)
+	out	(IdeLA1),a	; set block number
+	inc	hl
+	ld	a,(hl)
+	out	(IdeLA2),a
+	inc	hl
+	ld	a,(hl)
+	out	(IdeLA3),a
+	ld	a,0AAh
+	out	(IdeErr),a	; activate retries w/pattern in GIDE error reg
+	ld	a,1		; one sector to read or write
+	out	(IdeSCnt),a	; set sector count
+	or	a		; return with CY clear
+	ret
+
+prerr:	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Add error bits to ERFLAG variable and update error count in $ERSEQ.
+
+SETERR:	or	a
+	ret	z
+	push	hl
+	ld	hl,ERFLAG
+	or	(hl)
+	ld	(hl),a
+	ld	hl,($ERSEQ)
+	inc	hl
+	ld	($ERSEQ),hl
+	pop	hl
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; This routine is called at each clock interrupt to implement various
+; timeout functions.
+
+TMOUT:	ld	hl,(DUDCB)
+	ld	de,D.TCNT
+	add	hl,de
+	ld	de,1		; re-arm the timeout process
+	ldw	(hl),de
+	ld	hl,dcnt		; check GIDE access timeout counter
+	ld	a,(hl)
+	or	a		; timed out?
+	ret	z		; return if yes
+	dec	(hl)		; else count down
+	ret
+
+;-----------------------------------------------------------------------
+
+; Initialise the IDE hard disk, read the partition table and search
+; for RSX180 partitions.
+
+GINIT:
+;;	call	IDENT		; identify disk geometry
+;;	ret	c
+;;	call	HDINIT		; initialize disk with geom params
+	call	RDPTBL		; read the partition table
+	ret	c
+	call	CHKPT		; validate the partition table
+	ret	nz		; return if no partition table found (all
+				;  units are offline at this point)
+
+	; now scan the partition table, identify partitions and setup the
+	; disk parameter tables accordingly (note relative drive number = 0
+	; still in C)
+
+	ld	hl,(hdbuf+3)
+	ld	de,hdbuf
+	add	hl,de		; point to partition table
+	ld	iy,UCBDU0
+pscan:	ldw	de,(hl)
+	inc	hl
+	inc	hl
+	ldw	(iy+UX.PBAS),de	; store partition start
+	ldw	de,(hl)
+	inc	hl
+	inc	hl
+	ldw	(iy+UX.PSIZ),de	; store partition size
+	ld	a,d		; zero size = unused
+	or	e
+	res	US.OFL,(iy+U.ST)
+	jr	nz,online
+	set	US.OFL,(iy+U.ST)
+online:	ld	a,(hl)
+	inc	hl
+	inc	hl
+;;	cp	0D8h		; RSX180 partition? [we recognize any partition
+;;	jr	nz,next		;  type, so we can mount/access them foreign]
+next:	ldw	iy,(iy+U.LNK)
+	ld	a,iyh
+	or	iyl
+	jr	nz,pscan
+	ret
+
+psign:	db	'P112GIDE'	; partition table signature
+
+; Validate partition table. Returns Z if valid.
+
+CHKPT:	ld	hl,hdbuf+7
+	ld	de,psign
+	ld	b,8
+pchk:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	pchk
+	ret
+
+; Hard disk initialization
+
+HDINIT:	; rely on ZZmon initialization for now...
+	ret
+
+; Read ID from Hard Disk
+
+IDENT:	iopage	IdePage
+	WaitRdy	iderr
+	ld	a,CmdId
+	out	(IdeCmd),a	; command: read sector data
+	WaitDrq	iderr		; wait for DRQ to become active
+	ld	hl,hdbuf	; get target address
+	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
+	inirw			; read 512 data bytes (256 words)
+	WaitRdy	iderr
+	in	a,(IdeCmd)	; check final drive status
+	and	10001001b	; Busy, DRQ, or Error?
+	ret	z		; no: everything is ok
+iderr:	ld	a,1		; return with A=1 and CY set on error
+	scf
+	ret
+
+; Read partition table (C/H/S = 0/0/0)
+; Returns with CY set on error
+
+RDPTBL:
+  IF 0
+	iopage	IdePage
+	WaitRdy	pterr
+	ld	a,40h
+	out	(IdeLA4),a	; set LBA mode
+	xor	a
+	out	(IdeLA1),a
+	out	(IdeLA2),a
+	out	(IdeLA3),a
+	ld	a,0AAh
+	out	(IdeErr),a	; activate retries w/pattern in GIDE error reg
+	ld	a,1		; one sector to read or write
+	out	(IdeSCnt),a	; set sector count
+	WaitRdy	pterr
+	ld	a,CmdRd
+	out	(IdeCmd),a	; command: read sector data
+	WaitDrq	pterr		; wait for DRQ to become active
+	ld	hl,hdbuf	; get target address
+	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
+	inirw			; read 512 data bytes (256 words)
+	WaitRdy	pterr
+	in	a,(IdeCmd)	; check final drive status
+	and	10001001b	; Busy, DRQ, or Error?
+	jp	SETERR		; set error bits an return
+
+pterr:	ld	a,1
+	jp	SETERR
+  ELSE
+	ld	hl,psign
+	ld	de,hdbuf+7
+	ld	bc,8
+	ldir
+	ld	hl,100h
+	ld	(hdbuf+3),hl
+	ld	hl,pt
+	ld	de,hdbuf+100h
+	ld	bc,8*6
+	ldir
+	xor	a
+	ret
+
+pt:	dw	0001h,003Fh
+	db	0,1
+	dw	0040h,0040h
+	db	0,1
+	dw	0080h,0040h
+	db	0,0
+	dw	00C0h,0040h
+	db	0,0
+	dw	0100h,0100h
+	db	0D8h,1
+	dw	0000h,0000h
+	db	0,0
+	dw	0000h,0000h
+	db	0,0
+	dw	0000h,0000h
+	db	0,0
+	dw	0000h,0000h
+	db	0,0
+  ENDIF
+
+;-----------------------------------------------------------------------
+
+	DSEG
+
+DUDCB:	ds	2		; address of our DCB
+
+LBN:	ds	4		; number of logical block to read
+PBN:	ds	4		; number of physical block to read
+ERFLAG:	ds	1		; error flags
+
+dcnt:	ds	1		; GIDE I/O timeout counter
+
+hdbuf:	ds	512		; local buffer for disk I/O transfer
+
+	END

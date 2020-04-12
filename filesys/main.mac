@@ -1,0 +1,744 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Filesystem management task - Main module.
+
+	.Z280
+
+	IDENT	"V5.0"
+
+	include	SYSFN.INC
+	include	SYSFCP.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	LCB.INC
+	include	AST.INC
+	include	QIO.INC
+	include	ERRORS.INC
+	include	SYSTEM.INC
+
+	public	UCDIR		; get user dir
+	public	GETUIC		; get task UIC
+	public	LUNUCB		; UCB to be used for I/O
+	public	LUNVCB		; VCB of mounted device
+	public	CLRMEM
+
+	extrn	MOUNT,DISMNT,FCREAT,FOPEN,FCLOSE,FREAD,FWRITE,FSETL
+	extrn	FRATTR,FWATTR,FEXTND,FTRUNC,FUNLK,FDEL,FREN,MKDIR
+	extrn	INIBUF,FLBUFS,FNDVCB
+
+	cseg
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START::	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,fatal
+
+	call	INIBUF		; init buffers
+	jp	c,fatal
+
+	ld	de,DRAST
+	ld	c,AST.RD
+	SC	.ASTDF		; specify data-received AST routine
+
+	xor	a
+	ld	(TMOFLG),a
+
+next:	ld	e,ASTEFN
+	SC	.CLEF		; clear event flag
+	ld	hl,RCVBUF
+	ld	de,QDBSZ+4	; TCB addr + UCB addr + QDB
+	SC	.RECV
+	jr	nc,process
+wait:	ld	hl,5		; timeout = 5 seconds
+	ld	d,2
+	ld	e,0		; no EFN, the AST routine will set ASTEFN
+	ld	bc,TMAST	; AST routine address
+	SC	.MRKT		; setup timeout
+	ld	e,ASTEFN
+	SC	.WTSE		; wait for data or timeout
+	ld	bc,0
+	ld	e,0
+	SC	.CMKT		; cancel any outstanding mark-time requests
+	ld	hl,TMOFLG
+	ld	a,(hl)
+	or	a
+	ld	(hl),0
+	call	nz,FLBUFS	; flush disk buffers
+	jr	next
+
+process:
+	ld	a,(QDB+Q.FUNC)
+	sub	20		; subtract offset to file I/O functions
+	jr	c,fnerr
+	cp	15+1		; check upper limit
+	jr	nc,fnerr
+	add	a,a
+	ld	hl,fntab
+	add	hl,a
+	ld	hl,(hl)
+	push	fnsto		; push return address
+	jp	(hl)
+
+fnerr:	ld	a,E.BADOP	; error code = invalid operation
+fnsto:	push	af
+	ld	ix,(USRTSK)
+	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
+	call	GETBNK
+	ld	e,a
+	pop	af
+	ld	c,a
+	ld	b,0
+	KCALL	$UPUTW		; store result code
+fnend:	ld	a,(QDB+Q.EFN)
+	ld	e,a		; get flag number into E
+	ld	bc,(USRTSK)
+	KCALL	$IOEND		; set flag and resume task (processing done)
+	jr	next		; process next packet
+
+fatal:	ld	hl,EX.SEV
+	SC	.EXIT
+
+; Data-received AST service routine
+
+DRAST:	push	de
+	ld	e,ASTEFN
+	SC	.SETF		; set event flag
+	pop	de
+	SC	.ASTX		; return to program
+
+; Mark-time AST service routine
+
+TMAST:	push	de
+	ld	a,1
+	ld	(TMOFLG),a	; set timeout flag
+	ld	e,ASTEFN
+	SC	.SETF		; set event flag
+	pop	de
+	SC	.ASTX		; return to program
+
+fntab:	dw	fnmake		; IO.CRE
+	dw	fnopen		; IO.ACC
+	dw	fnclse		; IO.DEA
+	dw	fnrvb		; IO.RVB
+	dw	fnwvb		; IO.WVB
+	dw	fnrat		; IO.RAT
+	dw	fnwat		; IO.WAT
+	dw	fnunlk		; IO.UNL
+	dw	fndel		; IO.DEL
+	dw	fnren		; IO.REN
+	dw	fncln		; IO.CLN
+	dw	fnext		; IO.EXT
+	dw	fntrn		; IO.TRN
+	dw	fnmnt		; IO.MNT
+	dw	fndsm		; IO.DSM
+	dw	fnffs		; IO.FFS
+
+; ----- IO.MNT
+
+fnmnt:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; get UCB into DE
+	ret	c
+	ld	a,d
+	or	e
+	ld	a,E.INV		; LUN not assigned
+	ret	z
+	call	MOUNT		; mount device
+	ret
+
+; ----- IO.DSM
+
+fndsm:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; get UCB into DE
+	ret	c
+	ld	a,d
+	or	e
+	ld	a,E.INV		; LUN not assigned
+	ret	z
+	call	VALVCB		; get address of VCB
+	ret	c		; error if not set
+	call	DISMNT		; dismount device
+	ret
+
+; ----- IO.CRE
+
+fnmake:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; file open on this LUN?
+	ret	c
+	ld	a,h
+	or	l
+	ld	a,E.INV		; return error if yes
+	ret	nz
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	hl,(QDB+Q.P1)
+	ld	de,FDB1
+	push	de
+	call	UFDB		; get FDB from user space
+	pop	hl		; HL = file spec block
+	ret	c
+	ld	b,0		; initial file attributes
+	ld	a,(QDB+Q.SUBF)
+	ld	c,a
+	and	SF.CTG		; create contiguous file?
+	jr	z,fnmk1		; branch if not
+	ld	b,FA.CTG	; else set FA.CTG file attribute
+fnmk1:	ld	a,c
+	and	SF.DIR		; create directory?
+	jr	z,fnmk2		; branch if not
+	ld	a,b
+	or	FA.DIR		; else set FA.DIR attribute
+	ld	b,a		; B = file attribs
+	ld	de,(QDB+Q.P2)	; CDE = blocks to alloc for contiguous file
+	ld	a,(QDB+Q.P2+2)
+	ld	c,a
+	call	MKDIR		; create directory
+	ret
+
+fnmk2:	ld	a,b
+	or	FA.FILE		; set FA.FILE attribute
+	ld	b,a		; B = file attribs
+	ld	de,(QDB+Q.P2)	; CDE = blocks to alloc for contiguous file
+	ld	a,(QDB+Q.P2+2)
+	ld	c,a
+	call	FCREAT		; create and open regular file
+	push	af
+	ld	a,(QDB+Q.LUN)
+	ld	e,a		; get LUN into E
+	call	STOFCB		; store FCB address in task's LUN table
+	pop	af
+	ret
+
+; ----- IO.ACC
+
+fnopen:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; file open on this LUN?
+	ret	c
+	ld	a,h
+	or	l
+	ld	a,E.INV		; return error if yes
+	ret	nz
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	hl,(QDB+Q.P1)
+	ld	de,FDB1
+	push	de
+	call	UFDB		; get FDB from user space
+	pop	hl		; HL = file spec block
+	ret	c
+	ld	a,(QDB+Q.SUBF)
+	call	fmod		; get access mode bits
+	call	FOPEN		; open the file
+	push	af
+	ld	a,(QDB+Q.LUN)
+	ld	e,a		; get LUN into E
+	call	STOFCB		; store FCB address in task's LUN table
+	pop	af
+	ret
+
+fmod:	ld	b,a
+	ld	c,0
+	and	SF.ACR		; read access
+	jr	z,fm1
+	ld	a,c
+	or	FA.RD
+	ld	c,a
+fm1:	ld	a,b
+	and	SF.ACW		; write access
+	jr	z,fm2
+	ld	a,c
+	or	FA.WR
+	ld	c,a
+fm2:	ld	a,b
+	and	SF.SHR		; shared access
+	ret	z
+	ld	a,c
+	or	FA.SHR
+	ld	c,a
+	ret
+
+; ----- IO.DEA
+
+fnclse:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB, ensure is valid
+	ret	c		; return error if FCB not valid
+	call	VALVCB		; get address of VCB
+	ret	c
+	call	FCLOSE		; close file and free FCB
+	push	af
+	ld	a,(QDB+Q.LUN)
+	ld	e,a		; get LUN into E
+	ld	bc,0
+	call	STOFCB		; clear FCB entry in task's LUN table
+	pop	af
+	ret
+
+; ----- IO.CLN
+
+fncln:	ld	hl,(QDB+Q.P1)	; get FCB address
+	ld	de,(QDB+Q.P2)	; get UCB address
+	ld	(LUNUCB),de
+	call	VALVCB		; get address of VCB
+	jr	c,cln1
+	push	hl
+	call	FSETL		; set lock bit
+	pop	hl
+	call	FCLOSE		; close file and free FCB
+cln1:	pop	hl		; discard return to fnsto (no flag to set,
+	jp	next		;  no return status to store)
+
+; ----- IO.UNL
+
+fnunlk:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; get UCB into DE
+	ret	c
+	ld	a,d
+	or	e
+	ld	a,E.INV		; LUN not assigned
+	ret	z
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	hl,(QDB+Q.P1)
+	ld	de,FDB1
+	push	de
+	call	UFDB		; get FDB from user space
+	pop	hl		; HL = file spec address
+	ret	c
+	call	FUNLK		; unlock file
+	ret
+
+; ----- IO.RVB
+
+fnrvb:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB not valid
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	de,(QDB+Q.BUF)	; DE = buffer address
+	ld	bc,(QDB+Q.LEN)	; BC = len
+	call	VALBUF		; validate buffer
+	ld	a,E.INV
+	ret	c		; return error if invalid
+	call	GETBNK		; assuming the task is non-movable while
+				;  it has outstanding I/O
+	push	hl
+	pop	ix		; IX = FCB
+	push	bc
+	exx
+	pop	de		; DE' = len
+	ld	bc,(QDB+Q.OFS)	; BC' = offset within block
+	exx
+	ld	c,a
+	ld	hl,(QDB+Q.BLK)	; BHL = block number
+	ld	a,(QDB+Q.BLK+2)
+	ld	b,a
+	ld	a,c
+	call	FREAD		; read data from file
+	jr	fnrwe		; end via common code
+
+; ----- IO.WVB
+
+fnwvb:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB not valid
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	de,(QDB+Q.BUF)	; DE = buffer address
+	ld	bc,(QDB+Q.LEN)	; BC = len
+	call	VALBUF		; validate buffer
+	ld	a,E.INV
+	ret	c		; return error if invalid
+	call	GETBNK		; assuming the task is non-movable while
+				;  it has outstanding I/O
+	push	hl
+	pop	ix		; IX = FCB
+	push	bc
+	exx
+	pop	de		; DE' = len
+	ld	bc,(QDB+Q.OFS)	; BC' = offset within block
+	exx
+	ld	c,a
+	ld	hl,(QDB+Q.BLK)	; BHL = block number
+	ld	a,(QDB+Q.BLK+2)
+	ld	b,a
+	ld	a,c
+	call	FWRITE		; write data to file
+fnrwe:	push	bc
+	push	af
+	ld	ix,(USRTSK)
+	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
+	call	GETBNK
+	ld	e,a
+	pop	af
+	ld	c,a
+	ld	b,0
+	KCALL	$UPUTW		; store result code
+	pop	bc
+	KCALL	$UPUTW		; store number of bytes actually read/written
+				; (E still contains bank, and HL the address)
+	pop	hl		; discard fnsto return address
+	jp	fnend		; finish via fnend
+
+; ----- IO.EXT
+
+fnext:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB is invalid
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	de,(QDB+Q.BLK)	; CDE = new size in blocks
+	ld	a,(QDB+Q.BLK+2)
+	ld	c,a
+	call	FEXTND		; extend file
+	ret
+
+; ----- IO.TRN
+
+fntrn:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB is invalid
+	call	VALVCB		; get address of VCB
+	ret	c
+	push	hl
+	pop	ix		; IX = FCB address
+	ld	hl,(QDB+Q.BLK)
+	ld	a,(QDB+Q.BLK+2)
+	ld	b,a
+	ld	de,(QDB+Q.LEN)
+	call	FTRUNC		; truncate file
+	ret
+
+; ----- IO.RAT
+
+fnrat:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB not valid
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	de,(QDB+Q.BUF)	; DE = buffer address
+	ld	bc,(QDB+Q.LEN)	; BC = len
+	call	VALBUF		; validate buffer
+	ld	a,E.INV
+	ret	c		; return error if invalid
+	call	GETBNK		; assuming the task is non-movable while
+				;  it has outstanding I/O
+	call	FRATTR		; read file attribs
+	jp	fnrwe		; end via common code
+
+; ----- IO.WAT
+
+fnwat:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	VALFCB		; fetch FCB into HL, ensure is valid
+	ret	c		; return error if FCB not valid
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	de,(QDB+Q.BUF)	; DE = buffer address
+	ld	bc,(QDB+Q.LEN)	; BC = len
+	call	VALBUF		; validate buffer
+	ld	a,E.INV
+	ret	c		; return error if invalid
+	call	GETBNK		; assuming the task is non-movable while
+				;  it has outstanding I/O
+	call	FWATTR		; write file attribs
+	jp	fnrwe		; end via common code
+
+; ----- IO.DEL
+
+fndel:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; get UCB into DE
+	ret	c
+	ld	a,d
+	or	e
+	ld	a,E.INV		; LUN not assigned
+	ret	z
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	hl,(QDB+Q.P1)
+	ld	de,FDB1
+	push	de
+	call	UFDB		; get FDB from user space
+	pop	hl		; HL = file spec address
+	ret	c
+	call	FDEL		; delete the file
+	ret
+
+; ----- IO.REN
+
+fnren:	ld	a,(QDB+Q.LUN)	; get LUN
+	call	LUNFCB		; get UCB into DE
+	ret	c
+	ld	a,d
+	or	e
+	ld	a,E.INV		; LUN not assigned
+	ret	z
+	call	VALVCB		; get address of VCB
+	ret	c
+	ld	hl,(QDB+Q.P1)	; ptr to old FDB
+	ld	de,FDB1
+	call	UFDB
+	ret	c
+	ld	hl,(QDB+Q.P2)	; ptr to new FDB
+	ld	de,FDB2
+	call	UFDB
+	ret	c
+	ld	hl,FDB1		; HL = old file spec
+	ld	de,FDB2		; DE = new file spec
+	call	FREN
+	ret
+
+; ----- IO.FFS
+
+fnffs:	call	FLBUFS		; flush all buffers
+	xor	a		; E.OK, clear CY
+	ret
+
+terminate:
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Get ptr to task's current directory into HL
+
+UCDIR:	ld	ix,(USRTSK)
+	ldw	hl,(ix+T.CTX)	; get address of context block
+	ld	a,h
+	or	l
+	ld	a,E.TNAC
+	scf
+	ret	z		; error if not set (should not happen)
+	ld	de,TX.DIR
+	add	hl,de		; point to task's current directory
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get effective user ID and group ID of requesting task.
+
+; Returns:
+;   H = group ID
+;   L = user ID
+;   C = status byte of user's session
+;   IX = task TCB.
+; Preserves DE.
+
+GETUIC:	ld	ix,(USRTSK)
+	ldw	bc,(ix+T.TI)	; get UCB of terminal
+	ld	hl,U.LCB
+	add	hl,bc
+	ldw	bc,(hl)		; get LCB of terminal
+	ld	a,b
+	or	c		; session may be null (e.g. for HEL task)
+	jr	z,gt1		; note will return C = 0
+	ld	hl,L.ST
+	add	hl,bc
+	ld	c,(hl)		; get session status byte
+gt1:	ldw	hl,(ix+T.CTX)	; get address of context block
+	ld	a,h
+	or	l
+	ld	a,E.TNAC
+	scf
+	ret	z		; should not happen
+	ldw	hl,(hl)		; get user ID into reg H and group ID into L
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get address of FCB associated to LUN of USRTSK.
+; A = LUN, returns HL = FCB, DE = UCB.
+; Also sets LUNUCB.
+
+LUNFCB:	dec	a		; 1..16 -> 0..15
+	ld	e,a
+	cp	16		; valid?
+	ld	a,E.INV
+	ccf
+	ret	c		; return error if not
+	ld	ix,(USRTSK)
+	ldw	hl,(ix+T.CTX)	; get address of context block
+	lda	hl,(hl+TX.LUT)	; point to start on LUN table
+	ld	d,0
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	add	hl,de		; *4 (index into table)
+	ldw	de,(hl)		; fetch UCB address
+	inc	hl
+	inc	hl
+	ex	de,hl
+	KCALL	$REDIR		; follow redirect pointers
+	ld	(LUNUCB),hl
+	ex	de,hl
+	ldw	hl,(hl)		; fetch FCB address
+	xor	a
+	ret
+
+; Get address of FCB and ensure is valid.
+
+VALFCB:	call	LUNFCB
+	ret	c
+	ld	a,h
+	or	l
+	ld	a,E.INV
+	scf			; FCB must be valid
+	ret	z
+	xor	a
+	ret
+
+; Get address of VCB and ensure is valid. Sets LUNVCB variable.
+; Called with DE = UCB address.
+
+VALVCB:	push	hl
+	call	FNDVCB
+	ld	(LUNVCB),hl
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ret			; return 
+
+; Store FCB address in USRTSK's LUN table.
+; A = LUN, BC = FCB address.
+
+STOFCB:	dec	a		; 1..16 -> 0..15
+	ld	e,a
+	cp	16		; valid?
+	ld	a,E.INV
+	ccf
+	ret	c		; return error if not
+	ld	ix,(USRTSK)
+	ldw	hl,(ix+T.CTX)	; get address of task context block
+	ld	a,h
+	or	l
+	scf
+	ld	a,E.INV
+	ret	z		; error if not set
+	lda	hl,(hl+TX.LUT)	; HL = start of LUN table
+	ld	d,0
+	add	hl,de
+	add	hl,de
+	add	hl,de
+	add	hl,de		; *4
+	inc	hl
+	inc	hl
+	ldw	(hl),bc
+	ret
+
+; Validate buffer, ensure it is contained within task limits. Returns
+; CY set if not. DE = buf, BC = len
+
+VALBUF:	ld	ix,(USRTSK)
+	push	hl
+	ldw	hl,(ix+T.STRT)
+	ex	de,hl
+	cpw	hl,de		; CY if bufptr < task_start
+	ex	de,hl
+	pop	hl
+	ld	a,E.BADOP
+	ret	c
+	push	hl
+	ldw	hl,(ix+T.END)
+	sbc	hl,bc		; note CY clear
+	ret	c		; CY if task_end - len < 0
+	cpw	hl,de		; CY if bufptr + len > task_end
+	pop	hl
+	ld	a,E.BADOP
+	ret	c
+	xor	a
+	ret
+
+; Get FDB from user space. HL = ptr to FDB, DE = ptr to dest buffer
+
+UFDB:	push	de
+	ex	de,hl
+	ld	bc,FDBSZ
+	call	VALBUF		; ensure pointer is valid
+	ex	de,hl
+	pop	de
+	ret	c
+	call	GETBNK
+	exx
+	ld	hl,($CPCB)
+	ld	de,P.BASE
+	add	hl,de
+	ld	d,(hl)		; dst bank in D'
+	ld	e,a		; src bank in E'
+	exx
+	KCALL	$MCOPY		; length still in BC
+	xor	a
+	ret
+
+; Get task base bank.
+
+GETBNK:	ld	ix,(USRTSK)
+	push	hl
+	push	de
+	ldw	hl,(ix+T.PCB)
+	ld	de,P.BASE
+	add	hl,de
+	ld	a,(hl)
+	pop	de
+	pop	hl
+	ret
+
+; Clear block of memory. HL = start address, BC = length.
+
+CLRMEM:	ld	a,b
+	or	c
+	ret	z
+	ld	(hl),0
+	inc	hl
+	dec	bc
+	jr	CLRMEM
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+RCVBUF	equ	$
+RCVLEN:	ds	2		; !  do    !
+USRTSK:	ds	2		; !  not   !
+UCBADR:	ds	2		; ! change !
+QDB:	ds	QDBSZ		; ! order  !
+
+FDB1:	ds	FDBSZ
+FDB2:	ds	FDBSZ
+LUNUCB:	ds	2
+LUNVCB:	ds	2
+
+TBASE:	ds	1
+TMOFLG:	ds	1		; timeout flag
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

@@ -1,0 +1,578 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('P112')
+	TITLE	'RSX180 machine-dependent routines'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Machine-dependent routines - P112 CPU board version.           ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z180
+
+Z80182	equ	1
+	include	Z180.INC
+
+	include	SYSCONF.INC
+	include	ERRORS.INC
+
+	public	CPUSPD		; measure CPU clock frequency and get the
+				;  timer reload value
+	public	GETDT		; get date and time from hardware clock
+	public	SETDT		; write date and time to hardware clock
+	public	NVREAD		; read non-volatile RAM values
+	public	NVRAM		; non-volatile RAM data area
+	public	NVOK		; NV RAM OK flag
+
+	cseg
+
+;--------------------------------------------------------------------
+
+; Measure the system-clock speed and return the reload timer constant.
+; This routine is adapted from the P112 ROM BIOS and is specific to
+; the P112 SBC.
+;
+; Measurement is done by setting the 2ary serial port to 1200bps, and
+; outputting a 10-bit character (actually NUL).  This interval equates
+; to a frequency of 1200/10 = 120Hz.  This period is measured using the
+; Z180 system timer, which counts CLK/20. The final value will then be
+; SYSCLK / (20 * 120). This will be a 65k complement, as the timer
+; counts down. The measurement will be subject to some error, but near
+; enough to identify the standard crystals:
+;
+;	12.288MHz, 16.0MHz, 18.432MHz, and 24.576MHz.
+
+FRQ2TK	MACRO	kHz,tksec
+	;; Since the timer counts clk/20, the reload value is
+	;;     (clk_in_Hz / 20) / ticks_per_sec
+	;;  = ((clk_in_kHz * 1000 / 20) / ticks_per_sec
+	;;  =  (clk_in_kHz * 50) / ticks_per_sec
+	;; The 'AND 7FFFh' below is for M80, which does signed mult and div.
+	dw	((kHz / tksec) * 50 + (kHz MOD tksec) * 50 / tksec) AND 7FFFh
+	ENDM
+
+_RBR	equ	98h		; Receive Buffer Register
+_THR	equ	98h		; Transmit Holding Register
+_IER	equ	99h		; Interrupt Enable Register
+_IIR	equ	9Ah		; Interrupt Identification Register
+_FCR	equ	9Ah		; FIFO Control Register
+_LCR	equ	9Bh		; Line Control Register
+_MCR	equ	9Ch		; Modem Control Register
+_LSR	equ	9Dh		; Line Status Register
+_MMSR	equ	9Eh		; Modem Status Register
+_DDL	equ	98h		; Divisor LSB
+_DLM	equ	99h		; Divisor MSB
+
+CPUSPD:	in0	a,(_LSR)	; first, be sure it's empty
+	bit	6,a
+	jr	z,CPUSPD
+
+	ld	hl,tmInz	; ready to run it
+IoINz:	xor	a		; get a zero
+	ld	b,a		;  to hi-order address
+	cpl			; 0 -> FF
+IIz1:	ld	c,(hl)		; get port #
+	tst	c		; end?
+	jr	z,clkw		; exit if so
+	inc	hl		; else advance to data byte
+	outi			;  send it
+	inc	b		;   (correct B for above)
+	jr	IIz1		;   keep going
+
+clkw:	in0	a,(_LSR)	; now wait till it's gone
+	bit	6,a
+	jr	z,clkw
+
+	in0	l,(TMDR1L)	; get residual timer into HL
+	in0	h,(TMDR1H)
+
+	xor	a		; then kill the timer (at startup,
+	out0	(TCR),a		;   we know it's not shared)
+	in0	a,(_RBR)	; clear the looped char.
+
+	inc	h		; round HL in top 7 bits
+	res	0,h		; further rounding
+	ld	b,tCnt		; No. of table items
+	ld	a,h
+	ld	hl,trTab
+	ld	de,lTab
+tr1:	cp	(hl)		; matched?
+	jr	z,tr2
+	add	hl,de		; no: next
+	djnz	tr1
+
+	ld	hl,oddOne-1	; offset for 'inc' below
+tr2:	inc	hl		; point at the timer value
+
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; return the reload timer constant
+	ret
+
+tmInz:	db	_LCR, 80h	; DLAB=1
+	db	_DDL, 60h	; 96d, divisor for 1200bps
+	db	_DLM,  0h
+	db	_LCR, 03h	; DLAB=0, 8 bits, no parity
+	db	_MCR, 10h	; loopback, so nothing is output
+	db	TMDR1L, 0
+	db	TMDR1H, 0	; Timer-1: preset to zero
+	db	RLDR1L, 0
+	db	RLDR1H, 0
+	db	TCR,   02h	; kick off the timer
+	db	_THR,   0	; send the byte
+	db	0		; stop flag
+
+; Translation table for results
+
+trTab:	db	-0Ah
+	FRQ2TK	6144,TCKSEC	; 6.144 MHz
+lTab	equ	$-trTab
+
+	db	-0Ch
+	FRQ2TK	8000,TCKSEC	; 8.000 MHz
+
+	db	-0Eh
+	FRQ2TK	9216,TCKSEC	; 9.216 MHz
+
+	db	-12h
+	FRQ2TK	11059,TCKSEC	; 11.0592 MHz
+
+	db	-14h
+	FRQ2TK	12288,TCKSEC	; 12.288 MHz
+
+	db	-18h
+	FRQ2TK	14756,TCKSEC	; 14.756 MHz
+
+	db	-1Ah
+	FRQ2TK	16000,TCKSEC	; 16.000 MHz
+
+	db	-1Eh
+	FRQ2TK	18432,TCKSEC	; 18.432 MHz
+
+	db	-24h
+	FRQ2TK	22118,TCKSEC	; 22.1184 MHz
+
+	db	-28h
+	FRQ2TK	24576,TCKSEC	; 24.576 MHz
+
+	db	-30h
+	FRQ2TK	29491,TCKSEC	; 29.4912 MHz
+
+	db	-34h
+	FRQ2TK	32000,TCKSEC	; 32.000 MHz
+
+	db	-3Ch
+	FRQ2TK	36864,TCKSEC	; 36.864 MHz
+
+	db	-48h
+	FRQ2TK	44237,TCKSEC	; 44.2368 MHz
+
+	db	-50h
+	FRQ2TK	49152,TCKSEC	; 49.152 MHz
+
+	db	-60h
+	FRQ2TK	58982,TCKSEC	; 58.9824 MHz
+
+tCnt	equ	($-trTab)/lTab	; No. of entries
+
+oddOne:	FRQ2TK	17000,TCKSEC	; default value for odd crystals
+	
+;-----------------------------------------------------------------------
+
+; Get current date and time from DS1202 clock chip and store it
+; at HL address in BCD format (YYYY MM DD hh mm ss dow = 8 bytes).
+
+GETDT:	push	hl
+	ld	hl,timbuf	; point to the destination buffer
+	call	rdtime		; read clock
+	pop	hl
+	ld	a,(ds.year)	; fetch year
+	ld	c,a
+	cp	78h		; 1978
+	ld	a,19h
+	jr	nc,t1
+	ld	a,20h
+t1:	ld	(hl),a
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	a,(ds.mon)	; fetch month
+	ld	(hl),a		; month = 1...12
+	inc	hl
+	ld	a,(ds.day)	; fetch day
+	ld	(hl),a		; day = 1...29,30, or 31
+	inc	hl
+	ld	a,(ds.hour)
+	call	cvhour		; convert hour to 24-hours format (BCD)
+	ld	(hl),a		; hours = 00..23
+	inc	hl
+	ld	a,(ds.min)
+	ld	(hl),a		; minutes = 00..59
+	inc	hl
+	ld	a,(ds.sec)
+	ld	(hl),a		; seconds = 00..59
+	inc	hl
+	ld	a,(ds.dow)
+	ld	(hl),a		; day of week = 1..7
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set date and time from data @HL, same format as GETDT.
+
+SETDT:	ld	de,timbuf
+	ld	bc,dterr	; push error return address
+	push	bc		;  on stack for convenience
+	inc	hl		; skip century
+	ld	a,(hl)		; get year
+	ld	(ds.year),a
+	inc	hl
+	ld	a,(hl)		; get month
+	or	a
+	ret	z
+	ld	c,12h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.mon),a
+	inc	hl
+	ld	a,(hl)		; get day
+	or	a
+	ret	z
+	ld	c,31h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.day),a
+	inc	hl
+	ld	a,(hl)		; hour
+	ld	c,24h
+	call	chkbcd
+	ret	c
+	res	7,a		; set 24-hour format bit
+	ld	(ds.hour),a
+	inc	hl
+	ld	a,(hl)		; minutes
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.min),a
+	inc	hl
+	ld	a,(hl)		; seconds
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.sec),a
+	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z
+	cp	7+1
+	ret	nc
+	ld	(ds.dow),a
+	pop	bc		; discard error return address
+	ld	a,80h
+	ld	(ds.wp),a	; set write-protect bit
+	ld	hl,timbuf
+	call	sttime
+	xor	a
+	ret
+dterr:	ld	a,E.BADOP
+	scf
+	ret
+
+chkbcd:	ld	b,a
+	and	0Fh
+	cp	09h+1		; ensure low-nibble is value BCD
+	ccf
+	ld	a,b
+	ret	c
+	cp	c		; compare against max value, this also
+	ccf			;  validates high-nibble of BCD
+	ret
+
+; convert DS1202 hour to 24-hour format
+
+cvhour:	bit	7,a		; already in 24-hour format?
+	ret	z		; return if yes
+	and	7Fh
+	bit	5,a		; check AM/PM bit
+	ret	z		; return if AM
+	and	1Fh
+	add	a,12h		; correct if PM
+	daa
+	cp	24h		; hour >= 24?
+	ret	c		; return if not
+	sub	24h		; otherwise correct it
+	ret
+
+;-------------------------------------------------------------------------
+
+; Activate the Clock chip and set Date/Time from the string passed in HL.
+
+sttime:	di
+	call	copen		; Open the Clock
+	ld	a,8Eh
+	call	wrbyte		; Write-Protect Off
+	ld	a,0
+	call	wrbyte
+	call	cclosw
+	call	copen
+	ld	a,0BEh		; Burst Write
+	ld	e,8		;  8 bytes
+	call	wrbyte
+stloop:	ld	a,(hl)
+	call	wrbyte
+	inc	hl
+	dec	e
+	jr	nz,stloop
+	call	cclosw
+	ei
+	ret
+
+;-------------------------------------------------------------------------
+
+; Read the clock to a buffer area in memory. Seven bytes are read in burst
+; mode from the clock chip, one bit at a time via three bits from one of the
+; Z-182 parallel ports. The clock is accessed serially (LSB first) one byte
+; at a time with a command byte being written to begin the Read/Write. 
+; Burst mode is used with a 0BFH byte for reading, 0BEH for writing as the
+; command. Clock setting clears the Write Protect bit before setting, and
+; resets the chip to Read-Only when finished.
+
+; The entire Date/Time string is eight bytes read as:
+;
+;	Sec   Min   Hour   Day   Mon   DOW   Year   WProt
+;                  (12/24)                          (MSB)
+;
+; In this implementation, the 12/24 hour bit is always set to 24-hour mode
+; by clearing the MSB to 1.
+
+	; Z80182 Port A Bit Definitions
+
+RTCRst	equ	2		; DS-1202 ~Reset Bit
+RTCClk	equ	1		; DS-1202 Clock Bit
+RTCDat	equ	0		; DS-1202 Data IO Bit
+
+rdtime:	di
+	call	copen		; set clock to read, returning BC->DRA port
+	push	de
+	push	hl		; preserve ptr
+
+; Command the DS-1202 for burst read of clock
+
+	ld	a,0BFh		; load the Burst Clock Read Command
+	call	wrbyte		;  and send it
+
+; Read the clock data, use D as byte index
+
+	ld	d,7		; 7 Bytes to Read
+rdtim:	call	rdbyte
+	ld	(hl),e		; Save value in output string
+	inc	hl		;  go to next byte in output
+	dec	d		;   decrement counter
+	jr	nz,rdtim	; ..get another byte if not done
+	call	cclose		; Else Deselect Clock
+	pop	hl		; Restore Ptr
+	pop	de
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+; Read a single byte from the DS-1202 into register E
+
+rdbyte:	push	hl		; Save Ptr
+	ld	e,8		; Gather 8 bit for a byte
+rdloop:	in	a,(c)		; Read Port
+	res	RTCClk,a	;  Clock LO
+	out	(c),a		;   Set
+	nop			;    (settle)
+	in	a,(c)		;     Read Bit to LSB
+	rrca			; Data Bit to Carry
+	rr	l		;  to MSB of Accum
+	rlca			;   restore Parallel Port bits
+	set	RTCClk,a	; Clock HI
+	out	(c),a		;  Set
+	dec	e		; Byte Done?
+	jr	nz,rdloop	; ..jump if Not
+	ld	e,l		; Else Get Byte
+	pop	hl		; Restore Ptr to Dest
+	ret
+
+;--------------------------------------------------------------------
+
+; Set up DS-1202 interface from Z80182 Parallel port
+
+; Entry: None
+; Exit : BC -> Data Port w/Clk at bits 0-2
+; Uses : AF,BC,DE
+
+copen:	ld	bc,DDRA		; Address Parallel Port A Control
+	in	a,(c)		; Read Settings
+	set	RTCDat,a	;  Data Line to Input
+	out	(c),a		;   and Set
+	inc	bc		; Address Parallel Port A (DRA)
+	in	a,(c)		; Fetch settings
+	res	RTCClk,a	;  Clk LO to Start
+	out	(c),a		;   (set)
+	set	RTCRst,a	;    Clear Reset to HI
+	out	(c),a		;     (set)
+	ret
+
+;--------------------------------------------------------------------
+
+; Write the Byte in A to the clock (used for Command)
+
+; Entry: BC -> Data Port (DRA)
+; Exit : None
+; Uses : AF,E
+
+wrbyte:	push	hl		; Save Regs
+	push	de
+	ld	l,a		;  Store byte
+	ld	e,8		;   set bit count
+	di
+	in0	a,(DDRA)	; Fetch Def'n Reg contents
+	res	RTCDat,a	;  Data Line to Output
+	out0	(DDRA),a	;   (set)
+wrloop:	in	a,(c)		; Read Parallel Port
+	res	RTCClk,a	;  Clk LO
+	out	(c),a		;   (set)
+	srl	a		; (clear LSB)
+	rr	l		; Data Byte LSB to Carry
+	rla			;  then to Parallel Port LSB
+	out	(c),a		;   (set)
+	set	RTCClk,a	; Clk HI
+	out	(c),a		;  (set)
+	dec	e		; Eight Bits Sent?
+	jr	nz,wrloop	; ..loop if Not
+
+	in0	a,(DDRA)
+	set	RTCDat,a	; Set Port to Data IN
+	out0	(DDRA),a
+	ei
+	pop	de
+	pop	hl		;  Restore Regs
+	ret
+
+;--------------------------------------------------------------------
+
+; Deselect the Clock for Exit
+
+; Enter: BC -> Z80182 Parallel Port A
+; Exit : None
+; Uses : AF
+
+cclosw:	in0	a,(DDRA)
+	set	RTCDat,a	; Data Line IN
+	out0	(DDRA),a
+cclose:	in	a,(c)		; Fetch Parallel Port
+	set	RTCClk,a	;  Clk to HI
+	out	(c),a
+	res	RTCRst,a	;   Reset Active LO
+	out	(c),a
+	ret
+
+;--------------------------------------------------------------------
+
+; Load the DS-1202 non-volatile memory into RAM and validate contents
+
+NVREAD:	ld	hl,NVRAM	; point to buffer
+	ld	b,24		; 24 bytes to read
+	xor	a		; A = NV memory address
+nv1:	push	af
+	call	rdnv		; read a byte
+	ld	(hl),a		;  and store it
+	inc	hl
+	pop	af
+	inc	a		; increment address
+	djnz	nv1		; loop until done
+
+	; now validate the NV contents.
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc1:	or	(hl)
+	inc	hl
+	djnz	nvc1
+	or	a
+	jr	z,nvc4		; fail if all zeros
+
+	ld	hl,NVRAM
+	ld	b,24
+	ld	a,0FFh
+nvc2:	and	(hl)
+	inc	hl
+	djnz	nvc2
+	inc	a
+	jr	z,nvc4		; fail if all ones (0FFh)
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc3:	add	a,(hl)
+	inc	hl
+	djnz	nvc3
+	or	a
+	ld	a,0FFh
+	jr	z,nvc4
+	inc	a		; fail if bad checksum
+nvc4:	ld	(NVOK),a
+	ret
+
+; Read a single byte from the DS-1202 NV RAM
+
+rdnv:	push	bc
+	add	a,a		; shift the address
+	or	0C1h		; add command bits, read mode
+	push	af
+	call	copen		; select the chip
+	pop	af
+	call	wrbyte		; send the command
+	call	rdbyte		; read the byte
+	call	cclose		; deselect chip
+	ld	a,e		; return value in A reg.
+	pop	bc
+	ret
+	
+;--------------------------------------------------------------------
+
+	dseg
+
+timbuf:	ds	8		; buffer for reading/setting date/time
+
+ds.sec	equ	timbuf+0
+ds.min	equ	timbuf+1
+ds.hour	equ	timbuf+2
+ds.day	equ	timbuf+3
+ds.mon	equ	timbuf+4
+ds.dow	equ	timbuf+5
+ds.year	equ	timbuf+6
+ds.wp	equ	timbuf+7
+
+NVRAM:	ds	24		; buffer for CMOS memory contents
+NVOK:	ds	1		; NV OK flag
+
+	end

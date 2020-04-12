@@ -1,0 +1,1127 @@
+	TITLE	CAL -- DISPLAY CALENDAR PROGRAM
+	IDENT	'V1.00'
+
+	.z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+; Based on RSX-11M version (C) by Oleg Safiullin <form@pdp-11.org.ru>
+
+; This task displays a simple calendar. Calendar may be displayed by
+; month or year. The command line syntax is:
+;
+; >CAL [MONTH] [YEAR]
+;
+; Month can be specified as a numeric value 1-12 or by name  (may be
+; abbreviated).  The year must be fully specified: "CAL 89" will not
+; display calendar for 1989.
+
+CPM	equ	0
+
+LUN.TI	equ	5		; LUN for TI: I/O
+EFN.TI	equ	1		; EFN for TI: I/O
+
+TAB	equ	9		; TAB character
+CR	equ	13		; Carriage Return char
+LF	equ	10		; Linefeed char
+
+	CSEG
+
+CALEP::	ld	sp,stack
+
+	IF	CPM
+	ld	hl,SYSRST
+	ld	(hl),0C3h
+	inc	hl
+	ld	de,emu
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	jp	begin
+
+emu:	ex	(sp),hl
+	ld	a,(hl)
+	inc	hl
+	ex	(sp),hl
+	cp	.GDAT
+	jr	z,gdat
+	cp	.GTCMD
+	jr	z,gcmd
+	cp	.QIO
+	jr	z,qio
+	cp	.EXIT
+	jp	z,0
+
+gcmd:	ld	c,e
+	ld	b,0
+	ex	de,hl
+	ld	hl,80h
+	ldir
+	ret
+
+gdat:	ld	(hl),20h
+	inc	hl
+	ld	(hl),16h
+	inc	hl
+	ld	(hl),03h
+	inc	hl
+	ld	(hl),17h
+	ret
+
+qio:	push	hl
+	ex	(sp),ix
+	ld	bc,qret
+	push	bc
+	ld	a,(ix+2)
+	cp	IO.WVB
+	jr	z,wvb
+	cp	IO.ATT
+	ret	z
+	pop	bc
+	pop	ix
+	scf
+	ret
+
+wvb:	ld	l,(ix+11)
+	ld	h,(ix+12)
+	ld	c,(ix+13)
+	ld	b,(ix+14)
+wvb1:	ld	a,b
+	or	c
+	ret	z
+	ld	e,(hl)
+	push	hl
+	push	bc
+	ld	c,6
+	call	5
+	pop	bc
+	pop	hl
+	inc	hl
+	dec	bc
+	jr	wvb1
+
+qret:	ld	l,(ix+8)
+	ld	h,(ix+9)
+	ld	(hl),0
+	pop	ix
+	or	a
+	ret
+
+begin:
+	ENDIF
+
+	ld	hl,TBUF
+	SC	.GDAT		; get system time
+	call	CVTBIN		; convert BCD time to binary
+
+	ld	hl,GMCR
+	ld	e,80
+	SC	.GTCMD		; get command line
+	jp	c,c110		; if CY set then no command line is available
+
+	ld	e,(hl)		; get length
+	ld	d,0
+	inc	hl
+	push	hl
+	add	hl,de		; point to end of command
+	ld	(hl),0		; add null terminator
+	pop	hl
+	call	SKPWRD		; skip command name
+	call	SKIPBL		; point to begin of next word
+	or	a		; end of line?
+	jp	z,c110		; if Z yes
+	ld	e,l		; copy pointer
+	ld	d,h
+	call	SKPWRD		; skip word
+	or	a		; end of line?
+	jr	z,c30		; if Z yes
+	xor	a
+	ld	(hl),a		; make first arg asciz
+	inc	hl
+c30:	xor	a
+	ld	(TBUF+2),a	; assume no month specified
+	call	SKIPBL
+	or	a		; second arg present?
+	jr	nz,c40		; if yes, this arg is month
+	ld	a,(de)
+	call	UCASE
+	cp	'A'		; possible month name?
+	jr	c,c80		; jump if not
+	cp	'Z'+1		;
+	jr	nc,c80		;
+c40:	CALL	FNDMN		; lookup month name
+	jr	nc,c70		; if CY clear ok
+	ld	hl,EINVMN	; point to error message
+
+c50:	push	hl
+	ld	de,BUFF		; point to buffer address
+	ld	hl,PREFIX	; point to message prefix
+	call	MOVEZ		; move it to buffer
+	pop	hl		; point to message
+	call	MOVEZ		; move to buffer
+	ex	de,hl
+	ld	(hl),CR		; end with a CR
+	inc	hl
+	ld	de,BUFF
+	or	a
+	sbc	hl,de		; calculate string length
+	ld	(QIOW+Q.LEN),hl	; set length for QIOW
+	ld	hl,QIOW
+	SC	.QIO		; output to terminal
+	ld	hl,EX.ERR	; set exit status to error
+c60:	SC	.EXIT		; exit with status
+
+c70:	ld	(TBUF+2),a	; set month number
+	ex	de,hl		; point to second arg
+c80:	ld	a,(de)
+	or	a		; year specified?
+	jr	z,c110		; if Z no
+	call	CDTB		; convert decimal number
+	jr	c,c90		; if CY set overflow happened
+	ld	a,(de)
+	or	a		; end of line?
+	jr	z,c100		; if Z yes
+	cp	CR
+	jr	z,c100
+c85:	ld	hl,ESYNTX	; set error message
+	jr	c50		; print and exit
+
+c90:	ld	hl,EINVYR	; set error message
+	jr	c50		; print it and exit
+
+c100:	ld	a,h
+	or	l		; zero year?
+	jr	z,c90		; if Z yes, error
+	ld	de,9999
+	call	CPHLDE		; year > 9999?
+	jr	c,c90		; if CY yes, error
+	ld	(TBUF+0),hl	; set year
+
+c110:	ld	hl,QATT
+	SC	.QIO		; attach terminal
+	jr	c,c120		; if CY set attach failed
+	ld	a,(result)	;
+	or	a		; I/O succeeded?
+	jr	z,c130		; if Z yes
+c120:	ld	hl,EATTTY	; else set error message
+	jr	c50		; print and exit
+
+c130:	ld	hl,BUFF		; output a newline
+	ld	(hl),CR		; to prevent overwriting the MCR prompt
+	inc	hl
+	ld	(hl),LF
+	ld	hl,2
+	ld	(QIOW+Q.LEN),hl
+	ld	hl,QIOW
+	SC	.QIO
+
+	ld	hl,(TBUF+0)	; get year
+	ld	a,l
+	and	3		; leap year?
+	jr	nz,c150		; if NZ no
+
+	ld	de,1752
+	call	CPHLDE		; is year < 1753? (year <= 1752)
+	jr	nc,c140		; if NC yes, leap year
+	ex	de,hl		; n*400th year?
+	ld	bc,400		;
+	push	de		;
+	CALL	DIV		;
+	pop	de		;
+	ld	a,h		; test remainder
+	or	l		;
+	jr	z,c140		; if Z yes, leap year
+	ld	bc,100		; n*100th year?
+	CALL	DIV		;
+	ld	a,h		;
+	or	l		;
+	jr	z,c150		; if Z yes, non-leap year
+c140:	ld	a,(DAYTAB+1)	; update February day count
+	inc	a
+	ld	(DAYTAB+1),a
+
+c150:	ld	a,1
+	ld	(MROWS),a	; assume month rows count 1
+	ld	(MPROW),a	; assume months per row count 1
+	ld	hl,20+2		; assume string length 20+<CR><LF>
+	ld	(QIOW+Q.LEN),hl	;
+	ld	a,(TBUF+2)	; get month
+	ld	c,a
+	or	a		;
+	jr	nz,c160		; if NZ, month specified
+	ld	de,SBUF		; point to string buffer
+	ld	hl,(TBUF+0)	; get year
+	call	CBDMG		; convert to ascii
+	xor	a
+	ld	(de),a		; make string asciz
+	ld	hl,BUFF		; point to buffer
+	CALL	CLEAR		; clear the buffer
+	ex	de,hl
+	ld	hl,SBUF		; point to year string
+	ld	c,70-4		; set width
+	CALL	CENTR		; center the year
+	ex	de,hl
+	ld	(hl),CR		; leave one empty line
+	inc	hl		; in between
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	de,BUFF		; calculate string length
+	or	a
+	sbc	hl,de
+	ld	(QIOW+Q.LEN),hl	; set length for QIOW
+	ld	hl,QIOW
+	SC	.QIO		; output to terminal
+	ld	c,1		; point to January
+	ld	a,4
+	ld	(MROWS),a	; set month rows count to 4
+	dec	a
+	ld	(MPROW),a	; set months per row count to 3
+	ld	hl,70+2
+	ld	(QIOW+Q.LEN),hl	; set string length to 70+<CR><LF>
+
+c160:	ld	hl,BUFF		; point to buffer address
+	ld	(QIOW+Q.BUF),hl	; set buffer address for QIOW
+	CALL	CLEAR		; clear the buffer
+	ld	a,(MPROW)
+	ld	b,a		; get months per row count
+c170:	CALL	MONTH		; fill month data
+	ld	de,23
+	add	hl,de		; shift position
+	inc	c		; switch to next month
+	djnz	c170		; loop
+	push	bc		; save month
+	ld	c,8		; assume line count 8
+	ld	a,(TBUF+2)	; get month
+	cp	9		; Sep, 1752?
+	jr	nz,c175		; if NZ no
+	ld	hl,(TBUF+0)	; get year
+	ld	de,1752
+	call	CPHLDE
+	jr	nz,c175		; if NZ no
+	ld	c,5		; update line count
+	jr	c190		; jump
+c175:	ld	a,(TBUF+2)
+	or	a		; month specified?
+	jr	nz,c176		; if NZ yes
+	cp	11		; no, filling Oct-Dec?
+	jr	c,c190		; if CY no
+c176:	ld	hl,BUFF+72*7	; point to last line
+	ld	b,70		; set char count for line
+c180:	ld	a,(hl)		; TODO: use CPIR
+	cp	' '		; check if line is blank
+	jr	nz,c190		; no, print it
+	inc	hl
+	djnz	c180		; 
+	dec	c		; yes, don't print it
+c190:	ld	b,c		; 
+c200:	ld	hl,(QIOW+Q.BUF)
+	ld	de,(QIOW+Q.LEN)
+	add	hl,de
+	dec	hl
+	ld	(hl),LF		; append <CR><LF>
+	dec	hl
+	ld	(hl),CR
+	ld	hl,QIOW
+	SC	.QIO		; output line to terminal
+	ld	hl,(QIOW+Q.BUF)
+	ld	de,70+2
+	add	hl,de
+	ld	(QIOW+Q.BUF),hl	; point to next line
+	djnz	c200		; loop
+	pop	bc		; restore month
+	ld	a,(MROWS)
+	dec	a
+	ld	(MROWS),a
+	jr	nz,c160		; loop
+	ld	hl,EX.SUC	; set exit status to success
+	jp	c60		; exit
+
+;+
+; ISBLNK -- Check for blank character (TAB, space, CR or NULL)
+;
+; INPUT:
+;	A	- character to test
+;
+; OUTPUT:
+;	A	- character
+;	ZERO	- if set, character is blank
+;-
+ISBLNK:	or	a		; get char from string
+	ret	z		; set flags
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret
+
+;+
+; SKIPBL -- Skip blanks in a string
+;
+; INPUT:
+;	HL	- string address
+;
+; OUTPUT:
+;	HL	- address of first non-blank character
+;	A	- first non-blank character
+;-
+SKIPBL:	ld	a,(hl)		; get char from string
+	or	a		; end of string?
+	ret	z		; return if yes
+	call	ISBLNK		; blank?
+	ret	nz		; return if not
+	inc	hl		;
+	jr	SKIPBL		; else loop
+
+;+
+; SKPWRD -- Skip word in a string
+;
+; INPUT:
+;	HL	- string address
+;
+; OUTPUT:
+;	HL	- address of first blank character after word
+;	A	- first blank character
+;-
+SKPWRD:	ld	a,(hl)		; get char from string
+	call	ISBLNK		; blank?
+	ret	z		; return if yes
+	inc	hl		;
+	jr	SKPWRD		; else loop
+
+;+
+; CDTB -- Convert ASCII decimal number to binary
+;
+; INPUT:
+;	DE	- string address
+;
+; OUTPUT:
+;	HL	- converted value
+;	DE	- address of first non-digit character
+;	CARRY	- if set overflow
+;-
+CDTB:	ld	hl,0		; init return value
+nextd:	ld	a,(de)		; get char from string
+	sub	'0'		; test for digit
+	ccf			; return with CY clear if not
+	ret	nc
+	cp	10
+	ret	nc
+	call	adddig		; add to accumulator
+	ret	c		; if CY set overflow
+	inc	de		; point to next char
+	jr	nextd		; loop
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+;+
+; CBDMG -- Convert binary value to decimal ASCII string
+;
+; INPUT:
+;	HL	- value to convert
+;	DE	- output buffer address
+;
+; OUTPUT:
+;	DE	- address in buffer after converted value
+;-
+CBDMG:	push	hl
+	push	bc
+	push	de
+	ex	(sp),ix		; get pointer to string into IX
+	ld	b,0		; init zero-suppress flag
+	ld	de,-10000
+	call	sbcnt		; convert 10000s
+	ld	de,-1000
+	call	sbcnt		; convert 1000s
+	ld	de,-100
+	call	sbcnt		; convert 100s
+	ld	de,-10
+	call	sbcnt		; convert 10s
+	ld	a,l
+	add	a,'0'
+	ld	c,a
+	ld	(ix),a		; always output 1s
+	inc	ix
+	ex	(sp),ix		; restore IX, update DE
+	pop	de
+	pop	bc
+	pop	hl
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c		; subtract and count
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de		; restore remainder
+	ld	a,b
+	or	a
+	jr	nz,sb2
+	ld	a,c
+	cp	'0'
+	ret	z
+	ld	b,1
+sb2:	ld	(ix),c
+	inc	ix
+	ret
+
+;+
+; MONTH -- Fill month cell
+;
+; INPUT:
+;	HL	- buffer address
+;	C	- month number
+;
+; OUTPUT:
+;	NONE
+;-
+MONTH:	push	hl		; save registers
+	push	de
+	push	bc
+	ld	a,c
+	ld	(MON),a		; save month
+	ld	(BUFPTR),hl	; save buffer address
+	dec	c
+	sla	c		; word offset
+	ld	b,0
+	ld	hl,MONTAB
+	add	hl,bc
+	ld	a,(hl)		; get month name address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,SBUF		; point to string buffer
+	CALL	MOVEZ		; move to string buffer
+	ld	a,(TBUF+2)	; month specified?
+	or	a
+	jr	z,m10		; if Z no
+	ld	a,' '
+	ld	(de),a		; yes, add year
+	inc	de
+	ld	hl,(TBUF+0)	; 
+	CALL	CBDMG		; convert to ASCII
+m10:	xor	a
+	ld	(de),a		; make string asciz
+	ld	de,(BUFPTR)	; restore buffer address
+	ld	hl,SBUF		; point to string
+	ld	c,20		; set width
+	CALL	CENTR		; center a string
+	ld	hl,(BUFPTR)	; restore buffer address
+	ld	de,70+2
+	add	hl,de		; point to next line
+	ld	(BUFPTR),hl	; save buffer address
+	ex	de,hl
+	ld	hl,WEEKDY	; point to week day names
+	CALL	MOVEZ		; move to buffer
+	ld	a,(MON)
+	ld	c,a
+	ld	hl,(TBUF+0)	; 
+	CALL	GETDW		; get first day of week
+	neg			; calculate day offset
+	inc	a		; 
+	ld	(DAY),a
+	ld	a,(MON)		; restore month
+	dec	a		; calculate days per month
+	ld	c,a
+	ld	b,0
+	ld	hl,DAYTAB
+	add	hl,bc
+	ld	a,(hl)
+	ld	(DPM),a		; store days per month
+	xor	a
+	ld	(DOW),a		; set day of week to Sunday
+	ld	hl,(BUFPTR)	; restore buffer address
+m20:	ld	a,(DOW)
+	or	a		; Sunday?
+	jr	nz,m30		; if NZ no
+	ld	hl,(BUFPTR)	; restore buffer address
+	ld	de,70+2
+	add	hl,de		; yes, switch to next line
+	ld	(BUFPTR),hl
+	jr	m35		; jump
+m30:	ld	(hl),' '	; move space to buffer
+	inc	hl
+m35:	ld	a,(DAY)
+	cp	1		; valid day?
+	jp	p,m40		; if > 0 yes
+	ld	(hl),' '	; no, move spaces to buffer
+	inc	hl
+	ld	(hl),' '	; 
+	inc	hl
+	jr	m60		; jump
+m40:	push	hl
+	ld	hl,(TBUF+0)
+	ld	de,1752
+	call	CPHLDE		; year 1752?
+	pop	hl
+	jr	nz,m45		; if NZ no
+	ld	a,(MON)
+	cp	9		; September?
+	jr	nz,m45		; if NZ no
+	ld	a,(DAY)
+	cp	3		; 3rd day?
+	jr	nz,m45		; if NZ no
+	ld	a,14		; yes, set day to 14
+	ld	(DAY),a		; copy day
+m45:	ld	a,(DAY)
+	cp	10		; day >= 10?
+	jr	nc,m50		; if NC yes
+	ld	(hl),' '	; no, justify
+	inc	hl
+m50:	ex	de,hl		; convert day to ascii
+	ld	l,a		;
+	ld	h,0		;
+	CALL	CBDMG		;
+	ex	de,hl		;
+m60:	ld	a,(DOW)
+	inc	a		; switch to next day of week
+	ld	(DOW),a
+	cp	7		; week done?
+	jr	nz,m70		; if NZ no
+	xor	a
+	ld	(DOW),a		; yes, roll over
+m70:	ld	a,(DAY)
+	inc	a		; switch to next day
+	ld	(DAY),a
+	ld	c,a
+	ld	a,(DPM)
+	cp	c		; month done?
+	jp	p,m20		; if <= no, loop
+	pop	bc		; restore registers and return
+	pop	de
+	pop	hl
+	ret
+
+;+
+; GETDW -- Returns day of week for 1st day of month
+;
+; INPUT:
+;	TBUF+0	- year
+;	MON	- month
+;
+; OUTPUT:
+;	A	- day of week
+;-
+GETDW:	push	hl		; save registers
+	push	de
+	push	bc
+	ld	hl,(TBUF+0)	; get year
+	dec	hl		; calc # of days for past years
+	ld	(PYRS),hl	; 
+	ld	bc,365		; 
+	CALL	MUL		; 
+	push	hl		; save 32-bit result
+	push	de		; 
+	ld	hl,0
+	ld	(Y400),hl	; calc # of past leap years
+	ld	hl,(PYRS)
+	ld	de,1600
+	call	CPHLDE
+	jr	nc,g10		; jump if # of past years <= 1600
+	or	a		;
+	sbc	hl,de		;
+	ex	de,hl		;
+	ld	bc,400		; 
+	call	DIV		; n*400th past years
+	ld	(Y400),de
+g10:	ld	hl,0
+	ld	(Y100),hl	; 
+	ld	hl,(PYRS)
+	ld	de,1700
+	call	CPHLDE		; 
+	jr	nc,g20		; jump if # of past years <= 1700
+	ex	de,hl		; 
+	ld	bc,100		; 
+	call	DIV		; n*100th past years
+	ex	de,hl
+	or	a
+	ld	de,17
+	sbc	hl,de		; 
+	ld	(Y100),hl
+g20:	ld	hl,(PYRS)
+	sra	h		; n*4th past years
+	rr	l		;
+	sra	h		;
+	rr	l		;
+	ld	de,(Y100)
+	or	a
+	sbc	hl,de		; subtract n*100th
+	ld	de,(Y400)
+	add	hl,de		; add n*400th
+	ld	c,l
+	ld	b,h
+	pop	de		; restore # of days for past years
+	pop	hl		; 
+	ex	de,hl		;
+	add	hl,bc		; add result from above
+	ex	de,hl		;
+	ld	bc,0		; with 32-bit result
+	adc	hl,bc		;
+	ld	ix,DAYTAB	; add days from current year
+	ld	a,(MON)
+	ld	c,a
+g30:	dec	c		; 
+	jr	z,g40		;
+	push	bc		;
+	ld	c,(ix)		; get month days into BC
+	ld	b,0		;
+	ex	de,hl		;
+	add	hl,bc		; add to 32-bit accum
+	ex	de,hl		;
+	ld	bc,0		;
+	adc	hl,bc		;
+	pop	bc		;
+	inc	ix		;
+	jr	g30		; loop
+g40:	push	hl
+	push	de
+	ld	de,(TBUF+0)
+	ld	hl,1752
+	call	CPHLDE		; fixup for julian dates
+	pop	de
+	pop	hl
+	jr	c,g60		; jump if year < 1752
+	jr	nz,g50		; 
+	ld	a,(MON)
+	cp	10		; 
+	jr	c,g60		; jump if month < 10
+g50:	ld	bc,11
+	or	a
+	ex	de,hl
+	sbc	hl,bc		; else subtract 11 days
+	ex	de,hl
+	ld	bc,0
+	sbc	hl,bc
+g60:	ld	bc,6		; add 6
+	ex	de,hl		;
+	add	hl,bc		;
+	ex	de,hl		;
+	ld	bc,0		;
+	adc	hl,bc		;
+	ld	c,7		; divide by 7
+	CALL	DDIV		; remainder is day of week
+	pop	bc
+	pop	de
+	pop	hl
+	ret			; return with day of week in A
+
+;+
+; CLEAR -- CLEAR THE BUFFER
+;
+; INPUT:
+;	HL	- BUFFER ADDRESS
+;
+; OUTPUT:
+;	NONE
+;-
+CLEAR:	push	hl		; save registers
+	push	bc		;
+	ld	bc,72*8		; set byte count
+clr:	ld	(hl),' '	; move spaces to buffer
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,clr		; loop
+	pop	bc		; restore registers
+	pop	hl
+	ret			; return
+
+;+
+; FNDMN -- Find month
+;
+; INPUT:
+;	DE	- Month name of number pointer
+;
+; OUTPUT:
+;	CARRY	- if set not found
+;	DE	- changed
+;	A	- month number (if carry clear)
+;-
+FNDMN:	ld	a,(de)
+	cp	'0'		; month number specified?
+	ret	c		; return error if not
+	cp	'9'+1
+	jr	nc,trynam	; try name
+	sub	'0'
+fn1:	ld	c,a		; else get first digit into C
+	inc	de
+	ld	a,(de)		; get next char
+	or	a		; end of string?
+	jr	z,valid		; return if yes, after validating month value
+	cp	'0'		; else check for digit
+	ret	c		; error if not a digit
+	cp	'9'+1
+	ccf
+	ret	c
+	sub	'0'
+	ld	b,a
+	ld	a,c
+	add	a,a		; *2
+	ret	c
+	add	a,a		; *4
+	ret	c
+	add	a,c		; *5
+	ret	c
+	add	a,a		; *10
+	ret	c
+	add	a,b
+	ret	c
+	jr	fn1		; loop
+valid:	ld	a,c		; value must be 1..12
+	or	a
+	scf			; else return error
+	ret	z
+	cp	12+1
+	ccf
+	ret
+
+trynam:	push	hl		; save registers
+	ld	hl,MONTAB	; point to month names table [TODO: use IX]
+	ld	b,12		; set month count
+	ld	c,0		; clear month number
+fm4:	push	de
+	ld	e,(hl)		; get month name pointer
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	(sp),hl		; push names table pointer, pop string address
+	ex	de,hl		; DE = month string addr, HL = month name ptr
+	push	de		;
+	inc	c		; increase month number
+	push	bc
+	ld	c,0		; clear matches count
+fm5:	ld	a,(de)		; get character form string
+	or	a		; end of line?
+	jr	z,fm6		; if eq yes
+	call	UCASE
+	ld	b,a
+	ld	a,(hl)		; get current char
+	or	a
+	jr	z,fm7		; if Z end of name
+	call	UCASE		; convert to upper case
+	cp	b		; character match?
+	jr	nz,fm7		; if NZ no
+	inc	hl
+	inc	de
+	inc	c		; update match count
+	jr	fm5		; loop
+fm6:	ld	a,c
+	cp	3		; set CY if less than 3 chars matched
+	pop	bc		; pop saved month number
+	pop	de		; pop saved DE
+	pop	hl		; discard names table pointer
+	pop	hl		; pop saved HL
+	ld	a,c		; return month number in A
+	ret
+fm7:	pop	bc		; pop month number and loop counter
+	pop	de
+	pop	hl
+	djnz	fm4
+	pop	hl
+	scf			; not found
+	ret			; return
+
+;+
+; CENTR -- CENTER A MESSAGE
+;
+; INPUT:
+;	HL	- MESSAGE ADDRESS
+;	DE	- BUFFER ADDRESS
+;	C	- WIDTH
+;
+; OUTPUT:
+;	DE	- UPDATED
+;	C,HL	- CHANGED
+;-
+CENTR:	push	hl		; save message address
+cm10:	ld	a,(hl)
+	or	a		; end of line?
+	jr	z,cm20		; if Z yes
+	dec	c		; calculate offset
+	inc	hl		;
+	jr	cm10		;
+cm20:	inc	c
+	srl	c		; /2
+	ld	l,c
+	ld	h,0
+	add	hl,de
+	ex	de,hl		; point to centered position
+	pop	hl		; restore message address
+
+;+
+; MOVEZ -- MOVE ASCIZ STRING
+;
+; INPUT:
+;	HL	- SOURCE STRING ADDRESS
+;	DE	- DESTINATION BUFFER
+;
+; OUTPUT:
+;	HL,DE	- UPDATED
+;-
+MOVEZ:	ld	a,(hl)
+	or	a		; end of line?
+	ret	z		; if yes, return
+	ld	(de),a		; move char
+	inc	hl
+	inc	de
+	jr	MOVEZ		; loop
+
+;+
+; UCASE -- Translate character to uppercase
+;
+; INPUT:
+;	A	- character to translate
+;
+; OUTPUT:
+;	A	- uppercase character
+;-
+UCASE:	cp	'a'		; lowercase?
+	ret	c		; return if not
+	cp	'z'+1
+	ret	nc
+	and	5Fh		; else convert it
+	ret
+
+;+
+; CVTBIN -- Convert BCD date to binary
+;
+; INPUT:
+;	TBUF	- system date in BCD
+;
+; OUTPUT:
+;	TBUF	- system date in binary
+;-
+CVTBIN:	ld	a,(TBUF+3)
+	call	BCDBIN		; convert day
+	ld	(TBUF+3),a
+	ld	a,(TBUF+2)
+	call	BCDBIN		; convert month
+	ld	(TBUF+2),a
+	ld	a,(TBUF+0)
+	call	BCDBIN		; convert year
+	ld	l,a		; hi-digit
+	ld	h,0
+	add	hl,hl		; *2
+	add	hl,hl		; *4
+	ld	c,l
+	ld	b,h
+	add	hl,hl		; *8
+	add	hl,hl		; *16
+	add	hl,hl		; *32
+	ld	e,l
+	ld	d,h
+	add	hl,hl		; *64
+	add	hl,de		; +32
+	add	hl,bc		; +4 = *100
+	ld	a,(TBUF+1)
+	call	BCDBIN
+	ld	e,a
+	ld	d,0
+	add	hl,de		; add lo-digit
+	ld	(TBUF+0),hl	; store result
+	ret
+
+;+
+; DIV -- 16-bit unsigned division
+;
+; INPUT:
+;	DE	- dividend
+;	BC	- divisor
+;
+; OUTPUT:
+;	DE	- quotient
+;	HL	- remainder
+;-
+DIV:	ld	hl,0
+	ld	a,16
+d0:	push	af
+	add	hl,hl
+	ex	de,hl
+	sub	a
+	add	hl,hl
+	ex	de,hl
+	adc	a,l
+	sub	c
+	ld	l,a
+	ld	a,h
+	sbc	a,b
+	ld	h,a
+	inc	de
+	jr	nc,d1
+	add	hl,bc
+	dec	de
+d1:	pop	af
+	dec	a
+	jr	nz,d0
+	ret
+
+;+
+; DDIV -- 32-bit unsigned division
+;
+; INPUT:
+;	HLDE	- dividend
+;	C	- divisor
+;
+; OUTPUT:
+;	HLDE	- quotient
+;	A	- remainder
+;-
+DDIV:	ex	de,hl
+	ld	b,32
+	xor	a
+dd1:	add	hl,hl
+	rl	e
+	rl	d
+	rla
+	cp	c
+	jr	c,dd2
+	inc	l
+	sub	c
+dd2:	djnz	dd1
+	ex	de,hl
+	ret
+
+;+
+; MUL -- 16-bit unsigned multiplication with 32-bit result
+;
+; INPUT:
+;	HL,BC	- factors
+;
+; OUTPUT:
+;	HLDE	- 32-bit result
+;-
+MUL:	xor	a
+	ld	d,a
+	ld	e,a
+dmu:	add	hl,hl
+	rra
+	ex	de,hl
+	add	hl,hl
+	jr	nc,mul1
+	inc	de
+mul1:	rla
+	jr	nc,mul2
+	add	hl,bc
+	jr	nc,mul2
+	inc	de
+mul2:	ex	de,hl
+	add	a,10h
+	jr	nc,dmu
+	ret
+
+;+
+; BCDBIN -- Convert BCD byte value to binary
+;
+; INPUT:
+;	A	- BCD value to convert
+;
+; OUTPUT:
+;	A	- binary value
+;-
+BCDBIN:	push	de
+	ld	d,a
+	and	0F0h
+	ld	e,a		; high nibble in E
+	ld	a,d
+	and	0Fh		; low nibble
+	srl	e
+	add	a,e
+	srl	e
+	srl	e
+	add	a,e
+	pop	de
+	ret
+
+;+
+; CPHLDE -- Compare 16-bit unsigned values
+;
+; INPUT:
+;	HL,DE	- values to compare
+;
+; OUTPUT:
+;	CARRY	- if HL > DE
+;	ZERO	- if HL equals DE
+;-
+CPHLDE:	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+	DSEG
+
+QIOW:	QIOW$	IO.WVB,LUN.TI,EFN.TI,result,,<BUFF,,,,>
+QATT:	QIOW$	IO.ATT,LUN.TI,EFN.TI,result
+
+result:	ds	2		; result
+	ds	2		; bytes sent
+
+GMCR:	ds	81		; command line buffer
+
+BUFF:	ds	72*8		; work buffer
+TBUF:	ds	8		; time buffer
+SBUF:	ds	20		; string buffer
+
+MROWS:	ds	1		; month rows
+MPROW:	ds	1		; months per row
+
+DAY:	ds	1		; day
+DOW:	ds	1		; day of week
+MON:	ds	1		; month
+DPM:	ds	1		; days per month
+BUFPTR:	ds	2
+
+Y100:	ds	2
+Y400:	ds	2
+PYRS:	ds	2		; number of past years
+
+DAYTAB:	db	31,28,31,30,31,30,31	; days per month table
+	db	31,30,31,30,31		;
+
+MONTAB:	dw	MONJAN,MONFEB,MONMAR,MONAPR	; month
+	dw	MONMAY,MONJUN,MONJUL,MONAUG	;  names
+	dw	MONSEP,MONOCT,MONNOV,MONDEC	;   table
+
+PREFIX:	db	CR,LF,"CAL -- ",0
+EINVMN:	db	"Invalid month - use 1-12 or name",0
+EINVYR:	db	"Invalid year - use 1-9999",0
+ESYNTX:	db	"Command syntax error",0
+EATTTY:	db	"Couldn't attach terminal",0
+
+MONJAN:	db	"January",0
+MONFEB:	db	"February",0
+MONMAR:	db	"March",0
+MONAPR:	db	"April",0
+MONMAY:	db	"May",0
+MONJUN:	db	"June",0
+MONJUL:	db	"July",0
+MONAUG:	db	"August",0
+MONSEP:	db	"September",0
+MONOCT:	db	"October",0
+MONNOV:	db	"November",0
+MONDEC:	db	"December",0
+
+WEEKDY:	db	"Su Mo Tu We Th Fr Sa",0
+
+	ds	256
+stack	equ	$
+
+	end	CALEP

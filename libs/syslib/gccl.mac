@@ -1,0 +1,59 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Get CLI (MCR) command line.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	public	GCCL,CMLBUF
+
+	cseg
+
+; Get the MCR command line, if present. Returns a pointer in HL to the
+; null-terminated string in a 128-byte static buffer. Length is returned
+; in DE.
+
+; This routine is adequate for simple applications. The more complex
+; GCML supports input from (possibly nested) command files and is better
+; suited for applications such as PIP, DMP, etc.
+
+GCCL:	ld	hl,CMLBUF	; command line buffer
+	ld	e,129
+	SC	.GTCMD
+	ret	c
+	ld	e,(hl)		; get length into E
+	ld	d,0
+	inc	hl		; skip length field
+	push	hl
+	add	hl,de		; point past last char
+	ld	(hl),0		; add a null terminator
+	pop	hl
+	xor	a
+	ret
+
+	dseg
+
+CMLBUF:	ds	130		; 128 chars max + length field + null term
+
+	end

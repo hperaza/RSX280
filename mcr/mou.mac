@@ -1,0 +1,460 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command MOUNT for RSX280.                             ;
+;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	'01.04'
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNMOU	equ	2
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,UCASE,HLDEC,TTFLSH
+	extrn	GCML,RCML
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack	; setup stack
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	domnt		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; exit normally if yes
+
+	call	CMLERR		; else display error
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m3:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'MOU -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'MOU -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank.
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; Return Z if char in A is a delimiter.
+
+delim:	call	isblnk
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'='
+	ret	z
+	cp	':'
+	ret	z
+	cp	','
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; Skip blanks and return next char
+
+skipbl:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipbl
+
+; Get command name into nambuf (6 char max).
+
+getcmd:	ld	de,nambuf
+	ld	b,6
+gcmd1:	ld	a,(hl)
+	call	delim
+	jr	z,gcmd3
+	call	UCASE
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	gcmd1
+gcmd2:	ld	a,(hl)
+	call	delim
+	jr	z,gcmd3
+	inc	hl
+	jr	gcmd2
+gcmd3:	xor	a
+	ld	(de),a		; null-terminated
+	ret
+
+; Get blank-padded name (6 chars) into nambuf.
+
+getnam:	call	getcmd
+	inc	b
+	dec	b
+	ret	z
+	ld	a,' '
+sfill:	ld	(de),a
+	inc	de
+	djnz	sfill
+	ret
+
+; Search for the command (nambuf) in the command table (address in HL).
+; Returns A=0FFh if not found, or 0 if nambuf contains an empty string.
+; Otherwise returns the 1-based command ordinal.
+
+fndcmd:	ld	de,nambuf
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	c,0		; keyword index
+fcmd0:	ld	de,nambuf
+	inc	c
+fcmd1:	ld	a,(hl)
+	call	UCASE
+	ld	b,a
+	ld	a,(de)
+	cp	b		; match?
+	jp	nz,fcmd2	; jump if not
+	or	a		; end of both strings?
+	ld	a,c
+	ret	z		; return if yes, we have a match
+	inc	hl
+	inc	de
+	jr	fcmd1		; else keep comparing
+fcmd2:	ld	a,(hl)
+	or	a		; end of keyword?
+	ld	a,c
+	ret	z		; return if yes, we have a match
+fcmd4:	inc	hl		; else skip to end of keyword
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd4
+	inc	hl		; skip over null
+	ld	a,(hl)
+	or	a		; end of table?
+	jr	nz,fcmd0	; try again if not
+	ld	a,0FFh		; else return 'not found' flag
+	ret
+
+;-----------------------------------------------------------------------
+
+domnt:	ld	hl,dfacp
+	ld	de,ACPTDB+TD.NAME
+	ld	bc,6
+	ldir			; default ACP is SYSFCP
+
+	ld	hl,(lnptr)
+	call	PDN
+	jp	c,baddev
+
+	ld	(lnptr),hl
+	ld	(dev),de
+	ld	a,c
+	ld	(dev+2),a
+
+	call	getopt
+	ret	c		; on error, return
+
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	ld	b,LUNMOU
+	SC	.ALUN		; assign LUN
+	jp	c,SYSERR
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+
+	ld	de,(dev)
+	ld	a,(dev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB address
+	jr	c,m4
+	KCALL	$REDIR		; follow any redirection links
+	push	hl
+	pop	ix
+	bit	DV.MNT,(ix+U.CW)
+	ld	bc,nmmsg
+	jr	z,m4		; error if the unit is not mountable
+
+	xor	a
+	ld	(SYSLVL),a
+	ld	bc,ACPTDB+TD.NAME
+	call	fndtsk		; find ACP in STD
+	ld	a,1
+	ld	(SYSLVL),a
+	ld	a,h
+	or	l
+	ld	bc,npmsg
+	jr	z,m4		; error if not found
+	ex	de,hl
+	ld	hl,T.ATTR
+	add	hl,de
+	bit	TA.ACP,(hl)
+	ld	bc,namsg
+	jr	z,m4		; error if not an ACP
+
+	ldw	hl,(ix+U.ACP)
+	ld	a,h
+	or	l		; already registered with an ACP?
+	jr	z,m6		; go ahead if not
+	cpw	hl,de		; same as the requested one?
+	ld	bc,ammsg
+	jr	nz,m4		; error if not
+
+m6:				; TODO: check for possible race condition
+	ldw	(ix+U.ACP),de	;  with another instance of MOU. Also, restore
+				;   orig U.ACP contents on error [the last is
+				;    done by the ACP] 
+
+	ld	hl,ACPTDB
+	ld	bc,0		; don't connect to the ACP task
+	SC	.RQST		; start the ACP if not already running
+	jr	nc,m4		; continue on success (note BC still 0)
+	cp	E.TRUN		; task already running (unstopped)?
+	jr	z,m4		; continue if yes
+	cp	E.TACT		; task active?
+	jr	z,m4		; continue if yes
+	scf			; else if fatal
+
+m4:	push	bc
+	push	af
+	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	pop	af
+	pop	hl
+	jp	c,SYSERR	; display system error message
+	ld	a,h
+	or	l
+	jp	nz,ERROR	; or custom error message
+
+	ld	hl,qio1		; register unit with file processor
+	SC	.QIO		; .QIOW
+	jp	c,SYSERR
+
+	ld	a,(iosb)
+	or	a		; check result
+	ret	z
+	jp	SYSERR
+
+baddev:	ld	hl,bdmsg
+	jp	ERROR
+
+bdmsg:	db	'Invalid device specification',0
+nmmsg:	db	'Device not mountable',0
+ammsg:	db	'Device already mounted',0
+npmsg:	db	'ACP not installed',0
+namsg:	db	'Task is not an ACP',0
+dfacp:	db	'SYSFCP'
+
+getopt:	ld	hl,(lnptr)
+	call	skipbl
+	or	a
+	ret	z
+	cp	'/'
+	jp	nz,CMDERR
+	inc	hl
+	call	getcmd
+	ld	(lnptr),hl
+	ld	hl,optlst
+	call	fndcmd		; search option in table
+;;	or	a
+;;	jp	z,CMDERR
+;;	cp	0FFh
+;;	jp	z,CMDERR
+	dec	a
+	jp	nz,CMDERR
+	ld	hl,(lnptr)
+	call	skipbl
+	cp	'='
+	jp	nz,CMDERR
+	inc	hl
+	call	skipbl
+	call	getnam
+	ld	hl,nambuf
+	ld	a,(hl)
+	cp	' '
+	jp	z,CMDERR
+	ld	de,ACPTDB+TD.NAME
+	ld	bc,6
+	ldir			; set ACP name in TDB
+	ret
+
+optlst:	db	'ACP',0		; right now only one option supported
+	db	0
+
+; Find task in STD. Assumes supervisor mode is on.
+
+fndtsk:	ld	hl,$TLIST
+ftsk1:	ldw	hl,(hl)		; find ask in STD
+	ld	a,h
+	or	l
+	ret	z		; return HL=0 if not found
+	push	bc
+	push	hl
+	ld	de,T.NAME	; name offset
+	add	hl,de
+	ld	d,6		; name length
+ftsk2:	ld	a,(bc)
+	cp	(hl)
+	jr	nz,ftsk3	; jump if no match
+	inc	hl
+	inc	bc
+	dec	d
+	jr	nz,ftsk2	; loop unitl all chars processed
+	pop	hl		; found, return this TCB
+	pop	bc
+	ret
+ftsk3:	pop	hl
+	ld	bc,T.TCBL
+	add	hl,bc
+	pop	bc
+	jr	ftsk1
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	cmdbuf,80,'MOU',LUNCML,2
+
+cmdbuf:	ds	82
+lnptr:	ds	2
+dev:	ds	3
+nambuf:	ds	7
+
+ACPTDB:	db	'SYSFCP'
+	dw	0,0
+	db	0,0,0
+	db	'CO',0
+	dw	0,0
+
+qio1:	QIOW$	IO.MNT,LUNMOU,9,iosb
+iosb:	ds	4
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

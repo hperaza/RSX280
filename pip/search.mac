@@ -1,0 +1,897 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	cseg
+
+	include	PIP.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	FCB.INC
+	include	QIO.INC
+
+	public	SEARCH,SRCHDR,CPNAME,CPEXT,DIRFNB
+
+	extrn	CPHLDE,SYSERR,MATCH,SETDEV,SETDIR,SETNAM,SETEXT
+
+;-----------------------------------------------------------------------
+
+; Given a FNB with a search pattern, search the disk for matching files. 
+; The directory field of the FNB may contain wildcards, in which case
+; multiple directories will be searched. See also the SRCHDR routine
+; comments.
+
+; Input:
+;   IX = FNB with file/directory search pattern
+;   HL = address of user routine to call back as described below
+; Returns:
+;   CY set on error and error code in A.
+;
+; The callback function is called with a code in reg C as follows:
+;   0 upon opening the directory, pointer to directory file info block
+;     passed in HL to callback
+;   1 for each file that matches the search pattern, pointer to the
+;     matching directory entry passed in IX to callback
+;   2 after closing the directory
+; If the callback function returns with CY set, then the search operation
+; is aborted and the error code passed back to the caller.
+
+SEARCH:	ld	(usercb),hl	; save user callback routine address
+	ld	(fnbptr),ix	; save pointer to search FNB
+	ld	a,(ix+F.WLDC)
+	ld	c,a
+	and	FN.DIR		; directory wildcards?
+	jr	z,single	; branch if not
+
+	; search multiple directories
+
+	call	fixdir		; fix directory if necessary
+	ret	c		; an error here is fatal
+
+	push	ix
+	pop	hl		; get search FNB address into HL
+	ld	bc,F.DEV
+	add	hl,bc		; index into F.DEV field
+	push	hl		; remember this address
+	ld	ix,DIRFNB
+	call	SETDEV		; set dev name and unit in DIRFNB
+
+	ld	hl,mdfn		; search master directory
+	call	SETDIR		; set directory name in DIRFNB
+	ld	(ix+F.ATTR),FN.DIR	; set ONLY the directory bit
+
+	pop	hl		; pop F.DEV address of search FNB
+	ld	ix,dsfnb
+	call	SETDEV		; set dev name and unit in dir search FNB
+
+	ld	hl,(fnbptr)	; get back search FNB ptr
+	ld	bc,F.DIR
+	add	hl,bc		; index into directory name field
+	call	SETNAM		; directory pattern is now file pattern
+	ld	hl,dirext
+	call	SETEXT		; the search pattern is then 'dirmask.DIR;*'
+	ld	(ix+F.ATTR),FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.WLDC),FN.VER ; version is *
+
+	ld	hl,DIRFNB	; HL = FNB of master directory
+	ld	ix,dsfnb	; IX = FNB with directory search pattern
+	ld	de,procd	; DE = local callback routine address
+	ld	bc,mbuf		; BC = I/O buffer address
+	ld	a,LUNMD		; A  = LUN
+	call	SRCHDR		; search master dir for directories
+	ret
+
+single:	; search single directory
+
+	call	fixdir		; fix directory field if necessary
+	ret	c		; an error here is fatal
+	ld	hl,(fnbptr)	; get search FNB address into HL
+	push	hl
+	ld	bc,F.DEV
+	add	hl,bc		; index into F.DEV field
+	ld	ix,DIRFNB
+	call	SETDEV		; set dev name and unit in DIRFNB
+	pop	hl
+	ld	bc,F.DIR
+	add	hl,bc
+	call	proc1		; search single directory
+	ret
+
+; Set directory field in search FNB to current directory if none was
+; specified.
+
+fixdir:	ld	a,(ix+F.ATTR)
+	and	FN.DIR		; directory name specified?
+	ret	nz		; return if yes (note CY clear)
+
+	push	ix
+	pop	hl
+	ld	de,F.DIR
+	add	hl,de
+	ld	c,GD.TSK
+	SC	.GDIR		; else get current dir name
+	ret	c		; on error return
+
+	ld	a,(hl)
+	or	a		; current dir set?
+	ld	hl,mdfn
+	call	z,SETDIR	; default to master dir if not
+	ld	a,(ix+F.ATTR)
+	or	FN.DIR
+	ld	(ix+F.ATTR),a
+	ret
+
+mdfn:	db	'MASTER',0
+dirext:	db	'DIR',0
+
+;-----------------------------------------------------------------------
+
+; Callback routine for searching single directory
+
+procd:	ld	a,c
+	or	a		; first call?
+	ret	z		; return with success code if yes
+
+	dec	c		; matched entry?
+	ret	nz		; return if not
+
+	push	ix
+	pop	hl		; get ptr to dir entry into HL
+	inc	hl		; skip inode number
+	inc	hl
+proc1:	ld	ix,DIRFNB
+	call	SETDIR		; set directory name in DIRFNB
+	ld	(ix+F.ATTR),FN.DIR ; set ONLY the directory bit
+	push	ix
+	pop	hl		; HL = FDB of directory to search
+	ld	ix,(fnbptr)	; IX = FDB with file search pattern within dir
+	ld	de,(usercb)	; DE = user callback routine address
+	ld	bc,ubuf		; BC = I/O buffer address
+	ld	a,LUNDR		; A  = LUN
+	call	SRCHDR		; search this directory
+	ret	nc
+	cp	E.ABOP		; operation aborted by user? (delete)
+	scf
+	ret	z		; return with CY set if yes
+	call	SYSERR		; else display warning message
+	xor	a		;  and return success to process
+	ret			;   the next directory
+
+;-----------------------------------------------------------------------
+
+; Given a directory FNB and a FNB with a file search pattern, open the
+; directory and match every entry against the pattern. When an entry
+; matches, call an external routine with the corresponding directory
+; entry as argument.
+;
+; That way, this function can be used for the following:
+;
+; 1. Display directory (e.g. *.*;*/li):
+;    - pass FNB of directory to display
+;    - the callback function displays the directory entry and collects
+;      statistics such as number of blocks or bytes used, etc.
+; 2. Search for directory (e.g. [*]*.*;*/li)
+;    - pass FNB of master directory
+;    - the callback function displays each directory, calling
+;      recursively this function back as per point 1 above.
+; 3. Copy multiple input files to multiple output files (e.g. =*.*)
+;    - pass FNB of src directory
+;    - the callback function copies each file to the destination directory
+; 4. Merge multiple input files into a single output file (e.g. a=*.*/me)
+;    - pass FNB of src directory
+;    - the callback function appends the file contents to the dest file.
+; 5. Move multiple files to another dir (e.g. =*.*/mv)
+;    - pass FNB of src directory
+;    - the callback function duplicates the entry in the destination
+;      directory and then marks the file in the source dir as deleted.
+; 6. Delete multiple files (e.g. *.dat/sd)
+;    - pass FNB of source directory
+;    - the callback function deletes the file, optionally only after user
+;      confirmation.
+
+;-----------------------------------------------------------------------
+
+; Input:
+;   HL = valid directory FNB
+;        * only device and directory name should be set
+;        * F.ATTR should have only the FN.DIR bit set
+;   IX = FNB with file pattern to search for
+;   DE = address of callback routine
+;   BC = address of buffer to use for directory I/O
+;   A  = LUN to use for I/O
+; Return:
+;   CY set on error and error code in A.
+;
+; The callback function is called with a code in reg C as follows:
+;   0 upon opening the directory, HL = directory file info block
+;   1 for each file that matches the search pattern, IX = dir entry
+;   2 after closing the directory
+; If the callback function returns with CY set, then the search operation
+; is aborted and the error code passed back to the caller.
+;
+; Variables are stored on the stack frame, so this function can be called
+; recursively.
+
+; Offsets to variables on the stack:
+
+cbaddr	equ	0		; ds 2  callback routine address
+lun	equ	cbaddr+2	; ds 1  LUN
+vmode	equ	lun+1		; ds 1  version search mode
+buf	equ	vmode+1		; ds 2  I/O buffer address
+bufptr	equ	buf+2		; ds 2  pointer into I/O buffer
+bufcnt	equ	bufptr+2	; ds 2  bytes left in I/O buffer
+blkno	equ	bufcnt+2	; ds 2  current block number
+pattrn	equ	blkno+2		; ds 14 null-terminated search pattern
+fname	equ	pattrn+14	; ds 14 null-terminated filename string
+dirent	equ	fname+14	; ds 16 directory entry buffer
+frmsiz	equ	dirent+DESZ	; stack frame size
+
+SRCHDR:	push	iy
+	ld	iy,-frmsiz
+	add	iy,sp
+	ld	sp,iy		; IY points to stack frame
+
+	ld	(iy+lun),a	; store LUN
+
+	ld	(iy+buf),c	; store I/O buffer address
+	ld	(iy+buf+1),b
+
+	ld	(iy+cbaddr),e	; store callback routine address
+	ld	(iy+cbaddr+1),d
+
+	push	hl
+	call	bldpat		; build search pattern from FNB fields
+	call	chksv
+	ld	(iy+vmode),a	; set version search mode
+	pop	hl
+
+	ld	a,(iy+vmode)
+	dec	a		; check version search mode
+	jr	z,s1		; branch if normal
+
+	push	hl
+	call	TCREAT		; else create temp storage file
+	pop	hl
+	jp	c,rstk		; or error, restore stack and exit
+
+s1:	push	hl
+	ld	de,F.DEV
+	add	hl,de
+	ld	e,(hl)		; get device name and unit into DE-C
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	ld	b,(iy+lun)	; LUN in B
+	SC	.ALUN		; assign LUN
+	pop	hl
+	jp	c,rstk		; on error, restore stack and exit
+
+	ld	a,(iy+lun)
+	ld	(qio1+Q.LUN),a
+	ld	(qio1+Q.P1),hl	; HL = dir FNB
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open the directory
+	jp	c,rstk		; on error, restore stack and exit
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,rstk
+
+	; success
+
+	ld	hl,finfo
+	ld	a,(iy+lun)
+	call	RDATTR		; retrieve file info
+	jr	c,done		; should not happen... (dir just got deleted?)
+
+	ld	a,(finfo+F.ATTR); check F.ATTR
+	and	FA.DIR		; is a directory?
+	scf
+	ld	a,E.NODIR
+	jr	z,done		; error if not
+
+	push	ix
+	ld	hl,finfo
+	ld	c,0
+	call	callbk		; call external routine with directory info
+	pop	ix
+
+scan:	ld	hl,0
+	ld	(iy+bufcnt),l
+	ld	(iy+bufcnt+1),h
+	dec	hl
+	ld	(iy+blkno),l
+	ld	(iy+blkno+1),h	; rewind directory
+
+loop:	call	RDDIR		; read directory entry
+	jr	c,done		; exit loop on error or end of directory
+
+	ld	l,(iy+dirent+DE.INDX)
+	ld	h,(iy+dirent+DE.INDX+1)
+	ld	a,h
+	or	l		; unused entry?
+	jr	z,loop		; skip it if yes
+
+	ld	a,(iy+vmode)
+	dec	a		; check version search mode
+	jr	z,vnorm		; branch if normal
+
+	call	TADD		; else add entry to temp file
+	jr	c,done
+
+	jr	loop
+
+vnorm:	call	fmatch		; match against pattern
+	jr	nz,loop		; skip if no match
+
+	push	iy
+	ex	(sp),ix
+	ld	bc,dirent
+	add	ix,bc		; IX = dirent
+	ld	c,1
+	call	callbk		; call external routine
+	pop	ix
+
+	jr	nc,loop		; loop unless callbk aborts operation
+
+done:	push	af		; save error/success code
+	ld	a,(iy+lun)
+	call	CLOSE		; close directory or temp file
+
+	ld	a,(iy+vmode)
+	dec	a		; check version search mode
+	jr	z,s3		; return if normal (no tmp file or just closed)
+
+	pop	af
+	push	af		; check for fatal error
+	jr	nc,s2		; no error
+	cp	E.EOF
+	jr	z,s2		; error, but not fatal
+
+	ld	a,LUNTMP
+	call	CLOSE		; else close and delete the temp file
+	jr	s3		; return with error
+
+s2:	call	TFLUSH
+	ld	(iy+vmode),1
+	ld	(iy+lun),LUNTMP
+	pop	af		; restart loop, this time using the
+	jp	scan		;  temp storage file as source
+
+s3:	ld	c,2
+	call	callbk		; call external routine one last time
+	pop	af
+rstk:	ld	hl,frmsiz	; restore stack
+	add	hl,sp
+	ld	sp,hl
+	pop	iy
+	cp	E.EOF		; E.EOF is not an error here
+	scf
+	ret	nz
+	xor	a
+	ret
+
+callbk:	push	hl
+	ld	l,(iy+cbaddr)
+	ld	h,(iy+cbaddr+1)
+	ex	(sp),hl		; push callback address, restore HL
+	ret			; call routine
+
+; Read next directory entry
+
+RDDIR:	ld	l,(iy+bufcnt)
+	ld	h,(iy+bufcnt+1)
+	ld	a,h		; check bytes left
+	or	l		; zero?
+	jr	nz,cpent	; branch if not
+
+	ld	l,(iy+buf)	; else read next directory block
+	ld	h,(iy+buf+1)
+	ld	(iy+bufptr),l	; reset I/O buffer pointer
+	ld	(iy+bufptr+1),h
+	ld	(qio2+Q.BUF),hl
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	l,(iy+blkno)
+	ld	h,(iy+blkno+1)
+	inc	hl		; inc block number
+	ld	(iy+blkno),l
+	ld	(iy+blkno+1),h
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0		; we don't expect dirs larger than 32Mb ;)
+	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.OFS),hl
+	ld	a,(iy+lun)
+	ld	(qio2+Q.LUN),a
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO		; read directory block
+	ret	c
+	ld	hl,(iosb+2)	; check number of bytes read
+	ld	a,h
+	or	l
+	ld	a,E.EOF
+	scf
+	ret	z
+	ld	a,(iosb)	; check error code
+	or	a
+	scf
+	ret	nz
+
+cpent:	ld	de,-DESZ
+	add	hl,de		; count down entries
+	ccf
+	ld	a,E.EOF
+	ret	c
+	ld	(iy+bufcnt),l	; update number of bytes left in buffer
+	ld	(iy+bufcnt+1),h
+	push	iy
+	pop	hl
+	ld	bc,dirent
+	add	hl,bc		; get address of dirent on stack
+	ex	de,hl		;  into DE (dst)
+	ld	l,(iy+bufptr)	; get buffer pointer into HL (src)
+	ld	h,(iy+bufptr+1)
+	ld	bc,DESZ
+	ldir			; copy entry
+	ld	(iy+bufptr),l
+	ld	(iy+bufptr+1),h
+	xor	a		; return success
+	ret
+
+; Check for special version search mode: 0 or default means search
+; for newest version of the file(s), while -1 means search for oldest.
+
+; Returns mode in A:
+;  1 = normal search (explicit or '*')
+;  0 = search for newest version
+; -1 = search for oldest version
+
+chksv:	ld	a,(ix+F.WLDC)
+	and	FN.VER		; is version '*'?
+	ld	a,1
+	ret	nz		; return if yes, normal search mode
+	ld	a,(ix+F.ATTR)
+	and	FN.VER		; explicit version?
+	ret	z		; return if not, newest assumed
+	ld	c,(ix+F.VER)	; else get version
+	ld	b,(ix+F.VER+1)
+	ld	a,b
+	or	c		; check for 0
+	ret	z		; newest wanted
+	ld	a,b
+	and	c		; check for -1
+	cp	-1
+	ret	z		; oldest wanted
+	ld	a,1		; else explicit version wanted
+	ret
+
+;-----------------------------------------------------------------------
+
+; Build search pattern string from FNB.
+
+bldpat:	push	iy
+	pop	hl
+	ld	de,pattrn
+	add	hl,de
+	ex	de,hl		; DE = dst pattrn string on stack
+	ld	a,(ix+F.ATTR)
+	ld	c,a
+	and	FN.NAME OR FN.EXT OR FN.VER
+	jr	nz,bp0
+	ld	a,c		; null pattern means '*.*;*'
+	or	FN.VER
+	ld	(ix+F.ATTR),a
+	ld	a,(ix+F.WLDC)
+	or	FN.VER
+	ld	(ix+F.WLDC),a
+bp0:	ld	a,c
+	and	FN.NAME		; name specified?
+	jr	z,bp1		; branch if not
+	push	ix
+	pop	hl		; HL = src search FNB
+	ld	bc,F.NAME
+	add	hl,bc
+	call	CPNAME		; copy name
+	ld	a,c
+	or	a		; empty name?
+	jr	nz,bp2		; branch if not
+bp1:	ld	a,(ix+F.ATTR)	; get F.ATTR
+	and	FN.EXT		; explicit extension?
+	jr	nz,bp2		; branch if yes (explicit null name)
+	ld	a,'*'		; else assume '*'
+	ld	(de),a
+	inc	de
+bp2:	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	a,(ix+F.ATTR)
+	and	FN.EXT		; extension specified?
+	jr	z,bp3		; branch if not
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	call	CPEXT		; and extension
+	ld	a,c
+	or	a		; empty extension?
+	ret	nz		; return if not
+bp3:	ld	a,(ix+F.ATTR)	; get F.ATTR
+	and	FN.EXT OR FN.NAME ; explicit name or extension?
+	ret	nz		; return if yes
+	ld	a,'*'		; else assume '*'
+	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a		; end with a null
+	ret
+
+; Match directory entry against pattern
+
+fmatch:	push	iy
+	pop	bc
+	ld	hl,fname
+	add	hl,bc
+	ex	de,hl		; DE = fname
+	ld	hl,dirent+DE.NAME
+	add	hl,bc		; HL = dirent+2
+	push	de
+	push	hl
+	call	CPNAME
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	pop	hl
+	ld	bc,DE.EXT-DE.NAME
+	add	hl,bc		; HL = dirent+11
+	call	CPEXT
+	pop	de		; DE = fname
+	push	iy
+	pop	bc
+	ld	hl,pattrn
+	add	hl,bc		; HL = pattrn
+	ld	a,(hl)
+	or	a
+	jr	z,fm1		; null pattern matches anything
+	call	MATCH
+	ret	nz
+fm1:	ld	a,(iy+lun)	;;; if reading from temp storage
+	cp	LUNTMP		;;;  file, assume that versions
+	ret	z		;;;   match
+	ld	a,(ix+F.WLDC)
+	cpl
+	and	FN.VER
+	ret	z		; wildcard in version field matches any version
+	ld	a,(ix+F.VER)	; else compare version numbers
+	cp	(iy+dirent+DE.VER)
+	ret	nz
+	ld	a,(ix+F.VER+1)
+	cp	(iy+dirent+DE.VER+1)
+	ret
+
+; Copy name (CPNAME) or extension (CPEXT) from (HL) to (DE).
+; Terminates string with a null. Returns length in C.
+
+CPNAME:	ld	b,9
+	jr	cpn0
+CPEXT:	ld	b,3
+cpn0:	ld	c,0
+cpn1:	ld	a,(hl)
+	or	a
+	jr	z,cpn2
+	cp	' '
+	jr	z,cpn2
+	ld	(de),a
+	inc	hl
+	inc	de
+	inc	c
+	djnz	cpn1
+cpn2:	xor	a
+	ld	(de),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Create file for temporary storage
+
+TCREAT:	ld	e,(ix+F.DEV)	; get device name and unit into DE-C
+	ld	d,(ix+F.DEV+1)
+	ld	(tmpfdb+F.DEV),de
+	ld	a,(ix+F.UNIT)
+	ld	(tmpfdb+F.UNIT),a
+	ld	c,a
+	ld	b,LUNTMP	; LUN in B
+	SC	.ALUN		; assign LUN
+	ret	c		; on error, return
+
+	ld	hl,IO.CRE	; non-contiguous file
+	ld	(qio1+Q.FUNC),hl
+	ld	a,LUNTMP
+	ld	(qio1+Q.LUN),a
+	ld	hl,tmpfdb
+	ld	(qio1+Q.P1),hl
+	ld	hl,0
+	ld	(qio1+Q.P2),hl
+	ld	(tblk),hl	; reset current block number
+	ld	hl,qio1
+	SC	.QIO		; create and open the temp storage file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+
+	ld	hl,tmpfdb
+	ld	a,LUNTMP
+	call	RDATTR		; get full filespec (needed for delete op)
+	jr	c,tc1		; on error, close the file and return code
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(tmpfdb+F.ATTR),a
+	xor	a
+	ld	(tmodf),a
+	ret			; return success
+
+tc1:	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close the file
+	pop	af
+	ret
+
+; Read file attributes. HL = dest buf, A = LUN.
+
+RDATTR:	ld	(qio2+Q.LUN),a
+	ld	(qio2+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,IO.RAT
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO		; get file attributes
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Close directory or temp file. If temp file, delete it [TODO: use
+; delete-on-close bit]
+
+CLOSE:	ld	(qio1+Q.LUN),a
+	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close directory or temp file
+	pop	af
+	cp	LUNTMP
+	ret	nz
+	ld	hl,tmpfdb
+	ld	(qio1+Q.P1),hl
+	ld	hl,IO.DEL
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; if temp file, delete it
+	ret
+
+; Add entry to temp storage file according to search mode
+
+TADD:	call	TFLUSH
+
+	ld	hl,0
+	ld	(tblk),hl	; rewind file
+
+tloop:	ld	hl,tbuf		; HL = dest buffer address
+	ld	(tptr),hl	; reset pointer
+	ld	(qio2+Q.BUF),hl
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	a,LUNTMP
+	ld	(qio2+Q.LUN),a
+	ld	hl,(tblk)
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO		; read entries
+	ret	c
+	ld	hl,(iosb+2)
+	ld	(tlen),hl
+	ld	(tcnt),hl
+	ld	a,(iosb)
+	or	a
+	jr	z,t1
+	cp	E.EOF
+	jr	z,tdone		; E.EOF is not an error here
+	scf
+	ret
+
+t1:	ld	a,h
+	or	l		; end of file?
+	jr	z,tdone		; exit loop if yes to append entry
+
+t2:	ld	hl,(tptr)
+	ld	bc,DE.NAME
+	add	hl,bc
+	ex	de,hl		; DE = name field of current dir entry
+
+	push	iy
+	pop	hl
+	ld	bc,dirent+DE.NAME
+	add	hl,bc		; HL = name field of dir entry on stack
+
+	call	cmpent		; compare file name and extension
+	jr	nz,tnext	; skip if no match
+
+	push	de		; entry found in temp buffer
+	ld	e,(hl)		; now compare version numbers
+	inc	hl
+	ld	d,(hl)		; DE = version number on dirent
+	pop	hl
+	ld	a,(hl)		; HL = version number on temp buf
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+
+	ld	a,(iy+vmode)
+	or	a		; check version search mode
+	jr	z,tcmp		; branch if newest
+
+	ex	de,hl		; else is oldest
+
+tcmp:	call	CPHLDE		; compare version numbers (CY if HL > DE)
+	ccf
+	ret	nc		; return success if nothing to do
+
+tsave:	push	iy
+	pop	hl
+	ld	de,dirent
+	add	hl,de		; HL = src
+	ld	de,(tptr)	; DE = dst
+	ld	bc,DESZ
+	ldir			; store entry
+	ld	a,1
+	ld	(tmodf),a	; set modified flag
+	xor	a		; return success
+	ret
+
+tnext:	ld	hl,(tptr)
+	ld	de,DESZ
+	add	hl,de
+	ld	(tptr),hl	; point to next entry
+
+	ld	hl,(tcnt)
+	or	a
+	sbc	hl,de
+	ld	(tcnt),hl	; count entries
+	jr	nz,t2		; loop while some entries left
+
+	ld	hl,(tlen)
+	ld	de,512
+	call	CPHLDE		; at the end of this block?
+	jr	nz,t3		; append entry and return if not
+
+	call	TFLUSH		; else flush buffer
+	ret	c
+	ld	hl,(tblk)
+	inc	hl
+	ld	(tblk),hl
+	jp	tloop		; and loop to load and process next block
+
+tdone:	ld	hl,tbuf
+	ld	(tptr),hl	; new block, tblk has been already set
+	ld	hl,0
+	ld	(tlen),hl
+t3:	ld	hl,(tlen)
+	ld	de,DESZ
+	add	hl,de
+	ld	(tlen),hl
+	jr	tsave		; store entry and return
+
+cmpent:	ld	b,DE.VER-DE.NAME
+cmpe1:	ld	a,(de)
+  IF 1
+	cp	(hl)
+  ELSE
+	xor	(hl)
+	and	7Fh
+  ENDIF
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	cmpe1
+	ret
+
+TFLUSH:	ld	a,(tmodf)
+	or	a
+	ret	z		; return if buffer not modified
+	ld	hl,tbuf		; HL = dest buffer address
+	ld	(qio2+Q.BUF),hl
+	ld	hl,(tlen)
+	ld	(qio2+Q.LEN),hl
+	ld	hl,(tblk)
+	ld	(qio2+Q.BLK),hl
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.OFS),hl
+	ld	a,LUNTMP
+	ld	(qio2+Q.LUN),a
+	ld	hl,IO.WVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO		; update block
+;;	ret	c
+;;	ld	a,(iosb)
+;;	or	a
+;;	scf
+;;	ret	nz
+	xor	a
+	ld	(tmodf),a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+usercb:	ds	2		; user callback routine address
+fnbptr:	ds	2		; ptr to FNB with search pattern
+finfo:	ds	FINFSZ		; buffer for directory info
+tmpfdb:	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'PIP      '
+	db	'TMP'
+	dw	0
+tfnsz	equ	$-tmpfdb
+	ds	FINFSZ-tfnsz	; size = FINFSZ
+
+qio1:	QIOW$	IO.ACC,0,9,iosb,,<,,>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,>
+iosb:	ds	4
+
+tbuf:	ds	512		; buffer used by temp storage file
+tptr:	ds	2		; pointer into temp buffer
+tblk:	ds	2		; current temp file block
+tlen:	ds	2		; bytes in temp buffer
+tcnt:	ds	2		; bytes left to process
+tmodf:	ds	1		; temp buffer modified flag
+
+mbuf:	ds	512		; buffer used for master directory read
+ubuf:	ds	512		; buffer used for user directory read
+
+cdname:	ds	9		; directory name
+dsfnb:	ds	FNSZ		; directory(ies) to search for
+DIRFNB:	ds	FNSZ		; FNB of directory to search
+
+	end

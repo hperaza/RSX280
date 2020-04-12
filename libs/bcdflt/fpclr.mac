@@ -1,0 +1,21 @@
+	.Z80
+
+	name	'ZFR0'
+
+	public	ZFR0,ZFP
+
+	extrn	FR0
+
+	cseg
+
+; Set FR0 to all zeros. Returns with CY clear.
+
+ZFR0:	ld	hl,FR0		; clear FR0
+ZFP:	ld	b,6		; clear FP register
+	xor	a		; clear accum and CY
+clr1:	ld	(hl),a
+	inc	hl
+	djnz	clr1
+	ret
+
+	end

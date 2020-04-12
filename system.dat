@@ -1,0 +1,99 @@
+$ALUN	; assign LUN to device
+$ASGN	; assign logical name to physical device
+$ASNTP	; assign next task to partition
+$CHKPT	; initiate task checkpoint
+$CLASN	; delete all logical dev assignments of the given type
+$CLIST	; list of CLI control blocks
+$CLKQ	; ptr to head of clock queue
+$CONN	; connect to task
+$CPCB	; address of PCB of current task
+$CPLST	; ptr to head of checkpoint PCB list
+$CTCB	; address of TCB of current task
+$DEASN	; delete logical device assignment
+$ERSEQ	; error sequence number
+$FEAT	; feature bits
+$FILBF	; ptr to file I/O buffer area
+$FIXTK	; fix task in memory
+$FNDEV	; find device and get UCB address
+$FNPAR	; find partition by name
+$FNTCB	; find TCB by name
+$FNTSK	; find task by name
+$FORKQ	; pointer to list of fork blocks
+$GTUCB	; get UCB address
+$HOSTN	; host/node name
+IODONE	; end I/O processing
+$IOEND	; end I/O processing for ASTs
+$ALLOC	; allocate pool memory
+$FREE	; free pool memory
+LDRTCB	; LDR... TCB
+$LKTCB	; link TCB to the specified list
+$LOGDV	; ptr to head of logical device assignment list
+$LOGIN	; login user
+$LGOUT	; logout user
+MCRTCB	; MCR... TCB
+$MCOPY	; inter-bank memory copy routine
+$MEMSZ	; total memory size
+$DBMON	; debugger-monitor main entry point
+$MFLGS	; MCR flags
+$MVTBL	; ptr to head of mounted device list
+NVOK	; P112 NV RAM OK flag
+NVRAM	; P112 NV RAM contents
+$PHYDV	; ptr to head of physical device list
+$PLIST	; ptr to list of partitions
+$POOL	; ptr to start of pool area
+$POLSZ	; size of pool area
+$REDIR	; follow UCB redirection links
+$REMTK	; remove task from STD
+$RLIST	; ptr to head of ready tasks list
+$RNDC	; round-robin interval in ticks
+$RNDH	; highest priority for round-robin scheduling
+$RNDL	; lowest priority for round-robin scheduling
+SCBAR	; supervisor mode CBAR value
+SCMSEG	
+$SCRBF	; scratch buffer address
+SETFLG	; set task's event flag
+SETHVC	
+SETVEC	
+SFLAGS	; system flags
+$SWSTK	; stub to call kernel routines
+$SWPRI	; priority range for swapping
+$SWPC	; swapping interval in ticks
+$SWPCT	; swapping interval counter
+$SBANK	; system bank number
+SYSCOM	; start of common area
+SYSDAT	; start of system data area
+SYSEND	; end of system image
+SYSENT	; kernel services entry point
+SYSFN	
+SYSLVL	; current system level
+SYSSTK	
+SYSTOP	; top of pool area
+SYSVER	; system version number
+TALLOC	
+TCONT	
+TCONT2	
+$DBTRP	; debugger-monitor bpt entry
+TFREE	
+$LDGO	; start task after load
+$LDCKR	; resume task after checkpoint read
+$LDCKW	; queue task to partition after chkpnt write
+TICCNT	; absolute time count in ticks
+TICSEC	; ticks per second
+TKILL	; abort task
+$TLIST	; ptr to head of installed tasks list
+$DMTRP	; debugger-monitor bpt entry with message
+TSLEEP	
+TSTART	
+TSTOP	
+TUNFIX	
+TWAIT	
+UCBAR	; user mode CBAR value
+$UCBDN	; get device name and unit from UCB
+$UGETB	; inter-bank get byte routine
+$UGETW	; inter-bank get word routine
+$UNFTK	; unfix task
+UPTIME	; system up time (ticks and seconds)
+$UPUTB	; inter-bank put byte routine
+$UPUTW	; inter-bank put word routine
+$UBANK	; bank of current task
+$WLIST	; ptr to head of waiting tasks list

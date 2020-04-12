@@ -1,0 +1,75 @@
+
+TED is an interactive text editor with two main modes of operation:
+
+ * Command mode is used mainly for those operations that require one or more
+   parameters to be specified (e.g. when deleting or moving a number of lines,
+   reading a file fully of partially, etc.)
+
+   For help on command mode type HELP TED COMMANDS
+
+ * Screen mode is used to modify the text directly by moving the cursor around
+   using the arrow keys of the keyboard, and by typing or deleting characters
+   and lines.
+
+   For help on screen mode type HELP TED SCREEN
+
+The maximum line length allowed by the editor is 162 characters. Edited files
+can be larger than the available RAM; the maximum file size is limited to
+about 1 Megabyte, depending on the amount of disk space available.
+
+\COM*MANDS
+
+The following commands are available in command mode:
+
+EX or Ctrl-Z		   - exit the editor (note: without saving!)
+CL			   - clear buffer, delete all text
+R FILE			   - insert FILE
+R (P) FILE (N1,N2)	   - insert lines N1..N2 from FILE after P
+W [P1 P2] [FILE] [N]	   - save text to FILE optionally from P1 to P2
+WT [P1 P2] [FILE] [N]	   - save text to FILE with tabs
+F			   - show default file name
+FR			   - show available memory
+PR P1 [P2]		   - print line(s) on terminal
+D P1 [P2]		   - delete line(s)
+M P1 P2 P3		   - copy lines
+MD P1 P2 P3		   - move lines
+SU   /OLD/NEW/[(N1 [N2])]  - search (and replace)
+SU M /OLD/NEW/[(N1 [N2])]  - same, but ask for confirmation
+SU N /OLD/NEW/[(N1 [N2])]  - same, but N times
+S [P]			   - enter screen editor
+P [P]			   - show/set text index
+/TEXT/			   - search for TEXT and enter screen editor
+
+Commands are ended with either Return or Ctrl-C. When Ctrl-C is used, the
+screen mode is entered after command execution.
+
+\SCR*EEN
+
+The following commands are available in screen mode:
+
+	Arrow keys	  - move cursor
+	HOME (Ctrl-L)	  - cursor to begin/end of line
+	Ctrl-T		  - cursor to top/bottom of window
+	Ctrl-F		  - move to next tab stop
+	Ctrl-Q		  - move to prev tab stop
+	TAB (Ctrl-I)	  - insert tab
+	RETURN (Ctrl-M)	  - split line
+	Ctrl-R		  - redraw screen
+	LF (Ctrl-J)	  - insert line below
+	Ctrl-K		  - insert line above
+	DEL or Ctrl-H	  - delete char left
+	Ctrl-] or Ctrl-G  - delete char right
+	Ctrl-Y or Ctrl-^  - delete line
+	Ctrl-P		  - duplicate line
+	Ctrl-V		  - toggle insert mode
+	Ctrl-B or Ctrl-N  - enter "browse" mode (see HELP TED BROWSE)
+	Ctrl-C or Ctrl-Z  - exit back to command mode
+
+\BR*OWSE
+
+The following actions available in browse mode:
+
+	Arrow up/down	  - page up/down
+	Arrow left/right  - shift screen by 10 columns left/right
+	CR or Ctrl-C	  - exit back to screen mode
+

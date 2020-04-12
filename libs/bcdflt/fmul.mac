@@ -1,0 +1,58 @@
+	.Z80
+
+	public	FMUL
+
+	extrn	MDSIGN,MDPREP,RORDBL,FNORMX,ZFR0,?ADDFR
+	extrn	FR0,FR1,FR2,?FRX,?EXP
+
+; Floating point multiplication
+;
+; FR0 = FR0 * FR1
+
+	cseg
+
+FMUL:	ld	a,(FR0+0)	; if FR0 is zero
+	or	a		;  then return with CY clear
+	ret	z
+	ld	a,(FR1+0)	; if FR1 is zero
+	or	a
+	jp	z,ZFR0		;  then clear FR0 and return with no CY
+	call	MDSIGN		; note HL still points to FR1 on return
+	sub	40h		; subtract bias from FR0 exponent
+	scf
+	adc	a,(hl)		; add positive exponent of FR1
+	scf
+	ret	m		; overflow - return CY
+	call	MDPREP		; prepare operands
+	ld	b,5
+fml1:	push	bc
+	ld	a,(?FRX+5)	; get LSB of extended FR0 mantissa
+	and	0Fh		; get lower BCD half
+	ld	b,a		;  into B
+fml2:	dec	b
+	jp	m,fml3
+	ld	de,FR0+5
+	ld	hl,FR1+5
+	call	?ADDFR		; FR0 += FR1
+	jr	fml2		; multiply digits by summing in a loop
+fml3:	ld	a,(?FRX+5)
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh		; get higher BCD half
+	ld	b,a		;  into B
+fml4:	dec	b
+	jp	m,fml5
+	ld	de,FR0+5
+	ld	hl,FR2+5
+	call	?ADDFR		; FR0 += FR2
+	jr	fml4		; this time add the shifted FR1 mantissa
+fml5:	call	RORDBL		; shift intermediate result FR0-?FRX right
+	pop	bc
+	djnz	fml1		; loop for all 5 mantissa bytes
+	ld	a,(?EXP)	; get the resulting exponent
+	ld	(FR0+0),a	;  into place
+	jp	FNORMX		; normalize thru ?FRX and return
+
+	end

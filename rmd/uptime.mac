@@ -1,0 +1,59 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Uptime display
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+
+	public	SYSUPT
+
+	extrn	VPUTC,VPUTS,VXY,VADEC2,VHLDEC
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+SYSUPT:	VGTOXY	34,0
+	push	ix
+	ld	ix,UPTIME
+	ldw	hl,(ix+5)	; days
+	ld	a,'0'
+	call	VHLDEC
+	ld	c,'.'
+	call	VPUTC
+	ld	a,(ix+3)	; hours
+	call	VADEC2
+	ld	c,':'
+	call	VPUTC
+	ld	a,(ix+2)	; minutes
+	call	VADEC2
+	VGTOXY	31,0
+upt1:	ld	hl,upmsg
+	call	VPUTS
+	pop	ix
+	ret
+
+upmsg:	db	'Up ',0
+
+	end

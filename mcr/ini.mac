@@ -1,0 +1,1941 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command INI - initialize RSX180 Disk Volumes.         ;
+;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'03.02'
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	LCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+	include	SYSCONF.INC
+
+	extrn	PFN,PDN,PERROR,CRLF,PUTCH,PUTSTR,TTFLSH,UCASE
+	extrn	GETLN,ATTACH,DETACH,CPHLDE,HLDEC,GCML,RCML
+
+	extrn	FDBOOT,FDBTSZ,HDBOOT,HDBTSZ
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+BMHSZ	equ	16		; bitmap header size
+
+LUNCML	equ	1		; LUN for command file I/O
+LUNDSK	equ	2		; LUN for disk I/O
+LUNFIL	equ	3
+
+; option switch bit numbers
+
+SW.VF	equ	0		; verify
+SW.WB	equ	1		; write boot only
+SW.LB	equ	2		; write volume label only
+SW.CF	equ	3		; ask for confirmation before erasing all data
+SW.VI	equ	4		; display volume information only
+SW.MF	equ	5		; set max number of files
+SW.PR	equ	6		; set default file protection bits
+
+DEFSW	equ	0		; default switch value
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Syntax:
+;
+;  INI dev:[["]label["]]/switches
+;
+; switches can be (use /NOsw or /-sw to negate action):
+;  VF = verify. Default is no verify.
+;  WB = write boot loader (optionally from external file /WB:filename)
+;       and update system file information in boot blocks. Default
+;       is to use built-in loaders if they match the device type (else
+;       a warning is issued) [or INI dev:label,filename/wb]
+;  LB = set volume label only. Default is null label.
+;  CF = ask/prompt (/-CF do not ask) for confirmation before initializing
+;       main directory and related files. Default is *don't* ask.
+;  VI = display volume information only, do not initialize disk. Default
+;       is /NOVI
+;  MF = followed by a decimal value (/MF:nnn or /MF=nnn) sets the maximum
+;       number of files for volume (i.e. number of entries in index file)
+;  PR = followed by a hexadecimal (/PR:hhhh or /PR=hhhh) value or a
+;       protection specification (/PR:[rwed,rwed,rwed,rwed] or /PR=[...])
+;       sets the default file protection bits for newly created files.
+;       Default is /PR=FFFF or /PR=[rwed,rwed,rwed,rwed]
+
+; INI dev:label,boot.bin/wb - replaces 'SAV /WB'
+
+; So far only WB, CF, MF and PR are implemented.
+
+; TODO: if the disk has been checked with the BAD utility, use the bad
+; block information to initialize the BADBLK.SYS file and to place the
+; system files in safe areas away from the bad blocks.
+
+;-----------------------------------------------------------------------
+
+MAIN:	ld	sp,stack
+
+	xor	a
+	ld	(LBLFLG),a	; clear volume label flag
+
+	ld	hl,EX.SUC
+	ld	(exstat),hl	; default exit status is success
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error or end of file
+
+	call	PARSE		; parse command
+	jr	c,m3		; on error, break any command file execution
+
+	ld	a,(INICMD)	; valid INI command?
+	or	a		;  (i.e. not null and not comment)
+	call	nz,INIDSK	; execute command if yes - initialize disk
+	jr	m1		; loop
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m4		; exit normally if yes
+
+	call	CMLERR		; else display error
+
+m3:	ld	hl,EX.SEV	; set exit status to severe
+	ld	(exstat),hl
+
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+
+m4:	call	TTFLSH
+	ld	hl,(exstat)	; else exit normally
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Parse command
+
+PARSE:	xor	a
+	ld	(INICMD),a	; no valid command yet
+	ld	(LBLFLG),a	; no volume label specified yet
+	ld	(LBLOK),a	; label can be specified only after dev name
+
+	ld	a,DEFSW
+	ld	(SWBITS),a	; set default switches
+
+	ld	de,0FFF8h	; default prot = [RWED,RWED,RWED,R]
+	ld	(DFPROT),de	; set default file protection bits
+
+p0:	call	skipsp
+	or	a		; empty line?
+	ret	z		; return if yes
+	cp	CR
+	ret	z
+
+	cp	';'		; comment line?
+	ret	z		; return if yes
+
+	cp	'!'		; start of comment section?
+	jr	nz,p1		; jump if not
+
+	call	skpcmt		; else skip comment block
+	jr	p0		; and try again
+
+p1:	; get device name, volume label and switches
+
+	call	PDN		; parse device name
+	jp	c,SNERR
+
+	ld	(DEVNAM),de
+	ld	a,c
+	ld	(DEVNAM+2),a
+
+	ld	a,1
+	ld	(INICMD),a
+	ld	(LBLOK),a	; OK to specify label after dev name
+
+ploop:	call	skipsp
+	or	a		; end of command?
+	ret	z		; return success if yes
+	cp	CR
+	ret	z		; ditto
+
+	cp	';'		; start of comment?
+	ret	z		; return if yes
+
+	cp	'!'		; comment section?
+	jr	nz,p2		; jump if not
+
+	call	skpcmt		; else skip comment section
+	jr	ploop		; and loop for more
+
+p2:	inc	hl
+
+	cp	'/'
+	jr	z,switch
+
+	cp	'"'
+	jr	z,qstr
+
+	cp	"'"
+	jr	z,qstr
+
+	dec	hl
+
+	xor	a
+qstr:	ld	c,a		; C = quote character
+
+	ld	a,(LBLOK)
+	or	a
+	jp	z,errsn
+
+	ld	a,(LBLFLG)
+	or	a
+	jp	nz,errsn
+	inc	a
+	ld	(LBLFLG),a
+
+	ld	de,LABEL
+	ld	b,16+1		; max label length = 16 chars
+qs1:	ld	a,(hl)		; get character from command
+	cp	c		; closing quote?
+	jr	z,qend		; jump if yes
+	or	a		; end of command line?
+	jr	z,qend
+	cp	CR
+	jr	z,qend
+	call	qdelim		; delimiter?
+	jr	nz,qs2
+	inc	c		; allowed only in quoted string
+	dec	c
+	jr	z,qend
+qs2:	ld	(de),a		; else store char
+	inc	hl
+	inc	de
+	djnz	qs1		; and loop for more
+
+	ld	hl,elabel	; label too long
+errp:	call	ERROR		; display error message
+	scf
+	ret			; and return with CY set
+
+qdelim:	cp	' '
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'!'
+	ret	z
+	cp	';'
+	ret
+
+qend:	xor	a
+	ld	(de),a		; add trailing null
+	ld	b,(hl)
+	inc	hl
+	ld	a,c
+	or	a
+	jr	z,ploop
+	cp	b		; match closing quote
+	jr	z,ploop
+errsn:	call	SNERR
+	scf
+	ret			; and return with CY set
+
+switch:	xor	a
+	ld	(LBLOK),a	; no label allowed after switches
+	call	chkneg		; check for switch negation '-' or 'NO'
+	ld	a,(hl)		; get first switch character
+	or	a
+	scf
+	jr	z,errsn		; error if end of line
+	call	UCASE
+	ld	d,a
+	inc	hl
+	ld	a,(hl)		; get second switch character
+	or	a
+	scf
+	jr	z,errsn		; error if end of line
+	call	UCASE
+	ld	e,a
+	inc	hl
+
+	push	hl
+	ld	hl,swtab
+sw1:	ld	a,(hl)
+	inc	hl
+	or	a		; end of table?
+	jr	z,sw2		; error if yes - no switch matches
+	cp	d
+	jr	nz,sw3
+	ld	a,(hl)
+	cp	e
+	jr	z,sw4
+sw3:	inc	hl
+	inc	hl
+	jr	sw1
+
+sw2:	pop	hl
+	ld	hl,swerr
+	jp	errp
+
+sw4:	inc	hl		; switch found
+	ld	a,(hl)		; get the byte that follows
+	and	7		; bit number must be 0..7
+	ld	(SWNUM),a	; remember switch number
+	ld	b,a
+	ld	a,80h
+	inc	b		; so mask starts at 01h
+sw5:	rlca			; get bit into position
+	djnz	sw5
+	ld	hl,SWBITS
+	ld	b,a
+	ld	a,(NEGSW)
+	or	a		; negated?
+	ld	a,b
+	jr	z,sw7
+	cpl
+	and	(hl)		; clear switch bit
+	jr	sw8
+sw7:	or	(hl)		; set switch bit
+sw8:	ld	(hl),a
+	pop	hl
+
+sw6:	ld	a,(hl)
+	or	a
+	ret	z		; end of string
+	call	isalnum
+	inc	hl
+	jr	nc,sw6		; skip extra switch characters
+	dec	hl
+
+	call	chkarg		; check for possible switch argument
+	jp	c,errp		; exit loop on error (HL points to errmsg)
+
+	jp	ploop		; loop to process more switches
+
+chkneg:	xor	a
+	ld	(NEGSW),a
+	ld	a,(hl)
+	cp	'-'		; either '-' or 'NO' forms are allowed
+	jr	z,n1
+	call	UCASE
+	cp	'N'
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	dec	hl
+	call	UCASE
+	cp	'O'
+	ret	nz
+	inc	hl
+n1:	inc	hl
+	ld	a,1
+	ld	(NEGSW),a
+	ret
+
+chkarg:	cp	':'		; switch has an argument?
+	jr	z,ck1		; branch if yes
+	cp	'='
+	jr	z,ck1
+	ld	a,(SWNUM)
+	cp	SW.MF		; /MF requires explicit argument
+	jr	z,ck2
+	cp	SW.PR		; /PR as well
+	jr	z,ck2
+	or	a
+	ret
+ck2:	ld	hl,argreq
+	scf
+	ret
+ck1:	ld	a,(SWNUM)
+	cp	SW.MF
+	jr	z,swmf
+	cp	SW.PR
+	jr	z,swpr
+	ld	hl,argerr	; now other switches can have arguments
+	scf
+	ret
+
+swmf:	inc	hl
+	call	getdec		; get decimal value
+	jr	c,swne		; on overflow, error
+	ld	a,c
+	or	a		; can't be empty string
+	jr	z,swne
+	ld	(MAXFIL),de	; set max number of files
+	ret
+swne:	ld	hl,numerr
+	scf
+	ret
+
+swpr::	inc	hl
+	call	skipsp
+	cp	'['		; check for [RWED,...] format
+	jr	z,swp1
+	call	gethex		; else get hexadecimal value
+	jr	c,swne		; on overflow, error
+	ld	a,c
+	or	a		; can't be empty string
+	jr	z,swne
+	ld	(DFPROT),de	; set default file protection
+	ret
+
+swp1:	ld	de,0
+	ld	b,4		; number of groups
+swp2:	inc	hl		; advance pointer
+	call	skipsp		; skip blanks, get char
+	cp	']'
+	jr	z,swp4
+	cp	','		; group separator?
+	jr	z,swp3		; branch if yes
+	call	gtrwed		; get prot bit
+	jr	c,swpe
+	ld	a,e
+	and	c		; already set?
+	jr	nz,swpe		; error if yes
+	ld	a,e
+	or	c
+	ld	e,a		; else set bit
+	jr	swp2		; and loop for more
+
+swp3:	ex	de,hl
+	add	hl,hl		; shift mask
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	djnz	swp2
+swpe:	ld	hl,snmsg	; syntax error
+	scf
+	ret
+
+swp4:	djnz	swpe		; all groups must have been specified
+	ld	(DFPROT),de	; set default file protection
+	inc	hl
+	ret
+
+gtrwed:	call	UCASE
+	ld	c,08h
+	cp	'R'
+	ret	z
+	srl	c
+	cp	'W'
+	ret	z
+	srl	c
+	cp	'E'
+	ret	z
+	srl	c
+	cp	'D'
+	ret	z
+	scf
+	ret
+
+swtab:	db	'VF',SW.VF	; verify
+	db	'WB',SW.WB	; write boot
+	db	'LB',SW.LB	; write volume label only
+	db	'CF',SW.CF	; prompt before erasing data
+	db	'VI',SW.VI	; display volume information
+	db	'MF',SW.MF	; set max number of files
+	db	'PR',SW.PR	; set default file protection
+	db	0
+
+swerr:	db	'Illegal switch',0
+argerr:	db	'Illegal switch argument',0
+numerr:	db	'Invalid numeric value',0
+argreq:	db	'Switch requires argument',0
+elabel:	db	'Volume label is too long',0
+
+; skip !comment block!
+
+skpcmt:	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	'!'
+	jr	nz,skpcmt
+	inc	hl
+	ld	a,(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+INIDSK:	ld	hl,EX.SEV
+	ld	(exstat),hl	; assume the worst
+
+	call	CHKPRV		; ensure user is privileged
+	jp	c,SYSERR
+
+	xor	a
+	ld	(noboot),a
+
+	ld	a,(SWBITS)
+	bit	SW.WB,a		; check write-boot-only switch
+	jp	z,ini1		; jump if not set
+
+	; get system image file information before attaching to device
+
+	ld	hl,sysfdb
+	ld	(qio1+Q.P1),hl
+	ld	de,(DEVNAM)
+	ld	(sysfdb+F.DEV),de
+	ld	a,(DEVNAM+2)
+	ld	(sysfdb+F.UNIT),a
+	ld	c,a
+	ld	b,LUNFIL
+	SC	.ALUN
+	jp	c,SYSERR
+
+	ld	hl,qio1
+	SC	.QIO		; open SYSTEM.SYS file
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,SYSERR
+
+	ld	hl,qio2
+	SC	.QIO		; get file info
+	jr	c,ini0
+	ld	a,(iosb)
+	or	a
+	jr	z,ini0
+	scf
+ini0:	push	af
+	ld	hl,qio4
+	SC	.QIO		; close file
+	pop	af
+	jp	c,SYSERR
+
+	ld	hl,(finfo+F.INODE)
+	ld	a,h
+	or	l
+	ex	de,hl
+	ld	hl,invsys
+	jp	z,ERROR
+
+	ld	a,(finfo+F.ATTR)
+	and	FA.CTG
+	ld	hl,sysnct
+	jp	z,ERROR		; error if system image file is not contiguous
+
+	ex	de,hl
+	dec	hl		; make inode number 0-based
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	and	1Fh
+	ld	d,a
+	ld	e,h		; DE = VBN = inode number / 8
+	ld	h,0
+	add	hl,hl		; HL = offset = (inode number % 8) * 64
+	ld	(qio3+Q.OFS),hl
+	ld	(qio3+Q.BLK),de
+	ld	hl,0
+	ld	(qio3+Q.BLK+2),hl
+
+	ld	hl,idxfdb
+	ld	(qio1+Q.P1),hl
+	ld	de,(DEVNAM)
+	ld	(idxfdb+F.DEV),de
+	ld	a,(DEVNAM+2)
+	ld	(idxfdb+F.UNIT),a
+
+	ld	hl,qio1
+	SC	.QIO		; open INDEXF.SYS file
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,SYSERR
+
+	ld	hl,qio3
+	SC	.QIO		; read inode
+	jr	c,ini5
+	ld	a,(iosb)
+	or	a
+	jr	z,ini5
+	scf
+ini5:	push	af
+	ld	hl,qio4
+	SC	.QIO		; close file
+	pop	af
+	jp	c,SYSERR
+
+	ld	hl,BUF+IE.BMAP
+	ld	de,SYSLBN
+	ld	bc,3
+	ldir			; store LBN of system image
+
+	ld	a,(BUF+IE.USED+2)
+	or	a
+	ld	hl,sysbig
+	jp	nz,ERROR
+
+	ld	hl,(BUF+IE.USED)
+	ld	(SYBLKS),hl	; store size of system image
+
+	jr	ini2		; skip confirmation
+
+ini1:	bit	SW.CF,a		; check confirmation switch
+	jr	z,ini2		; jump if not set
+
+	call	CONFIRM		; prompt the user before continuing
+	ret	c		; return if user canceled operation
+
+ini2:	; assign LUN
+
+	ld	de,(DEVNAM)	; get dev name into DE-C
+	ld	a,(DEVNAM+2)
+	ld	c,a
+	ld	b,LUNDSK
+	SC	.ALUN
+	jp	c,SYSERR
+
+	; get LUN info, ensure unit is not mounted and is a directory device
+
+	ld	hl,LUNINF
+	ld	c,LUNDSK
+	SC	.GTLUN
+	jp	c,SYSERR
+
+	ld	a,(LUNINF+4)
+	bit	DV.DIR,a	; directory device?
+	ld	hl,edevt
+	jp	z,ERROR		; error if not
+
+	ld	a,(LUNINF+4)
+	bit	DV.MNT,a	; device mountable?
+	jp	z,ERROR		; error if not
+
+	ld	a,(SWBITS)
+	bit	SW.WB,a		; check write-boot-only switch
+	jr	nz,ini3		; skip next check if set
+
+	ld	a,(LUNINF+3)
+	bit	US.MNT,a	; unit mounted?
+	ld	hl,emnt
+	jp	nz,ERROR	; error if yes
+
+ini3:	; check user (terminal) privileges, etc.
+
+	; attach to the device
+
+	ld	de,0		; no ASTs
+	ld	c,LUNDSK
+	call	ATTACH
+	jp	c,SYSERR
+
+	; get disk size in blocks
+
+	call	SENSEC
+	jp	c,inierr
+
+	ld	b,e		; 24-bit value in BHL
+	ld	a,d
+	or	a
+	ld	de,toobig
+	jp	nz,inierm	; error if size > 2^24 (16777216 blocks)
+
+	push	hl
+	call	SETCLF		; select an appropriate cluster factor
+	pop	hl
+
+	call	BK2CL		; compute number of clusters
+	call	CL2BK		; back to blocks to round to cluster boundary
+
+	ld	(NBLKS),hl	; store rounded disk size
+	ld	(BLKCNT),hl	; init block counter
+	ld	a,b
+	ld	(NBLKS+2),a
+	ld	(BLKCNT+2),a
+
+	ld	hl,0
+	ld	(BLKNO),hl	; clear current block number
+	xor	a
+	ld	(BLKNO),a
+
+	; create boot block (block 0)
+
+	call	CLRBF
+
+	call	GTBOOT		; get bootstrap loader image for device
+	jr	nc,b1		; jump if found
+
+	ld	hl,btmsg
+	call	ERROR		; else display warning
+	ld	a,1
+	ld	(noboot),a	; and set flag
+	jr	b2
+
+b1:	ld	de,BUF		; copy the boot loader
+	ldir
+
+	call	SETBDV		; set boot unit number in DU: loader image
+
+b2:	ld	hl,BUF
+	ld	bc,511
+	ld	e,0
+cks:	ld	a,(hl)
+	add	a,e		; compute boot block checksum
+	ld	e,a
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,cks
+	ld	a,e
+	neg
+	ld	(hl),a		; block checksum must be zero for the P112
+
+	ld	hl,0
+	ld	b,0
+	call	WRBLK		; write the boot block
+	jp	c,inierr
+
+	ld	a,(SWBITS)
+	bit	SW.WB,a		; check write-boot-only switch
+	jr	z,ini4		; continue with initialization if not set
+
+	; update boot only
+
+	ld	hl,1
+	ld	b,0
+	call	RDBLK		; read volume ID block
+	jp	c,inierr
+
+	ld	hl,SYSLBN
+	ld	de,BUF+72
+	ld	bc,3
+	ldir			; store LBN of system image file
+	ld	hl,(SYBLKS)
+	ld	(BUF+76),hl	; store size of system image file
+
+	ld	hl,1
+	ld	b,0
+	call	WRBLK		; write it back
+	jp	c,inierr
+
+	jp	iend		; finish operation
+
+ini4:	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	; create volume ID (block 1)
+
+	call	CLRBF
+	ld	hl,vid
+	ld	de,BUF
+	ld	bc,6
+	ldir			; set volume ID
+	ld	hl,FVER.H*256+FVER.L
+	ld	(BUF+8),hl	; set filesystem version
+
+	ld	hl,LABEL
+	ld	de,BUF+16	; set volume label
+	call	strcpy
+
+	ld	hl,NBLKS
+	ld	de,BUF+32
+	ld	bc,3		; store disk size
+	ldir
+
+	ld	a,(CLFACT)
+	ld	(BUF+48),a	; store cluster factor
+
+	ld	hl,(DFPROT)
+	ld	(BUF+36),hl	; set default file protection bits
+
+	ld	hl,(NBLKS)	; get volume size in blocks
+	ld	a,(NBLKS+2)
+	ld	b,a
+	call	BK2CL		; convert to clusters
+	ld	a,7
+	call	ADD24B
+	rr	b		; note: takes into account CY from above addition
+	rr	h
+	rr	l
+	call	SHRBHL
+	call	SHRBHL		; bitmap bytes = (nblks + 7) / 8 + BMHSZ
+	ld	a,BMHSZ
+	call	ADD24B
+	ld	(BMSIZE),hl	; storage bitmap file size in bytes
+	ld	a,b
+	ld	(BMSIZE+2),a
+
+	ld	de,511
+	call	ADD24W
+	ld	l,h
+	ld	h,b
+	call	SHRHL		; bitmap blocks = (bitmap bytes + 511) / 512
+	ld	(BMBLKS),hl	; storage bitmap size in blocks
+
+	ld	a,(SWBITS)
+	bit	SW.MF,a		; check max files switch
+	ld	hl,(MAXFIL)
+	jr	nz,ixf1		; jump if set
+
+	ld	hl,(NBLKS)	; else use nclusters / 8
+	ld	a,(NBLKS+2)
+	ld	b,a
+	call	BK2CL
+	call	SHRBHL
+	call	SHRBHL
+	call	SHRBHL
+	ld	a,b
+	or	a
+	jr	z,ixf1
+	ld	hl,0FFFFh
+
+ixf1:	ld	(MAXFIL),hl
+	ld	de,32
+	call	CPHLDE		; at least 32 files
+	ld	de,eminf
+	jp	nc,inierm
+
+	ex	de,hl
+	ld	hl,(NBLKS)
+	ld	a,(NBLKS+2)
+	ld	b,a
+	call	SHRBHL
+	ld	a,b
+	or	a
+	ex	de,hl
+	jr	nz,ixf2
+	call	CPHLDE		; but less or equal nblks / 2
+	ld	de,emaxf
+	jp	c,inierm
+
+ixf2:	ld	de,7
+	add	hl,de
+	rr	h		; note: takes into account CY from addition
+	rr	l
+	call	SHRHL
+	call	SHRHL		; index file blocks = (maxf + 7) / 8
+	ld	(IXBLKS),hl
+
+	ld	de,BMHSZ	; index bitmap bytes = (maxf + 7) / 8 + BMHSZ
+	add	hl,de
+	ld	(IXBMSZ),hl	; index bitmap size in bytes
+
+	ld	de,511
+	add	hl,de		; note: no CY possible
+	ld	l,h
+	ld	h,0
+	call	SHRHL		; index bitmap blocks = (ixbmsz + 511) / 512
+	ld	(IXBMBK),hl	; index bitmap size in blocks
+
+	ld	hl,2		; starting block of index file
+	ld	b,0
+	call	CLRND		; round to next cluster boundary
+	ld	(BUF+64),hl	; store LBN of index file
+	ld	(IXLBN),hl
+	ld	a,b
+	ld	(BUF+64+2),a
+	ld	(IXLBN+2),a
+
+	ld	de,(IXBLKS)
+	call	ADD24W
+	call	CLRND		; round to next cluster boundary
+	ld	(BUF+68),hl	; store LBN of bitmap
+	ld	(BMLBN),hl
+	ld	a,b
+	ld	(BUF+68+2),a
+	ld	(BMLBN+2),a
+
+	ld	de,(BMBLKS)
+	call	ADD24W
+	ld	de,(IXBMBK)
+	call	ADD24W
+	call	CLRND		; round to next cluster boundary
+	ld	(MDLBN),hl	; starting block of master directory
+	ld	a,b
+	ld	(MDLBN+2),a
+
+	ld	hl,DTBUF
+	SC	.GDAT		; get current date and time
+	jp	c,inierr
+	ld	de,BUF+40	; set creation date
+	ld	bc,7
+	ldir
+
+	ld	hl,1
+	ld	(BLKNO),hl
+	xor	a
+	ld	(BLKNO+2),a
+	ld	b,a
+	call	WRBLK		; write the volume ID block
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+
+	ld	hl,(IXLBN)
+	ld	a,(IXLBN+2)
+	ld	b,a
+	call	PADCL		; pad cluster
+	jp	c,inierr
+
+	; create index file
+
+	ld	ix,BUF+IESZ*0	; set INDEXF.SYS inode
+	ld	iy,mde+16*0
+	ld	hl,0CCC8h	; [rw,rw,rw,r]
+	ld	(FPROT),hl
+	ld	de,(IXLBN)	; LBN
+	ld	bc,(IXBLKS)	; allocated blocks
+	ld	hl,512		; last block byte count
+	ld	a,FA.FILE OR FA.CTG
+	call	SETINO
+
+	ld	ix,BUF+IESZ*1	; set BITMAP.SYS inode
+	ld	iy,mde+16*1
+	ld	hl,0CCC8h	; [rw,rw,rw,r]
+	ld	(FPROT),hl
+	ld	hl,(BMBLKS)
+	ld	de,(IXBMBK)
+	add	hl,de
+	ld	c,l		; allocated blocks
+	ld	b,h
+	ld	de,(BMLBN)	; LBN
+	ld	hl,(IXBMSZ)	; size in bytes (for last block byte count)
+	ld	a,FA.FILE OR FA.CTG
+	call	SETINO
+
+	ld	ix,BUF+IESZ*2	; set BADBLK.SYS entry
+	ld	iy,mde+16*2
+	ld	hl,0CCC8h	; [rw,rw,rw,r]
+	ld	(FPROT),hl
+	ld	de,0		; nothing allocated
+	ld	bc,0		; file is empty
+	ld	hl,0		; last block byte count
+	ld	a,FA.FILE
+	call	SETINO
+
+	ld	ix,BUF+IESZ*3	; set BOOT.SYS inode
+	ld	iy,mde+16*3
+	ld	hl,0CCC8h	; [rw,rw,rw,r]
+	ld	(FPROT),hl
+	ld	de,0		; LBN
+	ld	bc,2		; allocated blocks
+	ld	hl,512		; last block byte count
+	ld	a,FA.FILE OR FA.CTG
+	call	SETINO
+
+	ld	ix,BUF+IESZ*4	; set MASTER.DIR inode
+	ld	iy,mde+16*4
+	ld	hl,0CCC8h	; [rw,rw,rw,r]
+	ld	(FPROT),hl
+	ld	de,(MDLBN)	; first alloc block
+	ld	bc,1		; allocated blocks
+	ld	hl,512		; last block byte count
+	ld	a,FA.DIR
+	call	SETINO
+
+	ld	ix,BUF+IESZ*5	; set CORIMG.SYS inode
+	ld	iy,mde+16*5
+	ld	hl,0FFF8h	; [rwed,rwed,rwed,r]
+	ld	(FPROT),hl
+	ld	de,0		; nothing allocated
+	ld	bc,0		; file is empty
+	ld	hl,0		; last block byte count
+	ld	a,FA.FILE OR FA.CTG
+	call	SETINO
+
+	ld	ix,BUF+IESZ*6	; set SYSTEM.SYS entry
+	ld	iy,mde+16*6
+	ld	hl,0FFF8h	; [rwed,rwed,rwed,r]
+	ld	(FPROT),hl
+	ld	de,0		; nothing allocated
+	ld	bc,0		; file is empty
+	ld	hl,0		; last block byte count
+	ld	a,FA.FILE OR FA.CTG
+	call	SETINO
+
+	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+
+	ld	hl,(BMLBN)
+	ld	a,(BMLBN+2)
+	ld	b,a		; clear the remaining index file blocks
+	call	PADCL		;  and pad cluster
+	jp	c,inierr
+
+	; write the bitmap file, blocks 0 to MDLBN (thus, MDLBN+1) have been
+	; allocated to system files
+
+	exx
+	ld	hl,(MDLBN)
+	ld	a,(MDLBN+2)
+	ld	b,a
+	call	INC24		; number of blocks allocated to system files
+	call	BK2CL		; convert to clusters (number of bits to set)
+	or	a
+	call	nz,INC24	; round up, result in B'HL'
+	ld	de,8
+	ld	c,0		; decrement by 8 value in C'DE' (see below)
+	exx
+
+	ld	hl,NBLKS
+	ld	de,BUF+0
+	ld	bc,3
+	ldir			; store number of blocks in bitmap header
+
+	ld	a,(CLFACT)
+	ld	(BUF+4),a	; store cluster factor
+
+	ld	hl,(BMBLKS)
+	ld	(BUF+8),hl	; store VBN of index file bitmap
+
+	ld	hl,BUF+BMHSZ	; actual bitmap starts after header
+	ld	bc,512-BMHSZ	; bytes remaining in this block
+
+bm0:	exx
+	ld	a,b
+	or	h
+	jr	nz,bm1
+	ld	a,l
+	cp	8		; CY if L < 8
+bm1:	exx			; cluster count >= 8?
+
+	jr	c,bm2		; branch if not
+
+	ld	(hl),0FFh	; else write a full byte
+	inc	hl
+
+	exx
+	call	SUB24		; decrement counter by 8
+	exx
+
+	dec	bc
+	ld	a,b		; done with this block?
+	or	c
+	jr	nz,bm0		; loop if not
+
+	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK		; else write block
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+	ld	hl,BUF
+	ld	bc,512
+	jr	bm0		; and continue with next block
+
+bm2:	or	a		; cluster count reached zero?
+	jr	z,bm4		; branch if yes
+
+	ld	b,a		; else get count into B
+	xor	a
+bm3:	scf			; obtain bit pattern for remaining blocks
+	rra
+	djnz	bm3
+
+	ld	(hl),a		; store it
+
+bm4:	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK		; write block
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+
+	ld	hl,(BMLBN)
+	ld	a,(BMLBN+2)
+	ld	b,a
+	ld	de,(BMBLKS)
+	call	ADD24W
+	call	PADCL		; clear the remaining storage bitmap blocks
+	jp	c,inierr
+
+	; append the index file bitmap
+
+	ld	hl,(MAXFIL)
+	ld	(BUF+0),hl	; store max number of files in bitmap header
+
+	ld	hl,BUF+BMHSZ	; actual bitmap starts after header
+	ld	(hl),0FEh	; 7 bits set = 7 entries used by 7 system files
+
+	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK		; write block
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+
+	ld	hl,(MDLBN)
+	ld	a,(MDLBN+2)
+	ld	b,a		; clear the remaining index file bitmap blocks
+	call	PADCL		; and pad cluster
+	jp	c,inierr
+
+	; write MASTER.DIR
+
+	ld	hl,mde
+	ld	de,BUF
+	ld	bc,mdesz
+	ldir
+
+	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK		; first block contains entries for system files
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	call	CLRBF
+
+	ld	hl,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	b,a
+	call	WRBLK		; second block is empty
+	jp	c,inierr
+
+	call	INCBKN		; increment BLKNO
+	call	DECBKC		; decrement BLKCNT
+
+	; copy the system image file? [/SY switch]
+
+	; if specified, fill remaining blocks with 0E5h?
+
+	; detach from device
+
+iend:	ld	c,LUNDSK
+	call	DETACH
+	jp	c,SYSERR
+
+	; flush buffers
+
+	; return success
+
+	ld	hl,EX.SUC
+	ld	(exstat),hl	; set exit status to success
+	ld	a,(noboot)	; check "bootstrap loader not found" flag
+	or	a
+	ret	z		; return if not set
+	ld	hl,EX.WRN
+	ld	(exstat),hl	; else set exit status to warning
+	xor	a
+	ret
+
+inierm:	ex	de,hl
+	call	ERROR		; display custom error message
+	jr	inie1
+
+inierr:	call	SYSERR		; display error message
+inie1:	ld	c,LUNDSK
+	call	DETACH		; and detach from device before returning
+	scf
+	ret
+
+vid:	db	'VOL180'
+
+dirent	MACRO	i,fname,ver
+	dw	i
+	db	fname
+	dw	ver
+	ENDM
+
+mde:	dirent	1,'INDEXF   SYS',1
+	dirent	2,'BITMAP   SYS',1
+	dirent	3,'BADBLK   SYS',1
+	dirent	4,'BOOT     SYS',1
+	dirent	5,'MASTER   DIR',1
+	dirent	6,'CORIMG   SYS',1
+	dirent	7,'SYSTEM   SYS',1
+mdesz	equ	$ - mde
+
+edevt:	db	'Invalid device type',0
+emnt:	db	'Cannot initialize mounted device',0
+btmsg:	db	'No suitable bootstrap loader found, device will not be bootable',0
+eminf:	db	'Index file storage too small for volume',0
+emaxf:	db	'Index file storage too big for volume',0
+toobig:	db	'Volume size exceeds 8Gb',0
+invsys:	db	'Invalid system image file',0
+sysnct:	db	'System image file not contiguous',0
+sysbig:	db	'System image file is too big',0
+
+;-----------------------------------------------------------------------
+
+; Get boot loader image address in HL and size in BC from device type
+; Right now we know only about DY: and DU: devices.
+
+GTBOOT:	ld	de,(DEVNAM)
+	ld	a,e
+	cp	'D'
+	scf
+	ret	nz		; unknow device
+	ld	a,d
+	cp	'Y'
+	jr	nz,gtb1
+	ld	hl,FDBOOT
+	ld	bc,FDBTSZ
+	xor	a
+	ret
+gtb1:	cp	'U'
+	scf
+	ret	nz
+	ld	hl,HDBOOT
+	ld	bc,HDBTSZ
+	xor	a
+	ret
+
+; Store unit number in bootstrap loader image (DU: only)
+
+SETBDV:	ld	de,(DEVNAM)
+	ld	a,e
+	cp	'D'
+	ret	nz
+	ld	a,d
+	cp	'U'
+	ret	nz
+	ld	hl,(BUF+3)	; get offset to loader data location
+	ld	de,BUF
+	add	hl,de		; index into buffer
+	ld	a,(DEVNAM+2)
+	ld	(hl),a		; store unit number
+	ret
+
+; Setup inode
+
+SETINO:	ld	(ix+IE.LCNT),1	; set link count
+	ld	(ix+IE.LCNT+1),0
+
+	ld	(ix+IE.SEQN),1	; set seq number
+	ld	(ix+IE.SEQN+1),0
+
+	ld	(ix+IE.ATTR),a	; set attrib
+
+	ld	(ix+IE.USER),1	; user
+	ld	(ix+IE.GRP),1	; group
+
+	ld	(ix+IE.BMAP),e	; LBN
+	ld	(ix+IE.BMAP+1),d
+	ld	(ix+IE.BMAP+2),0
+
+	ld	(ix+IE.ALOC),c	; nalloc
+	ld	(ix+IE.ALOC+1),b
+	ld	(ix+IE.ALOC+2),0
+
+	ld	(ix+IE.USED),c	; nused = nalloc
+	ld	(ix+IE.USED+1),b
+	ld	(ix+IE.USED+2),0
+
+	ld	a,(CLFACT)
+	ld	(ix+IE.CLF),a	; cluster factor
+
+	call	lbcnt
+	ld	(ix+IE.LBCN),l	; lbcnt
+	ld	(ix+IE.LBCN+1),h
+
+	ld	hl,(FPROT)
+	ld	(ix+IE.PROT),l	; protection bits
+	ld	(ix+IE.PROT+1),h
+
+	push	ix
+	pop	hl
+	ld	de,IE.NAME
+	add	hl,de
+	ex	de,hl
+	push	iy
+	pop	hl
+	inc	hl
+	inc	hl
+	ld	bc,9+3+2
+	ldir			; set orig name, extension and version
+
+	ld	bc,IE.TCRE	; set creation date
+	call	setd1
+	ld	bc,IE.TMOD	; set modified date
+setd1:	push	ix
+	pop	hl
+	add	hl,bc
+	ex	de,hl
+	ld	hl,DTBUF
+	ld	bc,7
+	ldir
+	ret
+
+lbcnt:	ld	de,512
+lbc1:	call	CPHLDE		; returns CY if HL > DE
+	ret	nc
+	or	a
+	sbc	hl,de
+	jr	lbc1
+
+; Set cluster factor according to disk size. Called with size in regs BHL.
+
+SETCLF:	ld	a,h
+	or	l
+	ld	a,b
+	jr	nz,sc1
+	dec	a
+sc1:	ld	hl,CLFACT
+	ld	(hl),0
+	cp	02h		; 128K blocks (64M bytes) or less?
+	ret	c		; use cluster factor 0 (1 block) if yes
+	inc	(hl)
+	cp	08h		; 512K blocks (256M bytes) or less?
+	ret	c		; use cluster factor 1 (2 blocks) if yes
+	inc	(hl)
+	cp	20h		; 2M blocks (1G bytes) or less?
+	ret	c		; use cluster factor 2 (4 blocks) if yes
+	inc	(hl)		; else use cluster factor 3 (8 blocks)
+	ret
+
+; Convert blocks in BHL to clusters. Returns remainder in A.
+
+BK2CL:	ld	a,(CLFACT)
+	or	a
+	ret	z
+	push	de
+	ld	e,a
+	ld	d,a
+	xor	a
+bc1:	srl	b		; clusters = blocks >> cluster_factor
+	rr	h
+	rr	l
+	rra
+	dec	d
+	jr	nz,bc1
+bc2:	rlca
+	dec	e
+	jr	nz,bc2
+	pop	de
+	ret
+
+; Convert clusters in BHL to blocks.
+
+CL2BK:	ld	a,(CLFACT)
+	or	a
+	ret	z
+cb1:	add	hl,hl		; blocks = clusters << cluster_factor
+	rl	b
+	dec	a
+	jr	nz,cb1
+	ret
+
+; Round block number in BHL to the upper cluster boundary
+
+CLRND:	call	BK2CL
+	or	a
+	call	nz,INC24
+	jp	CL2BK
+
+; Increase 24-bit value in BHL
+
+INC24:	inc	l
+	ret	nz
+	inc	h
+	ret	nz
+	inc	b
+	ret
+
+; Decrease 24-bit value in BHL
+
+DEC24:	ld	a,l
+	dec	l
+	or	a
+	ret	nz
+	ld	a,h
+	dec	h
+	or	a
+	ret	nz
+	dec	b
+	ret
+
+; BHL += A, sets CY on overflow
+
+ADD24B:	add	a,l
+	ld	l,a
+	ret	nc
+	or	a
+	inc	h
+	ret	nz
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += DE, sets CY on overflow
+
+ADD24W:	add	hl,de
+	ret	nc
+	or	a
+	inc	b
+	ret	nz
+	scf
+	ret
+
+; BHL += CDE, sets CY on overflow
+
+ADD24:	add	hl,de
+	ld	a,b
+	adc	a,c
+	ld	b,a
+	ret
+
+; BHL -= CDE, sets CY on borrow
+
+SUB24:	or	a
+	sbc	hl,de
+	ld	a,b
+	sbc	a,c
+	ld	b,a
+	ret
+
+; Compare two 24-bit values, returns CY if BHL > CDE
+
+CMP24:	ld	a,c
+	cp	b
+	ret	nz
+	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+; Increment variable BLKNO
+
+INCBKN:	ld	hl,BLKNO
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+; Decrement variable BLKCNT
+
+DECBKC:	ld	hl,BLKCNT
+	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	dec	(hl)
+	or	a
+	ret	nz
+	inc	hl
+	dec	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Ask for confirmation before initializing unit.
+
+CONFIRM:ld	hl,prefix
+	ld	de,BUF
+	call	strcpy
+	ld	hl,ask
+	call	strcpy		; prepare prompt
+	push	hl
+	ld	hl,DEVNAM
+	ldi
+	ldi			; insert device name
+	ld	a,(hl)
+	ex	de,hl
+	call	ASTR		; insert unit number
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	strcpy
+	inc	de
+	ex	de,hl
+	push	hl		; HL = response addr
+	ld	de,10		; D = 0 (read with echo), E = max length
+	ld	bc,BUF		; prompt
+	call	GETLN
+	pop	hl
+	ret	c
+	ld	a,(hl)
+	call	UCASE
+	cp	'Y'
+	ret	z
+	ld	hl,EX.SEV
+	ld	(exstat),hl
+	scf
+	ret
+
+ask:	db	'All existing data on volume ',0
+	db	': will be lost, are you sure? [Y/N]: ',0
+
+ASTR:	push	de
+	push	bc
+	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	ld	(hl),a
+	inc	hl
+	pop	bc
+	pop	de
+	ret
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad4
+	inc	d
+	dec	d
+	jr	z,ad5
+ad4:	ld	(hl),c
+	inc	hl
+	ld	d,1
+ad5:	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
+; Clear disk I/O buffer
+
+CLRBF:	ld	hl,BUF
+	ld	bc,512
+clr1:	ld	(hl),0
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,clr1
+	ret
+
+; HL = HL / 2
+
+SHRHL:	srl	h
+	rr	l
+	ret
+
+; BHL = BHL / 2
+
+SHRBHL:	srl	b
+	rr	h
+	rr	l
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read block (number in BHL) from LUNDSK to memory buffer BUF.
+
+RDBLK:	ld	(qio6+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(iosb+2),hl	; clear counter of bytes transferred
+	ld	hl,qio6
+	SC	.QIO		; .QIOW
+	ld	hl,(iosb+2)	; fetch byte count
+	ret	c		; if queueing failed
+	ld	a,(iosb)	; fetch return code
+	or	a
+	ret	z
+	scf
+	ret
+
+; Write block (number in BHL) from memory buffer BUF to LUNDSK.
+
+WRBLK:	ld	(qio7+Q.BLK),hl
+	ld	l,b
+	ld	h,0
+	ld	(iosb+2),hl	; clear counter of bytes transferred
+	ld	hl,qio7
+	SC	.QIO		; .QIOW
+	ld	hl,(iosb+2)	; fetch byte count
+	ret	c		; if queueing failed
+	ld	a,(iosb)	; fetch return code
+	or	a
+	ret	z
+	scf
+	ret
+
+; Sense disk characteristics.
+
+SENSEC:	ld	hl,qio5
+	SC	.QIO		; .QIOW
+	ret	c		; if queueing failed
+	ld	hl,(BUF)	; get device size in blocks into DEHL
+	ld	de,(BUF+2)
+	ld	a,(iosb)	; fetch return code
+	or	a
+	ret	z
+	scf
+	ret
+
+; Pad cluster from current block number in BLKNO up to, but not
+; including the block number specified in BHL.
+
+PADCL:	ld	de,(BLKNO)
+	ld	a,(BLKNO+2)
+	ld	c,a
+	call	CMP24		; current block < limit?
+	ret	nc		; return if not
+	push	hl
+	push	bc
+	ex	de,hl		; get BLKNO into BHL
+	ld	b,c
+	call	WRBLK		; write block
+	ret	c
+	call	INCBKN		; inc BLKNO
+	call	DECBKC		; dec BLKCNT
+	pop	bc
+	pop	hl
+	jr	PADCL		; loop
+
+;-----------------------------------------------------------------------
+
+; Return Z if char in A is blank
+
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret
+
+; Convert char to uppercase and return NC if alphanum
+
+isalnum:call	UCASE
+	cp	'Z'+1
+	ccf
+	ret	c
+	cp	'A'
+	ret	nc
+isnum:	cp	'9'+1
+	ccf
+	ret	c
+	cp	'0'
+	ret
+
+; Skip spaces
+
+skipsp:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	hl
+	jr	skipsp
+
+; Copy string (HL) -> (DE)
+
+strcpy:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	(de),a
+	inc	hl
+	inc	de
+	jr	strcpy
+
+; Parse decimal number from input string @HL, return value in DE and
+; number of processed chars in C. CY set on overflow.
+
+getdec:	ld	de,0
+	ld	c,0
+	call	skipsp
+	ret	z
+gd1:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isnum
+	ccf
+	ret	nc
+	push	bc
+	ex	de,hl
+	call	adddig
+	ex	de,hl
+	pop	bc
+	ret	c
+	inc	c
+	inc	hl
+	jr	gd1
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	sub	'0'
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+; Parse hexadecimal number from input string @HL, return value in DE and
+; number of processed chars in C. CY set on overflow.
+
+gethex:	ld	de,0
+	ld	c,0
+	call	skipsp
+	ret	z
+gh1:	ld	a,(hl)
+	call	UCASE
+	or	a
+	ret	z
+	sub	'0'
+	ccf
+	ret	nc
+	cp	10
+	jp	c,gh2
+	cp	11h
+	ccf
+	ret	nc
+	cp	17h
+	ret	nc
+	sub	7
+gh2:	push	bc
+	ex	de,hl
+	call	addhex
+	ex	de,hl
+	pop	bc
+	ret	c
+	inc	c
+	inc	hl
+	jr	gh1
+
+addhex:	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,hl		; *16
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +hex digit
+	ret
+
+;-----------------------------------------------------------------------
+
+; Display 'syntax error' message
+
+SNERR:	ld	hl,snmsg	; continue below
+
+; Display custom error message
+
+ERROR:	push	hl
+	ld	hl,prefix
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Display system error message
+
+SYSERR:	push	af
+	ld	hl,prefix
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+prefix:	db	CR,LF,'INI -- ',0
+snmsg:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,snmsg
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+;-----------------------------------------------------------------------
+
+; Check user privileges.
+
+CHKPRV:	ld	hl,LCBBUF
+	ld	c,I.USCB
+	SC	.GIN		; get user's session control block
+	ret	c
+	ld	hl,LCBBUF+L.ST
+	bit	LS.PRV,(hl)	; privileged session?
+	ld	a,E.PRIV
+	scf
+	ret	z		; return error if not
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	CMDBUF,80,'INI',LUNCML,2
+
+qio1:	QIOW$	<<IO.ACC OR (SF.ACR OR SF.SHR) SHL 8>>,LUNFIL,9,iosb,,<sysfdb>
+qio2:	QIOW$	IO.RAT,LUNFIL,9,iosb,,<finfo,FINFSZ>
+qio3:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<BUF,64,0,0,>
+qio4:	QIOW$	IO.DEA,LUNFIL,9,iosb
+qio5:	QIOW$	IO.SEC,LUNDSK,9,iosb,,<BUF,4>
+qio6:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<BUF,512,0,0,>
+qio7:	QIOW$	IO.WLB,LUNDSK,9,iosb,,<BUF,512,0,0,>
+iosb:	ds	4
+
+sysfdb:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'MASTER   ','SYSTEM   ','SYS',0
+
+idxfdb:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'MASTER   ','INDEXF   ','SYS',0
+
+finfo:	ds	FINFSZ		; buffer for system image file info
+
+exstat:	ds	2		; exit status
+noboot:	ds	1		; "bootstrap loader not found" flag
+
+CMDBUF:	ds	82		; buffer for command line
+INICMD:	ds	1		; non-zero if valid INI command
+SWBITS:	ds	1		; switch bits
+SWNUM:	ds	1		; current switch number, used during parsing
+NEGSW:	ds	1		; negated switch flag, used during parsing
+
+LUNINF:	ds	6		; LUN info buffer
+LCBBUF:	ds	LCBSZ		; buffer for user's SCB
+
+DEVNAM:	ds	3		; name of device to be initialized
+LBLOK:	ds	1		; used during parsing
+LBLFLG:	ds	1		; <>0 if volume label has been specified
+LABEL:	ds	17		; max 16 chars + trailing null
+DFPROT:	ds	2		; default file protection bits
+CLFACT:	ds	1		; cluster factor
+NBLKS:	ds	3		; number of block in volume
+BLKNO:	ds	3		; current block number
+BLKCNT:	ds	3		; number of blocks written so far
+MAXFIL:	ds	2		; max number of files (index file entries)
+IXBLKS:	ds	2		; index file size in blocks
+BMSIZE:	ds	3		; storage allocation bitmap size in bytes
+BMBLKS:	ds	2		; storage allocation bitmap size in disk blocks
+IXBMSZ:	ds	2		; index file bitmap size in bytes
+IXBMBK:	ds	2		; index file bitmap size in blocks
+IXLBN:	ds	3		; LBN of index file
+BMLBN:	ds	3		; LBN of storage bitmap file
+MDLBN:	ds	3		; LBN of master directory
+SYSLBN:	ds	3		; LBN of system image file
+SYBLKS:	ds	2		; size of system image file in blocks
+FPROT:	ds	2		; file protection bits
+
+DTBUF:	ds	8		; buffer for date/time
+BUF:	ds	512		; buffer for disk I/O
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	MAIN

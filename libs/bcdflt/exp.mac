@@ -1,0 +1,91 @@
+	.Z80
+
+	public	EXP,EXP10
+
+	extrn	FLD0R,FLD1R,FSUB,FMUL,FDIV,FSTOR,FPI,IFP,FMOVE,PLYEVL,FMOVE
+	extrn	FR0,FR1,ILN10,?DIGRT,?FSCR,FPone,?FLAG
+
+	cseg
+
+EXP:	ld	hl,ILN10	; calculate 10^(1/ln(10)*x) == e^x
+	call	FLD1R		; FR1 = 1/ln(10)
+	call	FMUL
+	ret	c		; signal error
+
+	public	EXP10
+
+EXP10:	xor	a
+	ld	(?DIGRT),a
+	ld	a,(FR0)		; get exponent and sign
+	ld	(?FLAG),a	; remember sign in ?FLAG
+	and	7Fh		; clear sign bit
+	ld	(FR0),a		; store exponent back
+	sub	40h		; subtract bias
+	jp	m,exp1		; jump if number < 1.0
+	cp	4		; number >= 1E8? (cp 2 would be enough)
+	scf
+	ret	p		; return error if yes
+	ld	hl,?FSCR
+	call	FSTOR		; ?FSCR <- FR0 (save x)
+	call	FPI		; convert FR0 to integer
+	ld	a,(FR0)
+	ld	(?DIGRT),a
+	ld	a,(FR0+1)
+	or	a		; number > 256?
+	scf
+	ret	nz		; error if yes - overflow
+	call	IFP		; convert it back to float
+	call	FMOVE		; FR1 = integer part
+	ld	hl,?FSCR
+	call	FLD0R		; FR0 <- ?FSCR (restore x)
+	call	FSUB		; FR0 = x - int(x) = frac(x)
+
+exp1:	ld	a,10		; number of coefficients
+	ld	hl,EXP10C	; point to coefficients
+	call	PLYEVL		; evaluate polynom
+	call	FMOVE		; FR1 <- FR0
+	call	FMUL
+	ld	a,(?DIGRT)	; get int(x)
+	or	a
+	jr	z,exp4		; jump if x was < 1.0
+	rra			; note CY clear from above
+	ld	(FR1),a
+	ld	a,1
+	jr	nc,exp2
+	ld	a,10h
+exp2:	ld	(FR1+1),a
+	ld	hl,FR1+6	; FR1+6 = FR2
+	ld	b,5
+	xor	a
+exp3:	ld	(hl),a		; clear down to FR1+2
+	dec	hl
+	djnz	exp3
+	ld	a,(FR1)
+	add	a,40h		; add exponent bias
+	ret	c		; error if overflow
+	scf
+	ret	m		; error if overflows into sign
+	ld	(FR1),a
+	call	FMUL
+exp4:	ld	a,(?FLAG)	; get original sign of x
+	or	a
+	ret	p		; return if positive
+	call	FMOVE		; else move result to FR1
+	ld	hl,FPone
+	call	FLD0R		;  FR0 <- 1.0
+	jp	FDIV		;   and return the inverse of the result
+
+	; EXP10 coefficients
+
+EXP10C:	db	03Dh,017h,094h,019h,000h,000h	;  0.00001794190000
+	db	03Dh,057h,033h,005h,000h,000h	;  0.00005733050000
+	db	03Eh,005h,054h,076h,062h,000h	;  0.000554766200
+	db	03Eh,032h,019h,062h,027h,000h	;  0.003219622700
+	db	03Fh,001h,068h,060h,030h,036h	;  0.0168603036
+	db	03Fh,007h,032h,003h,027h,041h	;  0.0732032741
+	db	03Fh,025h,043h,034h,056h,075h	;  0.2543345675
+	db	03Fh,066h,027h,037h,030h,050h	;  0.6627373050
+	db	040h,001h,015h,012h,092h,055h	;  1.15129255
+	db	03Fh,099h,099h,099h,099h,099h	;  0.9999999999
+
+	end

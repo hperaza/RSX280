@@ -1,0 +1,103 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Read line from console.
+;  Assumes console is assigned to LUN 5.
+
+	.Z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	QIO.INC
+
+	public	GETLN,GETLNL
+
+	extrn	TTFLSH,QIOBLK,QIOSB,TTLUN
+
+	cseg
+
+; Read a line from console into HL buffer, max length = E, echo-suppress
+; flag in D (<>0 = supress echo), BC = optional prompt.
+; Returns actual length in BC.
+; GETLNL is the same, but uses a user-supplied LUN in A.
+
+GETLN:	call	TTFLSH		; make sure any pending output is displayed
+	ld	a,(TTLUN)
+GETLNL:	push	ix
+	push	hl
+	push	de
+	ld	ix,QIOBLK
+	ld	(ix+Q.LUN),a	; set LUN
+	ld	(ix+Q.FUNC),IO.RPR ; function code
+	ld	a,d
+	add	a,0FFh
+	sbc	a,a		; A = 0FFh if D was <> 0, else A = 0
+	and	TF.RNE
+	ld	(ix+Q.SUBF),a	; subfunction
+	ld	(ix+Q.EFN),3	; flag number
+	ld	(ix+Q.WAIT),1	; wait for completion
+	ld	(ix+Q.BUF),l	; buffer address
+	ld	(ix+Q.BUF+1),h
+	dec	e		; -trailing zero
+	ld	(ix+Q.LEN),e	; bytes to read
+	ld	(ix+Q.LEN+1),0
+	ld	(ix+Q.P3),c	; optional prompt
+	ld	(ix+Q.P3+1),b
+	xor	a
+	ld	(ix+Q.AST),a	; no AST
+	ld	(ix+Q.AST+1),a
+	ld	hl,QIOSB
+	ld	(ix+Q.IOSB),l	; set result address
+	ld	(ix+Q.IOSB+1),h
+	push	ix
+	pop	hl
+	SC	.QIO		; .QIOW
+	jr	c,gc1		; if queuing failed
+	ld	bc,(QIOSB+2)	; fetch byte count
+	ld	a,(QIOSB)	; fetch return code
+	pop	de
+	pop	hl
+	push	hl
+	ld	a,b
+	or	c
+	jr	z,gc2
+	add	hl,bc
+	dec	hl
+	ld	a,(hl)
+	inc	hl
+	cp	1Ah
+	jr	nz,gc2
+	ld	a,E.EOF
+	scf
+	jr	gc3
+gc2:	xor	a
+gc3:	ld	(hl),0		; add a trailing zero
+	pop	hl
+	pop	ix
+	ret
+
+gc1:	ld	bc,0
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+	end

@@ -1,0 +1,88 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSFCP, the standard filesystem task of       ;
+;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Disk block I/O routines.
+
+	.Z280
+
+	include	SYSFCP.INC
+	include	SYSFN.INC
+	include	QIO.INC
+	include	TCB.INC
+	include	SYSTEM.INC
+
+	public	RDBLK		; read disk block
+	public	WRBLK		; write disk block
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Read block (number in B'HL') from specified device (UCB address in DE)
+; to memory buffer (address in HL).
+
+RDBLK:	ld	a,IO.RLB	; function code
+	jr	qio0
+
+; Write block (number in B'HL') to specified device (UCB address in DE)
+; from memory buffer (address in HL).
+
+WRBLK:	ld	a,IO.WLB	; function code
+qio0:	call	SETLUN
+	ld	(QIOBLK+Q.FUNC),a ; set function code
+	push	hl
+	ld	(QIOBLK+Q.BUF),hl ; buffer address
+	exx
+	ld	(QIOBLK+Q.BLK),hl ; block number
+	ld	l,b
+	ld	h,0
+	ld	(QIOBLK+Q.BLK+2),hl
+	exx
+	ld	hl,QIOBLK
+	SC	.QIO		; .QIOW
+	pop	hl
+	ret	c		; if queueing failed
+	ld	a,(QIOSB)	; fetch return code (lo-byte)
+	or	a
+	ret	z
+	scf
+	ret
+
+SETLUN:	push	hl
+	push	bc
+	ldw	hl,($CTCB)
+	ldw	hl,(hl+T.CTX)	; get task context block address
+	lda	hl,(hl+TX.LUT)	; point to LUN table
+	ld	bc,4*(QIOLUN-1)
+	add	hl,bc		; index into table
+	ldw	(hl),de		; set LUN
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+QIOBLK:	QIOW$	IO.RLB,QIOLUN,QIOEFN,QIOSB,,<,512,,0,>
+QIOSB:	ds	4
+
+	end

@@ -1,0 +1,36 @@
+	.Z80
+
+	public	IFP
+
+	extrn	ZFR0,FNORM
+	extrn	FR0
+
+; Integer -> Floating Point conversion
+;
+; Convert 2-byte binary unsigned integer (0 to 65535) in FR0
+; to floating point number in FR0
+
+	cseg
+
+IFP:	ld	hl,(FR0)
+	ex	de,hl		; get integer into DE
+	call	ZFR0		; clear FR0
+	ld	c,16		; for each bit in integer
+ifp1:	ex	de,hl
+	add	hl,hl		; shift integer, get hi-bit into CY
+	ex	de,hl
+	ld	hl,FR0+3	; will produce 5 max decimal digits
+	ld	b,3		;  (3 mantissa bytes)
+ifp2:	ld	a,(hl)
+	adc	a,(hl)		; add the hi-bit to the mantissa
+	daa			;  with decimal correction
+	ld	(hl),a
+	dec	hl
+	djnz	ifp2
+	dec	c		; decrement count of integer bits
+	jr	nz,ifp1		; loop until done
+	ld	a,42h		; bias+2, means 1E4
+	ld	(FR0),a		; store initial exponent
+	jp	FNORM		; normalize number and return
+
+	end

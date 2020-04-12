@@ -1,0 +1,36 @@
+	.Z80
+
+	public	ISINT
+
+	extrn	?DIGRT
+
+; Check whether the number in (HL) has a fractionary part.
+; Returns with CY clear if number is integer.
+; Returns with CY set if number < 1.0 or has fractionary part.
+
+	cseg
+
+ISINT:	ld	a,(hl)		; get exponent
+	and	7Fh		; kill sign bit
+	sub	40h		; subtract bias
+	ret	c		; return CY if number < 1.0
+	ld	(?DIGRT),a
+	inc	a		; obtain length of integer part
+	cp	6
+	ret	nc		; return no CY if past end of mantissa
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; HL now points to the frac part
+	ld	a,6
+	sub	c
+	ld	c,a		; number of frac bytes in C
+floop:	inc	hl		; inc first, since we begin @ exp pos
+	dec	c
+	ret	z		; return no CY when end of number reached
+	ld	a,(hl)
+	or	a
+	jr	z,floop
+	scf
+	ret			; return CY on non-zero frac value
+
+	end

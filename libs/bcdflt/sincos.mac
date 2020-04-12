@@ -1,0 +1,101 @@
+	.Z80
+
+	public	SIN,COS
+
+	extrn	FLD0R,FLD1R,FMUL,FDIV,FSUB,FMOVE,FSTOR,PLYEVL,FNEG
+	extrn	FR0,FR1,?FSCR,FPone,?FLAG,?DIGRT,DEGRAD
+
+	cseg
+
+SIN:	ld	a,(FR0)		; check sign of x
+	or	a
+	ld	a,4
+	jp	p,cos1
+	ld	a,2
+	jp	cos1
+
+	public	COS
+
+COS:	ld	a,1
+cos1:	ld	(?FLAG),a	; 1 for cos(x), 2 for -sin(x), 4 for sin(x)
+	ld	a,(FR0)
+	and	7Fh		; clear sign bit
+	ld	(FR0),a
+	ld	hl,PIDIV2
+	ld	a,(DEGRAD)
+	ld	e,a
+	ld	d,0
+	add	hl,de		; point to either PI/2 or 90
+	call	FLD1R
+	call	FDIV		; compute x/(PI/2) or x/90
+	ret	c
+	ld	a,(FR0)
+	and	7Fh		; clear sign bit
+	sub	40h		; subtract exponent bias
+	jp	m,cos4		; jump if number < 1.0
+	cp	4
+	scf
+	ret	p		; error if number >= 1.0E8
+	ld	e,a
+	ld	d,0
+	ld	hl,FR0+1
+	add	hl,de
+	ld	a,(hl)
+	ld	(?DIGRT),a
+	and	10h
+	jr	z,cos2
+	ld	a,2
+cos2:	ld	hl,?DIGRT
+	add	a,(hl)
+	and	3
+	ld	hl,?FLAG
+	add	a,(hl)
+	ld	(hl),a
+	ld	a,e
+	ld	(?DIGRT),a
+	call	FMOVE
+	ld	a,(?DIGRT)
+	ld	e,a
+	ld	d,0
+	ld	hl,FR1+2
+	add	hl,de
+cos3:	ld	(hl),0
+	inc	hl
+	inc	e
+	ld	a,e
+	cp	3
+	jr	c,cos3
+	call	FSUB
+cos4:	ld	hl,?FLAG
+	srl	(hl)
+	jr	nc,cos5
+	call	FMOVE
+	ld	hl,FPone	; 1.0
+	call	FLD0R
+	call	FSUB
+cos5:	ld	hl,?FSCR
+	call	FSTOR
+	call	FMOVE
+	call	FMUL
+	ret	c
+	ld	a,6		; number of coefficients
+	ld	hl,COSC		; point to coefficients
+	call	PLYEVL		; evaluate polynom
+	ld	hl,?FSCR
+	call	FLD1R
+	call	FMUL
+	ld	hl,?FLAG
+	srl	(hl)
+	ret	nc
+	jp	FNEG		; negate and return
+
+COSC:	db	0BDh,003h,055h,014h,099h,039h	; -0.00000355149939
+	db	03Eh,001h,060h,044h,027h,052h	;  0.0160442752
+	db	0BEh,046h,081h,075h,043h,055h	; -0.004681754355
+	db	03Fh,007h,096h,092h,062h,039h	;  0.0796926239
+	db	0BFh,064h,059h,064h,008h,067h	; -0.6459640867
+
+PIDIV2:	db	040h,001h,057h,007h,096h,032h	;  1.57079632 [pi/2]
+	db	040h,090h,000h,000h,000h,000h	; 90.00000000
+
+	end

@@ -1,0 +1,298 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('KMEM')
+	TITLE	'RSX180 Pool Memory Management'
+
+;-----------------------------------------------------------------------;
+;                                                                       ;
+;	Kernel (pool) memory allocation routines.                       ;
+;                                                                       ;
+;-----------------------------------------------------------------------;
+
+	.z80
+
+	include	ERRORS.INC
+
+	public	$ALLOC		; alloc kernel memory block
+	public	$FREE		; free kernel memory block
+	public	KSIZE		; compute amount of free kernel memory
+
+	extrn	$POOL,$POLSZ
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Free blocks are kept in a single-linked list with a two-word header: the
+; first one is the link field, the second is the block size. The head of
+; the list is kept in the variable $POOL.
+
+; The routine below assumes $POOL and $POLSZ have been setup by VMR with
+; 4-byte granularity.
+
+;-----------------------------------------------------------------------
+
+; Allocate the specified number of bytes using a first-fit algorithm.
+
+; Input:
+;   BC = size in bytes of block to allocate
+; Returns:
+;   HL = start address of the allocated block
+;   CY set on error (not enough memory)
+
+; Notes:
+; - Call only when SYSLVL < 1 (system state), or with interrupts disabled!
+; - Do not call from an interrupt routine (schedule a fork process instead)
+
+; TODO:
+; - use a best-fit algorithm?
+
+$ALLOC:	inc	bc
+	inc	bc
+	inc	bc
+	ld	a,c
+	and	0FCh		; ensure 4-byte granularity
+	ld	c,a
+	or	b
+	ld	a,E.BADOP
+	scf
+	ret	z		; nothing to allocate
+	ld	ix,$POOL	; IX = list head
+ka1:	ld	l,(ix)		; get link field into HL
+	ld	h,(ix+1)
+	ld	a,h
+	or	l		; no (more) free blocks?
+	ld	a,E.NOMEM
+	scf
+	ret	z		; then return with error
+	push	hl		; push address of current block
+	push	hl		;  twice
+	ld	e,(hl)		; get link to next block into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	de		; push address of next block
+	ld	e,(hl)		; get free block size into DE
+	inc	hl
+	ld	d,(hl)
+	call	cpdebc		; compare with requested size
+	jr	nc,ka2		; jump if it fits
+	pop	de		;  discard
+	pop	hl		;  discard
+	pop	ix
+	jr	ka1		; else search for another block
+
+ka2:	; Here with:
+	;   IX = addr of prev block
+	;   DE = free block size
+	;   BC = requested size
+	;   (SP) = addr of next block
+	;   (SP+2) = addr of current (just allocated) block
+	;   (SP+4) = addr of current (just allocated) block
+
+	jr	z,ka3
+
+	; if non zero, create a list entry just after this block
+	;  and update the prev pointer to this.
+
+	pop	hl
+	ex	(sp),hl		; get addr of current block into HL
+	add	hl,bc		; point past end of allocated region
+	ld	(ix),l		; update prev ptr to the start of this one
+	ld	(ix+1),h
+	ex	de,hl		; get free block size into HL
+	or	a
+	sbc	hl,bc		; subtract requested size
+	ld	c,l		;  and we have the new free segment size
+	ld	b,h
+	ex	de,hl		; restore old HL
+	pop	de		; pop addr of next block
+	ld	(hl),e		; set next pointer
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),c		; set size of new segment
+	inc	hl
+	ld	(hl),b
+	pop	hl		; pop current block address and return it
+	xor	a
+	ret
+
+ka3:	; if zero (exact fit) simply update prev pointer
+
+	pop	de		; pop address of next block
+	ld	(ix),e		; update prev ptr to the start of next
+	ld	(ix+1),d
+	pop	hl		; discard
+	pop	hl		; pop current block address and return it
+	xor	a
+	ret
+
+; Compare DE and BC. Returns CY set if BC > DE.
+
+cpdebc:	ld	a,d
+	cp	b
+	ret	nz
+	ld	a,e
+	cp	c
+	ret
+
+;-----------------------------------------------------------------------
+
+; Free memory block.
+
+; Input:
+;   HL = address of block to free
+;   DE = size of the block in bytes
+
+; Notes:
+; - Call only when SYSLVL < 1 (system state), or with interrupts disabled!
+; - Do not call from an interrupt routine (schedule a fork process instead)
+
+; TODO: validate address to ensure is in range?
+
+$FREE:	push	hl
+	ld	hl,3
+	add	hl,de
+	ld	d,h
+	ld	a,l
+	and	0FCh		; ensure 4-byte granularity
+	ld	e,a
+	or	d
+	pop	hl
+	ret	z
+
+	ex	de,hl
+	push	hl
+	ld	h,0
+
+	ld	ix,$POOL
+kf1:	ld	c,(ix)
+	ld	b,(ix+1)	; fetch next field
+	ld	a,b
+	or	c
+	jr	z,kf2		; if end of list reached, simply add the block
+	call	cpdebc		; compare next addr with block addr
+	jr	c,kf2		; jump if next addr > block addr, insert here
+	push	bc
+	pop	ix
+	ld	h,1
+	jr	kf1		; else keep searching
+
+kf2:	ex	(sp),hl
+	ex	de,hl
+
+	; here with IX = prev, HL = this, DE = size, BC = next
+
+	ld	(ix),l		; set prev ptr
+	ld	(ix+1),h
+	ld	(hl),c		; set next ptr
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	(hl),e		; set size field
+	inc	hl
+	ld	(hl),d
+	dec	hl
+	dec	hl
+	dec	hl
+
+	; attempt to merge with previous
+
+	pop	af
+	push	hl		; this
+	or	a
+	jr	z,kf3
+
+	push	bc		; next
+	push	de		; size
+	push	hl		; this
+
+	ld	e,(ix+2)	; get size of prev block
+	ld	d,(ix+3)
+	push	ix
+	pop	hl
+	add	hl,de		; prev + size
+	ex	de,hl		; HL = size, DE = prev + prevsize
+	pop	bc		; this
+	call	cpdebc
+	pop	de		; size
+	pop	bc		; next
+	jr	nz,kf3
+
+	add	hl,de		; size + prevsize
+	ld	(ix),c		; restore link to next
+	ld	(ix+1),b
+	ld	(ix+2),l	; set new size
+	ld	(ix+3),h
+	ex	(sp),ix		; discard old this, push new this (prev)
+	ex	de,hl		; DE = size
+
+kf3:	; attempt to merge with next
+
+	pop	hl		; new this
+	push	hl
+	add	hl,de		; this + size
+	ex	de,hl
+	call	cpdebc		; this + size == next?
+	pop	ix
+	jr	nz,kf4		; return if not
+	ld	a,(bc)
+	ld	(ix),a		; set next ptr
+	inc	bc
+	ld	a,(bc)
+	ld	(ix+1),a
+	inc	bc
+	ld	a,(bc)
+	add	a,l
+	ld	(ix+2),a	; set new size
+	inc	bc
+	ld	a,(bc)
+	adc	a,h
+	ld	(ix+3),a
+kf4:	xor	a		; job done (full merge)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Calculate the amount of free kernel memory. Return the value in BC.
+
+KSIZE:	ld	hl,($POOL)
+	ld	bc,0
+ks1:	ld	a,h
+	or	l		; no (more) free blocks?
+	ret	z		; then return
+	ld	e,(hl)		; get link to next block into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,(hl)		; get free block size into BC
+	add	a,c
+	ld	c,a
+	inc	hl
+	ld	a,(hl)
+	adc	a,b		; add to the acummulated size in BC
+	ld	b,a
+	ex	de,hl
+	jr	ks1		; process next block
+
+	end

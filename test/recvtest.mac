@@ -1,0 +1,70 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	PERROR,PUTSTR,CRLF,UCASE,TTFLSH
+
+;-----------------------------------------------------------------------
+
+; Program to test the send-receive communication mechanism.
+
+	cseg
+
+RECV::	ld	sp,stack
+	ld	hl,msg1
+	call	PUTSTR
+	call	TTFLSH
+
+loop:	ld	hl,msgbuf
+	ld	de,127
+	SC	.RECV		; wait for message
+	jr	c,wait
+
+	ld	c,(hl)		; get message length
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	push	hl
+	add	hl,bc		; point to end of message
+	ld	(hl),0		; add trailing zero
+	pop	hl
+	push	hl
+	call	PUTSTR		; output message
+	call	CRLF
+	call	TTFLSH
+	pop	de
+	ld	hl,extkw
+	call	strcmp		; "BYE" exits this task
+	jr	z,exit
+
+wait:	SC	.WTDAT
+	jr	loop
+
+exit:	ld	hl,EX.SUC
+	SC	.EXIT
+
+msg1:	db	CR,LF,'Waiting for message...',CR,LF,0
+extkw:	db	'BYE',0
+
+strcmp:	ld	a,(de)		; get char from string
+	call	UCASE		; convert to uppercase
+	cp	(hl)		; matches keyword?
+	ret	nz		; return NZ if not
+	or	a		; else check for end of string
+	ret	z		; return Z if yes (strings match)
+	inc	hl		; else advance pointers
+	inc	de
+	jr	strcmp		; and loop
+
+	dseg
+
+msgbuf:	ds	128+2
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	RECV

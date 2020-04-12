@@ -1,0 +1,126 @@
+	.Z80
+
+	public	FPOW
+
+	extrn	FLD0R,ISINT,FPUSH,FPOP,LOG10,EXP10,FMUL,FTRUNC
+	extrn	FR0,FR1,?DIGRT,FPone
+
+; Floating point raise to a power
+
+; FR0 = FR0 ^ FR1
+
+	cseg
+
+FPOW:	ld	a,(FR1)		; check Y
+	or	a		;  zero?
+	jp	z,FLD01		;   if yes, load 1 into FR0 and return
+	ld	d,a		; save sign of Y
+	ld	a,(FR0)		; check X
+	or	a		;  zero?
+	jr	nz,pow1		;   jump if not
+	ld	a,d
+	or	a
+	scf
+	ret	m		; return error if Y was negative
+	or	a		; otherwise return with no error
+	ret			;  (X is already zero)
+
+pow1:	ld	e,a		; save FR0
+	ld	hl,FR0
+	call	ISINT		; is X integer? (returns CY = 0 if yes)
+	ld	a,0
+	rra
+	rra			; save CY
+	ld	d,a		;  into MSB-1 of D
+	ld	hl,FR1
+	call	ISINT		; is Y integer?
+	rl	d		; save CY into LSB of D (LSB = !Y int, MSB = !X int)
+	ld	a,e
+	or	a		; X positive?
+	jp	p,pow3
+	and	7Fh
+	ld	(FR0),a		; make X positive
+	ld	a,d		; check Y
+	rra			;  was integer?
+	ret	c		;   return error if not
+	ld	a,(FR1)		; check Y
+	or	a		;  is positive?
+	jp	p,pow2		;   jump if yes
+	set	0,d		; set LSB of D (Y fractionary flag)
+pow2:	ld	a,(?DIGRT)
+	cp	5
+	jr	nc,pow5
+	ld	c,a
+	ld	b,0
+	ld	hl,FR1+1
+	add	hl,bc
+	ld	a,(hl)		; get last integer digit of X (FR1+1 + ?DIGRT)
+	rra			;  even number?
+	jr	nc,pow4		;   jump if yes, result is positive
+	ld	e,80h		;  odd number, result is negative
+	jr	pow5
+
+pow3:	ld	a,(FR1)		; check Y
+	or	a		;  is positive?
+	jp	p,pow4		;   jump if yes
+	set	0,d		; set LSB of D (Y fractionary flag)
+pow4:	ld	e,0
+pow5:	push	de		; save sign bit and integer flags
+	ld	hl,FR1
+	call	FPUSH
+	call	LOG10		; compute log10(x)
+	ld	hl,FR1
+	call	FPOP
+	call	FMUL		; compute y * log10(x)
+	jp	c,err1
+	call	EXP10		; compute 10^(y * log10(x)) = x^y
+	jp	c,err1
+	pop	de		; restore sign bit and integer flags
+	ld	hl,FR0
+	ld	a,(hl)
+	or	e		; set sign of result
+	ld	(hl),a
+	ld	a,d		; check integer flags
+	or	a
+	ret	m		; return if X not integer
+	rra
+	ccf
+	ret	nc		; return if Y not integer
+	ld	hl,FR0
+	call	ISINT		; is result integer?
+	ret	nc		; if yes, return with no error
+	ld	a,(FR0)		; get exponent of result
+	and	7Fh		; kill sign bit
+	sub	3Fh		; subtract bias
+	cp	6
+	ret	nc		; return if number >= 1E+10
+	push	af		; otherwise round to next integer
+	ld	c,a
+	ld	b,0
+	ld	hl,FR0
+	add	hl,bc
+	scf
+pow6:	ld	a,(hl)
+	adc	a,0
+	daa
+	ld	(hl),a
+	dec	hl
+	dec	c
+	jr	nz,pow6
+	jr	nc,pow7
+	inc	(hl)		; inc FR0
+	inc	hl
+	inc	(hl)		; inc FR0+1
+	dec	hl
+pow7:	pop	af
+	jp	FTRUNC		; clear the fractionary part and return
+
+err1:	pop	de
+	ret			; CY is set
+
+; Load 1.0 into FR0
+
+FLD01:	ld	hl,FPone
+	jp	FLD0R		; returns with CY clear
+
+	end

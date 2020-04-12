@@ -1,0 +1,84 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Help screen
+
+	.Z280
+
+	include	RMD.INC
+
+	public	HELP
+
+	extrn	VPUTS,VXY
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+HELP:	dw	dproc
+	dw	setup
+	dw	hlptxt
+
+dproc:	or	a
+	ret	nz
+	ld	hl,hlpmsg
+hloop:	ld	d,(hl)		; X
+	inc	hl
+	ld	e,(hl)		; Y
+	inc	hl
+	inc	de
+	ld	a,d
+	or	e
+	ret	z
+	dec	de
+	ex	de,hl
+	call	VXY
+	ex	de,hl
+	call	VPUTS
+	inc	hl
+	jr	hloop
+
+hlpmsg:	db	0,0,'Use the following keys to switch display pages:',0
+	db	4,2,'A - Active Task Display',0
+	db	4,3,'H - Help Display (this page)',0
+	db	4,4,'M - Memory Display',0
+	db	4,5,'T - Task Header Display',0
+	db	4,20,'<ESC> lets you enter a setup command if any setup '
+	db	     'commands',0
+	db	10,21,'are available for that display page',0
+	db	4,22,'<SPACE> replots the current display page',0
+	db	4,23,'<CTRL-C> or <CTRL-Z> exits RMD',0
+	dw	0FFFFh
+
+;-----------------------------------------------------------------------
+
+; Process setup command @DE
+
+setup:	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Help text to add to the setup command page, if any
+
+hlptxt:	db	0
+
+	end

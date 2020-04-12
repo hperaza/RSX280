@@ -1,0 +1,676 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command ACS (Allocate Checkpoint Space) for RSX180.   ;
+;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	"1.02"
+
+	cseg
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	LCB.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	extrn	PDN,PERROR,CRLF,UCASE,PUTCH,PUTSTR,TTFLSH,GCCL,CPHLDE
+
+KCALL	macro	addr
+	call	$SWSTK
+	dw	addr
+	endm
+
+; ACS ddn:/BLKS=nn
+
+;-----------------------------------------------------------------------
+
+START:	ld	sp,stack
+	call	GCCL		; get MCR command line
+	ex	de,hl
+	call	skpnam
+	ld	(lnptr),de
+	call	ACS
+	ld	l,EX.SUC
+	jr	nc,exit
+	ld	l,EX.ERR
+exit:	ld	h,0
+	SC	.EXIT
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'ACS -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'ACS -- ',0
+snerr:	db	'Syntax error',0
+
+;-----------------------------------------------------------------------
+
+; Copy string (HL) <- (DE)
+
+cpstr:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	cpstr
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+getcmd:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	getns
+	call	getnam
+	ld	(lnptr),de
+	ret
+
+; Get task name (9 chars) into cmdnam, padding with blanks if neccessary.
+
+getn9:	call	getcmd
+	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+getnam:	call	getfs
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	getnam
+gn2:	call	getfs
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+isblnk:	call	iseol
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+getns:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getns
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	iseol
+	ret	z
+	call	isblnk
+	jr	z,getns		; return via getns
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+getfs:	ld	a,(de)
+	call	iseol
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Read a decimal number from input line into HL
+; Returns CY if the number contains invalid chars or on overflow.
+
+GETDEC:	ld	de,(lnptr)
+	call	getns
+	ld	hl,0
+newdig:	call	getfs
+	jr	z,endnum	; note no CY
+	sub	'0'
+	jr	c,endnum	; note CY
+	cp	10
+	ccf
+	jr	c,endnum	; note CY
+	call	adddig		; note CY on overflow
+	inc	de
+	jr	nc,newdig
+endnum:	ld	(lnptr),de
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+fndcmd:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse command line and execute the specified action.
+
+ACS:	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	jp	c,CMDERR	; error if not present
+	ld	(fdb+F.DEV),de	; store device name
+	ld	a,c
+	ld	(fdb+F.UNIT),a
+	ex	de,hl		; check remainder of command line
+	call	getns		; skip any spaces
+	cp	'/'		; switch char?
+	jp	nz,CMDERR	; error if not, the option is mandatory
+	inc	de		; skip switch char
+	ld	(lnptr),de	; save command pointer
+	call	getcmd		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; not allowed
+	ld	hl,optbl
+	call	fndcmd		; else search for switch in option table
+	dec	a		; we have only one option
+	jp	nz,CMDERR	; error if not found
+	ld	hl,(lnptr)
+	ld	a,(hl)
+	cp	'='		; '=' must follow
+	jp	nz,CMDERR
+	inc	hl
+	ld	(lnptr),hl
+	call	GETDEC
+	jp	c,CMDERR
+	ld	(nblks),hl	; store requested size in blocks
+	ld	de,(lnptr)
+	call	getns
+	call	iseol
+	jp	nz,CMDERR
+
+	call	CHKPRV
+	jp	c,SYSERR
+
+	; TODO: check for supported feature
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+
+	ld	hl,(nblks)
+	ld	a,h		; check number of blocks
+	or	l
+	jp	z,delcf		; zero means delete checkpoint file
+
+	; create the checkpoint file
+
+	call	FNDPCB		; checkpoint file already active on device?
+	jp	c,err
+	ld	a,h
+	or	l
+	jr	nz,acs1		; branch if yes
+
+	; TODO: fix potential race condition between here, by the time
+	; the file is created, another ACS instance could have allocated
+	; a new PCB for the same device.
+	; - one possibility is to have FNDPCB create the PCB if it does
+	;   not exist, and delete the PCB if the file could not be created.
+	;   but then again another ACS instance could delete the new PCB.
+	;   set a flag on new PCB to tell it's being created?
+
+	call	MAKECF		; setup checkpoint file
+	jp	c,err
+
+	ld	(lbn),de
+	ld	(lbn+2),hl
+
+	ld	bc,CPCBSZ
+	KCALL	$ALLOC		; allocate checkpoint PCB
+	jp	c,err
+
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+
+	push	hl
+	ex	de,hl		; keep PCB address in DE
+	pop	ix
+	xor	a
+	ld	(ix+P.LNK),a	; clear next ptr
+	ld	(ix+P.LNK+1),a
+	ld	(ix+P.SUB),a	; clear subpartition list
+	ld	(ix+P.SUB+1),a
+	ld	(ix+P.MAIN),e	; set pointer to main partition to itself
+	ld	(ix+P.MAIN+1),d
+	ld	hl,(ucbadr)
+	ld	(ix+P.UCB),l	; set UCB address
+	ld	(ix+P.UCB+1),h
+	ld	hl,lbn
+	ld	a,(hl)
+	ld	(ix+P.LBN),a	; set starting LBN
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+P.LBN+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+P.LBN+2),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+P.LBN+3),a
+	ld	hl,(nblks)
+	ld	(ix+P.SIZE),l	; set size in blocks
+	ld	(ix+P.SIZE+1),h
+	xor	a
+	ld	(ix+P.REL),a	; clear relative block number
+	ld	(ix+P.REL+1),a
+
+	; append checkpoint PCB to system list
+
+	ld	ix,(prev)	; prev ptr is set to last PCB on the list
+	ld	(ix+P.LNK),e
+	ld	(ix+P.LNK+1),d
+
+	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
+	jr	ok		; success
+
+acs1:	push	hl
+	pop	ix
+	xor	a
+	ld	(ix+P.REL),a	; reactivate the checkpoint file, in case
+	ld	(ix+P.REL+1),a	;  it was discontinued
+
+	ld	hl,einuse	; 'Checkpoint file already in use'
+	call	ERROR
+	jr	ok
+
+delcf:	; delete the checkpoint file
+
+	call	FNDPCB		; checkpoint file already active on device?
+	jr	c,err
+	ld	a,h
+	or	l
+	jr	z,acs2		; branch if not
+
+	; TODO: fix potential race condition here, by the time $FREE
+	; is called, another instance of ACS could have deleted the PCB.
+	; - do the search and delete in one atomic operation.
+
+	push	hl
+	pop	ix
+	ld	a,-1
+	ld	(ix+P.REL),a	; mark the PCB as "discontinued"
+	ld	(ix+P.REL+1),a
+
+	ld	a,(ix+P.SUB)
+	or	(ix+P.SUB+1)	; checkpoint file in use?
+	jr	nz,ok		; return if yes, TKTN will delete it
+
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+
+	ld	hl,(prev)
+	ld	a,(ix+P.LNK)
+	ld	(hl),a		; unlink the PCB
+	inc	hl
+	ld	a,(ix+P.LNK+1)
+	ld	(hl),a
+
+	push	ix
+	pop	hl
+	ld	de,CPCBSZ
+	KCALL	$FREE		; delete the PCB
+
+	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
+
+	ld	hl,einact
+	call	ERROR		; 'Checkpoint file now inactive'
+	jr	ok
+
+acs2:	ld	hl,enused
+	call	ERROR		; 'Checkpoint file not in use'
+
+	; to fully truncate: PIP [MASTER]CORIMG.SYS/TR
+
+ok:	xor	a
+err:	push	af
+	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	pop	af
+	jp	c,SYSERR
+	ret
+
+	; when the PCB is marked 'discontinued' the kernel will call TKTN
+	; when no more tasks are checkpointed to delete the file (when
+	; discontinued, the kernel will try to bring tasks back to memory
+	; even if they are stopped/suspended)
+
+optbl:	db	'BLKS',0
+
+; Error messages
+
+einuse:	db	'Checkpoint file already in use on device',0
+enused:	db	'Checkpoint file not in use',0
+einact:	db	'Checkpoint file now inactive',0
+eunsup:	db	'Checkpointing not supported',0
+
+;-----------------------------------------------------------------------
+
+; Check if a checkpoint file is already active on the specified device.
+; Assumes supervisor mode is on. Returns PCB address in HL, else zero.
+; CY set on error and error code in A. Sets 'prev' pointer for insert
+; and delete operations.
+
+FNDPCB:	xor	a		; disable task dispatching
+	ld	(SYSLVL),a	;  while we access system database
+
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB for device
+	jr	c,fp2		; error if not found
+	KCALL	$REDIR		; follow redirect pointers
+
+	ld	(ucbadr),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.DIR,(hl)	; directory device?
+	ld	a,E.BADOP
+	scf
+	jr	z,fp2		; error if not
+
+	ld	hl,$CPLST	; get head of checkpoint PCB list
+fp1:	ld	(prev),hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h		; end of list?
+	jr	z,fp2		; exit loop if yes
+
+	push	hl
+	ld	de,P.UCB
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(ucbadr)
+	call	CPHLDE		; same device?
+	pop	hl
+	jr	nz,fp1		; loop if not
+
+fp2:	push	af
+	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
+	pop	af
+	ret
+
+; Setup checkpoint file. If the file does not exist, it will be created.
+; Otherwise, the file size will be extended if the current allocated size
+; is smaller than the requested. Returns starting block number in HLDE.
+; CY set on error and error code in A.
+
+MAKECF:	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a
+	ld	b,1
+	SC	.ALUN		; assing LUN for file I/O operations
+	ret	c
+
+	ld	hl,qopen
+	SC	.QIO		; open the checkpoint file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	jr	z,mk1		; success
+	cp	E.FNF		; file not found?
+	scf
+	ret	nz		; exit with error if not
+
+	ld	hl,(nblks)
+	ld	(qcreat+Q.P2),hl
+	ld	hl,0
+	ld	(qcreat+Q.P2+2),hl
+	ld	hl,qcreat
+	SC	.QIO		; else try to create the file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+
+mk1:	ld	hl,qrdatt
+	SC	.QIO		; read file attributes
+	jp	c,mkerr
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,mkerr
+
+	ld	hl,(nblks)
+	ld	de,(finfo+F.NALOC)
+	call	CPHLDE		; requested size > allocated?
+	jr	nc,mk2		; branch if not
+
+	; TODO: verify that the file is contiguous,
+	; and change attribs if not (possible since
+	; the size has been truncated to 0 alloc, 0 used)
+
+	ld	hl,qtrunc
+	SC	.QIO		; truncate file to zero blocks
+	jp	c,mkerr
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,mkerr
+
+	ld	hl,(nblks)
+	ld	(qextnd+Q.BLK),hl
+	ld	hl,0
+	ld	(qextnd+Q.BLK+2),hl
+	ld	hl,qextnd
+	SC	.QIO		; extend file
+	jp	c,mkerr
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,mkerr
+
+	ld	hl,qrdatt	; read file attributes again
+	SC	.QIO		;  to get the starting block number
+	jp	c,mkerr
+	ld	a,(iosb)
+	or	a
+	scf
+	jp	nz,mkerr
+
+mk2:	ld	hl,qclose
+	SC	.QIO		; close the file
+	jp	c,mkerr
+	ld	de,(finfo+F.BMAP)
+	ld	a,(finfo+F.BMAP+2)
+	ld	l,a
+	ld	h,0
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+mkerr:	push	af
+	ld	hl,qclose
+	SC	.QIO		; close the file
+	pop	af
+	ret
+
+; Check user privileges
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN		; get user's login control block
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	bit	LS.PRV,(hl)	; privileged user?
+	ld	a,E.PRIV
+	scf
+	ret	z		; return error if not
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qcreat:	QIOW$	<<IO.CRE OR (SF.CTG SHL 8)>>,1,9,iosb,,<fdb,0,0>
+qopen:	QIOW$	<<IO.ACC OR (SF.ACR OR SF.SHR) SHL 8>>,1,9,iosb,,<fdb,0>
+qclose:	QIOW$	IO.DEA,1,9,iosb
+qtrunc:	QIOW$	<<IO.TRN OR (SF.TRU SHL 8)>>,1,9,iosb,,<,,0,0,0>
+qextnd:	QIOW$	IO.EXT,1,9,iosb,,<,,,,>
+qrdatt:	QIOW$	IO.RAT,1,9,iosb,,<finfo,FINFSZ>
+iosb:	ds	4
+
+lnptr:	ds	2
+cmdnam:	ds	9
+nblks:	ds	2
+ucbadr:	ds	2
+lcbbuf:	ds	LCBSZ
+lbn:	ds	4
+prev:	ds	2
+
+fdb:	dw	0
+	db	FN.DIR OR FN.NAME OR FN.EXT
+	db	'SY',0,'MASTER   ','CORIMG   ','SYS'
+	dw	0
+
+finfo:	ds	FINFSZ
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

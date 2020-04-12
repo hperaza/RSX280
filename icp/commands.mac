@@ -1,0 +1,2338 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Internal Commands.
+
+	.Z80
+
+	include	ICP.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+	include	DCB.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	QIO.INC
+	include	SYSTEM.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+EOF	equ	1Ah
+ESC	equ	1Bh
+
+cnd$eq	equ	1	; .IF relop types
+cnd$ne	equ	2
+cnd$lt	equ	3
+cnd$le	equ	4
+cnd$gt	equ	5
+cnd$ge	equ	6
+
+	cseg
+
+	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
+	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI
+
+	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU
+	extrn	ALLOC,SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY
+	extrn	INPBUF,LNPTR,EVAL,SEVAL,GPRMPT,RDCMD,PROCLN
+	extrn	INDSTP,INDEOF,CLRVAR,GSBTBL,GSBLVL,GETPOS,SETPOS
+	extrn	ISBLNK,ISDIG,ISALPN,PRCMD,VNAME,ADDHLA,STRLEN
+	extrn	DECSTR,PRMSG,EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT
+	extrn	FDB,LNBUF,SUBST,ERRMEM,ERRTYP,FNDEV
+
+	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF
+	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
+
+CMD	MACRO	name,addr
+	db	name,0
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+; Process internal command
+
+; "; comment"  is allowed only at the start of the statement, and is
+;              not displayed if the QUIET option is enabled. Else the
+;              comment is displayed, but the semicolon is suppressed
+;              if the DISPLAY option is disabled.
+; ".; comment" does not get displayed
+; "! comment"  can be after a command
+;
+; If the routine that processes the command returns with CY set (e.g.
+; because of an error condition), ICP will exit with error status.
+; It is up to the corresponding routine to display the appropriate
+; error message.
+
+INTCMD:	inc	hl		; skip dot
+	ld	a,(hl)
+	cp	';'		; '.;' comment?
+	ret	z		; return if yes - ignore it
+	ld	de,CMDNMT
+	call	FNDCMD		; find command in table
+	jp	c,chklbl	; if not found, check for '.label:'
+	ld	(LNPTR),de
+	ld	l,c
+	ld	h,b
+	jp	(hl)		; execute command
+
+chklbl:	ex	de,hl
+	ld	hl,varnam
+	ld	b,12
+	call	GETNAM		; get label name into varnam
+	ld	a,(de)
+	cp	':'		; label must end with a colon
+	jp	nz,CMDERR	; else is error
+	inc	de		; skip colon
+	ex	de,hl
+	jp	PRCMD		; execute statement after label, if present
+
+;-----------------------------------------------------------------------
+
+; .commands
+
+CMDNMT:	CMD	'ASK',		ask
+	CMD	'ASKN',		askn
+	CMD	'ASKS',		asks
+	CMD	'BEGIN',	begin
+	CMD	'CHAIN',	chain
+cmcls:	CMD	'CLOSE',	close
+cmdat:	CMD	'DATA',		data
+	IF	DEBUG
+	CMD	'DEBUG',	dbg
+	ENDIF
+	CMD	'DEC',		decx
+	CMD	'DELAY',	delay
+cmdis:	CMD	'DISABLE',	disabl
+	CMD	'ENABLE',	enabl
+	CMD	'END',		bend
+	CMD	'ERASE',	erase
+	CMD	'EXIT',		exit
+	CMD	'GOSUB',	gosub
+	CMD	'GOTO',		goto
+	CMD	'IF',		ifx
+	CMD	'IFT',		ift
+	CMD	'IFF',		iff
+	CMD	'IFDF',		ifdf
+	CMD	'IFNDF',	ifndf
+	CMD	'IFINS',	ifins
+	CMD	'IFNINS',	ifnins
+	CMD	'IFACT',	ifact
+	CMD	'IFNACT',	ifnact
+	CMD	'IFENABLED',	ifena
+	CMD	'IFDISABLED',	ifdisa
+	CMD	'INC',		incx
+	CMD	'ONERR',	onerr
+	CMD	'OPEN',		openw
+	CMD	'OPENA',	opena
+	CMD	'OPENR',	openr
+	CMD	'PARSE',	parse
+	CMD	'PAUSE',	pause
+	CMD	'READ',		read
+	CMD	'RETURN',	return
+	CMD	'SETT',		sett
+	CMD	'SETF',		setf
+	CMD	'SETN',		setn
+	CMD	'SETL',		setl
+	CMD	'SETS',		sets
+	CMD	'STOP',		stop
+	CMD	'TEST',		test
+	CMD	'TESTDEVICE',	tstdev
+	CMD	'TESTFILE',	tstfil
+	CMD	'TESTPARTITION',tstpar
+	CMD	'WAIT',		wait
+	CMD	'XQT',		exec
+	db	0
+
+	IF	DEBUG
+dbg:	call	SHVARS##
+	call	SHMEM##
+	call	SHIOCH##
+	xor	a
+	ret
+	ENDIF
+
+;-----------------------------------------------------------------------
+
+; .ASK varname
+; .ASK varname text
+; .ASK [default:timeout] varname
+; .ASK [:timeout] varname
+
+ask:	ld	a,V.LOG
+	call	askvar		; get variable, display prompt, get response
+	ld	a,b
+	or	c		; empty response?
+	jr	nz,ask1
+	ld	a,(askopb)
+	bit	1,a		; a default value was specified?
+	ld	hl,(askdf)
+	jr	nz,ask2		; jump if yes, use it
+ask1:	ld	de,askbuf	; ckeck response
+	call	GETNB		; skip any leading blanks
+	call	UCASE
+	ld	hl,-1
+	cp	'Y'		; true requires explicit 'Y'
+	jr	z,ask2
+	cp	'T'		; or 'T'
+	jr	z,ask2
+	inc	hl		; else result is false
+ask2:	ld	de,varnam
+	call	SETLV		; set variable accordingly
+	xor	a
+	ret
+
+; .ASKN varname
+; .ASKN varname text
+; .ASKN [low:high:default:timeout] varname text
+
+askn:	ld	a,V.NUM
+	call	askvar		; get variable, display prompt, get response
+	ld	a,b
+	or	c		; empty response?
+	jr	nz,askn1	; jump if not
+	ld	a,(askopb)
+	bit	1,a		; a default value was specified?
+	ld	hl,(askdf)
+	jr	nz,askn2	; jump if yes, use it
+askn1:	ld	de,askbuf
+	call	GETNB
+	call	ATOU		; TODO: signed option?
+	;;;jp	c,ovflw or error
+askn2:	ld	de,varnam
+	call	SETNV
+	xor	a
+	ret
+
+; .ASKS varname
+; .ASKS varname text
+; .ASKS [low:high:default:timeout] varname text
+
+asks:	ld	a,V.STR
+	call	askvar		; get variable, display prompt, get response
+	ld	a,b
+	or	c		; empty string?
+	jr	nz,asks1	; jump if not, use it
+	ld	a,(askopb)
+	bit	1,a		; a default string was specified?
+	jr	z,asks2		; jump if not
+	ld	hl,(askdf)	; else use it
+	ld	(DSPTR),hl	; make it the current string
+	ld	de,DSPTR
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	inc	hl
+	jr	asks3		; assign to var
+
+asks1:	call	asks4		; deallocate default string
+asks2:	ld	hl,askbuf
+	call	ALLOC		; allocate string for response
+asks3:	call	STRLEN
+	ld	a,c
+	ld	(SLEN),a	; set string length for <STRLEN> special var.
+	ld	de,varnam
+	call	SETSV		; assign string to variable
+	xor	a		; clear CY
+	ret
+
+asks4:	ld	a,(askopb)
+	bit	1,a		; default string was specified?
+	ret	z		; return if not
+	xor	a
+	ld	hl,(askdf)
+	dec	hl
+	ld	(hl),a		; else deallocate default string
+	dec	hl
+	ld	(hl),a	
+	ret
+
+askvar:	ld	(vartyp),a	; remember variable type
+	call	askopt		; get options
+	call	getvn2		; get variable name into 'varnam'
+	call	GETNB		; skip spaces
+	push	de
+	ld	de,askprm
+	call	askp0		; copy CLI prompt
+	ld	ix,MODE
+	bit	B0.DPY,(ix+0)	; display mode enabled?
+	pop	hl
+	jr	z,askv1		; jump if not - copy only user-specified text
+	push	hl
+	ld	hl,askstr
+	call	STRCPY		; copy first part of prompt
+	ex	(sp),hl
+	call	STRCPY		; copy user-specified text, if any
+	pop	hl
+	inc	hl
+	ld	a,(vartyp)	; check variable type
+	cp	V.LOG
+	jr	z,askv0
+	inc	hl		; skip question mark if not logical var
+askv0:	call	STRCPY		; copy (question mark) and opening bracket
+	push	hl
+	call	askp2		; get variable type string
+	call	STRCPY		; copy expected variable type
+	call	askp3		; copy any user options
+	pop	hl
+	inc	hl
+askv1:	call	STRCPY		; copy end part of prompt
+askv4:	xor	a
+	ld	(SVEOF),a	; clear <EOF>
+	ld	(SVESC),a	;  <ESCAPE>
+	ld	(SVTMO),a	;   <TIMOUT>
+	ld	(SVDFLT),a	;    and <DEFAUL>
+	call	tgetln		; get user response with optional timeout
+	call	stpeol		; strip terminator, return it in A, adj length
+	ld	ix,MODE
+	cp	EOF		; terminator was ^Z?
+	jp	z,askv3		; jump if yes
+	cp	ESC		; was it ESC?
+	jp	z,askv2		; jump if yes
+	ld	a,b
+	or	c		; null response?
+	jr	nz,askv5	; branch if not
+	ld	a,1
+	ld	(SVDFLT),a	; else set <DEFAUL> to true
+	ret
+
+askv5:	ld	a,(askopb)
+	bit	0,a		; range specified?
+	ret	z		; return if not
+	ld	a,(vartyp)
+	cp	V.LOG
+	ret	z		; no range checking for logical var
+	cp	V.STR
+	jp	z,askv6
+
+	; check numeric range
+
+	ld	de,askbuf
+	call	GETNB
+	call	ATOU		; get numeric response
+	;;;jp	c,ovflw or error
+	call	chklim		; value in range?
+	ret	nc		; return if yes
+	ld	hl,errval
+	call	PRMSG		; else display error message
+	jp	askv4		; and ask again
+
+errval:	db	'Value not in range',0
+
+askv6:	; check string length range
+
+	ld	hl,askbuf
+	call	STRLEN		; get string length
+	ld	l,c
+	ld	h,b
+	call	chklim		; length within limits?
+	ret	nc		; return if yes
+	ld	hl,errlen	; else display error message
+	call	PRMSG
+	jp	askv4		; and ask again
+
+errlen:	db	'String length not in range',0
+
+askv2:	; input ended with escape
+
+	bit	B0.ESC,(ix+0)	; escape option enabled?
+	jr	z,askv10	; error if not, ask again
+	ld	e,a
+	ld	a,b
+	or	c		; ESC must be the only char in the line
+	jr	nz,askv10	; if not, ask again
+	ld	a,1
+	ld	(SVESC),a	; set <ESCAPE> special var to true
+	ld	a,e
+	ret
+askv10:	ld	hl,errans
+	call	PRMSG
+	jp	askv4		; ask again
+
+errans:	db	'Invalid answer or terminator',0
+
+askv3:	; input ended with ^Z
+
+	ld	e,a
+	ld	a,1
+	ld	(SVEOF),a	; set <EOF> special var to true
+	ld	ix,MODE
+	bit	B0.CTZ,(ix+0)	; control-z option enabled?
+	jp	z,INDSTP	; stop indirect if not
+	ld	a,e
+	ret
+
+; ASK prompt starts with the CLI prompt
+
+askp0:	call	GPRMPT		; get CLI prompt
+	jp	nc,STRCPY	; copy it into .ASK prompt buffer
+	ld	a,CR
+	ld	(de),a		; if no CLI prompt set, just use CR/LF
+	inc	de
+	ld	a,LF
+	ld	(de),a
+	inc	de
+	ret
+
+; Get variable type string for ASK prompt
+
+askp2:	ld	a,(vartyp)
+	ld	hl,asktl	; Y/N for logical
+	cp	V.LOG
+	ret	z
+	ld	hl,asktn	; D (decinal) for numeric
+	cp	V.NUM
+	ret	z
+	ld	hl,askts	; S for string
+	ret
+
+; Add user options to the ASK prompt
+
+askp3:	ld	ix,askopb
+	bit	0,(ix)		; range specified?
+	jr	z,askp31	; branch if not
+	ld	hl,askor
+	call	STRCPY
+	ld	hl,(asklo)
+	xor	a
+	call	DECSTR		; else output limits
+	ld	a,'-'
+	ld	(de),a
+	inc	de
+	ld	hl,(askhi)
+	xor	a
+	call	DECSTR
+askp31:	bit	1,(ix)		; default value specified?
+	jr	z,askp35
+	ld	hl,askod
+	call	STRCPY
+	ld	hl,(askdf)
+	ld	a,(vartyp)	; get variable type
+	cp	V.LOG		; logical?
+	jr	z,askp32
+	cp	V.NUM		; numeric?
+	jr	z,askp34
+	ld	a,'"'		; else is string
+	ld	(de),a
+	inc	de
+	call	STRCPY
+	ld	a,'"'
+	ld	(de),a
+	inc	de
+	jr	askp35
+askp32:	ld	a,h
+	or	l
+	ld	a,'T'
+	jr	nz,askp33
+	ld	a,'F'
+askp33:	ld	(de),a
+	inc	de
+	xor	a
+	ld	(de),a
+	jr	askp35
+askp34:	xor	a
+	call	DECSTR
+askp35:	bit	2,(ix)		; timeout specified?
+	ret	z
+	ld	hl,askot
+	call	STRCPY
+	ld	hl,(asktmo)
+	xor	a
+	call	DECSTR
+	ret
+
+askstr:	db	'* ',0,'? [',0,']: ',0
+asktl:	db	'Y/N',0
+asktn:	db	'D',0
+askts:	db	'S',0
+askor:	db	' R:',0
+askod:	db	' D:',0
+askot:	db	' T:',0
+
+; Get .ASK options
+
+askopt:	ld	hl,0
+	ld	(askdf),hl	; clear default value
+	ld	ix,askopb
+	ld	(ix),0		; clear options bits
+	call	GETNB		; skip spaces
+	cp	'['		; open bracket present?
+	ret	nz		; return if not, no options specified
+	inc	de
+	ld	(LNPTR),de
+	ld	a,(vartyp)	; get variable type
+	cp	V.LOG
+	jr	nz,askop1	; branch if numeric or string
+	call	getvn		; get variable name
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR		; find variable
+	jp	c,ERRUDF
+	ld	a,c
+	cp	V.LOG
+	scf
+	jp	nz,ERRTYP
+	ld	(askdf),hl	; store value as default
+	jr	askop3
+
+askop1:	call	GETNB
+	cp	':'		; check for empty low limit
+	jr	z,askop6
+	call	EVAL		; get low limit
+	ld	(asklo),de
+	ld	de,(LNPTR)
+	call	GETNB
+	cp	':'
+	jp	nz,CMDERR	; high limit must follow
+	inc	de
+	ld	(LNPTR),de
+	call	EVAL		; get high limut
+	ld	(askhi),de
+	set	0,(ix)		; set range option bit
+	ld	de,(LNPTR)
+	call	GETNB
+	cp	':'
+	jr	nz,askop4
+askop7:	inc	de
+	call	GETNB
+	cp	':'		; check for empty default
+	jr	z,askop8
+	cp	']'
+	jr	z,askop9
+	ld	(LNPTR),de
+	ld	a,(vartyp)
+	cp	V.NUM		; check again variable type
+	jr	z,askop2	; branch if numeric
+	call	SEVAL		; get default string value
+	ld	(askdf),hl	; store string address
+	ld	de,askdf
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	inc	hl
+	call	STRLEN
+	ld	l,c
+	ld	h,b
+	call	askop0		; ensure length of default string is in range
+	jr	askop3
+
+askop6:	inc	de
+	call	GETNB
+	cp	':'		; if low is null, then high must be null too
+	jp	nz,CMDERR
+	jr	askop7
+
+askop2:	call	EVAL		; get default numeric value
+	ld	(askdf),de
+	ex	de,hl
+	call	askop0		; ensure default value is in range
+askop3:	set	1,(ix)		; set default value bit
+	ld	de,(LNPTR)
+	call	GETNB
+	cp	':'
+	jr	nz,askop4
+askop8:	inc	de
+	ld	(LNPTR),de
+	call	EVAL		; get timeout value
+	ld	(asktmo),de
+	ld	a,(MODE+1)
+	bit	B1.TMO,a	; timeouts disabled?
+	jr	z,askop5	; then ignore it
+	set	2,(ix)		; else set timeout bit
+askop5:	ld	de,(LNPTR)
+	call	GETNB
+askop4:	cp	']'
+	jp	nz,CMDERR
+askop9:	inc	de
+	ld	(LNPTR),de
+	ret
+
+askop0:	xor	a
+	bit	0,(ix)		; range specified?
+	ret	z		; return if yes
+	call	chklim		; else check limits
+	ret	nc
+	ld	hl,erspec	; error if outside range
+	jp	ERROR
+
+erspec:	db	'Bad range or default specification',0
+
+; Check value in HL against hi/lo limits.
+
+chklim:	ld	de,(askhi)
+	call	CPHLDE		; value > hi?
+	ret	c		; return CY if yes
+	ld	de,(asklo)
+	ex	de,hl
+	call	CPHLDE		; value < lo?
+	ex	de,hl
+	ret			; return CY if yes
+
+; Strip end-of-line char from string @HL = buffer, BC = length.
+; Return old end-of-line char in A.
+
+stpeol:	ld	a,b
+	or	c
+	ret	z
+	push	hl
+	add	hl,bc
+	dec	hl
+	ld	a,(hl)		; return old terminator in A
+	ld	(hl),0
+	dec	bc		; adjust length
+	pop	hl
+	or	a
+	ret
+
+; Get variable name into 'varnam' buffer. Called with DE = pointer to line.
+; Returns CY set if name is invalid.
+
+getvn:	call	getvn1
+	ret	nc
+	jp	CMDERR
+
+getvn1:	call	GETNB		; skip spaces
+	scf
+	ret	z
+	ex	de,hl
+	ld	de,varnam
+	call	VNAME		; get variable name
+	ld	(LNPTR),hl
+	ex	de,hl
+	ret	c
+	ld	a,(varnam)
+	or	a
+	ret	nz
+	scf
+	ret
+
+getvn2:	call	getvn
+	ld	a,c
+	or	a
+	ret	z
+	jp	CMDERR		; special variable not allowed
+
+; Get task name into 'varnam' buffer. Pad name with spaces if shorter
+; than 6 chars.
+
+; TODO:
+; - if task name is 3 chars, convert it to ...XXX or XXXTn
+
+gettn:	ld	hl,varnam
+	ld	b,6
+	call	GETNB		; skip spaces
+	jr	z,gtn2
+gtn0:	ld	a,(de)
+	call	UCASE
+	call	ISBLNK
+	jr	z,gtn2
+	call	ISALPN
+	jr	nc,gtn1
+	cp	'.'
+	jr	z,gtn1
+	cp	'$'
+	jr	nz,gtn2
+gtn1:	ld	(hl),a
+	inc	de
+	inc	hl
+	djnz	gtn0
+	ld	(LNPTR),de
+	ret
+gtn2:	ld	(hl),' '
+	inc	hl
+	djnz	gtn2
+	ld	(LNPTR),de
+	ret
+
+; Get label name into varnam buffer
+
+getlbl:	ld	hl,varnam
+	ld	b,8
+	call	GETNB		; skip spaces
+	call	GETNAM
+	ld	(LNPTR),de
+	ret
+
+; Get user response with a optional timeout.
+; Returns actual length in BC.
+
+tgetln:	ld	a,(TTLUN)
+	ld	(qio3+Q.LUN),a
+	ld	(qio4+Q.LUN),a
+	call	TTFLSH		; flush any pending output
+	ld	a,(askopb)
+	bit	2,a		; timeout specified?
+	jr	z,gtln1		; branch if not
+	ld	hl,(asktmo)	; get time interval magnitude into HL
+	ld	d,2		; units = seconds
+	ld	e,9		; same event flag number as for QIO
+	ld	bc,0		; no AST
+	SC	.MRKT		; mark time
+gtln1:	ld	hl,qio3
+	SC	.QIO		; read from terminal
+	push	af
+	ld	bc,0
+	ld	e,9
+	SC	.CMKT		; cancel mark time event, if pending
+	pop	af
+	ret	c		; error if queuing failed
+	ld	a,(iosb)	; fetch return code
+	or	a		; success?
+	jr	z,gtln2		; brach if yes
+	ld	bc,0
+	cp	E.PEND		; request pending (timeout)?
+	scf
+	ret	nz		; return error if not
+	ld	hl,qio4
+	SC	.QIO		; else kill pending I/O
+	ld	a,-1
+	ld	(SVTMO),a	; set <TIMOUT> variable
+	ld	hl,askbuf
+	ld	(hl),0
+	ld	bc,0		; and return zero length to force
+	ld	a,E.TMO		;  default response
+	scf
+	ret
+
+gtln2:	ld	hl,askbuf
+	ld	bc,(iosb+2)	; fetch byte count
+	ld	a,b
+	or	c		; zero?
+	jr	z,gtln3		; return if yes
+	add	hl,bc
+	dec	hl
+	ld	a,(hl)		; get terminator
+	cp	1Ah		; EOF?
+	ld	a,E.EOF
+	scf
+	ret	z		; return with CY set if yes
+gtln3:	xor	a
+	ld	(hl),a		; replace terminator with a null
+	ret
+
+;-----------------------------------------------------------------------
+
+; .ERASE
+; .ERASE LOCAL
+; .ERASE GLOBAL
+; .ERASE SYMBOL varname
+
+erase:	call	CLRVAR		; erase all variables
+	ret
+
+;-----------------------------------------------------------------------
+
+; .SETT varname
+
+sett:	call	getvn2		; get variable name into 'varnam'
+	ld	hl,0FFFFh
+	ld	de,varnam
+	call	SETLV
+	xor	a
+	ret
+
+; .SETF varname
+
+setf:	call	getvn2		; get variable name into 'varnam'
+	ld	hl,0
+	ld	de,varnam
+	call	SETLV
+	xor	a
+	ret
+
+; .SETN varname expr
+
+setn:	call	getvn2		; get variable name into 'varnam'
+	call	EVAL
+	ex	de,hl
+	ld	de,varnam
+	call	SETNV
+	xor	a
+	ret
+
+; .SETL varname expr
+
+setl:
+	ret
+
+; .SETS varname expr
+
+sets:	call	getvn2		; get variable name into 'varnam'
+	call	SEVAL		; evaluate string expression
+	ld	de,varnam
+	call	SETSV		; assign result to string variable
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; .ENABLE option
+
+enabl:	ld	c,1
+	jr	ed0
+
+; .DISABLE option
+
+disabl:	ld	c,0
+ed0:	ex	de,hl
+ed1:	push	bc		; push enable/disable flag
+	call	FNDOPT
+	ld	(LNPTR),de
+	pop	de		; pop enable/disable flag into reg E
+	jp	c,CMDERR
+	ld	a,e
+	or	a		; check enable/disable bit
+	ld	a,c
+	jr	nz,setbit
+	cpl
+	and	(hl)
+	jr	ed2
+setbit:	or	(hl)
+ed2:	ld	(hl),a
+	ld	hl,(LNPTR)
+	call	SKIPBL
+	ret	z
+	cp	','
+	inc	hl
+	ld	c,e		; enable/disable flag back in reg C
+	jr	z,ed1		; process more options
+	dec	hl
+	or	a
+	ret
+
+	; find option in table, called with HL = addr of option string
+	; returns HL = addr of MODE byte, C = bit mask
+
+FNDOPT:	call	SKIPBL
+	ld	de,EDOPTS
+	call	FNDCMD		; bit number in C, byte offset in B
+	ret	c
+	ld	a,b
+	or	a
+	jr	nz,ed3
+	ld	a,c
+	cp	B0.DAT		; .ENABLE DATA requires special processing
+	jr	nz,ed3
+	ld	(LNPTR),de
+	pop	bc		; thus, discard return address,
+	pop	bc		;  the enable/disable flag,
+	jp	edata		;   and jump directly to the file I/O routine
+ed3:	ld	a,80h
+	inc	c
+ed4:	rlca
+	dec	c
+	jr	nz,ed4
+	ld	c,a		; mask in C
+	ld	hl,MODE
+	ld	a,b
+	call	ADDHLA		; index into MODE table
+	or	a
+	ret
+
+EDOPTS:	CMD	'ATTACH',	<(0 SHL 8) OR B0.ATT>
+	CMD	'CONTROL-Z',	<(0 SHL 8) OR B0.CTZ>
+	CMD	'DATA',		<(0 SHL 8) OR B0.DAT>
+	CMD	'DECIMAL',	<(0 SHL 8) OR B0.DEC>
+
+	CMD	'DELETE',	<(0 SHL 8) OR B0.DEL>
+	CMD	'DETACH',	<(0 SHL 8) OR B0.DET>
+	CMD	'DISPLAY',	<(0 SHL 8) OR B0.DPY>
+	CMD	'ESCAPE',	<(0 SHL 8) OR B0.ESC>
+
+	CMD	'GLOBAL',	<(1 SHL 8) OR B1.GBL>
+	CMD	'LOWERCASE',	<(1 SHL 8) OR B1.LWC>
+	CMD	'MCR',		<(1 SHL 8) OR B1.MCR>
+	CMD	'OVERFLOW',	<(1 SHL 8) OR B1.OVF>
+
+	CMD	'QUIET',	<(1 SHL 8) OR B1.QIE>
+	CMD	'SUBSTITUTION',	<(1 SHL 8) OR B1.SUB>
+	CMD	'TIMEOUT',	<(1 SHL 8) OR B1.TMO>
+	CMD	'TRACE',	<(1 SHL 8) OR B1.TRC>
+
+	CMD	'TRUNCATE',	<(2 SHL 8) OR B2.TRU>
+	db	0
+
+;-----------------------------------------------------------------------
+
+; .PARSE string control-string v1 v2 ... vn
+
+PARSE:	xor	a
+	ld	(SLEN),a
+	call	SEVAL		; get string to parse
+	ld	(str1),hl
+	ld	de,str1
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	call	SEVAL		; get control string
+	jr	c,psend1
+	ld	(str2),hl
+	ld	de,str2
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	ld	hl,psend	; return via psend
+	push	hl
+
+	ld	hl,askprm
+	ld	(strp),hl
+	ex	de,hl
+	ld	hl,(str1)
+	call	STRCPY		; use static copy of the strings
+	ld	hl,askbuf	;  since the original ones may move
+	ld	(ctrs),hl	;   in memory due to calls to ALLOC/SETSV
+	ex	de,hl		;    in the loop below
+	ld	hl,(str2)
+	call	STRCPY
+
+	ld	hl,(ctrs)
+	ld	a,(hl)
+	or	a		; check for null control string
+	ld	hl,errcs
+	jp	z,ERROR
+pse1:	ld	de,(LNPTR)
+	call	getvn1		; get variable to receive substring
+	ccf
+	ret	nc		; end if no more vars
+	ld	a,c
+	or	a
+	jp	nz,CMDERR	; can't be special variable
+	push	hl
+	call	incsl		; inc <STRLEN>
+	pop	hl
+	call	GETNB		; is this the last variable on the list?
+	ld	hl,(strp)	; then it gets all the rest
+	call	nz,split	; else get next substring
+	call	ALLOC		; store it in dynamic area
+	jp	c,ERRMEM
+	ld	de,varnam
+	call	SETSV		; and assign it to variable name
+	jp	c,ERRTYP
+	jr	pse1		; continue until all vars set
+
+psend:	ld	hl,(str2)	; free control and parse strings
+	call	frestr		;  (note: CY is preserved)
+psend1:	ld	hl,(str1)
+frestr:	dec	hl
+	ld	(hl),0		; free the string
+	dec	hl
+	ld	(hl),0
+	ret
+
+errcs:	db	'Null control string',0
+
+split:	ld	hl,(ctrs)
+	ld	c,(hl)		; get control char into C
+	inc	hl		; advance to next char
+	ld	a,(hl)
+	or	a		; backup if null
+	jr	z,spl1
+	ld	(ctrs),hl
+spl1:	ld	hl,(strp)
+	push	hl		; remember start of string
+spl2:	ld	a,(hl)		; get char from string
+	or	a		; end of string?
+	jr	z,spl4		; jump if yes
+	cp	c		; matches control char?
+	jr	z,spl3		; jump if yes
+	inc	hl
+	jr	spl2		; else keep searching
+spl3:	ld	(hl),0		; end substring here
+	inc	hl
+spl4:	ld	(strp),hl
+	pop	hl		; return start of substring
+	ret
+
+incsl:	ld	hl,(strp)
+	ld	a,(hl)
+	or	a
+	ret	z
+	ld	hl,SLEN
+	inc	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; .GOTO label
+
+; TODO:
+; - .GOTO targets can be only within the current .BEGIN-.END block!
+
+goto:	call	getlbl		; get label name into 'varnam'
+	ld	hl,0		; blk #
+	ld	de,0		; char offset
+	ld	bc,1		; line #
+	call	SETPOS		; reset indirect file
+	jp	c,SYSERR
+gto1:	call	RDCMD		; read line from file
+	jr	c,gto2
+	ld	de,INPBUF
+	call	GETNB
+	cp	'.'
+	jr	nz,gto1
+	inc	de
+	ld	hl,varnam
+	call	cmplbl		; compare label name
+	jr	nz,gto1
+	ld	a,(de)
+	cp	':'
+	jr	nz,gto1
+	jp	PROCLN		; found label, resume normal processing
+gto2:	ld	hl,elabel
+	jp	ERROR
+
+elabel:	db	'Label not found',0
+
+cmplbl:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	c,a
+	ld	a,(de)
+	call	UCASE
+	cp	c
+	ret	nz
+	inc	hl
+	inc	de
+	jr	cmplbl
+
+; .GOSUB label
+; .GOSUB label args
+
+; label can be anywhere in the file.
+
+; TODO:
+; - .BEGIN-.END block context must be saved on entry, and restored
+;   on .RETURN
+; - args that follow .GOSUB label up to a comment and are stored
+;   in the _reserved_ _local_ COMMAN variable. If user redefined
+;   COMMAN erase and recreate it.
+
+gosub:	ld	a,(GSBLVL)
+	inc	a
+	cp	MAXGSB
+	jr	c,gsb1
+	ld	hl,egsb
+	jp	ERROR
+
+gsb1:	ld	(GSBLVL),a
+	dec	a
+	add	a,a		; *2
+	ld	c,a
+	add	a,a		; *4
+	add	a,c		; *6
+	ld	ix,GSBTBL
+	ld	c,a
+	ld	b,0
+	add	ix,bc
+	push	de
+	call	GETPOS		; get current file position
+	ld	(ix+0),l	; save state
+	ld	(ix+1),h
+	ld	(ix+2),e
+	ld	(ix+3),d
+	ld	(ix+4),c
+	ld	(ix+5),b
+	pop	de
+	jp	goto
+
+egsb:	db	'.GOSUB nesting too deep',0
+
+; .RETURN
+
+return:	ld	a,(GSBLVL)
+	or	a
+	ld	hl,ertn
+	jp	z,ERROR
+	dec	a
+	ld	(GSBLVL),a
+	add	a,a		; *2
+	ld	c,a
+	add	a,a		; *4
+	add	a,c		; *6
+	ld	ix,GSBTBL
+	ld	c,a
+	ld	b,0
+	add	ix,bc
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	ld	c,(ix+4)
+	ld	b,(ix+5)
+	call	SETPOS
+	jp	c,SYSERR
+	ret
+
+ertn:	db	'.RETURN without .GOSUB',0
+
+; .ONERR label
+
+onerr:
+	ret
+
+;-----------------------------------------------------------------------
+
+; .IF varname relop expr statement
+
+ifx:	call	getvn		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,ERRUDF
+	ld	a,c
+	cp	V.STR
+	jr	z,ifs
+	cp	V.NUM
+	jr	z,ifn
+
+	scf			; TODO: logical
+	ret
+
+ifs:	push	hl
+	call	relop
+	pop	hl
+	push	bc
+	push	hl
+	call	SEVAL		; evaluate string expression
+	ex	de,hl		; result in DE
+	pop	hl		; variable value in HL
+	pop	bc		; cond type in C
+	push	de
+	call	cmpstr
+	pop	hl
+	xor	a
+	dec	hl
+	ld	(hl),a		; free the string
+	dec	hl
+	ld	(hl),a
+	jr	if1
+
+ifn:	push	hl
+	call	relop		; get relational operator type
+	pop	hl
+	push	bc
+	push	hl
+	call	EVAL		; evaluate numeric expression, result in DE
+	pop	hl		; variable value in HL
+	pop	bc		; cond type in C
+	call	cmpnum
+if1:	ld	a,d
+	or	e
+	ret	z
+doif:	ld	hl,(LNPTR)	; get pointer to line (after expression)
+	jp	PRCMD		; execute command after .if
+
+relop:	ld	hl,(LNPTR)
+	call	SKIPBL
+	ld	a,(hl)
+	cp	'='
+	ld	c,cnd$eq
+	jr	z,rel2
+	cp	'<'
+	jr	z,rel1
+	cp	'>'
+	jr	nz,relop1	; -> try EQ NE LT LE GT GE
+	inc	hl
+	ld	a,(hl)
+	cp	'='
+	ld	c,cnd$gt
+	jr	nz,rel3
+	ld	c,cnd$ge
+	jr	rel2
+rel1:	inc	hl
+	ld	a,(hl)
+	cp	'='
+	ld	c,cnd$le
+	jr	z,rel2
+	cp	'>'
+	ld	c,cnd$lt
+	jr	nz,rel3
+	ld	c,cnd$ne
+rel2:	inc	hl
+rel3:	ld	(LNPTR),hl
+	ret
+
+relop1:	call	UCASE
+	cp	'E'
+	jr	nz,rel4
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'Q'
+	ld	c,cnd$eq
+	jr	z,rel2
+	jp	CMDERR
+
+rel4:	cp	'N'
+	jr	nz,rel5
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'E'
+	ld	c,cnd$ne
+	jr	z,rel2
+	jp	CMDERR
+
+rel5:	cp	'L'
+	jr	nz,rel6
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'E'
+	ld	c,cnd$le
+	jr	z,rel2
+	cp	'T'
+	ld	c,cnd$lt
+	jr	z,rel2
+	jp	CMDERR
+
+rel6:	cp	'G'
+	jp	nz,CMDERR
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'E'
+	ld	c,cnd$ge
+	jr	z,rel2
+	cp	'T'
+	ld	c,cnd$gt
+	jr	z,rel2
+	jp	CMDERR
+
+	; signed numeric comparison: HL = lval, DE = rval
+
+cmpnum:	ld	a,c
+	dec	a
+	jr	z,cndeq
+	dec	a
+	jr	z,cndne
+	dec	a
+	jr	z,cndlt
+	dec	a
+	jr	z,cndle
+	dec	a
+	jr	z,cndgt
+	jr	cndge
+cndle:	ex	de,hl
+cndge:	or	a
+	sbc	hl,de
+	ld	de,0
+	ret	m
+	dec	de
+	ret
+cndgt:	ex	de,hl
+cndlt:	or	a
+	sbc	hl,de
+	ld	de,-1
+	ret	m
+	inc	de
+	ret
+cndeq:	call	CPHLDE
+	ld	de,-1
+	ret	z
+	inc	de
+	ret
+cndne:	call	CPHLDE
+	ld	de,-1
+	ret	nz
+	inc	de
+	ret
+
+	; string comparison: HL = lstr, DE = rstr
+
+cmpstr:	ld	a,c
+	dec	a
+	jr	z,streq
+	dec	a
+	jr	z,strne
+	dec	a
+	jr	z,strlt
+	dec	a
+	jr	z,strle
+	dec	a
+	jr	z,strgt
+	jr	strge
+strge:	ex	de,hl
+strle:	call	strcmp
+	ld	de,0
+	ret	c
+	dec	de
+	ret
+strlt:	ex	de,hl
+strgt:	call	strcmp
+	ld	de,-1
+	ret	c
+	inc	de
+	ret
+streq:	call	strcmp
+	ld	de,-1
+	ret	z
+	inc	de
+	ret
+strne:	call	strcmp
+	ld	de,-1
+	ret	nz
+	inc	de
+	ret
+
+strcmp:	ld	a,(de)
+	cp	(hl)		; CY if (HL) > (DE)
+	ret	nz
+	or	a
+	ret	z		; return Z if strings are equal
+	inc	hl
+	inc	de
+	jr	strcmp
+
+; .IFT varname statement
+
+ift:	call	getvn		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,ERRUDF	; error if not found
+	ld	a,c
+	cp	V.LOG
+	scf
+	jp	nz,ERRTYP	; type mismatch
+	ld	a,h
+	or	l
+	jp	nz,doif
+	ret
+
+; .IFF varname statement
+
+iff:	call	getvn		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,ERRUDF	; error if not found
+	ld	a,c
+	cp	V.LOG
+	scf
+	jp	nz,ERRTYP	; type mismatch
+	ld	a,h
+	or	l
+	jp	z,doif
+	ret
+
+; .IFDF varname statement
+
+ifdf:	call	getvn		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	nc,doif
+	xor	a		; return with CY clear
+	ret
+
+; .IFNDF varname statement
+
+ifndf:	call	getvn		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,doif
+	ret			; return with CY clear
+
+; .IFINS task statement
+
+ifins:	call	gettsk		; get task name and obtain task info
+	ccf
+	ret	nc		; note: CY set aborts current command file
+	jp	doif
+
+; .IFNINS task statement
+
+ifnins:	call	gettsk		; get task name and obtain task info
+	ret	nc		; return if task found (installed)
+	jp	doif		; else execute command after .if
+
+; .IFACT task statement
+
+ifact:	call	gettsk		; get task name and obtain task info
+	ccf
+	ret	nc		; on error, return (task not found)
+	or	a
+	ld	a,(GTBUF+GT.ST)	; else check status
+	bit	TS.ACT,a	; active?
+	ret	z		; return if not
+	jp	doif
+
+; .IFNACT task statement
+
+ifnact:	call	gettsk		; get task name and obtain task info
+	jp	c,doif		; on error, execute command after .if
+	ld	a,(GTBUF+GT.ST)	; else check status
+	bit	TS.ACT,a	; active
+	ret	nz		; return if yes
+	jp	doif
+
+gettsk:	call	gettn		; get task name into 'varnam'
+	ld	hl,varnam
+	ld	de,GTBUF
+	SC	.GTSK
+	ret
+
+; .IFENABLED option statement
+
+ifena:	call	chkopt		; check option bit
+	ret	z		; return if not set
+	jp	doif
+
+chkopt:	ex	de,hl
+	call	FNDOPT		; find option in table
+	ld	(LNPTR),de	; update ptr to command line
+	jp	c,CMDERR	; error if not found
+	ld	a,(hl)		; get byte from MODE table
+	and	c		; mask option bit
+	ret
+
+; .IFDISABLED option statement
+
+ifdisa:	call	chkopt		; check option bit
+	ret	nz		; return if set
+	jp	doif
+
+ERRUDF:	ld	hl,snferr
+	jp	ERROR
+
+snferr:	db	'Undefined symbol',0
+
+;-----------------------------------------------------------------------
+
+; .TEST varname
+; .TEST string substring
+
+test:	ld	(strp),de	; save line pointer
+	call	getvn1		; get variable name
+	jp	c,tsub1		; on error, try second form
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR		; search symbol table for variable
+	jp	c,ERRUDF	; error if not found
+	ld	a,c		; check type
+	cp	V.STR		; string?
+	jr	nz,tst0		; branch if not
+	ld	de,(LNPTR)
+	call	GETNB		; else check for possible second argument
+	jr	nz,tsub1	; branch to process second form if present
+	ld	e,4		; else set <SYMTYP> to 4
+	jr	tst1
+tst0:	cp	V.NUM		; numeric?
+	ld	e,2		; set <SYMTYP> to 2 if yes
+	jr	z,tst1
+	ld	e,0		; else is logical, set <SYMTYP> to 0
+tst1:	ld	a,e
+	ld	(STYPE),a
+	ld	a,c
+	cp	V.STR		; string variable?
+	ret	nz		; return if not
+	ld	a,1		; else do extra checks
+	ld	(SNUM),a
+	ld	(SALNM),a
+	ld	c,0
+tst2:	ld	a,(hl)		; get char from string
+	or	a
+	jr	z,tst3
+	call	tst4		; check for digit and alphanumeric
+	inc	hl
+	inc	c
+	jr	tst2
+tst3:	ld	a,c
+	ld	(SLEN),a	; set <STRLEN> to string length
+	or	a		; null string?
+	ret	nz		; return if not
+	ld	(SNUM),a	; else set <NUMBER> and <ALPHAN> to false
+	ld	(SALNM),a
+	ret
+
+tst4:	call	ISDIG
+	jr	nc,tst5
+	ld	e,a
+	xor	a
+	ld	(SNUM),a
+	ld	a,e
+tst5:	call	UCASE
+	call	ISALPN
+	ret	nc
+	xor	a
+	ld	(SALNM),a
+	ret
+
+tsub1:	ld	hl,(strp)
+	ld	(LNPTR),hl	; restore line pointer to start of expr
+	call	SEVAL		; get first string
+	ld	(str1),hl	; save ptr to string
+	ld	de,str1
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	call	SEVAL
+	jp	c,psend1
+	ld	(str2),hl	; save ptr to substring
+	ld	de,str2
+	dec	hl
+	ld	(hl),d		; update backptr of allocated string
+	dec	hl
+	ld	(hl),e
+	ld	hl,psend
+	push	hl		; return via psend
+	ld	hl,(str1)
+	ld	de,(str2)
+	call	search
+	ld	(SLEN),a	; result in <STRLEN>
+	ret
+
+; Search substring @DE in string @HL. Returns 1-based index in A,
+; zero means substring not found.
+
+search:	ld	c,1
+s1:	push	hl
+	push	de
+s2:	ld	a,(de)
+	or	a
+	ld	b,c
+	jr	z,s3		; found
+	cp	(hl)
+	inc	hl
+	inc	de
+	jr	z,s2
+	ld	b,0
+	ld	a,(hl)
+	or	a
+s3:	pop	de
+	pop	hl
+	ld	a,b
+	ret	z		; not found
+	inc	hl
+	inc	c
+	jr	s1
+
+;-----------------------------------------------------------------------
+
+; .OPENR [#n] filespec
+
+; TODO: close open files on exit/error.
+
+openr:	call	fsetup		; get file number, file name, assign LUN
+	ret	c
+	call	opnfil		; open the file, read attrib
+	ret	c
+	ld	a,(fileno)
+	call	ALLBUF		; alloc file channel
+	jp	c,errfnm	; error: not enough memory
+	push	hl
+	pop	ix
+	ld	a,(fileno)
+	add	a,LUNFIL
+	ld	(ix+FB.LUN),a
+	xor	a
+	ld	(ix+FB.CNT),a
+	ld	(ix+FB.CNT+1),a
+	ld	(ix+FB.CUR),a
+	ld	(ix+FB.CUR+1),a
+	ld	(ix+FB.BLK),a
+	ld	(ix+FB.BLK+1),a
+	ld	(ix+FB.MOD),a	; zero means open for read
+	ret
+
+fsetup:	call	GETNB		; skip spaces
+	call	getfil		; get file number
+	jp	c,errifn
+	ld	(fileno),a
+	ex	de,hl
+	ld	ix,FDB
+	call	PFN		; parse file name
+	ld	a,E.BADF
+	jp	c,SYSERR
+	ld	hl,datext
+	call	ADDEXT
+	ld	de,(FDB+F.DEV)
+	ld	a,(FDB+F.UNIT)
+	ld	c,a
+	ld	a,(fileno)
+	add	a,LUNFIL
+	ld	b,a
+	SC	.ALUN
+	jp	c,SYSERR
+	ret			; note: returns LUN in reg B
+
+opnfil:	ld	hl,IO.ACC OR (SF.ACR OR SF.ACW OR SF.SHR) SHL 8 ; !!!TODO: mode!
+	jr	opn1
+crefil:	ld	hl,IO.CRE	; non-contiguous
+opn1:	ld	a,b
+	ld	(qio1+Q.LUN),a
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open the file
+	jp	c,SYSERR
+	ld	a,(iosb)	; check error code (lo-byte)
+	or	a
+	jp	nz,SYSERR
+	ld	hl,IO.RAT
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,FINFSZ
+	ld	(qio1+Q.LEN),hl
+	ld	hl,qio1
+	SC	.QIO		; read attrib (full filespec)
+	jp	c,SYSERR	; !!!TODO: close file!
+	ld	a,(iosb)	; check error code (lo-byte)
+	or	a
+	ret	z
+	jp	SYSERR		; !!!TODO: close file!
+
+; .OPEN [#n] filespec
+
+openw:	call	fsetup		; get file number, file name, assign LUN
+	ret	c
+	call	crefil		; create file, read attrib
+	ret	c
+opnw1:	ld	a,(fileno)
+	call	ALLBUF		; alloc file channel
+	jp	c,errfnm	; error: not enough memory
+	push	hl
+	pop	ix
+	ld	a,(fileno)
+	add	a,LUNFIL
+	ld	(ix+FB.LUN),a
+	xor	a
+	ld	(ix+FB.CNT),a
+	ld	(ix+FB.CNT+1),a
+	ld	(ix+FB.CUR),a
+	ld	(ix+FB.CUR+1),a
+	ld	(ix+FB.BLK),a
+	ld	(ix+FB.BLK+1),a
+	dec	a
+	ld	(ix+FB.MOD),a	; non-zero means open for write
+	ret
+
+; .OPENA [#n] filespec
+
+opena:	call	fsetup		; get file number, file name, assign LUN
+	ret	c
+	call	opnfil		; open file, read attrib
+	ret	c
+	call	opnw1		; alloc buffer and setup write mode
+	ret	c
+	ld	a,(FDB+F.ATTR)
+	and	FA.CTG		; contiguous file?
+	ld	hl,(FDB+F.NUSED)
+	jr	nz,opna1	; branch if yes
+	ld	hl,(FDB+F.NALOC)
+opna1:	dec	hl
+	ld	(ix+FB.BLK),l	; seek to last block
+	ld	(ix+FB.BLK+1),h
+	call	frblk		; load last block
+	jp	c,SYSERR	; !!!TODO: close file!
+	ld	(ix+FB.CUR),e	; seek to last char in buffer
+	ld	(ix+FB.CUR+1),d
+	ld	(ix+FB.CNT),e
+	ld	(ix+FB.CNT+1),d
+	ld	l,(ix+FB.BLK)
+	ld	h,(ix+FB.BLK+1)
+	dec	hl		; set lock number to last block read
+	ld	(ix+FB.BLK),l
+	ld	(ix+FB.BLK+1),h
+	ret
+
+; .READ [#n] strvar
+
+read:	call	GETNB		; skip spaces
+	call	getfil		; get file number
+	jp	c,errifn
+	ld	(fileno),a
+	call	getvn2		; get variable name into 'varnam'
+	ld	a,(fileno)
+	call	GETBUF		; get file buffer
+	ld	a,h
+	or	l
+	jp	z,errfno	; error if file not open
+	push	hl
+	pop	ix
+	ld	a,(ix+FB.MOD)
+	or	a
+	jp	nz,errfmd
+	call	FGETLN		; get line from file into askbuf
+;;	jp	c,SYSERR
+	ld	hl,askbuf
+	call	ALLOC		; allocate string
+	ld	de,varnam
+	call	SETSV		; assign string to variable
+	xor	a		; clear CY
+	ret
+
+FGETLN:	ld	hl,askbuf
+	ld	b,130
+fln1:	call	FGETC		; get char from file
+	jr	c,fln2		; on error, return
+	cp	CR
+	jr	z,fln1		; ignore CR
+	cp	LF
+	jr	z,fln2		; LF terminates line
+	ld	(hl),a		; else store char in buffer
+	inc	hl
+	djnz	fln1		; and loop for more
+	scf			; error - line too long
+fln2:	ld	(hl),0
+	ret
+
+FGETC:	ld	e,(ix+FB.CNT)
+	ld	d,(ix+FB.CNT+1)
+	ld	a,d
+	or	e
+	jr	nz,fgtc2
+	push	hl
+	push	bc
+	call	frblk		; read block
+	pop	bc
+	pop	hl
+	jr	c,fgtc0
+	ld	a,d
+	or	e
+	jr	nz,fgtc1
+fgtc0:	ld	a,1
+	ld	(SVEOF),a	; set EOF flag
+	ld	a,E.EOF
+	scf
+	ret
+fgtc1:	xor	a
+	ld	(ix+FB.CUR),a
+	ld	(ix+FB.CUR+1),a
+fgtc2:	dec	de
+	ld	(ix+FB.CNT),e
+	ld	(ix+FB.CNT+1),d
+	ld	e,(ix+FB.CUR)
+	ld	d,(ix+FB.CUR+1)
+	inc	de
+	ld	(ix+FB.CUR),e
+	ld	(ix+FB.CUR+1),d
+	dec	de
+	push	hl
+	push	ix
+	pop	hl
+	ld	a,FB.BUF
+	call	ADDHLA		; point to start of buffer
+	add	hl,de		; index into buffer
+	xor	a		; clear CY
+	ld	(SVEOF),a	; clear EOF special variable
+	ld	a,(hl)		; return char in A
+	pop	hl
+	ret
+
+; .DATA [#n] ...
+
+data:	ld	a,(de)		; consume one space char after DATA statement
+	cp	' '		;  if present
+	jr	nz,dat1
+	inc	de
+	ld	a,(de)
+dat1:	cp	'#'		; else check for possible file number spec
+	ld	a,0
+	jr	nz,dat2
+	call	getfil		; get file number if present
+	jp	c,errifn
+	ld	c,a
+	ld	a,(de)
+	cp	' '		; and consume again one single space char
+	ld	a,c
+	jr	nz,dat2
+	inc	de
+dat2:	ld	(fileno),a
+	ld	(LNPTR),de	; write the rest of the line to file
+	call	GETBUF		; get file buffer
+	ld	a,h
+	or	l
+	jp	z,errfno	; error if file not open
+	push	hl
+	pop	ix
+	ld	a,(ix+FB.MOD)
+	or	a
+	jp	z,errfmd
+	ld	de,(LNPTR)
+	call	FPUTLN		; write string to file
+;;	jp	c,SYSERR
+	ret
+
+; .ENABLE DATA [#n]
+
+edata:	call	GETNB		; skip following blanks
+	call	getfil		; get file number
+	jp	c,errifn
+	ld	(fileno),a
+
+	; we're now in DATA mode
+
+edat1:	call	RDCMD		; read line from file
+	jp	c,SYSERR
+	call	SUBST		; perform substitutions
+	;jp	c,...		; !!!TODO: process subst errors?
+	ld	de,LNBUF
+	ld	a,(de)
+	cp	'.'		; check for possible .DISABLE DATA
+	jr	nz,edat3	;  or .CLOSE command starting at first column
+	inc	de
+	push	de
+	ld	hl,cmdis
+	call	cmplbl		; .DISABLE...?
+	pop	hl
+	jr	nz,edat2	; branch if not
+	call	GETNB		; skip blanks
+	ld	hl,cmdat
+	call	cmplbl		; ...DATA?
+	jr	nz,edat3	; branch if not - output line to file
+	xor	a		; else exit DATA mode
+	ret
+
+edat2:	ex	de,hl
+	ld	hl,cmcls
+	call	cmplbl		; .CLOSE?
+	jr	nz,edat3	; branch if not - output line to file
+	ld	a,(fileno)
+	jp	cls0		; flush and close file, then exit DATA mode
+
+edat3:	ld	a,(fileno)
+	call	GETBUF		; get file buffer
+	ld	a,h
+	or	l
+	jp	z,errfno	; error if file not open
+	push	hl
+	pop	ix
+	ld	a,(ix+FB.MOD)
+	or	a
+	jp	z,errfmd	; error if file not open for write
+	ld	de,LNBUF
+	call	FPUTLN		; write line to file
+;;	jp	c,SYSERR
+	jr	edat1		; loop for more
+
+FPUTLN:	ld	a,(de)
+	or	a
+	jr	z,fpl1
+	call	FPUTC
+	inc	de
+	jr	FPUTLN
+fpl1:	ld	a,CR
+	call	FPUTC
+	ld	a,LF
+FPUTC:	push	de
+	ld	c,a
+	ld	e,(ix+FB.CNT)
+	ld	d,(ix+FB.CNT+1)
+	ld	hl,512
+	call	CPHLDE
+	jr	c,fptc1
+	push	bc
+	call	fwblk		; write block
+	pop	bc
+	;;;jr	c,...		; !!!TODO: error
+	ld	de,0
+fptc1:	push	ix
+	pop	hl
+	ld	a,FB.BUF
+	call	ADDHLA		; point to start of buffer
+	add	hl,de		; index into buffer
+	ld	(hl),c		; store char
+	xor	a		; clear CY
+	ld	(SVEOF),a	; clear EOF special variable
+	inc	de
+	ld	(ix+FB.CNT),e
+	ld	(ix+FB.CNT+1),d
+	pop	de
+	ret
+
+; .CLOSE [#n]
+
+close:	call	GETNB		; skip spaces
+	call	getfil		; get file number
+	jp	c,errifn
+	ld	(fileno),a
+cls0:	call	GETBUF
+	ld	a,h
+	or	l
+	ret	z		; channel not in use, ignore
+	push	hl
+	pop	ix
+	ld	a,(ix+FB.MOD)
+	or	a
+	jr	z,cls1		; skip flush buffer if file open for read
+	call	fwblk		; else write buffer
+	;;;jr	c,...		; !!!TODO: error
+cls1:	ld	a,(ix+FB.LUN)
+	ld	(qio1+Q.LUN),a
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	jr	nc,cls2
+	call	SYSERR
+	jr	cls3
+cls2:	ld	a,(iosb)	; check error code (lo-byte)
+	or	a
+	call	nz,SYSERR
+cls3:	ld	a,(fileno)
+	call	FREBUF		; free file buffer
+	xor	a
+	ret
+
+frblk:	push	ix
+	pop	hl
+	ld	a,FB.BUF
+	call	ADDHLA
+	ld	(qio2+Q.BUF),hl	; set buffer address
+	ld	l,(ix+FB.BLK)
+	ld	h,(ix+FB.BLK+1)
+	ld	(qio2+Q.BLK),hl	; set block number
+	inc	hl
+	ld	(ix+FB.BLK),l
+	ld	(ix+FB.BLK+1),h
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl	; set length
+	ld	a,(ix+FB.LUN)
+	ld	(qio2+Q.LUN),a	; set LUN
+	ld	a,IO.RVB
+	ld	(qio2+Q.FUNC),a	; set function code
+	ld	hl,qio2
+	SC	.QIO		; read block
+	ret	c		; TODO: handle error
+	ld	a,(iosb)	; get error code (lo-byte) into A
+	ld	de,(iosb+2)	; get number of bytes processed into DE
+	or	a
+	ret
+
+fwblk:	push	ix
+	pop	hl
+	ld	a,FB.BUF
+	call	ADDHLA
+	ld	(qio2+Q.BUF),hl	; set buffer address
+	ld	l,(ix+FB.BLK)
+	ld	h,(ix+FB.BLK+1)
+	ld	(qio2+Q.BLK),hl	; set block number
+	inc	hl
+	ld	(ix+FB.BLK),l
+	ld	(ix+FB.BLK+1),h
+	ld	hl,0
+	ld	(qio2+Q.BLK+2),hl
+	ld	l,(ix+FB.CNT)
+	ld	h,(ix+FB.CNT+1)
+	ld	(qio2+Q.LEN),hl	; set length
+	ld	a,(ix+FB.LUN)
+	ld	(qio2+Q.LUN),a	; set LUN
+	ld	a,IO.WVB
+	ld	(qio2+Q.FUNC),a	; set function code
+	ld	hl,qio2
+	SC	.QIO		; write block
+	ret	c		; TODO: handle error
+	ld	a,(iosb)	; get error code (lo-byte) into A
+	ld	de,(iosb+2)	; get number of bytes processed into DE
+	or	a
+	ret
+
+; .TESTFILE filespec
+
+tstfil:	call	GETNB		; skip spaces
+	ex	de,hl
+	ld	ix,FDB
+	call	PFN		; parse file name
+	ld	a,E.BADF
+	jr	c,tstset
+	ld	hl,datext
+	call	ADDEXT
+	ld	de,(FDB+F.DEV)
+	ld	a,(FDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNDEV
+	SC	.ALUN
+	jr	c,tstset
+	
+	; TODO: get LUN info in case is TI:, etc.
+
+	ld	hl,IO.ACC OR (SF.ACR OR SF.SHR) SHL 8
+	ld	a,LUNDEV
+	ld	(qio1+Q.LUN),a
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open the file
+	jr	c,tstset
+	ld	a,(iosb)	; check error code (lo-byte)
+	or	a
+	jr	nz,tstset
+	ld	hl,IO.RAT
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,FINFSZ
+	ld	(qio1+Q.LEN),hl
+	ld	hl,qio1
+	SC	.QIO		; read attrib (full filespec)
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	xor	a
+tstset:	ld	(FILERR),a
+	xor	a
+	ret
+
+; .CHAIN filespec args...
+
+chain:
+	scf
+	ret
+
+; Get file number (assumes spaces have been skipped)
+
+getfil:	ld	a,(de)
+	sub	'#'
+	or	a		; ensure CY is clear
+	ld	a,0		; default is #0
+	ret	nz
+	inc	de
+	ld	a,(de)
+	call	ISDIG
+	ret	c
+	call	ATOU
+	ld	a,h
+	or	a
+	scf
+	ret	nz
+	ld	a,l
+	cp	MAXFIL
+	ccf
+	ret
+
+errifn:	ld	hl,ifnerr
+	jp	ERROR
+
+ifnerr:	db	'Invalid file number',0
+
+errfno:	ld	hl,fnoerr
+	jp	ERROR
+
+fnoerr:	db	'File not open',0
+
+; We are here because ALLBUF failed (not enough memory). Channel in
+; use error should have been trapped by ALUN.
+
+errfnm:	ld	a,(fileno)
+	add	a,LUNFIL
+	ld	(qio1+Q.LUN),a
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file, ignore errors
+	jp	ERRMEM
+
+errfmd:	ld	hl,fmderr
+	jp	ERROR		; !!!RSX-11M's AT. does not check file
+				; !!!mode? (thus r/w is possible) or
+				; !!!it just sets <FILERR>?
+				; !!!at least I/O to terminal is
+				; !!!posible using the same channel
+
+fmderr:	db	'Bad file mode',0
+
+datext:	db	'DAT'
+
+;-----------------------------------------------------------------------
+
+; .TESTDEVICE dev
+
+tstdev:	call	GETNB		; skip spaces
+	jp	z,CMDERR
+	ex	de,hl
+	call	PDN		; parse device name
+	jp	c,CMDERR
+	call	FNDEV
+	jr	c,tstd3
+	push	hl
+	ld	hl,EXSTRI	; return result in <EXSTRI> variable
+	ld	(hl),e		; store device name
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ex	de,hl
+	ld	l,c
+	ld	h,0
+	xor	a
+	call	DECSTR		; store unit number
+	ld	a,':'
+	ld	(de),a
+	inc	de
+	pop	ix
+	ld	l,(ix+3)
+	ld	h,0
+	call	tstd1		; store U.ST
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	call	tstd1		; store U.CW
+	bit	US.OFL,(ix+3)
+	ld	hl,devonl
+	call	tstd2
+	bit	US.MNT,(ix+3)
+	ld	hl,devmnt
+	call	tstd2
+	bit	US.PUB,(ix+3)
+	ld	hl,devpub
+tstd2:	ld	a,','
+	ld	(de),a
+	inc	de
+	jp	z,STRCPY
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	jp	STRCPY
+
+tstd3:	ld	de,EXSTRI
+	ld	hl,nodev
+	jp	STRCPY
+
+tstd1:	ld	a,','
+	ld	(de),a		; followed by a comma
+	inc	de
+	xor	a
+	call	DECSTR		; output as decimal
+	ret
+
+devonl:	db	'ONL',0,'OFL',0
+devmnt:	db	'NMT',0,'MNT',0
+devpub:	db	'NPU',0,'PUB',0
+nodev:	db	'NSD',0
+
+; .TESTPARTITION par
+
+tstpar:	call	GETNB		; skip spaces
+	jp	z,CMDERR
+	cp	'*'		; wildcard specified as name?
+	ld	hl,0
+	jr	z,tstp3		; branch if yes to get current partition
+	ld	hl,varnam
+	push	hl
+	ld	b,6
+	call	GETNAM		; get partition name
+	inc	b
+tstp1:	dec	b
+	jr	z,tstp2
+	ld	(hl),' '	; pad with spaces
+	inc	hl
+	jr	tstp1
+tstp2:	pop	hl
+tstp3:	ld	de,askprm	; askprm buffer is large enough
+	SC	.GTPAR		; get partition info
+	ld	hl,askprm+P.NAME
+	jr	nc,tstp4
+	ld	hl,varnam
+	ld	de,0
+tstp4:	push	de
+	ex	de,hl
+	ld	hl,EXSTRI	; return result in <EXSTRI> variable
+	ld	b,6
+tstp5:	ld	a,(de)
+	cp	' '
+	jr	z,tstp6
+	ld	(hl),a		; copy partition name
+	inc	hl
+	inc	de
+	djnz	tstp5
+tstp6:	ld	(hl),','	; follow with a comma
+	inc	hl
+	ex	de,hl
+	pop	bc		; pointer to partition now in BC
+	ld	hl,P.BASE
+	call	tstp8		; copy partition base
+	ld	hl,P.SIZE
+	call	tstp8		; copy partition size
+	ld	hl,nopar
+	ld	a,b
+	or	c		; partition valid?
+	jr	z,tstp7		; use NSP type if not
+	ld	hl,P.ATTR
+	add	hl,bc
+	bit	PA.SYS,(hl)	; system-controlled partition?
+	ld	hl,syspar
+	jr	nz,tstp7	; yes
+	ld	hl,usrpar	; else is user controlled
+tstp7:	call	STRCPY		; copy partition type
+	ret
+
+tstp8:	ld	a,b		; valid partition?
+	or	c
+	jr	z,tstp9		; branch if not
+	add	hl,bc
+	ld	l,(hl)		; else get value
+	ld	h,0
+	xor	a
+	call	DECSTR		; output as decimal
+tstp9:	ld	a,','
+	ld	(de),a		; followed by a comma
+	inc	de
+	ret
+
+usrpar:	db	'USR',0
+syspar:	db	'SYS',0
+nopar:	db	'NSP',0
+
+;-----------------------------------------------------------------------
+
+begin:
+bend:
+	ret
+
+; .EXIT
+; .EXIT value
+
+exit:	call	GETNB
+	or	a
+	jp	z,INDEOF
+	call	EVAL
+	ld	(EXSTAT),de
+	jp	INDEOF
+
+;-----------------------------------------------------------------------
+
+; .STOP
+; .STOP value
+
+stop:	call	GETNB
+	or	a
+	jp	z,INDSTP
+	call	EVAL
+	ld	(EXSTAT),de
+	jp	INDSTP
+
+; .INC varname
+
+incx:	call	getvn2		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,ERRUDF	; error if not found
+	ld	a,c
+	cp	V.NUM
+	scf
+	jp	nz,ERRTYP	; type mismatch
+	inc	hl
+	ld	de,varnam
+	call	SETNV
+	ret
+
+; .DEC varname
+
+decx:	call	getvn2		; get variable name into 'varnam'
+	ld	de,varnam
+	ld	a,c
+	call	GETVAR
+	jp	c,ERRUDF	; error if not found
+	ld	a,c
+	cp	V.NUM
+	scf
+	jp	nz,ERRTYP	; type mismatch
+	dec	hl
+	ld	de,varnam
+	call	SETNV
+	ret
+
+delay:
+pause:
+	ret
+
+; .WAIT taskname
+
+wait:	call	GETNB
+	call	gettn		; get task name
+	ld	hl,varnam
+	ld	a,(hl)		; ensure task name is valid
+	cp	' '
+	jp	z,CMDERR	; TODO: empty task name means TTnn
+	;...check if task in table (started by us)
+	;...if yes, wait for flag
+	;...else check if task is active
+	;........if yes, connect to task and wait
+	;........else set <EXSTAT> to -1??
+	ld	e,XQTFLG
+	SC	.STSE		; stop for event flag
+	ret
+
+; .XQT taskname args
+
+; TODO:
+; - use table of tasks started by us so we can trace exit status
+
+exec:	call	GETNB
+	ld	(LNPTR),de
+	ld	a,1
+	ld	(XQTMOD),a	; set no-wait flag
+	jp	PRMCR		; send command to MCR
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	IO.ACC,0,9,iosb,,<FDB,0>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,512,0,0,>
+qio3:	QIOW$	IO.RPR,0,9,iosb,,<askbuf,130,askprm,,>
+qio4:	QIOW$	IO.KIL,0,9,iosb
+iosb:	ds	4
+
+varnam:	ds	13		; length = 12 + trailing zero
+
+askprm:	ds	132		; .ASKx prompt buffer
+askbuf:	ds	132		; .ASKx response buffer
+
+fileno:	ds	1		; current file number for .OPEN, etc.
+
+str1:	ds	2		; temp dynamic
+str2:	ds	2		;  string pointers
+
+strp:	ds	2		; pointer to string to parse
+ctrs:	ds	2		; pointer to control string
+vartyp:	ds	1		; variable type for .ASKx, etc.
+asklo:	ds	2		; .ASKx lo-range value
+askhi:	ds	2		; .ASKx hi-range value
+askdf:	ds	2		; .ASKx default value
+asktmo:	ds	2		; .ASKx timeout value
+asktmu:	ds	1		; .ASKx timeout units
+askopb:	ds	1		; .ASKx option bits:
+				;        bit 0 = range specified
+				;        bit 1 = default value specified
+				;        bit 2 = timeout specified
+
+STYPE:	ds	1		; <SYMTYP> value
+SNUM:	ds	1		; <NUMBER> value
+SALNM:	ds	1		; <ALPHAN> value
+SLEN:	ds	1		; <STRLEN> value
+SVEOF:	ds	1		; <EOF> value
+SVESC:	ds	1		; <ESCAPE> value
+SVDFLT:	ds	1		; <DEFAUL> value
+SVTMO:	ds	1		; <TIMOUT> value
+FILERR:	ds	1		; <FILERR> value
+EXSTRI:	ds	132		; <EXSTRI> value
+
+	end

@@ -1,0 +1,134 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Time of Day display routine
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSFN.INC
+
+	public	SYSTIM
+
+	extrn	BCD2BIN,VXY,VAHEX,VPUTC
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+SYSTIM:	ld	hl,dtbuf
+	SC	.GDAT
+	ret	c
+
+;;	call	valdt		; validate date and time
+;;	ret	c		; return if error
+
+	VGTOXY	51,0
+	call	PRDAT
+	ld	c,' '
+	call	VPUTC
+	call	PRTIM
+	ret
+
+PRDAT:	ld	a,(dtbuf+7)
+	dec	a		; 1..7 -> 0..6
+	and	7		; blank will be displayed if value invalid
+	ld	hl,dow
+	call	PR3
+	ld	c,' '
+	call	VPUTC
+	ld	hl,dtbuf+3
+	ld	a,(hl)		; day
+	call	VAHEX
+	ld	c,'-'
+	call	VPUTC
+	dec	hl
+	ld	a,(hl)		; month
+	call	BCD2BIN
+	dec	a
+	push	hl
+	ld	hl,month
+	call	PR3
+	pop	hl
+	ld	c,'-'
+	call	VPUTC
+	dec	hl
+	dec	hl
+	ld	a,(hl)		; year
+	call	VAHEX
+	inc	hl
+	ld	a,(hl)
+	call	VAHEX
+	ret
+
+PR3:	ld	c,a
+	add	a,a		; *2
+	add	a,c		; *3
+	add	hl,a
+	ld	b,3
+pm:	ld	c,(hl)
+	call	VPUTC
+	inc	hl
+	djnz	pm
+	ret
+
+PRTIM:	ld	hl,dtbuf+4
+	ld	a,(hl)		; hour
+	call	VAHEX
+	ld	c,':'
+	call	VPUTC
+	inc	hl
+	ld	a,(hl)		; min
+	call	VAHEX
+	ld	c,':'
+	call	VPUTC
+	inc	hl
+	ld	a,(hl)		; sec
+	call	VAHEX
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+; Validate date (only day and month)
+
+valdt:	ld	hl,dtbuf+2
+	ld	c,12h+1		; month
+	call	vldt1		; check if in range
+	ret	c
+	ld	c,31h+1		; day
+vldt1:	ld	a,(hl)
+	inc	hl
+	or	a
+	scf
+	ret	z
+	cp	c
+	ccf
+	ret
+
+dow:	db	'SunMonTueWedThuFriSat   '
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+dtbuf:	ds	8
+
+	end

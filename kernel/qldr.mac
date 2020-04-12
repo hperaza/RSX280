@@ -1,0 +1,77 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('QLDR')
+	TITLE	'RSX280 Loader queue'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Queue TCB to Loader task                                       ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	TCB.INC
+	include	QCB.INC
+	include	QIO.INC
+
+	public	QLDR		; queue task to LDR
+
+	extrn	LDRTCB,$RLIST,$FNTCB,$LKTCB
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Queue TCB to loader task.
+
+; Input:
+;   IX = TCB address
+
+QLDR:	ld	de,(LDRTCB)
+	ld	a,d
+	or	e
+	scf			; TODO: error code!
+	ret	z
+	push	de
+	ld	iy,T.RCVL
+	add	iy,de
+	ld	bc,T.LNK
+	call	$LKTCB		; queue TCB to loader list
+	pop	bc
+	call	$FNTCB		; find loader in active list: IX=TCB, IY=prev
+	ret	c
+	bit	T2.WTD,(ix+T.ST+1) ; loader task is waiting for data?
+	ret	z		; return success if not
+	res	T2.WTD,(ix+T.ST+1) ; else clear waiting bit
+	ld	a,(ix+T.ST+1)
+	or	a		; loader became runnable?
+	jr	nz,q1		; return if not
+	ldw	bc,(ix+T.ACTL)
+	ldw	(iy),bc		; unlink TCB
+	ld	iy,$RLIST
+	ld	bc,T.ACTL
+	call	$LKTCB		; move loader task to ready list
+q1:	xor	a
+	ret
+
+	end

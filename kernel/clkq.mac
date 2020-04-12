@@ -1,0 +1,543 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('CLKQ')
+	TITLE	'RSX180 Clock queue'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Clock Queue routines                                           ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z80
+
+	include	CLKQ.INC
+	include	TCB.INC
+	include	AST.INC
+	include	ERRORS.INC
+
+	cseg
+
+	public	MRKT		; mark-time request
+	public	CMKT		; clear mark-time request(s)
+	public	SRQST		; time-scheduled task request
+	public	DOCLKQ		; dispatch clock queue
+	public	CLNCLQ		; clock queue cleanup
+
+	extrn	TICCNT,$CLKQ,QAST,$ALLOC,$FREE,CLRFLG,SETFLG,TRQST2
+	extrn	$TLIST,$CTCB,FTCB,TICSEC
+
+;-----------------------------------------------------------------------
+
+; Mark Time request.
+
+; Input:
+;   HL = magnitude of time interval
+;   D  = units (1=ticks, 2=seconds, 3=minutes, 4=hours)
+;   E  = optional event flag number
+;   BC = optional AST routine address
+; Returns:
+;   CY flag set on error and error code in A
+
+MRKT:	push	hl
+	push	de
+	push	bc
+	ld	bc,CLQSZ	; BC = packet size
+	call	$ALLOC		; allocate clock queue packet
+	push	hl
+	pop	ix		; IX = packet address
+	pop	bc
+	pop	de
+	pop	hl
+	ret	c		; on error return
+	ld	(ix+C.TYPE),CT.MKT ; set request type
+	ld	(ix+C.EFN),e	; set event flag number
+	ld	(ix+C.AST),c	; set AST routine address
+	ld	(ix+C.AST+1),b
+	ld	c,d		; get units into reg C
+	call	TMULT		; convert time interval to ticks
+	jr	c,mkt1		; on error, free packet and return
+	or	a		; overflow?
+	ld	a,E.INV
+	scf
+	jr	nz,mkt1		; return error as well
+	call	ABSTIM		; compute absolute ticks
+	ld	(ix+C.TIME),e	; set absolute time in packet
+	ld	(ix+C.TIME+1),d
+	ld	(ix+C.TIME+2),l
+	ld	(ix+C.TIME+3),h
+	ld	bc,($CTCB)
+	ld	(ix+C.TCB),c	; set TCB address of requesting task
+	ld	(ix+C.TCB+1),b
+	ld	a,(ix+C.EFN)
+	or	a
+	ld	e,a
+	call	nz,CLRFLG	; clear event flag, if specified
+	jp	nc,LNKCLQ	; on success, queue packet and return
+mkt1:	push	af
+	push	ix
+	pop	hl
+	ld	de,CLQSZ
+	call	$FREE		; on error, free packet and return
+	pop	af
+	ret
+
+; Convert time interval magnitude in HL to ticks according to units in C.
+
+TMULT:	ex	de,hl		; get 32-bit magnitude into HLDE
+	ld	hl,0
+	dec	c		; ticks?
+	ret	z		; return if yes
+	ld	a,(TICSEC)
+	call	MUL328		; multiply by ticks/sec
+	dec	c		; seconds?
+	ret	z		; return if yes
+	ld	a,60
+	call	MUL328		; multiply by sec/min
+	dec	c		; minutes?
+	ret	z		; return if yes
+	ld	a,60
+	call	MUL328		; multiply by min/hour
+	dec	c		; hours?
+	ret	z		; return if yes
+	ld	a,E.INV
+	scf			; else is error
+	ret
+
+; Convert relative time in HLDE to absolute.
+
+ABSTIM:	ld	iy,TICCNT
+	di
+	ld	a,e
+	add	a,(iy)
+	ld	e,a		; compute absolute time from relative time
+	ld	a,d		;  for clock queue
+	adc	a,(iy+1)
+	ld	d,a
+	ld	a,l
+	adc	a,(iy+2)
+	ld	l,a
+	ld	a,h
+	adc	a,(iy+3)
+	ld	h,a
+	ei
+	ret
+
+; AHLDE = HLDE * A
+
+MUL328:	ex	de,hl
+	push	hl
+	or	a
+	sbc	hl,hl
+	exx
+	pop	de		; DE'DE = multiplicand
+	sbc	hl,hl		; HL'HL = product = 0
+	ld	b,8
+m1:	add	hl,hl		; shift multiplicand
+	exx
+	adc	hl,hl
+	exx
+	add	a,a		; get next bit of multiplier into CY
+	jr	nc,m2		; skip if not set
+	add	hl,de		; else accumulate product
+	exx
+	adc	hl,de
+	adc	a,0		; any CY gets into A
+	exx
+m2:	djnz	m1
+	push	hl
+	exx
+	pop	de		; return result in AHLDE
+	ret
+
+;-----------------------------------------------------------------------
+
+; Cancel Mark Time request.
+
+; Input:
+;   BC = AST routine address, or zero for any
+;   E  = event flag number, or zero for any
+; Returns:
+;   CY flag set on error and error code in A
+
+; Notes:
+; - if both BC and E are zero, then all mark-time requests issued by
+;   the task will be removed
+; - if both BC and E are set, all requests issued by the task matching
+;   either the AST address or the event flag number will be removed
+; - if only BC or E is set, then only the requests matching the AST
+;   or the EFN will be removed
+
+CMKT:	ld	ix,($CTCB)
+	ld	d,CT.MKT	; type = mark time requests
+	call	CLNCLQ		; purge clock queue
+	ret
+
+;-----------------------------------------------------------------------
+
+; Time-scheduled task request.
+
+; Input:
+;   HL = address of time parameters: relative request time followed by
+;        the reschedule interval, both in the form 'magnitude + unit'
+;        (4 words in total).
+;   DE = valid TCB address of requested task.
+; Returns:
+;   CY flag set on error and error code in A
+
+SRQST:	push	hl
+	push	de
+	ld	bc,CLQSZ	; BC = packet size
+	call	$ALLOC		; allocate clock queue packet
+	push	hl
+	pop	ix		; IX = packet address
+	pop	de
+	pop	hl
+	ret	c		; on error return
+	ld	(ix+C.TYPE),CT.RUN ; set request type
+	ld	(ix+C.TCB),e	; set TCB address of requesting task
+	ld	(ix+C.TCB+1),d
+	ld	e,(hl)		; get magnitude of time interval
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get units
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	or	a
+	ld	a,E.INV
+	scf
+	jp	nz,mkt1
+	push	hl
+	ex	de,hl
+	call	TMULT		; convert time interval to ticks
+	jr	c,srq1		; on error, free packet and return
+	or	a		; overflow?
+	ld	a,E.INV
+	scf
+	jr	nz,srq1		; return error as well
+	call	ABSTIM		; compute absolute ticks
+	ld	(ix+C.TIME),e	; store absolute time in packet
+	ld	(ix+C.TIME+1),d
+	ld	(ix+C.TIME+2),l
+	ld	(ix+C.TIME+3),h
+	pop	hl
+	ld	e,(hl)		; get magnitude of reschedule interval
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get units
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	or	a
+	ld	a,E.INV
+	scf
+	jp	nz,mkt1
+	ex	de,hl
+	call	TMULT		; convert interval to ticks
+	ld	(ix+C.RSI),e	; store reschedule interval in packet
+	ld	(ix+C.RSI+1),d
+	ld	(ix+C.RSI+2),l
+	ld	(ix+C.RSI+3),h
+	jp	LNKCLQ		; queue packet and return
+
+srq1:	pop	hl
+	jp	mkt1		; on error, free packet and return
+
+;-----------------------------------------------------------------------
+
+; Enter packet into the clock queue. The queue is sorted by increasing
+; absolute time.
+;
+; Input:
+;   IX = address of item to add
+
+LNKCLQ:	ld	iy,$CLKQ	; get addr of list head into IY
+lclk1:	ld	e,(iy)		; get next ptr into DE
+	ld	d,(iy+1)
+	ld	a,d
+	or	e		; end of the list?
+	jr	z,lclk2		; jump if yes
+	push	de
+	push	ix
+	pop	hl		; HL = addr of new item
+	ld	bc,C.TIME+3
+	add	hl,bc
+	ex	de,hl		; DE = addr of timestamp of new item (MSB)
+	add	hl,bc		; HL = addr of timestamp of queued item (MSB)
+	di
+	call	CMPTIM		; compare timestamps
+	ei
+	pop	de
+	jr	c,lclk2		; jump if queued packet has higher time
+	push	de		; else go to next item in list
+	pop	iy
+	jr	lclk1		; and try again
+
+; we arrive here with:
+;   IY = prev item in clock queue
+;   DE = current item in clock queue
+;   IX = new item to insert
+
+lclk2:	push	ix
+	pop	hl
+	ld	(iy),l		; set prev pointer in list
+	ld	(iy+1),h
+	ld	(ix),e		; set next pointer in new item
+	ld	(ix+1),d
+	xor	a		; return success
+	ret
+
+;-----------------------------------------------------------------------
+
+; Check the clock queue, remove expiring and/or expired items and
+; perform the requested action.
+
+DOCLKQ:	ld	iy,$CLKQ
+cclk1:	ld	c,(iy)		; get ptr to queue item into BC
+	ld	b,(iy+1)
+	ld	a,b		; end of list
+	or	c
+	ret	z		; return if yes
+	ld	hl,C.TIME+3
+	add	hl,bc		; HL = addr of time field of packet (MSB)
+	ld	de,TICCNT+3	; DE = addr of absolute system time (MSB)
+	push	bc		; push address of packet
+	di
+	call	CMPTIM		; compare with current system time
+	ei
+	jr	c,cclk4		; return if not expired (current time is lower)
+	pop	ix		; IX = packet
+	push	iy
+	call	ACTION		; execute desired action
+	pop	iy
+	jr	c,cclk3		; on error, leave packet in queue for next time
+	ld	a,(ix+C.TYPE)	; check packet type
+	cp	CT.RUN		; scheduled task request?
+	jr	nz,cclk2	; dequeue and free packet if not
+	ld	e,(ix+C.RSI)	; else check the reschedule interval
+	ld	d,(ix+C.RSI+1)
+	ld	l,(ix+C.RSI+2)
+	ld	h,(ix+C.RSI+3)
+	ld	a,d
+	or	e
+	or	h
+	or	l		; one-time shot?
+	jr	z,cclk2		; dequeue and free packet if yes
+	ld	a,(ix+C.TIME)	; else compute new absolute time
+	add	a,e
+	ld	(ix+C.TIME),a
+	ld	a,(ix+C.TIME+1)
+	adc	a,d
+	ld	(ix+C.TIME+1),a
+	ld	a,(ix+C.TIME+2)
+	adc	a,l
+	ld	(ix+C.TIME+2),a
+	ld	a,(ix+C.TIME+3)
+	adc	a,h
+	ld	(ix+C.TIME+3),a
+	ld	a,(ix)		; unlink the packet
+	ld	(iy),a
+	ld	a,(ix+1)
+	ld	(iy+1),a
+	push	iy
+	call	LNKCLQ		; and relink it back
+	pop	iy
+	jr	cclk1		; loop to check next packet
+
+cclk2:	push	iy
+	call	FRECQP		; else unlink and free the packet
+	pop	iy
+	jr	cclk1		; check next packet
+
+cclk3:	push	ix		; skip this packet
+	pop	iy
+	jr	cclk1		; and check next
+
+cclk4:	pop	bc
+	ret
+
+; Compare timestamp @DE with @HL. Returns CY if time @HL > @DE.
+
+CMPTIM:	ld	b,4
+cmpt1:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	dec	hl
+	dec	de
+	djnz	cmpt1
+	ret
+
+; Execute the specified action
+
+ACTION:	ld	a,(ix+C.TYPE)
+	cp	CT.MKT
+	jr	z,ACTMKT
+	cp	CT.RUN
+	jr	z,ACTRUN
+	xor	a
+	ret
+
+; Mark time request: set event flag and execute AST if specified.
+
+ACTMKT:	ld	c,(ix+C.TCB)
+	ld	b,(ix+C.TCB+1)
+	ld	e,(ix+C.EFN)
+	push	ix
+	push	bc
+	call	SETFLG
+	pop	bc
+	pop	ix
+	;ret	c		; ignore invalid event flag number error
+	ld	e,(ix+C.AST)	; get AST routine address
+	ld	d,(ix+C.AST+1)
+	ld	a,d		; any specified?
+	or	e
+	ret	z		; we're done if not
+	push	bc
+	ex	(sp),ix		; push packet address, pop TCB address
+	ld	hl,0		; no AST arguments
+	ld	c,0		; arg length = 0
+	ld	a,AST.CK	; AST type
+	call	QAST		; queue AST to task
+	pop	ix
+	ret
+
+; Run task at specified time: request task
+
+ACTRUN:	ld	iy,TMPTDB
+	ld	de,'CO'		; set terminal device to CO:
+	ld	c,0
+	ld	(iy+TD.TI),e
+	ld	(iy+TD.TI+1),d
+	ld	(iy+TD.TI+2),c
+	xor	a
+	ld	(iy+TD.ATTR),a	; clear TA.MCR bit
+	ld	(iy+TD.USR),a	; TODO: set UIC to 1,1?
+	ld	(iy+TD.GRP),a
+	ld	(iy+TD.CMD),a	; no command line
+	ld	(iy+TD.CMD+1),a
+	ld	(iy+TD.CML),a
+	ld	(iy+TD.CML+1),a
+	ld	c,(ix+C.TCB)
+	ld	b,(ix+C.TCB+1)
+  IF 1
+	push	ix
+	push	iy
+	ld	iy,$TLIST
+	ld	de,T.TCBL
+	call	FTCB		; just in case - ensure TCB is valid
+	pop	iy		; IX = TCB, IY = TDB
+	call	nc,TRQST2	; request task
+	pop	ix
+	ret
+  ELSE
+	push	bc
+	ex	(sp),ix		; IX = TCB, IY = TDB
+	call	TRQST2		; request task
+	pop	ix
+	ret
+  ENDIF
+
+; Unlink and free the clock queue item
+
+FRECQP:	ld	a,(ix)
+	ld	(iy),a
+	ld	a,(ix+1)
+	ld	(iy+1),a
+	push	ix
+	pop	hl
+	ld	de,CLQSZ
+	push	ix
+	call	$FREE
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Remove from the clock queue all items that belong to the specified
+; task. Called to cancel a specific Time Mark Request, during task
+; cleanup on exit (mark time requests), and/or upon removing a task
+; from STD (scheduled run requests).
+
+; Input:
+;   IX = TCB address
+;   D  = request type
+;   E  = event flag number (zero for any)
+;   BC = AST routine address (zero for any)
+
+CLNCLQ:	ld	iy,$CLKQ
+ccln1:	ld	l,(iy)
+	ld	h,(iy+1)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ex	(sp),ix		; IX = clock packet address
+	pop	hl		; HL = TCB address
+	call	cmatch		; this packet matches?
+	jr	nz,ccln2	; skip it if not
+	push	hl
+	push	de
+	push	bc
+	call	FRECQP		; else unlink and free the packet
+	pop	bc
+	pop	de
+	pop	ix		; TCB address back in IX
+	jr	ccln1
+ccln2:	push	hl
+	ex	(sp),ix		; TCB address back in IX
+	pop	iy
+	jr	ccln1		; loop to ptocess next packet
+
+cmatch:	ld	a,(ix+C.TYPE)	; check request type
+	cp	d
+	ret	nz
+	ld	a,(ix+C.TCB)	; check TCB
+	cp	l
+	ret	nz		; if not the specified one, return
+	ld	a,(ix+C.TCB+1)
+	cp	h
+	ret	nz
+	ld	a,b
+	or	c		; AST specified?
+	jr	nz,cm1		; branch if yes
+	or	e		; EFN specified?
+	ret	z		; return success if not
+	cp	(ix+C.EFN)	; else match EFN
+	ret
+cm1:	ld	a,(ix+C.AST)
+	cp	c		; match AST address
+	ret	nz
+	ld	a,(ix+C.AST+1)
+	cp	b
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+TMPTDB:	ds	TDBSZ
+
+	end

@@ -1,0 +1,417 @@
+;**********************************************************************;
+;                                                                      ;
+;   GIDE master boot loader, included in the FDISK task.               ;
+;   Copyright (C) 2004-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   "New" boot code version.
+;   This is the primary loader that resides in C/H/S=0/0/0
+;   Also contains the partition table.
+
+	.Z180
+
+;;	include Z180.INC
+
+	public	MBBOOT,MBBTSZ
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+himem	equ	0C000h
+
+; GIDE adresses
+
+GIDE	equ	50h		; base address of GIDE board
+
+IdeDOR	equ	GIDE+6		; Digital Output Register
+IdeDat	equ	GIDE+8		; Data Register
+IdeErr	equ	GIDE+9		; Error Register
+IdeSCnt	equ	GIDE+0Ah	; Sector Count
+IdeSNum	equ	GIDE+0Bh	; Sector Number
+IdeCLo	equ	GIDE+0Ch	; Cylinder Low
+IdeCHi	equ	GIDE+0Dh	; Cylinder High
+IdeSDH	equ	GIDE+0Eh	; Drive and Head
+IdeCmd	equ	GIDE+0Fh	; Command / Status
+
+; Commands for IDE hard disk drives:
+
+CmdRd	equ	20h		; Read Sector
+CmdWr	equ	30h		; Write Sector
+CmdInit	equ	91h		; Initialize Drive Params
+
+	cseg
+
+MBBOOT	equ	$
+
+	.phase	8000h		; the P112 loads the boot sector at this loc
+
+boot:	halt			; "new" boot loader signature
+	ld	hl,boot
+	ret
+	jp	b1
+
+	defm	'P112GIDE'	; signature/volume_id (not used by fdisk)
+	defb	10h		; version
+
+	defw	ldr - boot + ptofs	; here, the pointers are located
+	defw	ldr - boot + hddat	; after the signature/volume_id
+
+	defs	boot + 80h - $
+
+b1:	ld	hl,ldr
+	ld	de,himem
+	ld	bc,size
+	ldir			; copy loader to high memory
+	jp	loader
+
+ldr:
+	.dephase
+	.phase	himem
+
+pbeg:
+
+; Place RAM variables at the beginning, to ensure they fall into the
+; first sector:
+
+hddat	equ	$ - pbeg
+
+; Hard disk geometry definition.
+; The following default values are for a WD Tidbit-60
+; These can be overwritten by fdisk or the boot installer.
+
+ncyl:	defw	1024		; number of cylinders
+nheads:	defb	7		; number of heads
+nspt:	defb	17		; number of sectors per track
+
+ptofs	equ	$ - pbeg
+
+nent	equ	8		; number of entries in partition table
+
+ptable:	defw	   1, 1999	; partition table (currently 8 entries)
+	defb	052h,    0
+
+	defw	2000, 1900	; bounds are in UZI tracks units
+	defb	0D1h,    1
+
+	defw	3900,  100	; fields are: start (word), size (word)
+	defb	0D2h,    0	; type (byte) and bootable flag (byte)
+
+	defw	4000, 1700
+	defb	000h,    0
+
+	defw	   0,    0
+	defb	   0,    0
+
+	defw	   0,    0
+	defb	   0,    0
+
+	defw	   0,    0
+	defb	   0,    0
+
+	defw	   0,    0
+	defb	   0,    0
+
+pnum:	defs	1		; booted partition number
+
+; This code assumes the ROM BIOS is still mapped in.
+
+loader:	; find a bootable partition
+
+	ld	hl,ptable+5	; point to bootable flag of first partition
+	ld	b,nent		; number of entries on partition table
+	ld	c,0		; counter of bootable partitions
+	ld	de,0
+check:	ld	a,(hl)		; get bootable flag
+	inc	e
+	or	a		; bootable?
+	jr	z,nope
+	inc	c		; increment counter if yes
+	ld	d,e
+nope:	push	de
+	ld	de,6
+	add	hl,de
+	pop	de
+	djnz	check
+	ld	a,c
+	or	a
+	jr	nz,menu?
+	ld	hl,noboot	; no bootable partitions
+	rst	20h		; print error message
+	ret			; and exit
+
+menu?:	dec	c		; just one bootable partition?
+	jr	nz,menu
+	ld	a,d
+	add	a,'0'
+	jr	try		; yes, go load it
+menu:	ld	hl,msg1		; no -> prompt the user
+	rst	20h
+	ld	hl,ptable+5
+	ld	b,nent
+	ld	c,'1'
+	ld	de,0
+next:	ld	a,(hl)
+	or	a
+	jr	z,m1
+	ld	a,e
+	or	a
+	jr	z,m2
+	ld	a,','
+	rst	18h
+	jr	m3
+m2:	ld	d,c		; save the first bootable partition in D
+m3:	ld	a,c
+	rst	18h
+	inc	e
+m1:	inc	c
+	push	de
+	ld	de,6
+	add	hl,de
+	pop	de
+	djnz	next
+	ld	hl,msg2
+	rst	20h
+m4:	rst	10h		; wait for keypress
+	jr	z,m4
+	cp	CR		; carriage return?
+	jr	nz,nocr
+	ld	a,d		; yes, boot the first bootable partition
+nocr:	rst	18h		; echo the character
+	cp	'1'
+	jr	c,error
+	cp	nent+'0'+1
+	jr	c,try
+error:	ld	hl,badinp
+	rst	20h
+	jr	menu
+
+badinp:	defm	' - Invalid entry'
+	defb	CR, 0		; P112 ROM adds a LF after CR
+
+try:	ld	ix,ncyl		; IX = hard disk geometry parameters
+	ld	iy,ptable
+	sub	'1'
+	ld	(pnum),a	; save partition number for secondary loader
+	ld	e,a
+	ld	d,6
+	mlt	de
+	add	iy,de		; IY = boot partition parameters
+	ld	a,(iy+5)	; check bootable flag
+	or	a
+	jr	z,error
+	ld	e,(iy+0)	; get start of partition into DE
+	ld	d,(iy+1)
+	ld	hl,8000h	; load the secondary loader
+	call	hdread		; read a block from hard disk
+	jr	c,lderror
+	ld	hl,8000h	; validate boot sector
+	ld	bc,200h		; before jumping into it
+	xor	a
+cks:	add	a,(hl)
+	cpi
+	jp	pe,cks
+	or	a		; checksum is zero?
+	jr	nz,lderror	; no, error
+	ld	a,CR
+	rst	18h
+	ld	a,LF
+	rst	18h
+	ld	a,(pnum)
+	ld	c,a		; partition number in C
+	jp	8000h		; go execute boot code
+				; TODO: check for a possible B/P BIOS boot
+				; sector.
+lderror:
+	ld	hl,errmsg
+	rst	20h
+;	rst	38h
+	ret
+
+msg1:	defm	'Boot partition ('
+	defb	0
+msg2:	defm	'): '
+	defb	0
+
+noboot:	defm	'No bootable partitions'
+	defb	CR, 0		; P112 ROM adds a LF after CR
+
+errmsg:	defm	' - Load error'
+	defb	CR, 0
+
+;================================================================
+; GIDE I/O routines
+
+;---------------------------------------------------------------------
+; Compute the CHS Address and Read the specified Block.
+; Enter: DE = partition offset,
+;        HL = load address.
+; Exit : CY set on errors.
+
+hdread:	ld	bc,0		; Wait up to several seconds for drive ready
+WtLp:	in0	a,(IdeCmd)	; Get the Busy Bit
+	rla			; Is it BSY?
+	jr	nc,HdOp0	; ..jump if Not
+	push	bc		; Else Pause: Save overall Counter
+	ld	b,0		;  Set max loop delay
+hdel0:	djnz	hdel0		; ..pause..
+	pop	bc		;    restore regs
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,WtLp		;..loop if more time remains
+	scf
+	ret			; Else Return Timeout Error
+HdOp0:	push	hl
+	ex	de,hl		; Track offset for this partition to HL
+	xor	a
+	ld	b,4
+mul16:	add	hl,hl		; Multiply by 16
+	adc	a,a		;   with 20-bit result
+	djnz	mul16
+	ld	c,a		; result in CHL
+
+; This routine uses physical drive characteristics.
+;
+; The routine computes Head, Sector and Track from a sequential block number
+; defined by: Trk_Offset * 16 + Block#.  The Physical characteristics
+; needed are Number_of_Heads (nheads) and Sectors_per_Track (nspt).
+;
+; Computation of the CHS address is per:
+;
+;   Sector := (Block# MOD nspt)+1	(* Quotient1 := Block# DIV nspt *)
+;   Head   := Quotient1 MOD nheads	(* Quotient2 := Quotient1 DIV nheads *)
+;   Track  := Quotient2
+;
+; Prepare for Disk Read by Preloading all Registers
+
+	ld	a,(ix+3)	; Load Number of Sectors-per-Track (nspt)
+	ld	e,a
+	call	Divide		; Divide CHL by E
+	inc	a		;  Make Sector Number Base at 1
+	out0	(IdeSNum),a	;   Send to GIDE Register
+	ld	a,(ix+2)	; Get Number of Heads (nheads)
+	ld	e,a
+	call	Divide		; Divide CHL (Quotient from above) by E
+	or	0A0h		;  add Fixed Pattern (Assuming Unit 0, Master)
+	out0	(IdeSDH),a	;   Send to GIDE Register
+	out0	(IdeCHi),h	; Send Hi-Byte of Cylinder Number to GIDE
+	out0	(IdeCLo),l	;  and send Lo-Byte of Cylinder Number
+	pop	hl		; Restore Load Address
+	ld	A,0AAh
+	out0	(IdeErr),a	; Activate Retries w/pattern in GIDE Err Reg
+	ld	a,1		; One Block to Read
+	out0	(IdeSCnt),a	;   pass to GIDE
+	ld	b,5		; Give it a few tries
+HDOps0:	push	bc		; Save Count
+	call	GoGIDE		; Try Read/Write Operation
+	pop	bc
+	ret	z		; ..quit if Ok
+	djnz	HDOps0		; Loop while tries remain
+	scf			; Else return Error
+	ret
+
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; The IDE/ATA Command Block layout is:
+;
+; Byte		 Format    R/W/V    Init    RdID    Power   Diag   PwrSet  Home
+; 0 [ Command ]    50    20/30/40    91	     EC   E0/E1/E5   90    E2/E3    10
+; 1 [ BitMap  ]    70     7C/(7E)    74      40	     00	     00	    04      40
+; 2 [ Drv/Hd  ]   0AnH     0AnH    0AnH-1   0AnH     -	     -	    -      0An0
+; 3 [ Cyl#(Hi)]   CylHi    CylHi    CylHi    -	     -	     -	    -       -
+; 4 [ Cyl#(Lo)]   CylLo    CylLo    CylLo    -	     -	     -	    -       -
+; 5 [ Sector# ]	   -	   Sctr	     -	     -	     -	     -	    -       -
+; 6 [ Sctr Cnt]	   -	   SCnt     NSecs    -	     -	     -	  n*5Secs   -
+; 7 [ Err Reg ]	   -	   (0AA)     -	     -	     -	     -	    -       -
+; 8 [ Dgtl Out]	   -	    -	     -	     -	     -	     -	    -       -
+;   Rslts/Stat:   Stat     Stat     Stat    Stat    SCnt    Err	    -      Stat
+;		  Reg      Reg      Reg     Reg     Reg     Reg	           Reg
+;
+; Enter: GIDE Registers primed for Read/Write.
+;	 (_cmdblk+0) has respective Read/Write Command
+; Exit :  A = 0, Zero Flag Set (Z) if Ok, Zero Flag Clear (NZ) if Errors
+;	  H = Error Byte value (If any)
+;	  L = Status Byte value (If any)
+;::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+; Raw GIDE Driver.
+;   The Target is (hopefully) still ready from initial test
+;   HL = load buffer
+
+GoGIDE:	ld	bc,IdeDat	;   Pre-load Data Reg Adr in C, 0 in B
+
+; Read a Sector from the Disk, or Disk Parameters to the Buffer
+
+HRead:	ld	a,CmdRd
+	call	Cmd_Wt		; Send Command in A, Return when Ready
+HRead0:	in0	a,(IdeCmd)	; Get Status
+	bit	3,a		; Ready?
+	jr	z,HRead0	; ..loop if Not
+	inir			; Read 512 bytes
+	inir			;   in two-256 byte sequences
+HdFini:	call	Wt_Rdy		; Wait for drive to become Ready
+;; -- May need this with some Older Drives that send ECC bytes with no warning!
+;;	bit	4,a		; DRQ Shifted?
+;;	jr	z,HdFnQ		; ..jump if Not
+;;	in0	a,(IdeDat)	; Else Read data reg (ECC Bytes?
+;;	jr	HdFini		; ..loop til no more data
+
+HdFnQ:	in0	a,(IdeCmd)	; Restore byte
+	and	10001001B	; Busy, DRQ, or Error?
+	ret	z		; ..exit if Ok
+	scf			; Else Set Error Status
+	ret
+
+;================== SUPPORT ROUTINES ==================
+; Divide 24-bit Number by 8-bit Number returning Quotient and Remainder
+; Enter: CHL = 24-bit Unsigned Dividend
+;	 E = 8-bit Unsigned Divisor
+; Exit : CHL = 24-bit Quotient
+;	 A = 8-bit Remainder
+; Uses : AF,BC,HL
+
+Divide:	ld	b,24+1		; 25 times thru Loop
+	xor	a		; Clear Remainder and Carry
+Div:	adc	a,a		; Shift Accum Left + Carry
+	sbc	a,e		;  Subtract Divisor
+	jr	nc,Div0		; ..jump if it Worked
+	add	a,e		; Else restore Accum & Carry
+Div0:	ccf			; Flip Carry Bit
+	adc	hl,hl		;  Shift any Carry into
+	rl	c		;   Dividend/Quotient
+	djnz	Div		;  ..loop til Done
+	ret
+
+;.....
+; Send command to the IDE Command Register, fall thru to wait for Ready Status
+
+Cmd_Wt:	out0	(IdeCmd),a	;   Start Operation
+			;..fall thru to wait for Ready
+; Wait for Drive to become Ready (No Timeout)
+
+Wt_Rdy:	in0	a,(IdeCmd)	; Get Drive Status
+	rla			; Ready?
+	jr	c,Wt_Rdy	; ..loop if Not
+	ret
+
+size	equ	$ - pbeg
+
+	.dephase
+
+MBBTSZ	equ	$ - MBBOOT
+
+	end

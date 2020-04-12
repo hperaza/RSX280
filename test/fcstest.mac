@@ -1,0 +1,111 @@
+	.z80
+
+	.xlist
+	include	SYSFN.INC
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+	.list
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	GETLN,PUTCH,PUTSTR,PERROR,EXIT
+	extrn	FOPEN,FCREAT,FCLOSE,FGETLN,FPUTLN,PFN
+
+;-----------------------------------------------------------------------
+
+; Test of several FCSLIB functions.
+
+	cseg
+
+TEST:	ld	sp,stack
+
+t1:	ld	hl,strbuf
+	ld	e,80
+	ld	d,0
+	ld	bc,msg1
+	call	GETLN		; get input file name
+	jp	c,quit
+
+	ld	ix,(inpf+FC.FDB)
+	ld	hl,strbuf
+	call	PFN
+	jr	nc,t2
+
+	ld	hl,msg3
+	call	PUTSTR
+	jr	t1
+
+t2:	ld	hl,strbuf
+	ld	e,80
+	ld	d,0
+	ld	bc,msg2
+	call	GETLN		; get output file name
+	jp	c,quit
+
+	ld	ix,(outf+FC.FDB)
+	ld	hl,strbuf
+	call	PFN
+	jr	nc,t3
+
+	ld	hl,msg3
+	call	PUTSTR
+	jr	t2
+
+t3:	ld	ix,inpf
+	call	FOPEN		; open input file
+	jp	c,error
+
+	ld	ix,outf
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT		; create output file
+	jp	c,error
+
+t4:	ld	hl,strbuf
+	ld	b,128
+	ld	ix,inpf
+	call	FGETLN		; read line from input file
+	jr	nc,t5
+	cp	E.EOF
+	jr	z,t6
+	jp	error
+
+t5:	ld	hl,strbuf
+	ld	ix,outf
+	call	FPUTLN		; write line to output file
+	jp	c,error
+
+	jr	t4
+
+t6:	ld	ix,inpf
+	call	FCLOSE		; close input file
+
+	ld	ix,outf
+	call	FCLOSE		; close output file
+
+error:	push	af
+	ld	c,LF
+	call	PUTCH
+	pop	af
+	call	PERROR
+quit:	ld	hl,EX.SUC
+	jp	EXIT
+
+msg1:	db	LF,'Input file: ',0
+msg2:	db	LF,'Output file: ',0
+msg3:	db	LF,'Bad file name, try again',CR,0
+
+	dseg
+
+strbuf:	ds	128
+
+inpf:	FSR$	,<1 SHL FM.RD>,1,9
+outf:	FSR$	,<1 SHL FM.WR>,2,9
+
+	ds	256
+stack	equ	$
+
+	end	TEST

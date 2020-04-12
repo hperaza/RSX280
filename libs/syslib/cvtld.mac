@@ -1,0 +1,109 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;  Convert long value in registers DEBC to unsigned decimal string @HL,
+;  A = filler.
+
+	.Z80
+
+	public	CVTLD
+
+	cseg
+
+CVTLD:	push	hl
+	ex	de,hl		; get value into HLDE
+	ld	e,c
+	ld	d,b
+	ld	(filler),a
+	ld	bc,tmpnum+9
+	call	LNGASC		; convert to ASCII
+	pop	hl
+	ld	d,0		; leading zero flag
+	ld	e,10		; 10 digits max
+next:	inc	bc
+	ld	a,(bc)
+	cp	'0'
+	jr	nz,d1
+	inc	d
+	dec	d
+	jr	nz,d2
+	ld	a,e
+	dec	a
+	ld	a,(bc)
+	jr	z,d2
+	ld	a,(filler)
+	or	a
+	jr	nz,d2
+	jr	skip
+d1:	ld	d,1
+d2:	ld	(hl),a		; store digit in dest buffer
+	inc	hl
+skip:	dec	e
+	jr	nz,next
+	ret
+
+; Convert 32-bit HEX-value to ASCII decimal.
+; HLDE = value, BC = buffer *end* address.
+; Returns buffer start address -1 in BC.
+
+LNGASC:	ld	a,5
+	ex	de,hl
+la1:	push	af
+	push	bc
+	call	BCD
+	pop	bc
+	push	af
+	and	0Fh
+	add	a,'0'
+	ld	(bc),a
+	dec	bc
+	pop	af
+	rrc	a
+	rrc	a
+	rrc	a
+	rrc	a
+	and	0Fh
+	add	a,'0'
+	ld	(bc),a
+	dec	bc
+	pop	af
+	dec	a
+	jr	nz,la1
+	ret
+
+BCD:	ld	b,32
+	xor	a
+bd1:	add	hl,hl
+	rl	e
+	rl	d
+	adc	a,a
+	daa
+	jr	nc,bd2
+	inc	l
+bd2:	djnz	bd1
+	ret
+
+	dseg
+
+filler:	ds	1
+tmpnum:	ds	10
+
+	end

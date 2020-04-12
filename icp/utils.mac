@@ -1,0 +1,532 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ICP, an Indirect Command Processor for        ;
+;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   Misc Utility Routines.
+
+	.Z80
+
+	include	ICP.INC
+	include	FCB.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	cseg
+
+	public	SKIPBL,SKPNAM,STRCPY,STRLEN,GETNAM,GETNB,GETFS
+	public	ATOI,ATOU,ISDIG,ISALPN,ISBLNK,ISEOL,STRPEL,HLNEG
+	public	FNDCMD,DECSTR,HEXSTR,OCTSTR,AHEX2,ADDHLA,FNBSTR
+
+	extrn	UCASE
+
+;-----------------------------------------------------------------------
+
+; Convert signed (ATOI) or unsigned (ATOU) ASCII decimal number to
+; binary. On input DE points to string. On output HL contains the
+; converted value and DE points to the first non-digit character.
+; CY is set on overflow.
+
+ATOI:	ld	a,(de)
+	cp	'+'
+	jr	z,atoi0
+	cp	'-'
+	jr	nz,ATOU
+	ld	hl,HLNEG
+	push	hl		; negate HL before return
+atoi0:	inc	de
+ATOU:	ld	hl,0
+atoi1:	ld	a,(de)
+	call	ISDIG
+	ccf
+	ret	nc
+	sub	'0'
+	push	bc
+	call	adddig		; note CY on overflow
+	pop	bc
+	inc	de
+	jr	nc,atoi1
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; HL = -HL
+
+HLNEG:	ld	a,h
+	cpl
+	ld	h,a
+	ld	a,l
+	cpl
+	ld	l,a
+	inc	hl
+	ret
+
+; Check for digit, returns CY clear on success
+
+ISDIG:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+; Check for alphanumeric character
+
+ISALPN:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret	nc
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+; Return Z if blank
+
+ISBLNK:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret	z
+	cp	CR
+	ret
+
+; Return Z if EOL
+
+ISEOL:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Skip blanks (HL)
+
+SKIPBL:	ld	a,(hl)
+	or	a
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	hl
+	jr	SKIPBL
+
+; Skip name (HL)
+
+SKPNAM:	ld	a,(hl)
+	or	a
+	ret	z
+	call	ISBLNK
+	jr	z,SKIPBL	; return via SKIPBL
+	inc	hl
+	jr	SKPNAM
+
+; Copy null-terminated string from (HL) to (DE)
+
+STRCPY:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Get null-terminated string length into BC
+
+STRLEN:	ld	bc,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	bc
+	jr	strl1
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+GETNAM:	call	GETFS
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+gn2:	call	GETFS
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+GETNB:	ld	a,(de)
+	or	a
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNB
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'='
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'('
+	ret	z
+	cp	')'
+	ret	z
+	cp	'['
+	ret	z
+	cp	']'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	','
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'/'
+	ret	z
+	ret
+gf1:	xor	a
+	ret
+
+; Strip EOL (HL)
+
+STRPEL:	push	hl
+	call	STRLEN
+	ld	a,b
+	or	c
+	jr	z,strp1
+	dec	hl
+	ld	a,(hl)
+	call	ISEOL
+	jr	nz,strp1
+	ld	(hl),0
+strp1:	pop	hl
+	ret
+
+; HL = HL + A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert FNB @IX to string @HL, return string length in DE.
+
+FNBSTR:	push	hl
+	ld	a,(ix+F.DEV)
+	ld	(hl),a		; store device name
+	inc	hl
+	ld	a,(ix+F.DEV+1)
+	ld	(hl),a
+	inc	hl
+	ld	e,(ix+F.UNIT)
+	ld	d,0
+	ex	de,hl
+	xor	a
+	call	DECSTR		; store unit number
+	ex	de,hl
+	ld	(hl),':'
+	inc	hl
+	ld	(hl),'['
+	inc	hl
+	ex	de,hl
+	push	ix
+	pop	bc
+	ld	hl,F.DIR
+	add	hl,bc
+	push	bc
+	call	CPNAME		; store directory name
+	pop	bc
+	ld	a,']'
+	ld	(de),a
+	inc	de
+	ld	hl,F.NAME
+	add	hl,bc
+	push	bc
+	call	CPNAME		; store file name
+	pop	bc
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	hl,F.EXT
+	add	hl,bc
+	call	CPEXT		; store extension
+	ex	de,hl
+	ld	(hl),';'
+	inc	hl
+	ld	e,(ix+F.VER)
+	ld	d,(ix+F.VER+1)
+	ex	de,hl
+	xor	a
+	call	DECSTR		; store version number
+	ex	de,hl
+	pop	bc		; BC = ptr to start of string
+	ld	e,l
+	ld	d,h
+	or	a
+	sbc	hl,bc
+	ex	de,hl		; HL = end of string, DE = length
+	ret
+
+; Copy name (CPNAME) or extension (CPEXT) from (HL) to (DE).
+
+CPNAME:	ld	b,9
+	jr	cpn1
+CPEXT:	ld	b,3
+cpn1:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	z
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	cpn1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert value in HL to decimal ASCII string @DE, A = filler.
+
+DECSTR:	ld	(filler),a
+	push	hl
+	push	de
+	ex	(sp),ix		; get ptr to string into IX
+	push	bc
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	(ix),a
+	inc	ix
+	ld	(ix),0
+	pop	bc
+	ex	(sp),ix		; restore old IX
+	pop	de
+	pop	hl
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	ld	a,b
+	or	a
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	ld	b,1
+sb3:	ld	(ix),c
+	inc	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert value in HL to hexadecimal string @DE, A = filler.
+
+HEXSTR:	ld	(filler),a
+	push	bc
+	ld	c,4
+	ld	a,h
+	call	ahex
+	ld	a,l
+	call	ahex
+	xor	a
+	ld	(de),a
+	pop	bc
+	ret
+
+AHEX2:	push	af
+	ld	a,'0'
+	ld	(filler),a
+	ld	c,1
+	pop	af
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	nhex
+	pop	af
+nhex:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	cp	'0'
+	jr	nz,nh1
+	dec	c
+	jr	z,nh1
+	ld	a,(filler)
+	or	a
+	ret	z
+nh1:	ld	(de),a
+	inc	de
+	ld	c,1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert value in HL to octal string @DE, A = filler.
+
+OCTSTR:	ld	(filler),a
+	push	bc
+	ld	c,6
+	xor	a
+	add	hl,hl
+	rla
+	call	aoct
+	ld	b,5
+oct1:	xor	a
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	call	aoct
+	djnz	oct1
+	xor	a
+	ld	(de),a
+	pop	bc
+	ret
+
+aoct:	add	a,'0'
+	cp	'0'
+	jr	nz,ao1
+	dec	c
+	jr	z,ao1
+	ld	a,(filler)
+	or	a
+	ret	z
+ao1:	ld	(de),a
+	inc	de
+	ld	c,1
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find command in table.
+; Input:
+;   HL = pointer to start of command name
+;   DE = address of command table
+; Returns:
+;   HL = pointer to start of command name
+;   DE = pointer to char after command
+;   BC = address from table
+;   CY set if command not found
+
+FNDCMD:	ld	a,(de)		; end of table?
+	or	a
+	scf
+	ret	z		; return error if yes
+	push	hl
+	ex	de,hl		; HL = table, DE = input
+fnd1:	ld	a,(de)
+	cp	'-'
+	jr	z,fnd5
+	call	UCASE
+	call	ISALPN		; check for alphanumeric
+	jr	c,fnd2		; jump if it is not
+fnd5:	cp	(hl)		; else compare characters
+	jr	nz,fnd3		; jump if they don't match
+	inc	hl		; else advance pointers
+	inc	de
+	jr	fnd1		; and continue checking
+fnd2:	ld	a,(hl)		; check for end of keyword in table
+	or	a		; if so, we have a match
+	jr	z,fnd4
+fnd3:	ex	de,hl
+	pop	hl		; else try another
+fskip:	ld	a,(de)
+	inc	de
+	or	a
+	jr	nz,fskip
+	inc	de
+	inc	de
+	jr	FNDCMD
+fnd4:	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+filler:	ds	1
+
+	end

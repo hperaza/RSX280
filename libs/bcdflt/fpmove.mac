@@ -1,0 +1,22 @@
+	.Z80
+
+	name	'FPMOVE'
+
+	public	FMOVE,FCOPY
+
+	extrn	FR0,FR1
+
+	cseg
+
+; Copy FR0 to FR1
+
+FMOVE:	ld	hl,FR0
+	ld	de,FR1
+
+; Copy floating point number at (HL) to (DE)
+
+FCOPY:	ld	bc,6
+	ldir
+	ret
+
+	end

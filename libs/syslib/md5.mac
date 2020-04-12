@@ -1,0 +1,469 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;   Simple MD5 hash computation routines, as per RFC 1321.
+;   The code can process message in several chunks and has
+;   not been optimized for speed.
+
+	.Z80
+
+	public	MD5INI,MD5UPD,MD5END
+
+	extrn	CPY32M,CPL32M,ADD32M,AND32M,OR32M,XOR32M,RLC32M
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; MD5 variable initializations, call this before starting a new hash
+; computation.
+
+MD5INI:	ld	hl,h0
+	ld	de,a0
+	ld	bc,16
+	ldir			; init hash variables a0,b0,c0,d0
+	ld	hl,md5len
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	(hl),0
+	ld	bc,8-1
+	ldir			; clear length accum
+	ret
+
+; Process the next 512-bit (64 bytes) chunk of the message.
+; Called with HL = msg address.
+
+MD5UPD:	ld	de,512
+	push	hl
+	call	UPDLEN		; update message length
+	pop	hl
+
+MD5UP1:	; break chunk into sixteen 32-bit words w[j], 0 <= j <= 15
+
+	ld	(w),hl
+
+	; initialize hash value for this chunk
+
+	ld	hl,a0
+	ld	de,a1
+	ld	bc,16
+	ldir			; a1,b1,c1,d1 = a0,b0,c0,d0
+
+	; main loop
+
+	ld	c,0		; i
+
+loop:	ld	a,c
+	cp	16
+	jr	nc,mm1
+
+	; if i < 16
+
+	ld	de,b1
+	ld	hl,temp
+	call	CPL32M
+
+	ld	de,d1
+	ld	hl,temp
+	call	AND32M
+
+	ld	de,b1
+	ld	hl,f
+	call	CPY32M
+
+	ld	de,c1
+	ld	hl,f
+	call	AND32M
+
+	ld	de,temp
+	ld	hl,f
+	call	OR32M		; f = (b1 & c1) | (~b1 & d1)
+
+	ld	b,c		; g = i
+	jp	mm4
+
+mm1:	cp	32
+	jr	nc,mm2
+
+	; else if i < 32
+
+	ld	de,d1
+	ld	hl,temp
+	call	CPL32M
+
+	ld	de,c1
+	ld	hl,temp
+	call	AND32M
+
+	ld	de,d1
+	ld	hl,f
+	call	CPY32M
+
+	ld	de,b1
+	ld	hl,f
+	call	AND32M
+
+	ld	de,temp
+	ld	hl,f
+	call	OR32M		; f = (d1 & b1) | (~d1 & c1)
+
+	ld	a,c
+	add	a,a		; *2
+	add	a,a		; *4
+	add	a,c		; *5
+	inc	a		; +1
+	and	0Fh		; %16
+	ld	b,a		; g = (5*i + 1) % 16
+	jr	mm4
+
+mm2:	cp	48
+	jr	nc,mm3
+
+	; else if i < 48
+
+	ld	de,b1
+	ld	hl,f
+	call	CPY32M
+
+	ld	de,c1
+	ld	hl,f
+	call	XOR32M
+
+	ld	de,d1
+	ld	hl,f
+	call	XOR32M		; f = b1 ^ c1 ^ d1;
+
+	ld	a,c
+	add	a,a		; *2
+	add	a,c		; *3 note: overflow discarded
+	add	a,5		; +5
+	and	0Fh		; %16
+	ld	b,a		; g = (3*i + 5) % 16
+	jr	mm4
+
+mm3:	; else
+
+	ld	de,d1
+	ld	hl,f
+	call	CPL32M
+
+	ld	de,b1
+	ld	hl,f
+	call	OR32M
+
+	ld	de,c1
+	ld	hl,f
+	call	XOR32M		; f = c1 ^ (b1 | ~d1);
+
+	ld	a,c
+	add	a,a		; *2
+	add	a,a		; *4 note: overflow discarded
+	add	a,a		; *8
+	sub	c		; *7
+	and	0Fh		; %16
+	ld	b,a		; g = (7*i) % 16
+
+mm4:	ld	de,a1
+	ld	hl,f
+	call	ADD32M
+
+	ld	l,c
+	ld	h,0
+	add	hl,hl		; *2
+	add	hl,hl		; *4 (32-bit word index)
+	ld	de,k
+	add	hl,de
+	ex	de,hl
+	ld	hl,f
+	call	ADD32M
+
+	ld	l,b
+	ld	h,0
+	add	hl,hl		; *2
+	add	hl,hl		; *4 (32-bit word index)
+	ld	de,(w)
+	add	hl,de
+	ex	de,hl
+	ld	hl,f
+	call	ADD32M		; f = f + a1 + k[i] + w[g]
+
+	ld	de,d1
+	ld	hl,a1
+	call	CPY32M		; a1 = d1
+
+	ld	de,c1
+	ld	hl,d1
+	call	CPY32M		; d1 = c1
+
+	ld	de,b1
+	ld	hl,c1
+	call	CPY32M		; c1 = b1
+
+	ld	l,c
+	ld	h,0
+	ld	de,rs
+	add	hl,de
+	ld	b,(hl)
+	ld	hl,f
+	call	RLC32M
+	ex	de,hl
+	ld	hl,b1
+	call	ADD32M		; b1 = b1 + RLC(f, rs[i]);
+
+	inc	c
+	ld	a,c
+	cp	64
+	jp	nz,loop
+
+	; add this chunk's hash to result so far
+
+	ld	hl,a0
+	ld	de,a1
+	call	ADD32M
+
+	ld	hl,b0
+	ld	de,b1
+	call	ADD32M
+
+	ld	hl,c0
+	ld	de,c1
+	call	ADD32M
+
+	ld	hl,d0
+	ld	de,d1
+	call	ADD32M
+
+	ret
+
+; Process last chunk of message, which *must* be < 512 bits (64 bytes).
+; Called with HL = address of msg, and E = length in bytes.
+; Returns a pointer to the 128-bit (16 bytes) hash in HL.
+
+MD5END:	ld	d,0
+	push	de
+	inc	e
+	dec	e		; check length
+	jr	z,md50		; jump if zero (null message)
+	ld	c,e
+	ld	b,d
+	ld	de,md5pad	; else copy message to padding buffer
+	ldir
+md50:	pop	hl
+	push	hl
+	add	hl,hl		; *2
+	add	hl,hl		; *4
+	add	hl,hl		; *8 (length now in bits)
+	ex	de,hl
+	call	UPDLEN		; update message length
+	pop	de
+	ld	hl,md5pad
+
+	ld	a,56-1
+	sub	e
+	jr	nc,md53		; jump if remaining length < 56 (448 bits)
+	push	hl
+	add	hl,de
+	ld	(hl),80h	; add "1" bit
+	ld	a,64
+	sub	e
+	dec	a
+	jr	z,md52
+md51:	inc	hl
+	ld	(hl),0		; zero-fill
+	dec	a
+	jr	nz,md51
+md52:	pop	hl
+	call	MD5UP1		; update hash, do not update length
+	ld	hl,md5pad
+	ld	a,56
+	push	hl
+	jr	md54
+
+md53:	push	hl
+	add	hl,de
+	ld	(hl),80h	; add "1" bit
+	inc	hl
+	or	a
+	jr	z,md55
+md54:	ld	(hl),0		; zero-fill
+	inc	hl
+	dec	a
+	jr	nz,md54
+md55:	ex	de,hl
+	ld	hl,md5len
+	ld	bc,8
+	ldir			; add length in bits to bytes 56..63
+	pop	hl
+	call	MD5UP1		; update hash
+	ld	hl,a0		; return pointer to result
+	ret
+
+; Update 64-bit message length with value in DE
+
+UPDLEN:	ld	hl,md5len
+	ld	a,(hl)
+	add	a,e
+	ld	(hl),a
+	inc	hl
+	ld	a,(hl)
+	adc	a,d
+	ld	(hl),a
+	ret	nc
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Examples:
+
+; MD5("The quick brown fox jumps over the lazy dog") =
+; 9e107d9d372bb6826bd81d3542a419d6
+
+; MD5("The quick brown fox jumps over the lazy dog.") =
+; e4d909c290d0fb1ca068ffaddf22cbd0
+
+; MD5("") = d41d8cd98f00b204e9800998ecf8427e (zero-length string)
+
+;-----------------------------------------------------------------------
+
+; Note: All variables are unsigned 32 bit and wrap modulo 2^32 when
+; calculating.
+
+; rs specifies the per-round shift amounts
+
+rs:	db	7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22
+	db	5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20
+	db	4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23
+	db	6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+
+; Use binary integer part of the sines of integers (in radians) as constants
+
+k:	db	078h,0A4h,06Ah,0D7h
+	db	056h,0B7h,0C7h,0E8h
+	db	0DBh,070h,020h,024h
+	db	0EEh,0CEh,0BDh,0C1h
+	db	0AFh,00Fh,07Ch,0F5h
+	db	02Ah,0C6h,087h,047h
+	db	013h,046h,030h,0A8h
+	db	001h,095h,046h,0FDh
+	db	0D8h,098h,080h,069h
+	db	0AFh,0F7h,044h,08Bh
+	db	0B1h,05Bh,0FFh,0FFh
+	db	0BEh,0D7h,05Ch,089h
+	db	022h,011h,090h,06Bh
+	db	093h,071h,098h,0FDh
+	db	08Eh,043h,079h,0A6h
+	db	021h,008h,0B4h,049h
+	db	062h,025h,01Eh,0F6h
+	db	040h,0B3h,040h,0C0h
+	db	051h,05Ah,05Eh,026h
+	db	0AAh,0C7h,0B6h,0E9h
+	db	05Dh,010h,02Fh,0D6h
+	db	053h,014h,044h,002h
+	db	081h,0E6h,0A1h,0D8h
+	db	0C8h,0FBh,0D3h,0E7h
+	db	0E6h,0CDh,0E1h,021h
+	db	0D6h,007h,037h,0C3h
+	db	087h,00Dh,0D5h,0F4h
+	db	0EDh,014h,05Ah,045h
+	db	005h,0E9h,0E3h,0A9h
+	db	0F8h,0A3h,0EFh,0FCh
+	db	0D9h,002h,06Fh,067h
+	db	08Ah,04Ch,02Ah,08Dh
+	db	042h,039h,0FAh,0FFh
+	db	081h,0F6h,071h,087h
+	db	022h,061h,09Dh,06Dh
+	db	00Ch,038h,0E5h,0FDh
+	db	044h,0EAh,0BEh,0A4h
+	db	0A9h,0CFh,0DEh,04Bh
+	db	060h,04Bh,0BBh,0F6h
+	db	070h,0BCh,0BFh,0BEh
+	db	0C6h,07Eh,09Bh,028h
+	db	0FAh,027h,0A1h,0EAh
+	db	085h,030h,0EFh,0D4h
+	db	005h,01Dh,088h,004h
+	db	039h,0D0h,0D4h,0D9h
+	db	0E5h,099h,0DBh,0E6h
+	db	0F8h,07Ch,0A2h,01Fh
+	db	065h,056h,0ACh,0C4h
+	db	044h,022h,029h,0F4h
+	db	097h,0FFh,02Ah,043h
+	db	0A7h,023h,094h,0ABh
+	db	039h,0A0h,093h,0FCh
+	db	0C3h,059h,05Bh,065h
+	db	092h,0CCh,00Ch,08Fh
+	db	07Dh,0F4h,0EFh,0FFh
+	db	0D1h,05Dh,084h,085h
+	db	04Fh,07Eh,0A8h,06Fh
+	db	0E0h,0E6h,02Ch,0FEh
+	db	014h,043h,001h,0A3h
+	db	0A1h,011h,008h,04Eh
+	db	082h,07Eh,053h,0F7h
+	db	035h,0F2h,03Ah,0BDh
+	db	0BBh,0D2h,0D7h,02Ah
+	db	091h,0D3h,086h,0EBh
+
+; Initial values for hash variables
+
+h0:	db	001h,023h,045h,067h
+h1:	db	089h,0ABh,0CDh,0EFh
+h2:	db	0FEh,0DCh,0BAh,098h
+h3:	db	076h,054h,032h,010h
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+a0:	ds	4	; these variables will contain the final hash
+b0:	ds	4
+c0:	ds	4
+d0:	ds	4
+
+a1:	ds	4
+b1:	ds	4
+c1:	ds	4
+d1:	ds	4
+
+f:	ds	4
+temp:	ds	4
+
+md5pad:	ds	64	; 512-bit message padding buffer
+md5len:	ds	8	; 64-bit message length accum.
+w:	ds	2	; ptr to 32-bit word in message
+
+	end

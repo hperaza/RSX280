@@ -1,0 +1,456 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	cseg
+
+	include	PIP.INC
+	include	FCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+	public	PIPCPY,SRCFBK,DSTFBK,SRCBUF,DSTBUF
+
+	extrn	LFNB,RFNB,CRFNB,ASGN,NRPARM,SWBITS,SWVAL,SEARCH
+	extrn	FCREAT,FOPEN,FREAD,FWRITE,FCLOSE,FWATTR,SETDIR
+	extrn	SETNAM,SETEXT,SRCFDB,DSTFDB,NFILES,STRBUF,FRDBLK
+	extrn	FWRBLK,FGETLN,FPUTLN,?FINCB
+
+	extrn	SYSERR,ERRNF,ERRFNB
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+; TODO:
+; - if /ME switch specified, then LFNB is mandatory (no wildcards)
+;   and all src files will be merged into a single dst
+; - if /MV switch supplied (excludes /ME, LFNB should be a directory
+;   name) then simply copy the directory entry to the new dir and
+;   mark srcs as deleted (better in a separate MOVE routine).
+; - prevent matching the new output file being created (set it to
+;   hidden?), as it could cause infinite copy loop.
+; - what if output file is a directory? e.g. [MASTER]USER.DIR;1=...
+
+;-----------------------------------------------------------------------
+
+PIPCPY:	ld	hl,RFNB
+	ld	(CRFNB),hl
+
+loop:	call	CHKSDV		; check source device
+	jp	c,SYSERR
+	bit	DV.DIR,a	; directory device?
+	jr	nz,cp1		; jump if yes to search for files
+
+	ld	hl,(CRFNB)
+	ld	de,SRCFDB
+	ld	bc,FDBSZ
+	ldir
+	call	cpfile		; else copy from device
+	jp	c,SYSERR
+	jr	cp2
+
+cp1:	ld	ix,(CRFNB)
+	ld	hl,docpy	; HL = callback routine address
+	call	SEARCH		; search for files
+	jp	c,SYSERR
+
+cp2:	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs in command line?
+	ret	z		; return if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else select next filespec
+	jr	loop		; and loop until all processed
+
+;-----------------------------------------------------------------------
+
+; Copy single file.
+
+docpy:	ld	a,c
+	or	a		; first time call?
+	jr	nz,cpy1		; jump if not
+
+	ex	de,hl
+
+	ld	hl,0
+	ld	(NFILES),hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in SRCFDB
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.DEV),a	; set also device name and unit
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.DEV+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.UNIT),a
+	xor	a		; return with success code
+	ret
+
+cpy1:	dec	c		; matched entry?
+	jr	z,cpy2		; branch if yes
+
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	ret	nz		; return if set (note CY still clear)
+	ld	hl,(NFILES)
+	ld	a,h
+	or	l
+	call	z,ERRNF		; display warning if no files found
+	xor	a
+	ret
+
+cpy2:	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,SRCFDB
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM		; set filename in SRCFDB
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	push	de
+	call	SETEXT		; set extension
+	pop	de
+
+	ld	hl,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.VER),a	; set version number
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.VER+1),a
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.ATTR),a
+
+	ld	hl,SRCBUF
+	ld	(SRCFBK+FC.BUF),hl
+	ld	hl,DSTBUF
+	ld	(DSTFBK+FC.BUF),hl
+
+cpfile:	ld	hl,SRCFDB
+	ld	(ERRFNB),hl
+	call	OPNSRC		; open source file
+	jp	c,cpye2		; jump on error
+
+	ld	hl,DSTFDB
+	ld	(ERRFNB),hl
+	call	OPNDST		; open destination file
+	jp	c,cpye1		; jump on error
+
+cpy3:	ld	a,(SRCFBK+FC.MODE)
+	bit	FM.TT,a
+	jr	nz,cpyln
+
+	ld	a,(DSTFBK+FC.MODE)
+	bit	FM.TT,a
+	jr	nz,cpyln
+
+cpyblk:	ld	hl,SRCBUF	; share buffer for block-mode copy
+	ld	(SRCFBK+FC.BUF),hl
+	ld	(DSTFBK+FC.BUF),hl
+
+cpyb0:	ld	ix,SRCFBK
+	call	FRDBLK		; read block from source file
+	jr	nc,cpyb1
+
+	ld	hl,(SRCFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	cp	E.EOF
+	call	nz,SYSERR
+	jr	cpyend
+
+cpyb1:	ld	hl,(SRCFBK+FC.CNT)
+	ld	(DSTFBK+FC.CNT),hl
+
+	ld	ix,DSTFBK
+	call	FWRBLK		; write block to dest file
+	jr	nc,cpyb2
+
+	ld	hl,(DSTFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	call	SYSERR
+	jr	cpyend
+
+cpyb2:	ld	ix,SRCFBK
+	call	?FINCB		; next block
+	ld	hl,(SRCFBK+FC.BLK)
+	ld	(DSTFBK+FC.BLK),hl
+	ld	hl,(SRCFBK+FC.BLK+2)
+	ld	(DSTFBK+FC.BLK+2),hl
+	jr	cpyb0
+
+cpyln:	ld	ix,SRCFBK
+	ld	hl,STRBUF
+	ld	b,130
+	call	FGETLN		; read line
+	jr	nc,cpln1
+
+	ld	hl,(SRCFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	cp	E.EOF
+	call	nz,SYSERR
+	jr	cpyend
+
+cpln1:	ld	ix,DSTFBK
+	ld	hl,STRBUF
+	call	FPUTLN		; write line
+	jr	nc,cpyln
+
+	ld	hl,(DSTFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	call	SYSERR
+
+cpyend:	call	CLSSRC		; close source file
+	call	CLSDST		; close destination file
+	ld	hl,(DSTFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	call	c,SYSERR	; display error if dest close failed
+	xor	a		; return success code to copy other files
+	ret
+
+cpye1:	push	af
+	call	CLSSRC
+	ld	hl,(ERRFNB)
+	push	hl
+	ld	hl,(DSTFBK+FC.FDB)
+	ld	(ERRFNB),hl
+	call	c,SYSERR
+	pop	hl
+	ld	(ERRFNB),hl
+	pop	af
+cpye2:	call	SYSERR
+	xor	a		; return success code to copy other files
+	ret
+
+;-----------------------------------------------------------------------
+
+; Check source device
+
+CHKSDV:	ld	hl,(CRFNB)
+	ld	de,F.DEV
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	ld	b,LUNSRC
+	SC	.ALUN		; assign LUNSRC
+	ret	c
+	ld	hl,lisrc
+	ld	c,LUNSRC
+	SC	.GTLUN		; get LUN info
+	ret	c
+	ld	a,(lisrc+4)
+	ret
+
+; Open source file
+
+OPNSRC:	ld	hl,SRCFDB
+	ld	de,(SRCFBK+FC.FDB)
+	ld	bc,FDBSZ
+	ldir			; set FDB in SRCFBK
+	ld	ix,SRCFBK
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN		; open source file or device
+	ret
+
+CLSSRC:	ld	ix,SRCFBK
+	call	FCLOSE		; close the input file
+	ret
+
+; Open or create destination file
+
+OPNDST:	ld	hl,LFNB		; create output file on device
+	ld	de,DSTFDB
+	ld	bc,FNSZ
+	ldir
+
+	ld	a,(DSTFDB+F.ATTR)
+	and	FN.NAME		; filename specified?
+	jr	z,opnd1		; if not, use filename from source file
+	ld	a,(DSTFDB+F.WLDC)
+	and	FN.NAME		; wildcards in filename?
+	jr	z,opnd2		; branch if not
+
+opnd1:	ld	hl,SRCFDB+F.NAME
+	ld	de,DSTFDB+F.NAME
+	ld	bc,9		; else use filename from source file
+	ldir
+	ld	a,(DSTFDB+F.ATTR)
+	or	FN.NAME		; set 'filename specified' bit
+	ld	(DSTFDB+F.ATTR),a
+
+opnd2:	ld	a,(DSTFDB+F.ATTR)
+	and	FN.EXT		; extension specified?
+	jr	z,opnd3		; if not, use extension from source file
+	ld	a,(DSTFDB+F.WLDC)
+	and	FN.EXT		; wildcards in extension?
+	jr	z,opnd4		; branch if not
+
+opnd3:	ld	hl,SRCFDB+F.EXT
+	ld	de,DSTFDB+F.EXT
+	ld	bc,3		; else use extension from source file
+	ldir
+
+	ld	a,(DSTFDB+F.ATTR)
+	or	FN.EXT		; set 'extension specified' bit
+	ld	(DSTFDB+F.ATTR),a
+
+opnd4:	ld	a,(DSTFDB+F.ATTR)
+	and	FN.VER		; version specified?
+	jr	z,opnd5		; if not, use version from source file
+	ld	a,(DSTFDB+F.WLDC)
+	and	FN.VER		; wildcards in version?
+	jr	z,opnd6		; branch if not
+
+opnd5:	ld	hl,(SRCFDB+F.VER) ; else use version from source file
+	ld	(DSTFDB+F.VER),hl
+
+	ld	a,(DSTFDB+F.ATTR)
+	or	FN.VER		; set 'version specified' bit
+	ld	(DSTFDB+F.ATTR),a
+
+opnd6:	ld	a,(SWBITS+2)
+	bit	S3.NV,a		; force new version?
+	jr	z,opnd7		; branch if not
+
+	ld	a,(DSTFDB+F.ATTR)
+	and	NOT FN.VER	; else clear 'version specified' bit
+	ld	(DSTFDB+F.ATTR),a
+
+opnd7:	ld	hl,DSTFDB
+	ld	de,(DSTFBK+FC.FDB)
+	ld	bc,FDBSZ
+	ldir			; set FDB in DSTFBK
+
+	ld	a,(SWBITS+2)
+	bit	S3.SU,a		; supersede switch specified?
+	jr	z,opnd8		; jump if not
+
+	bit	S3.NV,a
+	jr	nz,opnd8	; /SU meaningless if /NV specified
+
+	ld	de,(DSTFDB+F.DEV) ; else if dest file exists, delete it
+	ld	a,(DSTFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNDST
+	SC	.ALUN
+	ret	c
+
+	ld	hl,qio1
+	SC	.QIO		; delete destination file, if it exists
+	ret	c		; return error if could not delete the file
+				; TODO: more specific error message?
+
+opnd8:	ld	h,0		; default is non-contiguous file
+	ld	ix,(SRCFBK+FC.FDB)
+	ld	a,(ix+F.ATTR)
+	and	FA.CTG		; is source file contiguous?
+	jr	nz,opnd9	; jump if yes
+	ld	a,(SWBITS+2)
+	bit	S3.CO,a		; force contiguous file?
+	jr	z,opnd10	; jump if not
+opnd9:	dec	h		; else set flag in reg H accordingly
+	ld	a,(SWBITS+3)
+	bit	S4.BL,a		; /BL switch specified?
+	jr	z,opnd91	; jump if not
+	ld	de,(SWVAL)	; else use the specified number of blocks
+	ld	a,(SWVAL+2)
+	ld	c,a
+	jr	opnd10
+opnd91:
+  IF 0
+	ld	e,(ix+F.NALOC)	; use same number of allocated blocks
+	ld	d,(ix+F.NALOC+1);  as original file
+	ld	c,(ix+F.NALOC+2)
+  ELSE
+	ld	e,(ix+F.NUSED)	; allocate the number of blocks
+	ld	d,(ix+F.NUSED+1);  actually used in the original file
+	ld	c,(ix+F.NUSED+2)
+  ENDIF
+opnd10:	ld	ix,DSTFBK
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	a,h
+	call	FCREAT
+	ret
+
+CLSDST:	ld	ix,DSTFBK
+	bit	FM.DV,(ix+FC.MODE) ; device mode?
+	jr	nz,clsd1	   ; jump if yes
+
+	ld	a,(SWBITS+3)
+	bit	S4.CD,a		; preserve creation date?
+	jr	z,clsd1		; branch if not
+	
+	ld	hl,(SRCFBK+FC.FDB)
+	push	hl
+	pop	ix
+	ld	de,FINFSZ	; source file info
+	ld	c,LUNDST
+	ld	a,FA.TCRE
+	ld	(ix+F.WAT),a	; set creation date of dest file
+	call	FWATTR
+	call	c,SYSERR
+
+clsd1:	ld	ix,DSTFBK
+	call	FCLOSE		; close the output file
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+lisrc:	ds	6		; src lun info
+
+qio1:	QIOW$	IO.DEL,LUNDST,9,iosb,,<DSTFDB>
+iosb:	ds	4
+
+SRCFBK:	FSR$	,0,LUNSRC,9,SRCBUF
+DSTFBK:	FSR$	,0,LUNDST,9,DSTBUF
+
+SRCBUF:	ds	512
+DSTBUF:	ds	512
+
+	end

@@ -1,0 +1,32 @@
+	.Z80
+
+	.xlist
+	include	$SYSFN.INC
+	include	$ERRORS.INC
+	.list
+
+	extrn	PUTSTR,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; "Hello world" example using SYSLIB calls.
+
+	cseg
+
+HELLO::	ld	sp,stack
+	ld	hl,str
+	call	PUTSTR
+	ld	hl,EX.SUC
+	jp	EXIT
+
+str:	db	CR,LF,'Hello, world!',CR,LF,0
+
+	dseg
+
+	ds	64		; stack space
+stack	equ	$
+
+	end	HELLO

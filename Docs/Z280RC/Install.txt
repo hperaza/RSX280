@@ -1,0 +1,242 @@
+Generating the system
+=====================
+
+The system is normally compiled and generated under Linux in order to avoid
+a chicken-and-egg problem. A CP/M assembler and a linker running under an
+emulator are used to compile the kernel and system tasks. The final system
+generation is done with a Linux utility, source code included.
+
+It may be possible to build the system under Windows with e.g. CygWin, but I
+haven't tried it.
+
+The Makefile on the top-level directory of the project is used to automate
+the building process.
+
+Please note that there are several RSX280 applications that are now in
+different GitHub repositories. Right now these are:
+
+  ZSM4     (./progdev/zsm4)
+  BASIC11  (./progdev/basic11)
+  TED      (./ted)
+
+You can either copy the contents of the corresponding repository into the
+appropriate directory, or use a soft link to point to the copy of the
+repository.
+
+
+Pre-requisites
+--------------
+
+- John Elliott's zxcc CP/M emulator (http://www.seasip.demon.co.uk/Cpm/)
+
+- The CP/M utilities from the Tools/cpm directory:
+
+  * ZSM4 Macro-Assembler
+  * Digital Research's LINK 1.31
+  * TKB task builder 2.00
+  * Object Code Librarian LBR
+
+- The Linux utilities from the Tools/linux directory:
+
+  * mktask
+  * cksboot
+  * sym2inc
+  * vol180
+
+- A C compiler (e.g. gcc) to build the Linux utilities.
+
+
+Steps
+-----
+
+1. Compile the Linux tools:
+
+     make linux-tools
+
+2. Install zxcc and copy the CP/M utilities to a place where zxcc can find
+   them.
+
+3. Edit the inc/sysconf.inc file to select e.g. which drivers you want
+   included in the system, etc. (normally no modifications will be necessary
+   for the Bill Shen's Z280RC board.)
+
+4. Build the kernel image:
+
+     make system
+
+   This command also builds the floppy and hard disk bootstrap programs.
+
+   The kernel image resides on the system partition (first 64K of memory)
+   and contains the kernel itself, the system common, the startup code,
+   the device drivers, the initialization task, the loader task and the
+   filesystem task.
+
+5. Build the system libraries:
+
+     make libs
+
+6. Build MCR and the Indirect Command Processor:
+
+     make cli
+
+7. Build the system utilities:
+
+     make utils
+
+   This will build the MCR external commands, the privileged utilities,
+   and PIP, RMD, TED, VDO, ZAP.
+
+   Note: DR Link may complain about an 'Unrecognized Item' while linking
+   certain utilities. That's because it does not recognize one particular
+   ZSM4 extension (IDENT pseudo-op), and the warning can be safely ignored.
+
+8. Build the program-development applications:
+
+     make progdev
+
+   This will build MAC (ZSM4), TKB, MKT, LBR and BASIC.
+
+9. Optionally, build the test programs and a few simple ASCII games
+    (the games require a VT100 or similar):
+
+     make test
+     make games
+
+Steps 4 to 9 above can be done with a single 'make all' command.
+
+
+Creating a bootable floppy image
+--------------------------------
+
+1. Create a bare-bone disk image:
+
+     make disk-image
+
+   This creates a 32Mb disk image named new.img conaining several empty
+   directories, copies the system image and the startup command file to
+   it, and installs the Compact Flash bootloader.
+
+2. Rename the just-created disk image (not done by the Makefile as a safety
+   measure to avoid overwriting any existing image):
+
+     mv new.img cf-partition.img
+
+3. Copy the system files, utilities, help files and program development
+   applications:
+
+     make copy-system
+     make copy-utils
+     make copy-help
+     make copy-progdev
+
+   Note: The vol180 application may output a bunch of 'File not found'
+   messages. That is normal, since the copy script tries first to delete
+   any existing files before copying the new ones, and at this point the
+   disk image is pretty much empty.
+
+4. If desired, copy the test programs, BASIC examples, and the ASCII games:
+
+     make copy-basic
+     make copy-test
+     make copy-games
+
+5. Configure the system image:
+
+     make sysvmr
+
+The steps 3 and 4 above can be done with a single 'make copy-all' command.
+
+Once the CF partition image is ready, it can be copied to a real CF card
+with a command like this:
+
+  dd if=cf-partition.img of=/dev/sdf conv=swab bs=512 seek=65536
+
+where
+
+  /dev/sdf   is the CF device name (check the Linux log files, or use the
+             dmesg command to figure out the correct device name on your
+             system, you don't want to overwrite your Linux disks!),
+  bs=512     sets the block size,
+  seek=65536 specifies the start of the partition on the CF (in this case
+             is at the first 32Mb boundary), and
+  conv=swab  tells the dd command to swap bytes in every input word, to
+             correct for a quirk of the Z280RC hardware.
+
+
+Booting the system
+------------------
+
+To boot RSX280, you will need to update ZZmon on the CF. This is because
+the original monitor can only boot CP/M.
+
+The new monitor can be found at http://github.com/hperaza/ZZmon2 and can
+be installed on the CF via serial load as usual, or by copying it to the
+CF card with the following command:
+
+  dd if=zzmon.bin of=/dev/sdf conv=swab bs=512 seek=248
+
+With ZZmon updated and the partition copied to the CF card, restart the
+Z280RC board:
+
+  TinyZZ Monitor v2.0 12-Apr-2020
+  
+  
+  >Boot
+  1 - User Apps
+  2 - CP/M 2.2
+  3 - CP/M 3
+  4 - RSX280
+  5 - UZI280
+  Select: 4 Press Return to confirm: 
+
+  Z280RC 1024K RSX280 V6.15
+  
+  >RED DU4:=LB:
+  >RED DU4:=SY:
+  >MOU DU4:
+  >@SY0:[SYSTEM]STARTUP.CMD
+  >tim
+  15:22:09 10-Apr-2020
+  >set /colog=on
+  >set /colog/nocoterm
+  >pip [syslog]*.*/pu:5
+  >upt
+  Up 0 days, 0 hours, 0 minutes and 10.56 seconds.
+  >@ <EOF>
+  >
+
+The current version uses an account file, and thus a password is required
+to login into other accounts. The image built above have the following
+accounts:
+
+  username  password
+  --------  --------
+  SYSTEM    rsx180     (note *not* rsx280)
+  USER
+  TEST      test
+  BASIC     basic
+  GAMES     games
+
+Note that user names are case-insensitive, but passwords are not! You can
+use the ACNT program (RUN $ACNT) to add/remove/modify user accounts.
+
+To shutdown RSX280, use the SHUTUP program:
+
+  >run $shutup
+  RSX280 SHUTDOWN PROGRAM
+
+  Enter minutes to wait before shutdown: 0
+  OK to shutdown? [Y/N]: y
+
+  SHUTUP -- System shutdown initiated -- 12-Apr-2020 00:42:38
+  SHUTUP -- All further logins are disabled
+
+  12-Apr-2020 00:42:40 System is now shutting down
+
+  >SET /COLOG=OFF
+  >ACS DU4:/BLKS=0
+  ACS -- Checkpoint file now inactive
+  >DMO DU4:/DEV
+
+  SHUTUP -- Operation complete
+

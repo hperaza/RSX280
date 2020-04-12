@@ -1,0 +1,28 @@
+	.Z80
+
+	name	'FPLOAD'
+
+	public	FLD0R,FLD1R,FSTOR
+	extrn	FCOPY
+
+	extrn	FR0,FR1
+
+	cseg
+
+; Load FR0 with floating point number
+
+FLD0R:	ld	de,FR0
+	jp	FCOPY
+
+; Load FR1 with floating point number
+
+FLD1R:	ld	de,FR1
+	jp	FCOPY
+
+; Store FR0 in user buffer
+
+FSTOR:	ex	de,hl
+	ld	hl,FR0
+	jp	FCOPY
+
+	end

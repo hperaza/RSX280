@@ -1,0 +1,10 @@
+
+Syntax:
+
+  DMP [outspec=]inpspec[/NH]
+
+Dumps the contents of the specified file to the terminal or to the specified
+file in hexadecimal and ASCII format.
+
+The /NH suppresses the output of block headers.
+

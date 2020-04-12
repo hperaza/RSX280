@@ -1,0 +1,565 @@
+;**********************************************************************;
+;                                                                      ;
+;   Disk Format Utility for RSX180.                                    ;
+;   Copyright (C) 2020, Hector Peraza.                                 ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	'01.00'
+
+	include	SYSFN.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	FCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+LUNCML	equ	1
+LUNFMT	equ	2
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,HLDEC,TTFLSH,GCML,RCML
+	extrn	UCASE,CVTWD,CPHLDE
+
+KCALL	MACRO	addr
+	call	SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START:	ld	sp,stack
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	jr	c,m2		; jump on error
+
+	ld	(lnptr),hl	; save pointer to command tail
+	call	FORMAT		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m4		; exit normally if yes
+
+	call	CMLERR		; else display error
+m3:	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+	
+m4:	call	TTFLSH
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'FMT -- message'
+
+CMDERR:	ld	hl,snerr
+ERROR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	ret
+
+eprfx:	db	CR,LF,'FMT -- ',0
+snerr:	db	'Syntax error',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+; Copy string @DE to @HL.
+
+STRCPY:	ld	a,(de)
+	or	a
+	ret	z
+	ld	(hl),a
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Convert device name in DE-C to string @HL
+
+CVTDEV:	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	e,c
+	ld	d,0
+	xor	a
+	call	CVTWD
+	ld	(hl),':'
+	inc	hl
+	ret
+
+; Get command name (9 chars max) from input line into cmdnam.
+
+GETCMD:	ld	de,(lnptr)
+	ld	hl,cmdnam
+	ld	b,9
+	call	GETNS
+	call	GETNAM
+	ld	(lnptr),de
+	ret
+
+; Get a name (up to B bytes in length) into HL buffer.
+
+GETNAM:	call	GETFS
+	jr	z,gn3
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	GETNAM
+gn2:	call	GETFS
+	jr	z,gn3
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0
+	ret
+
+; Return Z if char in A is blank.
+
+ISBLNK:	call	ISEOL
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+; Return Z if char in A is EOL.
+
+ISEOL:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	cp	1Ah
+	ret
+
+; Get next non-blank char. Returns Z flag set on end of line.
+
+GETNS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Skip name.
+
+skpnam:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	call	ISBLNK
+	jr	z,GETNS		; return via GETNS
+	inc	de
+	jr	skpnam
+
+; Get next char. Returns Z on end of line or if char is a delimiter.
+
+GETFS:	ld	a,(de)
+	call	ISEOL
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Search for the command (cmdnam) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+
+FNDCMD:	ld	de,cmdnam
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; number of matches
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af
+fcmd0:	ld	de,cmdnam
+fcmd1:	ld	a,(de)
+	or	a
+	jr	z,fcmd3
+	cp	(hl)
+	jr	nz,fcmd2
+	inc	hl
+	inc	de
+	jr	fcmd1
+fcmd3:	inc	b
+	pop	af
+	ld	a,(hl)		;;
+	or	a		;;
+	ld	a,c
+	ret	z		;;
+	push	af
+fcmd2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,fcmd2
+	inc	c
+	ld	a,(hl)
+	or	a
+	jr	nz,fcmd0
+	pop	af
+	dec	b
+	ret	z
+	ld	a,0FFh
+	ret
+
+;-----------------------------------------------------------------------
+
+FORMAT:	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	ld	hl,baddev
+	jp	c,ERROR		; on error, exit
+
+	ld	(dev),de	; save device name
+	ld	a,c
+	ld	(dev+2),a	; and unit
+
+	xor	a
+	ld	(opttyp),a	; default to 3.5"
+	ld	a,2
+	ld	(optden),a	; high-density
+	ld	a,0FFh
+	ld	(optvfy),a	; and verify-after-format
+
+chkopt:	ld	de,(lnptr)	; check remainder of command line
+	call	GETNS		; skip any spaces
+	call	ISEOL		; end of command?
+	jp	z,FMT		; jump if yes
+	cp	'/'		; option switch?
+	jp	nz,CMDERR	; error if not
+	inc	de		; skip switch char
+	call	chkneg		; check for NO or -
+	ld	(lnptr),de
+	call	GETCMD		; get switch name
+	ld	hl,cmdnam
+	ld	a,(hl)
+	cp	' '		; null switch?
+	jp	z,CMDERR	; error if yes
+	ld	hl,swtbl
+	call	FNDCMD		; search switch in table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,cmderr
+	dec	a
+	jp	z,setden	; set density
+	dec	a
+	jp	z,settyp	; set drive type
+	dec	a
+	jp	z,setvfy	; enable/disable verify
+	jp	CMDERR
+
+chkeq:	ld	hl,(lnptr)
+	ld	a,(hl)
+	cp	'='
+	ret	nz
+	inc	hl
+	ld	(lnptr),hl
+	ret
+
+chkneg:	xor	a
+	ld	(negsw),a
+	ld	a,(de)
+	cp	'-'
+	jr	z,n1
+	call	UCASE
+	cp	'N'
+	ret	nz
+	inc	de
+	ld	a,(de)
+	dec	de
+	call	UCASE
+	cp	'O'
+	ret	nz
+	inc	de
+n1:	inc	de
+	ld	a,0FFh
+	ld	(negsw),a
+	ret
+
+swtbl:	db	'DENS',0
+	db	'TYPE',0
+	db	'VERIFY',0
+	db	0
+
+setden:	ld	a,(negsw)
+	or	a
+	jp	nz,CMDERR
+	call	chkeq
+	ld	hl,denstb
+	call	FNDCMD
+	or	a
+	jp	z,CMDERR
+	dec	a
+	cp	3
+	ld	hl,badden
+	jp	nc,ERROR
+	ld	(optden),a
+	jp	chkopt
+
+denstb:	db	'SINGLE',0
+	db	'DOUBLE',0
+	db	'HIGH',0
+	db	0
+
+settyp:	ld	a,(negsw)
+	or	a
+	jp	nz,CMDERR
+	call	chkeq
+	ld	hl,typtbl
+	call	FNDCMD
+	or	a
+	jp	z,CMDERR
+	dec	a
+	cp	2
+	ld	hl,badtyp
+	jp	nc,ERROR
+	ld	(opttyp),a
+	jp	chkopt
+
+typtbl:	db	'3.5',0
+	db	'5.25',0
+	db	0
+
+setvfy:	ld	a,(negsw)
+	cpl
+	ld	(optvfy),a
+	ret
+
+baddev:	db	'Invalid device specification',0
+badtyp:	db	'Invalid drive type option',0
+badden:	db	'Invalid density option',0
+
+FMT:	ld	de,(dev)	; get device name
+	ld	a,(dev+2)	;  and unit
+	ld	c,a
+
+	ld	b,LUNFMT
+	SC	.ALUN		; assign LUN to device
+	jp	c,SYSERR
+
+	ld	hl,luninf
+	ld	c,LUNFMT
+	SC	.GTLUN		; get device info
+	jp	c,SYSERR
+
+	ld	a,(luninf+4)
+	bit	DV.DIR,a	; directory device?
+	ld	hl,edevt
+	jp	z,ERROR		; error if not
+
+	bit	DV.MNT,a	; device mountable?
+	jp	z,ERROR		; error if not
+
+	ld	a,(luninf+3)
+	bit	US.MNT,a	; unit mounted?
+	ld	hl,emnt
+	jp	nz,ERROR	; error if yes
+
+	; TODO:
+	; - the device must be allocated
+	; - IO.FMT subfunction to reset/force recalib
+	; - SET /DENS=DY0:HIGH
+	; - SET /TYPE=DY0:3.5
+	; - reset disk
+
+	ld	hl,qio1
+	SC	.QIO		; attach to device
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	bc,0		; start from track 0
+fmt1:	ld	(qio2+Q.BLK),bc
+	call	mktab		; build sector table
+	xor	a
+	ld	(qio2+Q.SUBF),a	; format track
+	ld	hl,qio2
+	SC	.QIO
+	jp	c,detach
+	ld	a,(iosb)
+	or	a
+	jp	nz,detach
+	inc	c
+	ld	a,c
+	cp	80*2		; 160 tracks = 80 cylinders, 2 sides
+	jr	nz,fmt1
+	ld	a,(optvfy)
+	or	a
+	jr	z,detach
+
+	; verify requested
+
+	ld	bc,0		; start from track 0
+vfy1:	ld	(qio2+Q.BLK),bc
+	ld	a,1
+	ld	(qio2+Q.SUBF),a	; verify track
+	ld	hl,qio2
+	SC	.QIO
+	jp	c,detach
+	ld	a,(iosb)
+	or	a
+	jp	nz,detach
+	inc	c
+	ld	a,c
+	cp	80*2		; 160 tracks = 80 cylinders, 2 sides
+	jr	nz,vfy1
+	xor	a
+
+detach:	push	af
+	ld	hl,qio3
+	SC	.QIO		; detach from device
+	pop	af
+	jp	c,SYSERR
+	ret
+
+edevt:	db	'Invalid device type',0
+emnt:	db	'Volume is mounted',0
+
+; Build the sector initialization table, called with C = track.
+
+mktab:	push	bc
+	ld	hl,trkbuf
+	ld	de,it18
+	ld	b,18		; final sector
+	rrc	c		; track => cylinder, side
+mt1:	ld	(hl),c
+	res	7,(hl)		; cylinder
+	inc	hl
+	ld	a,c
+	rlca
+	and	1
+	ld	(hl),a		; side
+	inc	hl
+	ld	a,(de)
+	ld	(hl),a		; sector
+	inc	de
+	inc	hl
+	ld	a,2		; 512 bytes
+	ld	(hl),a		; sector size
+	inc	hl
+	djnz	mt1
+	pop	bc
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	cmdbuf,80,'FMT',LUNCML,2
+
+cmdbuf:	ds	82
+lnptr:	ds	2
+cmdnam:	ds	9
+dev:	ds	3
+negsw:	ds	1
+opttyp:	ds	1
+optden:	ds	1
+optvfy:	ds	1
+luninf:	ds	6
+
+it18:	db	 1, 10,  2, 11,  3, 12,  4, 13,  5  ; sector interlace
+	db	14,  6, 15,  7, 16,  8, 17,  9, 18  ;  table, skewed 2:1
+
+qio1:	QIOW$	IO.ATT,LUNFMT,9,iosb
+qio2:	QIOW$	IO.FMT,LUNFMT,9,iosb,,<trkbuf,4*18,,,>
+qio3:	QIOW$	IO.DET,LUNFMT,9,iosb
+iosb:	ds	4
+
+trkbuf:	ds	4*18		; 4 bytes/sector
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START

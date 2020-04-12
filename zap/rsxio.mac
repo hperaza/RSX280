@@ -1,0 +1,461 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of ZAP - an hexadecimal file editor for RSX180.  ;
+;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	include	SYSFN.INC
+	include	AST.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	GCML.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+
+LUNFIL	equ	1
+LUNCML	equ	2
+LUNTI	equ	5
+EFIL	equ	9
+TTEFN	equ	10
+TMEFN	equ	11
+
+	public	GETCMD,RESCMD,ERRMSG,INKEY,GETCH,DELAY,INIT,EXIT
+	public	TTMODE,MKFCB,PRFCB,OPENF,CLOSEF,READF,WRITEF
+
+	extrn	ATTACH,DETACH,ADEC,HLDEC,PUTCH,TTFLSH,PFN
+	extrn	PUTSTR,PERROR,GCML,RCML
+
+	cseg
+
+INIT:	ld	ix,ttq
+	call	qinit		; init input queue
+	xor	a
+	ld	(kstat),a
+	ld	(lastk),a
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign TI: to LUN 5
+	ld	de,TTAST	; attach with ASTs
+	ld	c,LUNTI
+	call	ATTACH
+	ret
+
+EXIT:	call	TTFLSH
+	ld	c,LUNTI
+	call	DETACH		; detach from terminal
+	ld	hl,EX.SUC
+	SC	.EXIT		; exit
+
+TTMODE:	ld	(ttc+1),a
+	ld	hl,qio3
+	SC	.QIO		; set terminal mode (binary/normal)
+	ret
+
+GETCMD:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line tail
+	ret	nc
+	cp	E.EOF		; end of file on command input?
+	jr	z,EXIT		; exit normally if yes
+	call	CMLERR		; else display error message
+	call	RESCMD		; reset command state
+	jr	GETCMD		; and loop for more
+
+RESCMD:	ld	iy,GDAT
+	call	RCML		; reset command state
+	ret
+
+PRFX:	db	CR,LF,'ZAP -- ',0
+
+; Display error message @HL
+
+ERRMSG:	ex	de,hl
+	ld	hl,PRFX
+	call	PUTSTR
+	ex	de,hl
+	call	PUTSTR		; display error message
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Display standard system error message
+
+SYSERR:	push	af
+	ld	hl,PRFX
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERRMSG
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,msgsn
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msgsn:	db	'Syntax error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	call	HLDEC
+	ret
+
+atln:	db	' at line ',0
+
+TTAST:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	a,l		; get char into reg C
+	ld	hl,kstat
+	ld	c,a
+	ld	ix,ttq
+	cp	3		; ^C
+	jr	nz,ast1
+	ld	(hl),0		; kstat = 0
+	call	qinit		; reset queue
+	jr	ast3
+ast1:	cp	ESC
+	jr	nz,ast2
+	ld	(hl),1		; kstat = 1
+	jr	ast5
+ast2:	ld	a,(hl)
+	or	a
+	jr	z,ast3
+	ld	a,c
+	cp	'['		; trim cursor key seq down to a single char
+	jr	z,ast3
+	or	80h
+	ld	c,a
+	ld	(hl),0		; kstat = 0
+ast3:	ld	a,(hl)
+	or	a
+	jr	nz,ast5
+	ld	hl,lastk
+	call	qsize
+	jr	z,ast4
+	ld	a,(hl)
+	cp	c
+	jr	z,ast5
+ast4:	ld	(hl),c
+	call	qput		; store char in queue
+	ld	e,TTEFN
+	SC	.SETF		; and set event flag
+ast5:	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+INKEY:	push	ix
+	push	de
+	ld	ix,ttq
+	;di
+	call	qget
+	;ei
+	pop	de
+	pop	ix
+	ret
+
+GETCH:	push	ix
+	push	hl
+	push	de
+	push	bc
+	call	TTFLSH
+gc0:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag before accessing queue
+	ld	ix,ttq
+	;di			; prevent AST from modifying the queue
+	call	qget		; get char
+	;ei
+	jr	nc,gc1		; return if available
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for char
+	jr	gc0
+gc1:	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+DELAY:	push	hl
+	push	de
+	ld	l,a		; HL = magnitude
+	ld	h,0
+	ld	d,1		; units = ticks
+	ld	e,TMEFN
+	ld	bc,0		; no AST
+	SC	.MRKT
+	ld	e,TMEFN
+	SC	.WTSE
+	pop	de
+	pop	hl
+	ret
+
+qinit:	xor	a
+	ld	(ix+q.ipos),a
+	ld	(ix+q.opos),a
+	ret
+
+qput:	ld	a,(ix+q.ipos)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+q.opos)
+	scf
+	ret	z		; queue full
+	ld	(ix+q.ipos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+q.iob),c	; store char
+	pop	ix
+	or	a
+	ret
+
+qget:	ld	a,(ix+q.opos)
+	ld	e,a
+	sub	(ix+q.ipos)
+	scf
+	ret	z		; queue empty
+	ld	a,e
+	inc	a
+	and	3Fh
+	ld	(ix+q.opos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+q.iob)	; get char
+	pop	ix
+	or	a
+	ret
+
+qsize:	ld	a,(ix+q.opos)
+	sub	(ix+q.ipos)
+	ret	nc
+	ret	nz
+	add	a,64
+	ret
+
+MKFCB:	ld	ix,FDB
+	call	PFN
+	ret
+
+PRFCB:	ld	hl,FDB+F.DEV
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,'['
+	call	PUTCH
+	ld	hl,FDB+F.DIR
+	ld	b,9
+	call	pname
+	ld	c,']'
+	call	PUTCH
+	ld	hl,FDB+F.NAME
+	ld	b,9
+	call	pname
+	ld	c,'.'
+	call	PUTCH
+	ld	b,3
+	call	pname
+	ld	c,';'
+	call	PUTCH
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	xor	a
+	call	HLDEC
+	ret
+
+pname:	ld	a,(hl)
+	cp	' '
+	ld	c,a
+	call	nz,PUTCH
+	inc	hl
+	djnz	pname
+	ret
+
+; Open file, returns in HL the file size in blocks.
+
+OPENF:	ld	de,(FDB+F.DEV)
+	ld	a,(FDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNFIL
+	SC	.ALUN
+	ret	c
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.ACW ; note: exclusive (non-shared) mode
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,FDB
+	ld	(qio1+Q.P1),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,IO.RAT
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,FDB
+	ld	(qio2+Q.BUF),hl
+	ld	hl,FINFSZ
+	ld	(qio2+Q.LEN),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	hl,(FDB+F.NUSED)
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret	
+
+CLOSEF:	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Read 512-byte block, return actual number of bytes read in HL.
+; Called with HL = block number, DE = buffer address.
+
+READF:	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BUF),de
+	ld	hl,512
+	ld	(qio2+Q.LEN),hl
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.RVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	or	a
+	ret
+
+; Write (possibly partial) 512-byte block.
+; Called with HL = block number, DE = buffer address, BC = bytes to write.
+
+WRITEF:	ld	(qio2+Q.BLK),hl
+	ld	(qio2+Q.BUF),de
+	ld	(qio2+Q.LEN),bc
+	ld	hl,0
+	ld	(qio2+Q.OFS),hl
+	ld	hl,IO.WVB
+	ld	(qio2+Q.FUNC),hl
+	ld	hl,qio2
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(iosb+2)
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	LNBUF,128,'ZAP',LUNCML,2
+
+LNBUF:	ds	128	; command line buffer
+
+q.ipos	equ	0	; queue structure offsets
+q.opos	equ	1
+q.iob	equ	2
+
+kstat:	ds	1
+lastk:	ds	1
+
+ttq:	ds	1	; ipos
+	ds	1	; opos
+	ds	64	; buf
+
+FDB:	ds	FINFSZ
+
+qio1:	QIOW$	IO.ACC,LUNFIL,EFIL,iosb,,<FDB>
+qio2:	QIOW$	IO.RVB,LUNFIL,EFIL,iosb,,<,,,,>
+qio3:	QIOW$	SF.SMC,LUNTI,TTEFN,iosb,,<ttc,2>
+ttc:	db	TC.BIN,1
+iosb:	ds	4
+
+	end
