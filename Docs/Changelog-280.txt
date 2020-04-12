@@ -12,9 +12,8 @@ Changelog
   Reh's CPU280 board, whose ROM mainly implements a CP/M 3 BIOS with no
   possibility of booting any foreign-OS disks. The CPU280 ROM BIOS also
   limits programs to run in user mode, meaning no privileged instructions
-  can be executed that would allow one to e.g. take control of the MMU,
-  which is necessary to start a different OS (a sort of back-door exists,
-  but is a bit cumbersome to use).
+  can be executed that would allow one to e.g. take control of the MMU
+  (a sort of back-door exists, but is a bit cumbersome to use).
 
 - Modified the ZZmon so it will load the boot sector of an existing RSX180
   partition and execute it.
@@ -24,11 +23,13 @@ Changelog
 
 - Got the CF bootloader for the Z280RC board running. The system image is
   loaded starting from physical address zero, and can be up to 512K in size.
+  That's more than enough since, unless you have a large number of tasks
+  fixed in memory, the system image file will be smaller than 96K.
 
 - Ported the system debugger to the Z280.
 
 - Ported the system MMU initialization routine. System size will be limited
-  at the moment to 1Mbyte (8-bit page numbers).
+  at the moment to 1Mbyte (8-bit page numbers like in RSX180).
 
 - The system now boots into the debugger, but (obviously) can't continue
   any further.
@@ -47,13 +48,14 @@ Changelog
 - Ported the device drivers:
   * DU: driver accesses the CF, partitions are fixed at the moment.
   * TT: driver supports only one terminal (Z280's built-in UART).
-  * LP: and CT: drivers removed.
+  * DY:, LP: and CT: drivers removed.
 
 
 07/04/20
 
-- Ported the loader task, but since the kernel $SWSTK routine is not ported
-  yet the loader will not be operational.
+- Ported the loader task (just to take advantage of the more efficient Z280
+  instruction set, for the rest it is still the same), but since the kernel
+  $SWSTK routine is not ported yet the loader will not be operational.
 
 - More kernel modifications:
   * timer interrupt is working.
@@ -76,8 +78,9 @@ Changelog
 08/04/20
 
 - The initialization task must switch to kernel mode before accessing the
-  system database. That's irrelevant for RSX180, since the task runs in the
-  kernel partition, for on the Z280 that triggers an access violation trap.
+  system database. That's irrelevant for RSX180, since the initialization
+  task runs in the kernel partition, but on the Z280 that triggers an access
+  violation trap.
 
 - More kernel modifications:
   * new $SWSTK routine uses the syscall trap to switch to system mode.
@@ -85,17 +88,17 @@ Changelog
 
 - Debugging device drivers:
   * interrupts now reaching the driver code.
-  * fork processing is working.
+  * fork processing is working again.
   * fake a partition table for the DU: driver.
 
 - The initialization task now runs, the banner message appears and the
-  first MCR command is queued.
+  first MCR command is queued, but MCR gets aborted on startup.
 
 - Added Z280-specific abort codes to TKTN.
 
 - The Z280 is a really *great* CPU, but it's biggest annoyance is the
-  I/O page selection/save/restore, as it wastes two registers and 3..4
-  instructions every time.
+  I/O page selection/save/restore mechanism, as it wastes two registers
+  and 3..4 instructions every time.
 
 
 09/04/20
@@ -111,9 +114,9 @@ Changelog
   changed). 
 
 - The system now boots and works! (the port so far has been easier than 
-  I originally thought). Some utilities are aborted with a "Privileged
-  instruction" message because they use di/ei instructions in some parts
-  of the code.
+  originally expected). Some utilities get aborted with a "Privileged
+  instruction" message because they execute di/ei instructions in some
+  parts of the code.
 
 
 10/04/20
@@ -123,3 +126,14 @@ Changelog
 
 - The system has been working fully stable during the whole day. Getting
   ready for release on GitHub!
+
+
+12/10/20
+
+- DEVTT: do not call $UGET from the interrupt routine (e.g. via 'nextch'),
+  since the $UGET and $UPUT routines change the user MMU pages and do not
+  restore them. Instead, call $UGET from a fork process and use a separate
+  queue to buffer the characters from user space for the transmitter
+  interrupt routine.
+
+
