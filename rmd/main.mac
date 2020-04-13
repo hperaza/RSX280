@@ -191,7 +191,7 @@ h1:	call	shwhst		; show host name
 	call	SYSUPT		; show up time
 	ret
 
-sysnam:	db	'RSX-180',0
+sysnam:	db	'RSX-280',0
 
 shvers:	ld	c,'V'
 	call	VPUTC
@@ -237,6 +237,9 @@ MAIN:	ld	sp,stack
 	ld	hl,SYSVN
 	ld	c,I.VERS
 	SC	.GIN		; get system version number
+	ld	a,(SYSVN+2)
+	cp	2
+	jp	nz,syserr
 
 	ld	c,1
 	SC	.SUPER		; put us in supervisor mode
@@ -378,6 +381,12 @@ SELPG:	cp	'M'
 setmod:	ld	(ACTPG),hl
 	ret			; return with CY clear
 
+syserr:	ld	hl,sysmsg
+	call	ERROR
+	jp	fatal1
+
+sysmsg:	db	'Invalid system type or version',0
+
 ;-----------------------------------------------------------------------
 
 ; Parse command line
@@ -451,7 +460,7 @@ FATAL:	push	af
 	call	PERROR
 	ld	c,CR
 	call	PUTCH
-	ld	c,EX.ERR	; exit with error code
+fatal1:	ld	c,EX.ERR	; exit with error code
 exit:	push	bc
 	call	TTFLSH
 	ld	c,5		; LUN
@@ -474,7 +483,7 @@ iosb:	ds	4
 
 RATE:	ds	1		; replot rate in seconds
 ACTPG:	ds	2		; address of current page
-SYSVN:	ds	2		; system version number
+SYSVN:	ds	4		; system version number and type
 
 opts:	ds	1		; snapshot option
 astflg:	ds	1		; AST flags:
