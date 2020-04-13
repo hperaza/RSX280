@@ -748,7 +748,23 @@ IDENT:	iopage	IdePage
 	WaitRdy	iderr
 	in	a,(IdeCmd)	; check final drive status
 	and	10001001b	; Busy, DRQ, or Error?
-	ret	z		; no: everything is ok
+	jr	nz,iderr	; no: everything is ok
+
+	; due to a "quirk" of the Z280RC design (strictly speaking, a
+	; "quirk" of the Z280 CPU) we need to swap the bytes of every
+	; words in the buffer
+
+	ld	ix,hdbuf
+	ld	b,0		; 256 words
+	ld	a,2
+swap:	ldw	hl,(ix)
+	ex	h,l
+	ldw	(ix),hl
+	add	ix,a
+	djnz	swap
+	xor	a
+	ret
+
 iderr:	ld	a,1		; return with A=1 and CY set on error
 	scf
 	ret
@@ -798,23 +814,24 @@ pterr:	ld	a,1
 	xor	a
 	ret
 
-pt:	dw	0001h,003Fh
-	db	0,1
-	dw	0040h,0040h
-	db	0,1
-	dw	0080h,0040h
-	db	0,0
-	dw	00C0h,0040h
-	db	0,0
-	dw	0100h,0100h
+pt:	; "Fake" partition table reflecting the disk layout of the
+	; default 128Mb CF card of the Z280RC.
+
+	dw	0001h,003Fh	; 8M CP/M 3
+	db	0B2h,1
+	dw	0040h,0040h	; 8M CP/M 3
+	db	0B2,1
+	dw	0080h,0040h	; 8M CP/M 3
+	db	0B2,0
+	dw	00C0h,0040h	; 8M CP/M 3
+	db	0B2,0
+	dw	0100h,0100h	; 32M RSX180/RSX280
 	db	0D8h,1
-	dw	0000h,0000h
-	db	0,0
-	dw	0000h,0000h
-	db	0,0
-	dw	0000h,0000h
-	db	0,0
-	dw	0000h,0000h
+	dw	0200h,0100h	; 32M UZI280
+	db	0D1,0
+	dw	0300h,0100h	; 32M UZI280
+	db	0D1,0
+	dw	0000h,0000h	; unused
 	db	0,0
   ENDIF
 
