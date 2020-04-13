@@ -1,6 +1,6 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   CCL-like command catch-all task for RSX280.                        ;
+;   CCL-like command catch-all task for RSX180/RSX280.                 ;
 ;   Copyright (C) 1985-2020, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
@@ -22,7 +22,7 @@
 	.Z80
 
 	name	'CCL'
-	ident	'1.66'
+	ident	'1.67'
 
 	include	SYSFN.INC
 	include	TCB.INC
@@ -862,9 +862,17 @@ devcmd:	db	'DEV ',0
 
 shver:	ld	hl,vmsg1
 	call	PUTSTR
+	push	hl
 	ld	hl,buf
 	ld	c,I.VERS
 	SC	.GIN
+	ld	a,(buf+2)
+	add	a,'0'
+	ld	c,a
+	call	PUTCH
+	pop	hl
+	inc	hl
+	call	PUTSTR
 	ld	a,(buf+1)
 	call	ADEC
 	ld	c,'.'
@@ -879,7 +887,7 @@ shver:	ld	hl,vmsg1
 	call	PUTCH
 	ret
 
-vmsg1:	db	CR,LF,'RSX280 Version ',0
+vmsg1:	db	CR,LF,'RSX',0,'80 Version ',0
 vmsg2:	db	CR,LF,'CCL Version ',0
 
 ; ----- SHOW LABEL: Show label for specified disk or SY:
