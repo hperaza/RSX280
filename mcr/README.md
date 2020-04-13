@@ -1,5 +1,5 @@
 This directory contains the sources for the Monitor Console Routine (MCR),
-which is the default CLI of RSX180.
+which is the default CLI of RSX280.
 
 MCR consists of two tasks:
 
