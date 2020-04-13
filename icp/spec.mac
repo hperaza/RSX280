@@ -474,7 +474,11 @@ trm1:	ld	(hl),0
 ; 1 = RSX180
 ; 2 = RSX280
 
-vsys:	ld	hl,1
+vsys:	ld	hl,tmpbuf
+	ld	c,I.VERS
+	SC	.GIN
+	ret	c
+	ld	hl,(tmpbuf+2)
 	ld	c,V.NUM
 	ret
 
