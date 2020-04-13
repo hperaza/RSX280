@@ -1,6 +1,6 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   MCR external command HELLO/HELP for RSX280.                        ;
+;   MCR external command HELLO/HELP for RSX180/RSX280.                 ;
 ;   Copyright (C) 2014-2020, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.06'
+	ident	'03.07'
 
 	cseg
 
@@ -959,7 +959,7 @@ lgn11:	ld	hl,cmdnam
 	ld	hl,logms1	; display system identification
 	call	PUTSTR
 	push	hl
-	call	shver		; display system version
+	call	shver		; display system type and version
 	pop	hl
 	inc	hl
 	call	PUTSTR
@@ -1056,14 +1056,18 @@ lgn13:	; check for local startup command file
 	jp	c,SYSERR
 	ret
 
-; Display system version
+; Display system type and version
 
 shver:	ld	hl,sver
 	ld	c,I.VERS
 	SC	.GIN
 	ret	c
-	ld	c,'V'
-	call	PUTCH
+	ld	a,(sver+2)
+	cp	2
+	ld	hl,rsx280
+	jr	z,sv1
+	ld	hl,rsx180
+sv1:	call	PUTSTR
 	ld	hl,(sver)
 	ld	a,h
 	call	ADEC
@@ -1072,6 +1076,9 @@ shver:	ld	hl,sver
 	ld	a,l
 	call	ADEC2
 	ret
+
+rsx180:	db	'RSX180 V',0
+rsx280:	db	'RSX280 V',0
 
 ; Prepare TDB to execute command file via MCR and echo the command on
 ; the terminal. Called with HL = cmd file name.
@@ -1106,7 +1113,7 @@ logdis:	db	'Logins are disabled',0
 logprm:	db	CR,LF,'Account or name: ',0
 pwdprm:	db	CR,LF,'Password: ',0
 
-logms1:	db	CR,LF,LF,'RSX280 ',0,' ',0,CR,LF,0
+logms1:	db	CR,LF,LF,0,' ',0,CR,LF,0
 logms2:	db	' Logged on terminal ',0,' as ',0
 logms3:	db	'Login  user ',0
 
@@ -1485,7 +1492,7 @@ usrid:	ds	1		; ! change !
 grpid:	ds	1		; ! order  !
 uname:	ds	10
 hname:	ds	10
-sver:	ds	2
+sver:	ds	4
 lmode:	ds	1		; 0 = if login with user name
 				; 1 = if login with UIC
 				; hi-bit set if quiet mode
