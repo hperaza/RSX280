@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	"V3.13"
+	ident	"V3.14"
 
 	cseg
 
@@ -675,6 +675,12 @@ DMPBLK:	ld	ix,DSTF
 	ld	d,(iy+F.INODE+1)
 	xor	a
 	call	CVTWD		; output file ID
+	ld	(hl),','
+	inc	hl
+	ld	e,(iy+F.SEQNO)
+	ld	d,(iy+F.SEQNO+1)
+	xor	a
+	call	CVTWD		; output seq number
 	ld	(hl),0
 	ld	hl,dstr
 	call	FPUTLN
