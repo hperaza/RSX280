@@ -1,1 +1,1 @@
-This directory contains a few miscellaneous RSX180 utilities.
+This directory contains a few miscellaneous RSX280 utilities.
