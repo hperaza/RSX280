@@ -766,14 +766,16 @@ GIN:	ld	a,c
 	ret
 
 ; I.VERS:
-;   returns 2-byte system version number (minor, major)
+;   returns 2 words:
+;     +0: system version number (lo-byte: minor, hi-byte: major)
+;     +2: system type (1=RSX180, 2=RSX280)
 
 sver:	ld	bc,(SYSVER)
+	call	storew		; store version number
+	ld	bc,2		; system type: 2 = RSX180
 storew:	ld	a,($UBANK)
 	ld	e,a
-	di
-	call	$UPUTW		; store version number
-	ei
+	call	$UPUTW
 	xor	a
 	ret
 

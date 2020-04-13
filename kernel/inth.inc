@@ -305,7 +305,6 @@ $UGETB:	push	hl
 	pop	hl
 	ldup	a,(hl)
 	ret
-
 ; Write byte in A to bank E, address HL.
 
 $UPUTB:	push	af
