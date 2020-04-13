@@ -1,6 +1,6 @@
-# RSX180
+# RSX280
 
-RSX180 is an Operating System for the Zilog Z180 CPU that is similar in look
+RSX280 is an Operating System for the Zilog Z280 CPU that is similar in look
 and feel to the old DEC's RSX-11M.
 
 Features:
@@ -24,21 +24,16 @@ Features:
  * 2-level filesystem structure.
  * Indirect Command Processor.
 
-More details [here](http://p112.sourceforge.net/index.php?rsx180).
+RSX280 is a direct port of RSX180, and therefore compatible at both command
+and system call level. More details [here](http://p112.sourceforge.net/index.php?rsx180).
 
 ## Hardware supported
 
-P112 CPU board (Z182) with:
+Z280RC board with:
 
  * Kernel: Dallas DS1202/DS1302 (RTC and NVRAM)
- * Terminal driver: two serial ports (Z182 and FDC37C655)
- * Floppy disk driver (FDC37C655)
- * Hard disk driver (GIDE)
- * Parallel (printer) port (FDC37C655)
-
-## Compiling the system
-
-Follow the instructions listed in the Docs/Compiling.txt file.
+ * Terminal driver: one serial ports (Z280 internal UART)
+ * Compact Flash disk driver
 
 ## Bugs and limitations
 
