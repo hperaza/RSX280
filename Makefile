@@ -29,12 +29,13 @@ utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap
 #disk = /dev/fd0
 #disk = floppy.img
 #bootloader = fdboot.bin
-#size = 2880 #blocks
+#size = 2880 # 1.44M floppy disk blocks
 #files = 512
-disk = partition.img
+disk = cf-partition.img
 bootloader = cfboot.bin
-size = 8192 #32768 #blocks
-files = 1024 #8192
+size = 65536 # 32Mb partition size in blocks
+files = 8192 # max number of files
+seek = 65536 # offset to start of partition in CF card
 
 # Compile a system image, boot sector, mcr, help and utilities
 all: update-incs system filesys libs cli utils progdev test games
@@ -400,4 +401,4 @@ sysvmr:
 
 # Copy image to compact flash (Z280RC)
 cf-copy:
-	dd if=$(disk) of=/dev/sdf bs=512 seek=65536 conv=swab
+	dd if=$(disk) of=/dev/sdf conv=swab bs=512 seek=$(seek)
