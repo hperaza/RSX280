@@ -19,7 +19,7 @@
 ;                                                                      ;
 ;**********************************************************************;
 
-	.Z180
+	.Z80
 
 	ident	'01.01'
 
@@ -423,6 +423,7 @@ rdp3:	; shouldn't we check for the version number as well?
 
 rdp4:	xor	a
 	ld	(valid),a
+	jr	rdp7
 
 rdp5:	; we should still check for a valid disk geometry definition
 
@@ -754,10 +755,10 @@ report:	call	PUTSTR
 	ld	hl,gmsg4
 	call	PUTSTR
 	push	hl
-	ld	e,(ix+0)
-	ld	d,(ix+1)
-	ld	c,(ix+2)
-	ld	b,(ix+3)
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
 	call	TSECS
 	ex	de,hl		; total sectors in HLDE
 	xor	a
@@ -864,8 +865,8 @@ adp2:	ld	a,MAXENT+1
 	or	(ix+PSIZE+1)
 	jp	nz,aderr1	; if yes, display message and exit
 
-	ld	de,(icyls)
-	ld	bc,(iheads)
+	ld	hl,(icyls)
+	ld	de,(iheads)	; E = iheads, D = isecs
 	call	TSECS		; compute total sectors
 	ld	c,16
 	call	DIV328
@@ -1146,7 +1147,8 @@ gtp1:	push	bc
 	jr	c,rngerr
 	ld	a,e		; return partition number in A
 	ld	d,PTSIZE
-	mlt	de
+	call	MULT8
+	ex	de,hl
 	ld	ix,ptable
 	add	ix,de		; index into table
 	or	a
@@ -1435,13 +1437,15 @@ pvfy4:	push	bc
 	ld	e,(hl)		; get cyls
 	inc	hl
 	ld	d,(hl)
+	push	de
 	inc	hl
-	ld	c,(hl)		; get heads
+	ld	e,(hl)		; get heads
 	inc	hl
-	ld	b,(hl)		; get sectors
+	ld	d,(hl)		; get sectors
+	pop	hl
   ELSE
-	ld	de,(icyls)
-	ld	bc,(iheads)
+	ld	hl,(icyls)
+	ld	de,(iheads)
   ENDIF
 	call	TSECS		; compute total sectors
 
@@ -1626,10 +1630,13 @@ CLRMEM:	ld	a,b
 	ldir
 	ret
 
-; Compute total number of sectors from cylinder value in DE, heads in C
-; and sectors/track in B. Returns value in DEHL.
+; Compute total number of sectors from cylinder value in HL, heads in E
+; and sectors/track in D. Returns value in DEHL.
 
-TSECS:	mlt	bc
+TSECS:	push	hl
+	call	MULT8
+	ex	de,hl
+	pop	bc
 MULT16:	ld	hl,0		; DEHL = DE * BC
 	ld	a,16
 mu1:	add	hl,hl
@@ -1642,6 +1649,21 @@ mu1:	add	hl,hl
 mu2:	dec	a
 	jr	nz,mu1
 	ret
+
+; HL = D * E
+
+MULT8:	ld	hl,0
+	ld	a,d
+	ld	d,l
+next:	or	a
+	ret	z
+	rra
+	jr	nc,shift
+	add	hl,de
+shift:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	next
 
 ; DEHL = DEHL / C, remainder in A.
 

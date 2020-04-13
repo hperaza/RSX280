@@ -1,6 +1,6 @@
 	TITLE	MURPHY
 
-	.Z180
+	.Z80
 
 	include	SYSFN.INC
 	include	ERRORS.INC
@@ -19,16 +19,17 @@ BEGIN:	ld	sp,stack
 
 	ld	a,(gtimbf+4)	; hours
 	call	BCD2BIN
-	ld	l,a
-	ld	h,24
-	mlt	hl
+	ld	e,a
+	ld	d,24
+	call	MULT8
 	ld	a,(gtimbf+5)	; minutes
 	call	BCD2BIN
 	ld	e,a
 	ld	d,0
 	add	hl,de
-	ld	h,60
-	mlt	hl
+	ex	de,hl
+	ld	d,60
+	call	MULT8
 	ld	a,(gtimbf+6)	; seconds
 	ld	e,a
 	ld	d,0
@@ -39,8 +40,9 @@ BEGIN:	ld	sp,stack
 	ld	h,a
 
  if 0
-	ld	h,60
-	mlt	hl
+	ex	de,hl
+	ld	d,60
+	call	MULT8
 	ld	a,(ticks)
 	ld	e,a
 	ld	d,0
@@ -152,6 +154,21 @@ d1:	pop	af
 	dec	a
 	jr	nz,d0
 	ret
+
+; HL = D * E
+
+MULT8:	ld	hl,0
+	ld	a,d
+	ld	d,l
+next:	or	a
+	ret	z
+	rra
+	jr	nc,shift
+	add	hl,de
+shift:	ex	de,hl
+	add	hl,hl
+	ex	de,hl
+	jr	next
 
 TTE	MACRO	B,STRING
 S&B:	db	'&STRING'
