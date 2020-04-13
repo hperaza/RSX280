@@ -550,8 +550,6 @@ astx3:	push	ix
 ;   E  = task bank
 ;   HL = pointer to arguments
 ;   BC = argument size in bytes (includes new PC)
-;
-; Note: arguments must be below the 8K window!
 
 STARG:	ld	(ARGS),hl
 	push	bc
