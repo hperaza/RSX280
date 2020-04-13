@@ -18,7 +18,6 @@ SRCS = hello.mac \
 	test1.mac \
 	test2.mac \
 	bintest.mac \
-	iitest.mac \
 	fcstest.mac \
 	bcdtest.mac \
 	filernd.mac \
