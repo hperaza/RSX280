@@ -29,7 +29,7 @@ and system call level. More details [here](http://p112.sourceforge.net/index.php
 
 ## Hardware supported
 
-Z280RC board with:
+Bill Shen's Z280RC board with:
 
  * Kernel: Dallas DS1202/DS1302 (RTC and NVRAM)
  * Terminal driver: one serial ports (Z280 internal UART)
