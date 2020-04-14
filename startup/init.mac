@@ -43,20 +43,6 @@ SYSCMD	equ	80h		; boot loader stores boot device name here
 
 	cseg
 
-; Notes:
-; - This task runs in the system partition, since it makes a few direct
-;   kernel calls.
-; - Calls that may affect this task's execution state directly or indirectly
-;   (i.e. that call TRQST, etc.) are done via normal system calls to
-;   ensure redispatch, etc.
-; - Calls that modify the kernel database, but that do not change task state
-;   (e.g. $ASGN, TRQST, etc.) are safe to execute if interrupts are kept
-;   disabled during the call. That's because we know that we're running in
-;   task state (SYSLVL=1) and the kernel is idle (at least until the next
-;   timer interrupt). Another way is by explicitely setting SYSLVL=0 during
-;   the call to ensure that the kernel dispatcher will not be called on timer
-;   interrupt.
-
 KCALL	MACRO	addr
 	call	$SWSTK##
 	dw	addr
@@ -103,31 +89,6 @@ INIT_S:	ld	sp,INISTK
 	pop	hl
 	inc	hl
 	call	PUTSTR
-
-	; setup initial device assignments
-
- if 0
-;;	call	DEVSTR		; >ASN ddn:=LB:
-	ld	hl,'LB'
-	ld	b,0		; 'LB0:' HL-B = logical (system library)
-	ld	de,(sydev)
-	ld	a,(sydev+2)
-	ld	c,a		; DE-C = physical
-	ld	ix,0
-	ld	a,N.GBL
-	KCALL	$ASGN
- endif
-
- if 0
-;;	call	DEVSTR		; >ASN ddn:=SY:
-	ld	hl,'SY'
-	ld	b,0		; 'SY0:' HL-B = logical (user system device)
-	ld	de,(sydev)
-	ld	a,(sydev+2)
-	ld	c,a		; DE-C = physical
-	ld	a,N.GBL ;;N.LGN
-	KCALL	$ASGN
- endif
 
 	; login SYSTEM user
 
