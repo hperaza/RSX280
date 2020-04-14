@@ -342,10 +342,6 @@ tmarm:	ld	hl,(ttdcb)
 ; Kill outstanding I/O: clear input and output buffers.
 ; I/O kill point, called with IY = UCB address.
 
-; TODO:
-; - dequeue any queued fork blocks? or set state such way that they do
-;   not perform any action when executed.
-
 iokill:	call	ttclr		; reset input queue and clear I/O count
 	bit	US.BSY,(iy+U.ST)
 	ld	bc,E.ABOP
@@ -372,9 +368,9 @@ ttrpr:	ldw	hl,(ix+Q.P3)	     ; get address of prompt string
 	ld	a,(iy+UX.CNT)
 	or	(iy+UX.CNT+1)
 	jp	z,iend
+	call	prompt		     ; request display of prompt
 	res	UM.OUT,(iy+UX.MOD)
 	set	UM.INP,(iy+UX.MOD)   ; set input mode bit
-	call	prompt		     ; display prompt
 	ldw	hl,(iy+UX.TXK)
 	call	c,(hl)		     ; restart transmitter if necessary
 	jr	ttr1		     ; continue below
@@ -778,7 +774,7 @@ pch4:	call	store		; store char in buffer (char in reg C)
 	cp	1Ah		; ^Z
 	jp	z,ctrlz
 
-	dec	b		; do not echo char if buffer full
+	dec	b		; do not echo char if buffer is full
 	ret	nz
 
 	cp	20h		; any other control char?
@@ -1102,7 +1098,7 @@ ueol:	ldw	hl,(iy+UX.UBF)	; get address of unsolicited input buffer
 	scf			; restart transmitter
 	ret
 
-; Store char (in reg C) in task buffer or unsolicited input buffer
+; Store char (in reg C) into task's buffer or unsolicited input buffer
 ; according to current mode. Returns B=1 if char stored, or B=0 if
 ; buffer is full.
 
@@ -1136,7 +1132,7 @@ store:	ld	b,0
 	ld	a,h
 	or	l
 	ld	a,c
-st1:	ld	c,1Bh		; force end of input if buffer full
+st1:	ld	c,1Bh		; force end of input if buffer is full
 	ret	z
 	ld	b,1
 	ld	c,a
@@ -1195,7 +1191,7 @@ ucl1:	res	UM.SIP,(iy+UX.MOD)
 ucl2:	ldw	hl,(iy+UX.TXK)
 	jp	(hl)		; restart the transmitter
 
-; display prompt from user space
+; setup display of prompt
 
 prompt:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 	jr	z,pruser	; jump if not - display user prompt
@@ -1278,7 +1274,7 @@ oproc:	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
 
 ; Refill transmitter queue
 
-refill:	ldw	ix,(iy+UX.TQ)	; IX = transmitter queue
+refill:	ldw	ix,(iy+UX.XQ)	; IX = transmitter queue
 r1:	di
 	call	qsize
 	ei
@@ -1297,7 +1293,7 @@ r1:	di
 ; Get next char to send, either from local output queue or from requesting
 ; task's buffer.
 ; Called with IY = UCB. Returns CY set if no more chars to send.
-; Call with interrupts disabled!
+; Do not call from the interrupt routine.
 
 FF4	equ	1		; test code - translate FF to 4xLF
 
@@ -1417,7 +1413,7 @@ chkend:	bit	US.BSY,(iy+U.ST)   ; check busy flag
 	ret	z		   ; return if not set
 	jp	iend		   ; else end output operation
 
-; Schedule output fork block process
+; Schedule output fork block process. Call with interrupts disabled.
 
 ofpq:	bit	UM.OFP,(iy+UX.MOD) ; fork process already scheduled?
 	ret	nz		   ; return if yes
@@ -1427,7 +1423,7 @@ ofpq:	bit	UM.OFP,(iy+UX.MOD) ; fork process already scheduled?
 	add	ix,de		   ; point to output fork block process 
 	jp	LNKFQB		   ; queue fork block and return
 
-; Schedule input fork block process
+; Schedule input fork block process. Call with interrupts disabled.
 
 ifpq:	bit	UM.IFP,(iy+UX.MOD) ; fork process already queued?
 	ret	nz		   ; return if yes
@@ -1498,7 +1494,7 @@ kick0:	iopage	UARTP
 	and	01h		; check transmitter buffer empty bit
 	ret	z
 	di
-	ld	ix,(iy+UX.TQ)
+	ld	ix,(iy+UX.XQ)
 	call	qget		; anything in transmitter queue?
 	ei
 	jr	c,k1		; branch if not
