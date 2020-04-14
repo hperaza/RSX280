@@ -1,5 +1,5 @@
-RSX180 Changelog
-----------------
+Changelog
+---------
 
 (Starting from P112 port V2.0 - didn't keep any early modification records)
 
@@ -6039,4 +6039,14 @@ BUGS:
 
 - Linux vol180 utility: fixed a bug that caused the inode bitmap not to be
   updated after deleting a file.
+
+
+12/04/20
+
+- DMP: output file ID as "index entry number,seq number".
+
+- The I.VERS subfunction of the .GIN function now also returns the system
+  type. HEL and CCL now use that information to display the correct system
+  name; the ICP <SYSTEM> variable now returns the correct system type.
+
 
