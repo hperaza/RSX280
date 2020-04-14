@@ -199,7 +199,7 @@ Z280RC board:
   15:22:09 10-Apr-2020
   >set /colog=on
   >set /colog/nocoterm
-  >pip [syslog]*.*/pu:5
+  >pip [syslog]*.*/pu:50
   >upt
   Up 0 days, 0 hours, 0 minutes and 10.56 seconds.
   >@ <EOF>

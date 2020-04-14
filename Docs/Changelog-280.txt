@@ -128,12 +128,18 @@ Changelog
   ready for release on GitHub!
 
 
-12/10/20
+12/04/20
 
 - DEVTT: do not call $UGET from the interrupt routine (e.g. via 'nextch'),
   since the $UGET and $UPUT routines change the user MMU pages and do not
   restore them. Instead, call $UGET from a fork process and use a separate
   queue to buffer the characters from user space for the transmitter
   interrupt routine.
+
+
+14/04/20
+
+- DEVTT bug fix: the wrong queue was used for the UART transmitter, and
+  that caused the arrow keys not to work properly in e.g. MCE.
 
 
