@@ -21,7 +21,7 @@
 
 	.z80
 
-	ident	'01.05'
+	ident	'01.06'
 
 	include	FCB.INC
 	include	TCB.INC
@@ -159,7 +159,7 @@ addu:	ld	hl,new
 
 	call	CRLF
 
-	; get user name
+add1:	; get user name
 
 	ld	de,12
 	ld	bc,aopt1	; 'Enter name'
@@ -168,9 +168,11 @@ addu:	ld	hl,new
 	ret	z		; ESC cancels operation
 	call	SKIPBL
 	or	a
-	scf
-	ret	z
-	push	hl
+	jr	nz,add3
+add2:	ld	hl,errie
+	call	ERROR		; name can't be empty
+	jr	add1		; try again
+add3:	push	hl
 	ld	hl,uname
 	push	hl
 	ld	bc,9
@@ -178,21 +180,28 @@ addu:	ld	hl,new
 	pop	de
 	pop	hl
 	ld	b,9
-add1:	ld	a,(hl)
+add4:	ld	a,(hl)
 	or	a
-	jr	z,add2
+	jr	z,add5
 	call	VALID		; validate name
-	ret	c
+	jr	c,add2		; try again if not valid
 	ld	(de),a		; set name
 	inc	hl
 	inc	de
-	djnz	add1
-add2:	ld	hl,uname
+	djnz	add4
+add5:	ld	a,3		; search by user name
+	ld	(mode),a
+	call	SEARCH
+	jr	c,add51		; continue below if no record found
+	ld	hl,errex
+	call	ERROR		; account already exists
+	jr	add1		; so try again
+add51:	ld	hl,uname
 	ld	de,new+AF.UNAM
 	ld	bc,9
-	ldir
+	ldir			; store name
 
-	; get UIC
+add6:	; get UIC
 
 	ld	de,12
 	ld	bc,aopt2	; 'Enter account'
@@ -200,11 +209,21 @@ add2:	ld	hl,uname
 	ret	c		; ^Z exits
 	ret	z		; ESC cancels operation
 	call	GETUIC		; validate and convert to binary
-	ret	c		; TODO: display error and ask again
-	ld	(new+AF.USR),de	; store UIC
+	jr	nc,add7
+	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	add6		; try again
+add7:	ld	(new+AF.USR),de	; store UIC
 	ld	(uic),de
+	ld	a,2		; search by UIC
+	ld	(mode),a
+	call	SEARCH
+	jr	c,add71		; continue below if no record found
+	ld	hl,errex
+	call	ERROR		; account already exists
+	jr	add6		; so try again
 
-	; get full name
+add71:	; get full name
 
 	ld	de,32
 	ld	bc,aopt3	; 'Full name'
@@ -214,17 +233,17 @@ add2:	ld	hl,uname
 	ld	de,new+AF.NAME
 	ld	b,32
 	call	SKIPBL
-add3:	ld	a,(hl)
+add8:	ld	a,(hl)
 	or	a
-	jr	z,add4
+	jr	z,add9
 	ld	(de),a		; store full name or description
 	inc	hl
 	inc	de
-	djnz	add3
+	djnz	add8
 
-	; get password
+add9:	; get password
 
-add4:	ld	hl,new+AF.UNAM
+	ld	hl,new+AF.UNAM
 	ld	de,aopt4	; 'Password'
 	call	GETPWD
 	ret	c		; ^Z exits
@@ -233,7 +252,7 @@ add4:	ld	hl,new+AF.UNAM
 	ld	bc,16
 	ldir			; set MD5 password
 
-	; get system device
+add10:	; get system device name
 
 	ld	de,20
 	ld	bc,aopt5	; 'System device'
@@ -241,14 +260,17 @@ add4:	ld	hl,new+AF.UNAM
 	ret	c		; ^Z exits
 	ret	z		; ESC cancels operation
 	call	PDN		; parse device name
-	ret	c
-	ld	(new+AF.SYD),de	; TODO: convert to physical name and
-	ld	(udev),de
-	ld	a,c		;  emit warning if device does not exist
+	jr	nc,add11
+	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	add10		; try again
+add11:	ld	(new+AF.SYD),de
+	ld	(udev),de	; TODO: convert to physical name and
+	ld	a,c		;  display warning if device does not exist
 	ld	(new+AF.SYD+2),a
 	ld	(udev+2),a
 
-	; get CLI name
+add120:	; get CLI name
 
 	ld	de,20
 	ld	bc,aopt6	; 'System device'
@@ -259,23 +281,25 @@ add4:	ld	hl,new+AF.UNAM
 	ld	b,6
 	call	SKIPBL
 	or	a
-	jr	z,add8		; if response is empty, use default
-add7:	ld	a,(hl)
+	jr	z,add13		; if response is empty, use default
+add12:	ld	a,(hl)
 	or	a
-	jr	z,add9
+	jr	z,add14
 	call	VALID		; validate name
-	ret	c
+	jr	c,add121
 	ld	(de),a		; set CLI name
 	inc	hl
 	inc	de
-	djnz	add7
-	jr	add9
-
-add8:	ld	hl,mcrtdb
+	djnz	add12
+	jr	add14
+add121:	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	add120		; try again
+add13:	ld	hl,mcrtdb
 	ld	bc,3
 	ldir			; default to MCR
 
-add9:	; get options:
+add14:	; get options:
 
 	; disabled account?
 
@@ -345,10 +369,8 @@ add9:	; get options:
 	or	(hl)
 	ld	(hl),a
 
-	; Try to find a deleted slot
-	; TODO: Also check for duplicate user name and/or UIC
-	;  (should check for duplicate above, right after user name
-	;   and UIC are entered)
+	; try to find a deleted slot in the account file to store new entry
+	; if none found, create a new record at the end of the file
 
 	call	AFRWND		; rewind account file
 
@@ -412,7 +434,7 @@ aopt1:	db	CR,LF,'Enter name (max. 9 chars): ',0
 aopt2:	db	CR,LF,'Enter account (group,user): ',0
 aopt3:	db	CR,LF,'Full name (max. 30 chars): ',0
 aopt4:	db	CR,LF,'Password (max. 16 chars): ',0
-aopt5:	db	CR,LF,'Default system device (DDU): ',0
+aopt5:	db	CR,LF,'Default system device (DDU:): ',0
 aopt6:	db	CR,LF,'Enter user CLI (default=MCR): ',0
 aopt7:	db	CR,LF,'Locked account? [Y/N]: ',0
 aopt8:	db	CR,LF,'Silent login? [Y/N]: ',0
@@ -420,6 +442,8 @@ aopt9:	db	CR,LF,'Slave terminal? [Y/N]: ',0
 aopt10:	db	CR,LF,'Disable remote login? [Y/N]: ',0
 
 errex:	db	'Account already exists',0
+errie:	db	'Invalid entry, try again',0
+errnf:	db	'No such account',0
 
 ucmd1:	db	'UFD ',0,':[',0,']/OWNER=[',0,',',0,']',0
 
@@ -429,46 +453,12 @@ ucmd1:	db	'UFD ',0,':[',0,']/OWNER=[',0,',',0,']',0
 
 del:	call	GETNAM		; get account or user name
 	ret	c
+	call	SEARCH		; search for entry
+	ld	hl,errnf
+	jp	c,ERROR		; no entry found
+
 	call	CRLF
 	call	CRLF
-
-	; search for entry
-
-	call	AFRWND		; rewind account file
-del1:	call	AFPOS
-	ld	(fpos),bc	; remember file position
-	ld	(fpos+2),de
-	call	AFREAD		; read user acount record
-	ret	c
-    if 1
-	ld	a,b
-	or	c
-	ret	z
-    endif
-	call	AFCHK		; deleted record?
-	jr	z,del1		; skip if yes
-
-	ld	a,(mode)	; check search mode
-	cp	2
-	jr	z,del3		; search by UIC
-	ld	hl,rec+AF.UNAM	; else search by user name
-	ld	de,uname
-	ld	b,9
-del2:	ld	a,(de)
-	cp	(hl)
-	jr	nz,del1
-	inc	hl
-	inc	de
-	djnz	del2
-	jr	del4		; found
-
-del3:	ld	hl,(rec+AF.USR)
-	ld	de,(uic)
-	call	CPHLDE
-	jr	nz,del1
-
-del4:	; entry found
-
 	call	LSTREC		; display record details
 	ld	de,20
 	ld	bc,dopt1	; 'This entry?'
@@ -562,11 +552,7 @@ del4:	; entry found
 	cp	EX.SEV
 	ld	hl,errd1
 	jp	z,ERROR
-
-;   search disk for files belonging to user and delete them?
-;   PIP ddn:[*]*.*;*/OW:[grp,usr]/DE
-
-	ret
+	ret			; done
 
 dopt1:	db	CR,LF,'This entry? [Y/N]: ',0
 dopt2:	db	CR,LF,'Delete UFD and files? [Y/N]: ',0
@@ -723,20 +709,20 @@ sl1:	call	PUTSC		; display string
 	inc	hl
 	jr	sl1
 sl2:	call	CRLF
+
 	call	AFRWND		; rewind account file
 sloop:	call	AFREAD		; read user acount record
 	ret	c
-    if 1
 	ld	a,b
 	or	c
 	ret	z
-    endif
 	call	AFCHK		; deleted record?
 	jr	z,sloop		; skip if yes
 
 	ld	a,(mode)
-	or	a
-	jr	z,sl4
+	or	a		; all accounts?
+	jr	z,sl4		; branch if yes
+
 	ld	hl,rec+AF.GRP
 	ld	a,(uic+1)
 	cp	(hl)		; same group?
@@ -799,11 +785,9 @@ dlist:	call	CRLF
 	call	AFRWND		; rewind account file
 dloop:	call	AFREAD		; read user acount record
 	ret	c
-    if 1
 	ld	a,b
 	or	c
 	ret	z
-    endif
 	call	AFCHK		; deleted record?
 	jr	z,dloop		; skip if yes
 
@@ -1086,46 +1070,12 @@ optbl:	db	(1 SHL AO.SIL),'Silent login',0
 
 mod:	call	GETNAM		; get account or user name
 	ret	c
+	call	SEARCH		; search for entry
+	ld	hl,errnf
+	jp	c,ERROR		; error if not found
+
 	call	CRLF
 	call	CRLF
-
-	; search for entry
-
-	call	AFRWND		; rewind account file
-mod1:	call	AFPOS
-	ld	(fpos),bc	; remember file position
-	ld	(fpos+2),de
-	call	AFREAD		; read user acount record
-	ret	c
-    if 1
-	ld	a,b
-	or	c
-	ret	z
-    endif
-	call	AFCHK		; deleted record?
-	jr	z,mod1		; skip if yes
-
-	ld	a,(mode)	; check search mode
-	cp	2
-	jr	z,mod3		; search by UIC
-	ld	hl,rec+AF.UNAM	; else search by user name
-	ld	de,uname
-	ld	b,9
-mod2:	ld	a,(de)
-	cp	(hl)
-	jr	nz,mod1
-	inc	hl
-	inc	de
-	djnz	mod2
-	jr	mod4		; found
-
-mod3:	ld	hl,(rec+AF.USR)
-	ld	de,(uic)
-	call	CPHLDE
-	jr	nz,mod1
-
-mod4:	; entry found
-
 	call	LSTREC		; display record details
 	ld	de,20
 	ld	bc,dopt1	; 'This entry?'
@@ -1140,15 +1090,14 @@ mod4:	; entry found
 	ld	hl,modmsg
 	call	PUTSTR
 
-	;...do not allow changing UIC
-	;...if user name is changed, check for duplicates!
-
 	ld	hl,rec
 	ld	de,new
 	ld	bc,AFSZ
 	ldir
 
-	; get new user name
+	; note: does not allow changing UIC
+
+mod1:	; get new user name
 
 	ld	de,12
 	ld	bc,aopt1	; 'Enter name'
@@ -1157,9 +1106,11 @@ mod4:	; entry found
 	jr	z,mod7		; ESC leaves entry unchanged
 	call	SKIPBL
 	or	a
-	scf
-	ret	z
-	push	hl
+	jr	nz,mod3
+mod2:	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	mod1		; so try again
+mod3:	push	hl
 	ld	hl,uname
 	push	hl
 	ld	bc,9
@@ -1167,23 +1118,30 @@ mod4:	; entry found
 	pop	de
 	pop	hl
 	ld	b,9
-mod5:	ld	a,(hl)
+mod4:	ld	a,(hl)
 	or	a
-	jr	z,mod6
+	jr	z,mod5
 	call	VALID		; validate name
-	ret	c
+	jr	c,mod2		; try again if invalid
 	ld	(de),a		; set name
 	inc	hl
 	inc	de
-	djnz	mod5
+	djnz	mod4
+mod5:	ld	a,3		; search by user name
+	ld	(mode),a
+	call	SEARCH
+	jr	c,mod6		; continue below if no record found
+	ld	hl,errex
+	call	ERROR		; account already exists
+	jr	mod1		; so try again
 mod6:	ld	hl,uname
 	ld	de,new+AF.UNAM
 	ld	bc,9
-	ldir
+	ldir			; store new name
 
-	; get new full name
+mod7:	; get new full name
 
-mod7:	ld	de,32
+	ld	de,32
 	ld	bc,aopt3	; 'Full name'
 	call	GETLIN
 	ret	c		; ^Z exits
@@ -1218,8 +1176,12 @@ mod10:	; get system device
 	ret	c		; ^Z exits
 	jr	z,mod11		; ESC leaves entry unchanged
 	call	PDN		; parse device name
-	ret	c
-	ld	(new+AF.SYD),de	; TODO: convert to physical name and
+	jr	nc,mod101
+	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	mod10		; try again
+
+mod101:	ld	(new+AF.SYD),de	; TODO: convert to physical name and
 	ld	(udev),de
 	ld	a,c		;  emit warning if device does not exist
 	ld	(new+AF.SYD+2),a
@@ -1241,13 +1203,15 @@ mod12:	ld	a,(hl)
 	or	a
 	jr	z,mod14
 	call	VALID		; validate name
-	ret	c
+	jr	c,mod121
 	ld	(de),a		; set CLI name
 	inc	hl
 	inc	de
 	djnz	mod12
 	jr	mod14
-
+mod121:	ld	hl,errie
+	call	ERROR		; invalid entry
+	jr	mod11		; try again
 mod13:	ld	hl,mcrtdb
 	ld	bc,3
 	ldir			; default to MCR
@@ -1570,7 +1534,7 @@ sort15:	call	PUTSTR
 sort12:	pop	hl
 	pop	bc
 	call	TMPCLS		; error: close temporary file
-				; TODO: delete it!
+				; TODO: delete old version?
 	ret
 
 sopt1:	db	CR,LF,'Enter U - Sort by UIC or N - Sort by Name: ',0
@@ -1645,12 +1609,10 @@ pwd1:	call	AFPOS
 	ld	(fpos),bc	; remember file position
 	ld	(fpos+2),de
 	call	AFREAD		; read user acount record
-	jp	c,perr
-    if 1
+	ret	c
 	ld	a,b
 	or	c
 	jp	z,punkn
-    endif
 	call	AFCHK		; deleted record?
 	jr	z,pwd1		; skip if yes
 
@@ -2119,6 +2081,8 @@ AFSEEK:	ld	(blkno),de
 
 AFREAD:	ld	hl,(blkno)
 	ld	(qio3+Q.BLK),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK+2),hl
 	ld	hl,(offs)
 	ld	(qio3+Q.OFS),hl
 	ld	hl,qio3
@@ -2157,6 +2121,8 @@ rderr:	db	'Account file read error: ',0
 
 AFWRIT:	ld	hl,(blkno)
 	ld	(qio4+Q.BLK),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK+2),hl
 	ld	hl,(offs)
 	ld	(qio4+Q.OFS),hl
 	ld	hl,qio4
@@ -2182,7 +2148,7 @@ AFCLSE:	ld	hl,qio5
 	scf
 	ret
 
-; Check if the current record is deleted
+; Return Z if the current record is deleted
 
 AFCHK:	push	hl
 	ld	hl,rec
@@ -2194,6 +2160,47 @@ chk:	or	(hl)
 	pop	hl
 	or	a
 	ret
+
+; Search for the specified record according to variable 'mode':
+; * if mode = 2, search by UIC
+; * else search by name
+; Assumes the account file is already open.
+
+SEARCH:	call	AFRWND		; rewind account file
+sch1:	call	AFPOS
+	ld	(fpos),bc	; remember file position
+	ld	(fpos+2),de
+	call	AFREAD		; read user acount record
+	ret	c		; end of file: no record found
+	ld	a,b
+	or	c
+	scf
+	ret	z
+	call	AFCHK		; deleted record?
+	jr	z,sch1		; skip if yes
+
+	ld	a,(mode)	; check search mode
+	cp	2
+	jr	z,sch3		; search by UIC
+
+	ld	hl,rec+AF.UNAM	; else search by user name
+	ld	de,uname
+	ld	b,9
+sch2:	ld	a,(de)		; compare names
+	cp	(hl)
+	jr	nz,sch1		; no match, try next record
+	inc	hl
+	inc	de
+	djnz	sch2
+	xor	a
+	ret			; found, return success
+
+sch3:	ld	hl,(rec+AF.USR)
+	ld	de,(uic)
+	call	CPHLDE		; compare UICs
+	jr	nz,sch1		; no match, try next record
+	xor	a
+	ret			; found, return success
 
 ; Create new account file on TMPLUN
 
