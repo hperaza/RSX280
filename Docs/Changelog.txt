@@ -6050,3 +6050,10 @@ BUGS:
   name; the ICP <SYSTEM> variable now returns the correct system type.
 
 
+16/04/20
+
+- ACNT add/modify account:
+  * if user name or UIC fails validation, display an appropriate error
+    message and retry the operation.
+  * check for duplicate name and UIC before adding/modifying the account.
+
