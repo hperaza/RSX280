@@ -6057,3 +6057,10 @@ BUGS:
     message and retry the operation.
   * check for duplicate name and UIC before adding/modifying the account.
 
+
+17/04/20
+
+- INI bug fix: the RDBLK and WRBLK routines did not store the high byte of
+  the 24-bit block number into the corresponding QIO field.
+
+
