@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.02'
+	ident	'03.03'
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -1580,9 +1580,11 @@ SHRBHL:	srl	b
 
 ; Read block (number in BHL) from LUNDSK to memory buffer BUF.
 
-RDBLK:	ld	(qio6+Q.BLK),hl
+RDBLK:	ld	(qio6+Q.BLK),hl	; store block number
 	ld	l,b
 	ld	h,0
+	ld	(qio6+Q.BLK+2),hl
+	ld	hl,0
 	ld	(iosb+2),hl	; clear counter of bytes transferred
 	ld	hl,qio6
 	SC	.QIO		; .QIOW
@@ -1596,9 +1598,11 @@ RDBLK:	ld	(qio6+Q.BLK),hl
 
 ; Write block (number in BHL) from memory buffer BUF to LUNDSK.
 
-WRBLK:	ld	(qio7+Q.BLK),hl
+WRBLK:	ld	(qio7+Q.BLK),hl	; store block number
 	ld	l,b
 	ld	h,0
+	ld	(qio7+Q.BLK+2),hl
+	ld	hl,0
 	ld	(iosb+2),hl	; clear counter of bytes transferred
 	ld	hl,qio7
 	SC	.QIO		; .QIOW
