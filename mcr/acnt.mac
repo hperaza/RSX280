@@ -59,7 +59,7 @@ START:	ld	sp,stack
 	ld	de,gtkbuf
 	SC	.GTSK		; get task info
 	ld	hl,(gtkbuf+GT.END)
-	ld	(memtop),hl	; save address of task memory
+	ld	(memtop),hl	; save top address of task memory
 
 	call	CHKPRV		; is user privileged?
 	jr	nc,tn1		; branch if yes
