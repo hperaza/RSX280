@@ -192,6 +192,7 @@ qio1:	; handle ACP request
 	jr	c,qio3		; on error free packet and return
 
 qio2:	pop	de		; E = flag number
+	xor	a		; return code = success so far
 	bit	0,(ix+I.QDB+Q.WAIT) ; wait bit set?
 	ld	bc,($CTCB)
 	call	nz,FLWAIT	; then wait for flag (note: will not cause
