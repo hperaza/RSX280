@@ -6064,3 +6064,11 @@ BUGS:
   the 24-bit block number into the corresponding QIO field.
 
 
+19/04/20 (by Tony Nicholson)
+
+- Linux vol180 bug fixes:
+  * include <time.h> in bitmap.c, check.c and mount.c.
+  * dirio.c: prevent string overflow in create_dir().
+  * check.c: fix block number in error message.
+
+
