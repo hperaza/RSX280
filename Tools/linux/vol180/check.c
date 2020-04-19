@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <time.h>
 
 #include "check.h"
 #include "indexf.h"
@@ -1022,7 +1023,7 @@ int check_alloc_map(void) {
         if (blkno > 0) {  /* allocation block allocated */
           buf = get_block(blkno);
           if (!buf) {
-            printf("*** Could not read block %ld, aborting.\n", next);
+            printf("*** Could not read block %ld, aborting.\n", blkno);
             free(bm);
             return 0;
           }
