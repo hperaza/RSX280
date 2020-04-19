@@ -84,7 +84,7 @@ int match_fcb(unsigned char *dirent, struct FCB *fcb) {
 int create_dir(char *filename, char group, char user) {
   unsigned char dirent[16];
   unsigned char inode[64];
-  char fname[13], *ext, *pvers;
+  char fname[20], *ext, *pvers;
   unsigned short ino;
   short vers;
   unsigned long fpos;
@@ -92,8 +92,8 @@ int create_dir(char *filename, char group, char user) {
 
   if (!mdfcb) return 0;
 
-  strncpy(fname, filename, 13);
-  fname[13] = '\0';
+  strncpy(fname, filename, 19);
+  fname[20] = '\0';
   
   ext = strchr(fname, '.');
   if (ext) {
