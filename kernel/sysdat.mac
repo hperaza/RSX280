@@ -35,7 +35,7 @@
 	public	MCRTCB,LDRTCB,$SWSTK,$CLKQ,$PHYDV,$LOGDV,SFLAGS
 	public	$CLIST,$FORKQ,$HOSTN,$ERSEQ,$SCRBF,$MVTBL,$CPLST
 	public	$RNDC,$RNDCT,$RNDH,$RNDL,$SWPC,$SWPCT,$SWPRI
-	public	$FEAT
+	public	SYSTYP,$FEAT
 
 ;-----------------------------------------------------------------------
 
@@ -48,9 +48,11 @@ SYSDAT:	db	'SYSDAT'; signature
 SYSVER:	db	SVER.L	; system version
 	db	SVER.H
 
-$HOSTN:	ds	9	; host/node name
+SYSTYP:	db	2	; system type = RSX280
 
 $FEAT:	db	0	; feature bits
+
+$HOSTN:	ds	9	; host/node name
 
 SYSTOP:	ds	2	; end of pool area (system top)
 $POOL:	ds	2	; ptr to list of free blocks

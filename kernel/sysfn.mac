@@ -52,6 +52,7 @@
 	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
 	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
+	extrn	SYSTYP
 
 	cseg
 
@@ -752,9 +753,9 @@ GIN:	ld	a,c
 	cp	I.SMEM
 	jr	z,smem
 	cp	I.USCB
-	jr	z,uscb
+	jp	z,uscb
 	cp	I.TSCB
-	jr	z,tscb
+	jp	z,tscb
 	cp	I.HOST
 	jp	z,hstn
 	cp	I.TCKS
@@ -772,7 +773,9 @@ GIN:	ld	a,c
 
 sver:	ld	bc,(SYSVER)
 	call	storew		; store version number
-	ld	bc,2		; system type: 2 = RSX180
+	ld	a,(SYSTYP)	; system type
+	ld	c,a
+	ld	b,0
 storew:	ld	a,($UBANK)
 	ld	e,a
 	call	$UPUTW
