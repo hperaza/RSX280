@@ -143,3 +143,8 @@ Changelog
   that caused the arrow keys not to work properly in e.g. MCE.
 
 
+22/04/20
+
+- More Z80 -> Z280 optimizations: clkq, connect, flags, session.
+
+

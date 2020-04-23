@@ -6072,3 +6072,13 @@ BUGS:
   * check.c: fix block number in error message.
 
 
+22/04/20
+
+- Added SYSTYP variable to kernel data area, so VMR could determine the
+  system image type.
+
+
+23/04/20
+
+- FCSLIB: fixed a bug in the FPOS routine.
+
