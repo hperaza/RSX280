@@ -47,7 +47,7 @@ FPOS:	ld	c,0
 	scf
 	ret	nz
  endif
-	srl	b
+	sla	b
 	rl	e
 	rl	d		; block * 512
  if 0
