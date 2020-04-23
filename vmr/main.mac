@@ -2805,6 +2805,7 @@ name:	dw	0
 
 SYMTBL:	ksym	SYSDAT		; start of data area, signature
 	ksym	SYSVER		; system version
+	ksym	SYSTYP		; system type
 	ksym	SYSEND		; end of system image, start of free memory
 	ksym	SYSTOP		; end of free memory
 	ksym	$POOL		; ptr to free memory pool
