@@ -86,10 +86,10 @@ NEWPAR:	push	de
 	pop	bc
 	xor	a
 	ld	hl,0
-	ld	(ix+P.SUB),hl	; subpartition list is initially empty
+	ldw	(ix+P.SUB),hl	; subpartition list is initially empty
 	ld	(ix+P.ATTR),a
 	ld	(ix+P.STAT),a
-	ld	(ix+P.TCB),hl
+	ldw	(ix+P.TCB),hl
 	ld	hl,$PLIST	; keep list sorted by address
 np1:	ldw	de,(hl)
 	ld	a,d

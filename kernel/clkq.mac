@@ -1,6 +1,6 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
 ;   Copyright (C) 1985-2020, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
@@ -20,7 +20,7 @@
 ;**********************************************************************;
 
 	NAME	('CLKQ')
-	TITLE	'RSX180 Clock queue'
+	TITLE	'RSX280 Clock queue'
 
 ;----------------------------------------------------------------------;
 ;                                                                      ;
@@ -28,7 +28,7 @@
 ;                                                                      ;
 ;----------------------------------------------------------------------;
 
-	.Z80
+	.Z280
 
 	include	CLKQ.INC
 	include	TCB.INC
@@ -71,8 +71,7 @@ MRKT:	push	hl
 	ret	c		; on error return
 	ld	(ix+C.TYPE),CT.MKT ; set request type
 	ld	(ix+C.EFN),e	; set event flag number
-	ld	(ix+C.AST),c	; set AST routine address
-	ld	(ix+C.AST+1),b
+	ldw	(ix+C.AST),bc	; set AST routine address
 	ld	c,d		; get units into reg C
 	call	TMULT		; convert time interval to ticks
 	jr	c,mkt1		; on error, free packet and return
@@ -81,13 +80,10 @@ MRKT:	push	hl
 	scf
 	jr	nz,mkt1		; return error as well
 	call	ABSTIM		; compute absolute ticks
-	ld	(ix+C.TIME),e	; set absolute time in packet
-	ld	(ix+C.TIME+1),d
-	ld	(ix+C.TIME+2),l
-	ld	(ix+C.TIME+3),h
+	ldw	(ix+C.TIME),de	; set absolute time in packet
+	ldw	(ix+C.TIME+2),hl
 	ld	bc,($CTCB)
-	ld	(ix+C.TCB),c	; set TCB address of requesting task
-	ld	(ix+C.TCB+1),b
+	ldw	(ix+C.TCB),bc	; set TCB address of requesting task
 	ld	a,(ix+C.EFN)
 	or	a
 	ld	e,a
@@ -214,11 +210,9 @@ SRQST:	push	hl
 	pop	hl
 	ret	c		; on error return
 	ld	(ix+C.TYPE),CT.RUN ; set request type
-	ld	(ix+C.TCB),e	; set TCB address of requesting task
-	ld	(ix+C.TCB+1),d
-	ld	e,(hl)		; get magnitude of time interval
+	ldw	(ix+C.TCB),de	; set TCB address of requesting task
+	ldw	de,(hl)		; get magnitude of time interval
 	inc	hl
-	ld	d,(hl)
 	inc	hl
 	ld	c,(hl)		; get units
 	inc	hl
@@ -237,14 +231,11 @@ SRQST:	push	hl
 	scf
 	jr	nz,srq1		; return error as well
 	call	ABSTIM		; compute absolute ticks
-	ld	(ix+C.TIME),e	; store absolute time in packet
-	ld	(ix+C.TIME+1),d
-	ld	(ix+C.TIME+2),l
-	ld	(ix+C.TIME+3),h
+	ldw	(ix+C.TIME),de	; store absolute time in packet
+	ldw	(ix+C.TIME+2),hl
 	pop	hl
-	ld	e,(hl)		; get magnitude of reschedule interval
+	ldw	de,(hl)		; get magnitude of reschedule interval
 	inc	hl
-	ld	d,(hl)
 	inc	hl
 	ld	c,(hl)		; get units
 	inc	hl
@@ -256,10 +247,8 @@ SRQST:	push	hl
 	jp	nz,mkt1
 	ex	de,hl
 	call	TMULT		; convert interval to ticks
-	ld	(ix+C.RSI),e	; store reschedule interval in packet
-	ld	(ix+C.RSI+1),d
-	ld	(ix+C.RSI+2),l
-	ld	(ix+C.RSI+3),h
+	ldw	(ix+C.RSI),de	; store reschedule interval in packet
+	ldw	(ix+C.RSI+2),hl
 	jp	LNKCLQ		; queue packet and return
 
 srq1:	pop	hl
@@ -274,8 +263,7 @@ srq1:	pop	hl
 ;   IX = address of item to add
 
 LNKCLQ:	ld	iy,$CLKQ	; get addr of list head into IY
-lclk1:	ld	e,(iy)		; get next ptr into DE
-	ld	d,(iy+1)
+lclk1:	ldw	de,(iy)		; get next ptr into DE
 	ld	a,d
 	or	e		; end of the list?
 	jr	z,lclk2		; jump if yes
@@ -302,10 +290,8 @@ lclk1:	ld	e,(iy)		; get next ptr into DE
 
 lclk2:	push	ix
 	pop	hl
-	ld	(iy),l		; set prev pointer in list
-	ld	(iy+1),h
-	ld	(ix),e		; set next pointer in new item
-	ld	(ix+1),d
+	ldw	(iy),hl		; set prev pointer in list
+	ldw	(ix),de		; set next pointer in new item
 	xor	a		; return success
 	ret
 
@@ -315,8 +301,7 @@ lclk2:	push	ix
 ; perform the requested action.
 
 DOCLKQ:	ld	iy,$CLKQ
-cclk1:	ld	c,(iy)		; get ptr to queue item into BC
-	ld	b,(iy+1)
+cclk1:	ldw	bc,(iy)		; get ptr to queue item into BC
 	ld	a,b		; end of list
 	or	c
 	ret	z		; return if yes
@@ -336,10 +321,8 @@ cclk1:	ld	c,(iy)		; get ptr to queue item into BC
 	ld	a,(ix+C.TYPE)	; check packet type
 	cp	CT.RUN		; scheduled task request?
 	jr	nz,cclk2	; dequeue and free packet if not
-	ld	e,(ix+C.RSI)	; else check the reschedule interval
-	ld	d,(ix+C.RSI+1)
-	ld	l,(ix+C.RSI+2)
-	ld	h,(ix+C.RSI+3)
+	ldw	de,(ix+C.RSI)	; else check the reschedule interval
+	ldw	hl,(ix+C.RSI+2)
 	ld	a,d
 	or	e
 	or	h
@@ -401,8 +384,7 @@ ACTION:	ld	a,(ix+C.TYPE)
 
 ; Mark time request: set event flag and execute AST if specified.
 
-ACTMKT:	ld	c,(ix+C.TCB)
-	ld	b,(ix+C.TCB+1)
+ACTMKT:	ldw	bc,(ix+C.TCB)
 	ld	e,(ix+C.EFN)
 	push	ix
 	push	bc
@@ -410,8 +392,7 @@ ACTMKT:	ld	c,(ix+C.TCB)
 	pop	bc
 	pop	ix
 	;ret	c		; ignore invalid event flag number error
-	ld	e,(ix+C.AST)	; get AST routine address
-	ld	d,(ix+C.AST+1)
+	ldw	de,(ix+C.AST)	; get AST routine address
 	ld	a,d		; any specified?
 	or	e
 	ret	z		; we're done if not
@@ -429,19 +410,16 @@ ACTMKT:	ld	c,(ix+C.TCB)
 ACTRUN:	ld	iy,TMPTDB
 	ld	de,'CO'		; set terminal device to CO:
 	ld	c,0
-	ld	(iy+TD.TI),e
-	ld	(iy+TD.TI+1),d
+	ldw	(iy+TD.TI),de
 	ld	(iy+TD.TI+2),c
 	xor	a
 	ld	(iy+TD.ATTR),a	; clear TA.MCR bit
 	ld	(iy+TD.USR),a	; TODO: set UIC to 1,1?
 	ld	(iy+TD.GRP),a
-	ld	(iy+TD.CMD),a	; no command line
-	ld	(iy+TD.CMD+1),a
-	ld	(iy+TD.CML),a
-	ld	(iy+TD.CML+1),a
-	ld	c,(ix+C.TCB)
-	ld	b,(ix+C.TCB+1)
+	ld	bc,0
+	ldw	(iy+TD.CMD),bc	; no command line
+	ldw	(iy+TD.CML),bc
+	ldw	bc,(ix+C.TCB)
   IF 1
 	push	ix
 	push	iy
@@ -462,10 +440,8 @@ ACTRUN:	ld	iy,TMPTDB
 
 ; Unlink and free the clock queue item
 
-FRECQP:	ld	a,(ix)
-	ld	(iy),a
-	ld	a,(ix+1)
-	ld	(iy+1),a
+FRECQP:	ldw	hl,(ix)
+	ldw	(iy),hl
 	push	ix
 	pop	hl
 	ld	de,CLQSZ
@@ -488,8 +464,7 @@ FRECQP:	ld	a,(ix)
 ;   BC = AST routine address (zero for any)
 
 CLNCLQ:	ld	iy,$CLKQ
-ccln1:	ld	l,(iy)
-	ld	h,(iy+1)
+ccln1:	ldw	hl,(iy)
 	ld	a,h
 	or	l
 	ret	z
@@ -514,12 +489,8 @@ ccln2:	push	hl
 cmatch:	ld	a,(ix+C.TYPE)	; check request type
 	cp	d
 	ret	nz
-	ld	a,(ix+C.TCB)	; check TCB
-	cp	l
+	cpw	hl,(ix+C.TCB)	; check TCB
 	ret	nz		; if not the specified one, return
-	ld	a,(ix+C.TCB+1)
-	cp	h
-	ret	nz
 	ld	a,b
 	or	c		; AST specified?
 	jr	nz,cm1		; branch if yes

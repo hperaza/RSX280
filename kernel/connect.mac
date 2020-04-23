@@ -1,6 +1,6 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
 ;   Copyright (C) 1985-2020, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
@@ -20,7 +20,7 @@
 ;**********************************************************************;
 
 	NAME	('CONNECT')
-	TITLE	'RSX180 Task Connect, Exit and Emit Status'
+	TITLE	'RSX280 Task Connect, Exit and Emit Status'
 
 ;----------------------------------------------------------------------;
 ;                                                                      ;
@@ -28,7 +28,7 @@
 ;                                                                      ;
 ;----------------------------------------------------------------------;
 
-	.Z80
+	.Z280
 
 	include	ERRORS.INC
 	include	TCB.INC
@@ -78,10 +78,7 @@ $CONN:	push	hl
 
 LNKOCB:	ld	de,T.OCBL
 	add	hl,de
-con0:	ld	e,(hl)		; search for end of OCB list
-	inc	hl
-	ld	d,(hl)
-	dec	hl
+con0:	ldw	de,(hl)		; search for end of OCB list
 	ld	a,d
 	or	e
 	ex	de,hl
@@ -89,9 +86,7 @@ con0:	ld	e,(hl)		; search for end of OCB list
 	ex	de,hl
 	push	ix
 	pop	de
-	ld	(hl),e		; set OCB in offspring task
-	inc	hl
-	ld	(hl),d
+	ldw	(hl),de		; set OCB in offspring task
 	ret
 
 ; Allocate and initialize a new OCB.
@@ -113,13 +108,11 @@ NEWOCB:	push	hl		; push offspring TCB
 	push	hl
 	pop	ix		; IX = OCB
 	ld	hl,($CTCB)
-	ld	(ix),0		; clear next pointer
-	ld	(ix+1),0
-	ld	(ix+O.PTCB),l	; set parent's TCB in OCB
-	ld	(ix+O.PTCB+1),h
+	ld	bc,0
+	ldw	(ix),bc		; clear next pointer
+	ldw	(ix+O.PTCB),hl	; set parent's TCB in OCB
 	pop	bc
-	ld	(ix+O.ESB),c	; set ESB address
-	ld	(ix+O.ESB+1),b
+	ldw	(ix+O.ESB),bc	; set ESB address
 	pop	de
 	ld	(ix+O.EFN),e	; set event flag number in OCB
 	ld	c,l
@@ -185,10 +178,7 @@ em1:	ld	a,d		; any (more) tasks connected?
 	jr	z,em2		; return if not
 	call	SENDST		; else send status
 	ex	de,hl		; traverse the list
-	ld	e,(hl)
-	inc	hl
-	ld	d,(hl)
-	dec	hl
+	ldw	de,(hl)
 	push	de
 	ld	de,OCBSZ
 	push	bc
@@ -217,9 +207,7 @@ em2:	pop	hl
 SENDST:	push	bc		; save status
 	ld	hl,O.PTCB
 	add	hl,de
-	ld	c,(hl)		; get TCB address of parent task
-	inc	hl		;  into BC
-	ld	b,(hl)
+	ldw	bc,(hl)		; get TCB address of parent task into BC
 	ld	hl,O.EFN
 	add	hl,de
 	push	de
@@ -230,25 +218,19 @@ SENDST:	push	bc		; save status
 	pop	de
 	ld	hl,O.ESB
 	add	hl,de
-	ld	a,(hl)		; get ESB address into HL
-	inc	hl
-	ld	h,(hl)
-	ld	l,a
+	ldw	hl,(hl)		; get ESB address into HL
 	bit	T2.OUT,(iy+T.ST+1) ; parent task out of memory?
 	jr	nz,st1		; branch if yes
 
 	pop	bc
 	push	de
 	push	hl
-	ld	e,(iy+T.PCB)	; else retrieve PCB address
-	ld	d,(iy+T.PCB+1)
+	ldw	de,(iy+T.PCB)	; else retrieve PCB address
 	ld	hl,P.BASE
 	add	hl,de
 	ld	e,(hl)		; get task bank number into reg E
 	pop	hl
-	di
 	call	$UPUTW		; and store status
-	ei
 	pop	de
 	jr	st2
 
@@ -264,18 +246,11 @@ st1:	push	de
 	ret	c		; on error, return
 	ld	(ix+A.SIZ),4
 	ld	(ix+A.TYP),AST.ST OR 80h
-	ld	(ix+A.DAT),l	; set ESB address
-	ld	(ix+A.DAT+1),h
-	ld	(ix+A.DAT+2),c	; set status
-	ld	(ix+A.DAT+3),b
-	push	ix
-	pop	hl
-	ld	a,(iy+T.ASTL)	; link AST block in front of list to ensure
-	ld	(ix+A.LNK),a	;  that it gets dispatched even if the task
-	ld	a,(iy+T.ASTL+1)	;   has disabled AST recognition.
-	ld	(ix+A.LNK+1),a
-	ld	(iy+T.ASTL),l
-	ld	(iy+T.ASTL+1),h
+	ldw	(ix+A.DAT),hl	; set ESB address
+	ldw	(ix+A.DAT+2),bc	; set status
+	ldw	hl,(iy+T.ASTL)	; link AST block in front of list to ensure
+	ldw	(ix+A.LNK),hl	;  that it gets dispatched even if the task
+	ldw	(iy+T.ASTL),ix	;   has disabled AST recognition.
 
 st2:	push	bc
 	push	de
@@ -283,9 +258,8 @@ st2:	push	bc
 	add	hl,sp		; allocate space for AST arguments on stack
 	ld	sp,hl
 	push	hl
-	ld	(hl),c		; store status
+	ldw	(hl),bc		; store status
 	inc	hl
-	ld	(hl),b
 	inc	hl
 	ld	(hl),0		; set cause = 0 (for now)
 	inc	hl
@@ -294,10 +268,7 @@ st2:	push	bc
 	push	bc
 	ld	hl,T.TI
 	add	hl,bc
-	ld	a,(hl)
-	inc	hl
-	ld	h,(hl)
-	ld	l,a
+	ldw	hl,(hl)
 	ex	de,hl
 	call	$UCBDN
 	ld	(hl),e		; set terminal device
@@ -353,8 +324,7 @@ st2:	push	bc
 DISCON:	ld	iy,$RLIST
 	call	disc1
 	ld	iy,$WLIST
-disc1:	ld	l,(iy)		; get link value into HL
-	ld	h,(iy+1)
+disc1:	ldw	hl,(iy)		; get link value into HL
 	ld	a,h		; end of list?
 	or	l
 	ret	z		; return if yes
@@ -373,8 +343,7 @@ CLNOCB:	ld	de,T.OCBL
 	add	hl,de
 	push	hl
 cln1:	pop	ix		; get head of OCB list into IX
-	ld	e,(ix)
-	ld	d,(ix+1)	; get pointer to OCB into DE
+	ldw	de,(ix)		; get pointer to OCB into DE
 	ld	a,d
 	or	e		; end of list?
 	ret	z		; return if yes

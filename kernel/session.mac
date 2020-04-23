@@ -1,6 +1,6 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
 ;   Copyright (C) 1985-2020, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
@@ -20,7 +20,7 @@
 ;**********************************************************************;
 
 	NAME	('SSMGR')
-	TITLE	'RSX180 Session Management'
+	TITLE	'RSX280 Session Management'
 
 ;----------------------------------------------------------------------;
 ;                                                                      ;
@@ -28,7 +28,7 @@
 ;                                                                      ;
 ;----------------------------------------------------------------------;
 
-	.Z80
+	.Z280
 
 	include	TCB.INC
 	include	PCB.INC
@@ -61,10 +61,7 @@
 ;   CY set on error.
 
 $LOGIN:	ld	ix,($CTCB)
-	ld	l,(ix+T.TI)	; get UCB of terminal
-	ld	h,(ix+T.TI+1)
-	push	hl
-	pop	ix		; IX = terminal UCB address
+	ldw	ix,(ix+T.TI)	; get UCB of terminal into IX
 	ld	a,(ix+U.LCB)	; check if U.LCB is set
 	or	(ix+U.LCB+1)
 	ld	a,E.ULI		; error if yes - other user logged in
@@ -74,8 +71,7 @@ $LOGIN:	ld	ix,($CTCB)
 	call	NEWLCB		; allocate new LCB
 	pop	ix
 	ret	c		; error if not enough memory
-	ld	(ix+U.LCB),l	; set U.LCB of terminal
-	ld	(ix+U.LCB+1),h
+	ldw	(ix+U.LCB),hl	; set U.LCB of terminal
 	push	hl
 	pop	ix		; IX = LCB address
 	ld	de,L.NAME
@@ -134,20 +130,15 @@ NEWLCB:	ld	bc,LCBSZ	; LCB size
 ;   CY set on error.
 
 $LGOUT:	ld	ix,($CTCB)
-	ld	l,(ix+T.TI)	; get UCB of terminal
-	ld	h,(ix+T.TI+1)
-	push	hl
-	pop	ix
-	ld	l,(ix+U.LCB)	; get LCB associated to the terminal
-	ld	h,(ix+U.LCB+1)
+	ldw	ix,(ix+T.TI)	; get UCB of terminal
+	ldw	hl,(ix+U.LCB)	; get LCB associated to the terminal
 	ld	a,h
 	or	l
 	ld	a,E.SSNF
 	scf
 	ret	z
-	xor	a
-	ld	(ix+U.LCB),a
-	ld	(ix+U.LCB+1),a
+	ld	de,0
+	ldw	(ix+U.LCB),de
 	ld	de,LCBSZ	; free LCB
 	push	ix
 	call	$FREE
