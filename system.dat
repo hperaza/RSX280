@@ -69,6 +69,7 @@ SYSLVL	; current system level
 SYSSTK	
 SYSTOP	; top of pool area
 SYSVER	; system version number
+SYSTYP	; system type
 TALLOC	
 TCONT	
 TCONT2	
