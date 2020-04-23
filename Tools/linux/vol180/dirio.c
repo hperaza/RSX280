@@ -82,12 +82,11 @@ int match_fcb(unsigned char *dirent, struct FCB *fcb) {
 }
 
 int create_dir(char *filename, char group, char user) {
-  unsigned char dirent[16];
-  unsigned char inode[64];
+  unsigned char dirent[16], inode[64], found;
   char fname[20], *ext, *pvers;
   unsigned short ino;
   short vers;
-  unsigned long fpos;
+  unsigned long cpos, fpos;
   time_t now;
 
   if (!mdfcb) return 0;
@@ -106,7 +105,7 @@ int create_dir(char *filename, char group, char user) {
   if (pvers) {
     *pvers++ = '\0';
   }
-  vers = 1;  /* TODO: do not allow duplicate or new version of dirs */
+  vers = 1;
 
   /* find a free inode */
   ino = new_inode();
@@ -118,12 +117,25 @@ int create_dir(char *filename, char group, char user) {
   if (GET_INT16(inode, 0) != 0) return 0; /* panic */
 
   /* find a free directory entry */
+  found = 0;
   file_seek(mdfcb, 0L);
   for (;;) {
-    fpos = file_pos(mdfcb);
+    cpos = file_pos(mdfcb);
     if (file_read(mdfcb, dirent, 16) == 16) {
-      if (GET_INT16(dirent, 0) == 0) break;  /* free dir entry */
+      if (GET_INT16(dirent, 0) == 0) {
+        /* free dir entry */
+        if (!found) {
+          fpos = cpos;
+          found = 1;
+        }
+      } else {
+        if (match(dirent, fname, ext, 0)) {
+          fprintf(stderr, "Directory already exists\n");
+          return 0;
+        }
+      }
     } else {
+      fpos = cpos;
       break; /* at the end of directory */
     }
   }
