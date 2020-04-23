@@ -738,7 +738,8 @@ int main(int argc, char *argv[]) {
           } else {
             printf("Current directory is %s\n", get_dir_name(cdfcb));
           }
-        } else if (strcmp(cmd, "mkdir") == 0) {
+        } else if ((strcmp(cmd, "mkdir") == 0) ||
+                   (strcmp(cmd, "ufd") == 0)) {
           if (*arg1) {
             strupr(arg1);
             if (!strchr(arg1, '.')) strcat(arg1, ".DIR");
