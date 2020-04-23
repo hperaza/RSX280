@@ -6082,3 +6082,6 @@ BUGS:
 
 - FCSLIB: fixed a bug in the FPOS routine.
 
+- TED: fixed scroll down when cursor was at the top of the screen.
+
+
