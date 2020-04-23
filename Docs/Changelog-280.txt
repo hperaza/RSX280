@@ -148,3 +148,8 @@ Changelog
 - More Z80 -> Z280 optimizations: clkq, connect, flags, session.
 
 
+23/04/20
+
+- vol180: don't allow duplicate directories.
+
+
