@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.02'
+	ident	'01.03'
 
 	include	SYSFN.INC
 	include	TCB.INC
@@ -1618,6 +1618,7 @@ GETTOP:	ld	hl,0
 
 ; Allocate memory, BC = requested size.
 ; Returns HL = block address, DE = new end of allocated region.
+; CY set on error (not enough memory).
 
 ALLOC:	ld	hl,(endptr)
 	add	hl,bc
@@ -1629,10 +1630,8 @@ av1:	push	hl
 	or	a
 	sbc	hl,de		; inc = endptr + size - memtop
 	call	EXTEND
-	pop	de
-	ld	hl,errmem
-	jp	c,ERROR		; not enough memory
-	ex	de,hl
+	pop	hl
+	ret	c		; not enough memory
 	ld	de,(memtop)
 	call	CPHLDE
 	jr	c,av1
@@ -1641,8 +1640,6 @@ av2:	ld	de,(endptr)
 	ld	(endptr),hl
 	ex	de,hl		; old endptr in HL, new in DE
 	ret
-
-errmem:	db	'Not enough memory',0
 
 ; Free all allocated memory
 
