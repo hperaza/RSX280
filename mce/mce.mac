@@ -5055,6 +5055,10 @@ ta3:
 	pop	af
 	SC	.ASTX		;; exit AST
 
+	IFNDEF	IO.WBT
+IO.WBT	equ	IO.WLB OR (TF.WLB SHL 8)
+	ENDIF
+
 stqio:	QIOW$	IO.WBT,TI,EFNAST,stiosb,,<STATX2,STALN2,0>
 	dseg
 stiosb:	ds	4
