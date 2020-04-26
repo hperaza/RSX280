@@ -6085,3 +6085,18 @@ BUGS:
 - TED: fixed scroll down when cursor was at the top of the screen.
 
 
+24/04/20
+
+- TKB: fixed a bug in /ASG option processing (the bug affected only the
+  RSX180 version).
+
+- LBR: display module identification version (if set) in listing.
+
+
+26/02/20
+
+- EXTSK: do not allow task size to become smaller than the installed size.
+
+- MCR, VMR: display installed task size in TAS command, and not file size.
+
+

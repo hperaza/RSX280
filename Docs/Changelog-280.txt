@@ -153,3 +153,13 @@ Changelog
 - vol180: don't allow duplicate directories.
 
 
+26/04/20
+
+- EXTSK: allow task size to reach 64K.
+
+- MCR, VMR: use at least 5 digits to display task size in TAS command, else
+  a size of 64K will be displayed as zero.
+
+- MCR: the BRK (break into the system debugger) is now working.
+
+

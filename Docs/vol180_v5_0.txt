@@ -5,7 +5,7 @@ Version: 5.0
 
 Block size: 512 bytes
 Cluster size: 1,2,4,8,16 blocks (cluster factors 0 to 4)
-Max disk/partition size: 2^24 (16,777,216) clusters (8G to 549G)
+Max volume size: 2^24 (16,777,216) clusters (8G to 549G)
 
 Boot record
 -----------
