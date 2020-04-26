@@ -653,11 +653,13 @@ INS:	call	RDHDR		; read and validate task header
 	ld	hl,(hdr+TH.INC)	; else use the value from task header
 useinc:	add	hl,de
 	ld	a,E.PBIG
-	ret	c		; increment too large
+	ret	c		; increment too large (above 64K)
+ if 0
 	ld	de,0EFFFh
 	call	CPHLDE
 	ld	a,E.PBIG
 	ret	c		; program extends above common area
+ endif
 
 	push	hl		; remember task top
 
