@@ -990,7 +990,8 @@ UICopt:
 HDRopt:
 	jp	CmdError
 
-ASGopt:	call	PDN		; get device name
+ASGopt:	ld	hl,(CmdPtr)
+	call	PDN		; get device name
 	jp	c,CmdError	; error if invalid
 	ld	(CmdPtr),hl	; save pointer
 	ld	a,(hl)		; get next character
