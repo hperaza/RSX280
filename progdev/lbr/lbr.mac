@@ -35,7 +35,7 @@
 
 	.Z80
 
-	ident	'V1.3'
+	ident	'V1.4'
 
 TAB	equ	09h
 CR	equ	0Dh
@@ -219,7 +219,32 @@ SEG.3:	call	FLD.B		; Default lib (RQUEST)
 	call	ADDSYM
 	ret
 
-SEG.4:	call	FLD.S		; Special extension segment
+SEG.4:	call	FLD.B		; Special extension segment
+	ld	hl,SNAME
+	ld	a,(hl)
+	cp	'I'		; IDENT?
+	ret	nz		; return if not
+	ld	e,l
+	ld	d,h
+	inc	hl
+	ld	bc,6
+	ldir			; fix name (remove 'I')
+	ld	a,' '
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	ld	a,(SLEN)
+	call	FIXLEN
+	dec	a
+	cp	6+1
+	jr	c,se41
+	ld	a,6		; truncate to 6 chars
+se41:	ld	(SLEN),a
+	ld	a,5 SHL 3
+	ld	(TYPE),a
+	ld	hl,0
+	ld	(ADDR),hl
+	call	ADDSYM
 	ret
 
 SEG.5:	call	FLD.A		; COMMON length
@@ -310,7 +335,20 @@ S.EALL:	ld	de,LNBUF
 	call	GETSYM
 	call	nc,CPYNAM	; output module name
 	call	WRLST		; output line
-	call	WRLST		; follow with an empty one
+
+	ld	a,5 SHL 3
+	ld	(TYPE),a
+	ld	hl,(SYMTAB)
+	ld	(SYMPTR),hl
+	call	GETSYM		; find ident
+	jr	c,se1		; skip if not set
+	push	hl
+	ld	hl,MSG10	; "Ident  "
+	call	STRCPY
+	pop	hl
+	call	CPYNAM		; output module identification version
+	call	WRLST		; output line
+se1:	call	WRLST		; follow with an empty one
 
 	ld	hl,MSG2		; "Length of program: "
 	call	STRCPY
@@ -398,6 +436,7 @@ S.EE1:	ld	(COMFLG),a	; clear COMMON flag
 	ret
 
 MSG1:	db	'Module ',0
+MSG10:	db	'Ident  ',0
 MSG2:	db	'Code size:   ',0
 MSG3:	db	'Data size:   ',0
 MSG4:	db	'Entry points:',0
@@ -457,25 +496,13 @@ clrn:	ld	(hl),a
 	ld	c,3		; get next 3 bits (name length)
 	call	GNBITS
 	ld	(SLEN),a	; store length (note: unfixed)
+	call	FIXLEN		; length 0 means 8
 	ld	b,a
 fb1:	ld	c,8		; get next 8 bits (char)
 	call	GNBITS
 	ld	(hl),a		; store name
 	inc	hl
 	djnz	fb1
-	ret
-
-; Get special extension segment type
-
-FLD.S:	ld	c,3		; get next 3 bits
-	call	GNBITS
-	dec	a
-	and	7
-	inc	a
-	ld	b,a
-skp1:	ld	c,8		; skip next 8 bits
-	call	SNBITS
-	djnz	skp1
 	ret
 
 ; Get next bit from input REL file

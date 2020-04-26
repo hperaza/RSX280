@@ -21,7 +21,7 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 lbr.com: $(OBJS)
-	$(ZXCC) $(TKB) -"$@=lbr,cpmio/of=c"
+	$(ZXCC) $(TKB) -"$@,lbrcpm=lbr,cpmio/of=c"
 
 lbr.tsk: $(OBJS) syslib.lib fcslib.lib
 	$(ZXCC) $(TKB) -"$@=lbr/of=t,rsxio,fcslib/lb,syslib/lb/task=...LBR/ext=4000"

@@ -124,7 +124,7 @@ ERRMSG:	call	PUTSTR		; display error message
 
 EXIT:	jp	WBOOT		; exit to CP/M
 
-PROGID:	db	'LBR Version 1.3',0
+PROGID:	db	'LBR Version 1.4',0
 
 UCASE:	cp	'a'
 	ret	c
