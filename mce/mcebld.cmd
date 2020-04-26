@@ -1139,7 +1139,7 @@
 .Iff $TD2    	.Data TDV2XX	equ	FALSE	; TDV2230 support not included
 .Ift $TMO	.Data TIMOUT	equ	TRUE	; Time-Out support included
 .Iff $TMO	.Data TIMOUT	equ	FALSE	; Time-Out support not included
-.Ift $TMO   	.Data TMOVAL	equ	'$TMON'	; Time-Out in '$TMON' minutes
+.Ift $TMO   	.Data TMOTIM	equ	'$TMON%D'	; Time-Out in '$TMON%D' minutes
 .Ift $TMO .Ift $TMS	.Data TMOSET	equ	TRUE	; Time-Out setable
 .Ift $TMO .Iff $TMS	.Data TMOSET	equ	FALSE	; Time-Out fixed
 .Ift $TMO .Ift $TMS .Iff $TMODF	.Data TMOON	equ	0	; Time-Out OFF by default
