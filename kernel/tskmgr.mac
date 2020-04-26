@@ -787,8 +787,7 @@ GETSIZ:	ldw	hl,(ix+T.NBLK)	; get file size in blocks
 	ret	nz		; program too big
 	ex	de,hl		; save # of pages in reg E
 	ldw	hl,(ix+T.END)	; check task's upper limit (task end + INC)
-	inc	hl		; size = end address + 1
-	call	BY2PG		; convert to number of pages
+	call	EA2PG		; convert upper limit to number of pages
 	cp	c		; larger than file size?
 	jr	nc,gz1		; yes, use it
 	ld	a,e		; else use file size
@@ -798,19 +797,19 @@ gz1:	ld	e,a
 	scf			; size can't be zero
 	ret	z
 	ld	a,e
-	cp	16		; max allowed size in pages
-	ccf			;  (one page reserved for system common)
+	cp	16+1		; max allowed size in pages
+	ccf
 	ld	a,E.PBIG
 	ret	c		; task won't fit in memory
 	xor	a
 	ret
 
-; Compute number of 4K pages from size in bytes in HL.
+; Compute number of 4K pages from upper address limit in HL.
 ; Return result in A.
 
-BY2PG:	push	hl
+EA2PG:	push	hl
 	push	de
-	ld	de,4096-1	; bytes per page - 1
+	ld	de,4096		; bytes per page
 	add	hl,de		; round to upper page boundary
 	ld	a,h
 	rra			; divide by 4096
@@ -1551,7 +1550,7 @@ UNLTCB:	call	FTCB
 ;   CY set on error
 
 TALLOC:	ld	a,e		; get requested number of pages
-	cp	10h		; should be in the 00-0F range (0000-EFFF)
+	cp	16+1		; 16 pages = 64K max
 	ccf
 	ld	a,E.NOMEM
 	ret	c		; prevent overwriting the commom segment
@@ -1643,16 +1642,23 @@ tf2:	pop	ix
 ; - return error if task has outstanding I/O and new size caused either
 ;   the task to shrink, or to relocate to a new region.
 
-EXTTSK:	ex	de,hl		; get increment into DE
+EXTTSK:	ld	a,h
+	or	l		; zero increment?
+	jr	nz,ext1		; branch if not
+	ldw	hl,(ix+T.DEND)	; else restore default installed size
+	jr	ext3
+ext1:	ex	de,hl		; get increment into DE
 	ldw	hl,(ix+T.END)	; and current end address into HL
-	inc	hl		; size = end address + 1
-	add	hl,de		; HL = new end address (size)
-	ld	a,d
-	or	e		; zero increment?
-	jr	nz,newsz	; jump if not
-	ldw	hl,(ix+T.DEND)	; else restore default size
-	inc	hl
-newsz:	call	BY2PG		; compute new size in pages
+	add	hl,de		; HL = new end address
+	jr	nc,ext2
+	bit	7,d
+	ld	a,E.NOMEM
+	ret	z		; error if above 64K and DE > 0 (CY still set)
+ext2:	ldw	de,(ix+T.DEND)
+	cpw	hl,de		; new end below default (installed) end?
+	ld	a,E.BADOP
+	ret	c		; error if yes
+ext3:	call	EA2PG		; compute new size in pages
 	ld	c,a		; save it in C
 	push	hl
 	ldw	de,(ix+T.PCB)	; get subpartition PCB
@@ -1663,10 +1669,10 @@ newsz:	call	BY2PG		; compute new size in pages
 	ld	a,E.OK
 	jr	z,stend		; if yes, set new end address and return
 	ld	a,c
-	cp	10h		; max allowed number of pages is 15
+	cp	16+1		; max allowed number of pages is 16
 	ccf
 	ld	a,E.NOMEM
-	ret	c		; prevent overwriting the commom segment
+	ret	c		; task larger than 64K
 	ld	a,c
 	or	a
 	ld	a,E.INV
