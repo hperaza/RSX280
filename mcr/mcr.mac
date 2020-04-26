@@ -571,7 +571,12 @@ fcmd4:	inc	hl		; else skip to end of keyword
 
 dobrk:	call	CHKLOG
 	call	CHKPRV		; privileged command
-	rst	DBGRST
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	KCALL	$DBTRP
+	ld	c,0
+	SC	.SUPER
 	ret
 
 ;-----------------------------------------------------------------------
