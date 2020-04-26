@@ -805,7 +805,7 @@ gz1:	ld	e,a
 	ret
 
 ; Compute number of 4K pages from upper address limit in HL.
-; Return result in A.
+; Return result in A. Preserves HL, DE, BC.
 
 EA2PG:	push	hl
 	push	de
@@ -1719,8 +1719,7 @@ ext3:	call	EA2PG		; compute new size in pages
 
 	;TODO: update $UBANK if IX == ($CTCB)?
 
-stend:	dec	hl
-	ldw	(ix+T.END),hl	; set new task end
+stend:	ldw	(ix+T.END),hl	; set new task end
 	xor	a
 	ret			; return success
 
