@@ -1139,10 +1139,12 @@ shwt0:	call	CRLF
 
 	ld	c,' '
 	call	PUTCH
-	ldw	hl,(ix+T.NBLK)	; display task size in bytes
-	ld	h,l
-	ld	l,0
-	add	hl,hl		; *512 (block size)
+	ldw	hl,(ix+T.DEND)	; display installed task size in bytes
+	ld	a,1
+	add	hl,a		; size = end address + 1
+	ld	a,0
+	rla			; CY into A
+	call	AHEX
 	call	HLHEX
 
 	ld	c,' '		; display load device and block number

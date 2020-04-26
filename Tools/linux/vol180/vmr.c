@@ -949,7 +949,7 @@ void unfix_task(char *name) {
 
 void list_tasks(char *name) {
   address poolsize, tcb, pcb, ucb, dcb;
-  unsigned long sblk, nblk;
+  unsigned long sblk, size;
   byte pri, attr;
   char tname[6], ident[6], par[6], dv[3];
   int i;
@@ -973,16 +973,16 @@ void list_tasks(char *name) {
       dv[1] = sys_getb(0, dcb + D_NAME + 1);
       dv[2] = sys_getb(0, ucb + U_UNIT);
       sblk = sys_getw(0, tcb + T_SBLK) + (sys_getw(0, tcb + T_SBLK + 2) << 16);
-      nblk = sys_getw(0, tcb + T_NBLK);
+      size = sys_getw(0, tcb + T_DEND) + 1;
       
       if (!name || !*name || (strncmp(name, tname, 6) == 0)) {
 #if 1
         printf("%.6s %.6s %04X %.6s %3d %08lX %c%c%d:%08lX %s\n",
-               tname, ident, tcb, par, pri, nblk * 512, dv[0], dv[1], dv[2],
+               tname, ident, tcb, par, pri, size, dv[0], dv[1], dv[2],
                sblk, (attr & (1 << TA_FIX)) ? "FIXED" : "");
 #else
         printf("%.6s %.6s %04X %.6s %3d %08lX %c%c%d:- FILE ID:%ld %s\n",
-               tname, ident, tcb, par, pri, nblk * 512, dv[0], dv[1], dv[2],
+               tname, ident, tcb, par, pri, size, dv[0], dv[1], dv[2],
                sblk, (attr & (1 << TA_FIX)) ? "FIXED" : "");
 #endif
       }
