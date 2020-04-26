@@ -999,11 +999,13 @@ instsk:	ld	hl,chkerr
 	ld	hl,(IBUF+TH.INC); else use INC from task header
 useinc:	add	hl,de
 	ld	a,E.PBIG
-	ret	c		; increment too large
+	ret	c		; increment too large (above 64K)
+  if 0
 	ld	de,0EFFFh
 	call	CPHLDE
 	ld	a,E.PBIG
 	ret	c		; program extends above common area
+  endif
 
 	push	hl		; remember task top
 
@@ -1545,11 +1547,13 @@ shwtsk:	call	CRLF
 
 	ld	c,' '
 	call	PUTCH
-	ld	l,(ix+T.NBLK)	; display task size in bytes
-	ld	h,(ix+T.NBLK+1)	; block size = 512 bytes
-	ld	h,l
-	ld	l,0
-	add	hl,hl		; *512
+	ld	l,(ix+T.NBLK)	; display installed task size in bytes
+	ld	h,(ix+T.NBLK+1)
+	ld	de,1
+	add	hl,de		; size = end address + 1
+	ld	a,0
+	rla			; CY bit into A
+	call	AHEX
 	call	HLHEX
 
 	ld	c,' '
