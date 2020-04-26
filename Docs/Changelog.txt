@@ -6099,4 +6099,5 @@ BUGS:
 
 - MCR, VMR: display installed task size in TAS command, and not file size.
 
+- VFY: the 'Not enough memory' error message was being output twice.
 
