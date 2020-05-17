@@ -752,7 +752,8 @@ IDENT:	iopage	IdePage
 
 	; due to a "quirk" of the Z280RC design (strictly speaking, a
 	; "quirk" of the Z280 CPU) we need to swap the bytes of every
-	; words in the buffer
+	; words in the buffer - we'll do this only for the ident record
+	; and not for the data sectors.
 
 	ld	ix,hdbuf
 	ld	b,0		; 256 words
