@@ -1248,7 +1248,10 @@ DATSTR:	push	hl
 	ld	a,(de)		; month
 	call	BCD2BIN
 	dec	a
-	ld	c,a
+	cp	12
+	jr	c,ds1
+	xor	a
+ds1:	ld	c,a
 	add	a,a
 	add	a,c
 	ex	de,hl

@@ -4326,8 +4326,10 @@ PRDAT:	push	hl
 	ld	a,(hl)		; month
 	call	BCD2BIN
 	dec	a
-	ld	c,a
-	add	a,a		; *2
+	cp	12
+	jr	c,pr1
+	xor	a
+pr1:	add	a,a		; *2
 	add	a,a		; *4
 	push	hl
 	ld	hl,month
