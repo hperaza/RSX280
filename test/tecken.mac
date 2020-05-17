@@ -5,18 +5,21 @@
 
 	include	SYSFN.INC
 	include	QIO.INC
+	include	DCB.INC
 	include	ERRORS.INC
 
 CR	equ	0Dh
 LF	equ	0Ah
 TAB	equ	09h
 
-	extrn	CVTWD
+	extrn	CVTWD,UCASE
 
 	CSEG
 ;
 START::	ld	sp,stack
 	ld	hl,qio1
+	SC	.QIO
+	ld	hl,qio10
 	SC	.QIO
 	ld	hl,qio2
 	SC	.QIO
@@ -67,6 +70,7 @@ CHKEND:	ld	a,(QPOS)
 	add	hl,de
 	ld	a,(BUF)
 	and	7Fh
+	call	UCASE
 	cp	(hl)
 	jr	z,MATCH
 	ld	a,e
@@ -95,6 +99,7 @@ END::	ld	hl,qio8
 IO.RAL	equ	IO.RLB OR (TF.RAL SHL 8)
 IO.RNE	equ	IO.RLB OR (TF.RNE SHL 8)
 qio1:	QIOW$	IO.ATT,5,1,iostat
+qio10:	QIOW$	SF.SMC,5,1,iostat,,<ttchr,2>
 qio2:	QIOW$	IO.WLB,5,1,iostat,,<HELO,HELOL>
 qio3:	QIOW$	<<IO.RNE OR IO.RAL>>,5,1,iostat,,<BUF,1>
 qio4:	QIOW$	IO.WLB,5,1,iostat,,<MSG,>
@@ -104,6 +109,7 @@ qio7:	QIOW$	IO.WLB,5,1,iostat,,<HELO,2>
 qio8:	QIOW$	IO.WLB,5,1,iostat,,<EMSG,EMSGL>
 qio9:	QIOW$	IO.DET,5,1,iostat
 iostat:	defs	4
+ttchr:	db	TC.BIN,1
 
 ASCII:	defb	'NUL SOH STX ETX EOT ENQ ACK BEL BS  HT  LF  VT  FF  CR  '
 	defb	'SO  SI  DLE DC1 DC2 DC3 DC4 NAK SYN ETB CAN EM  SUB ESC '
@@ -112,7 +118,7 @@ ASCII:	defb	'NUL SOH STX ETX EOT ENQ ACK BEL BS  HT  LF  VT  FF  CR  '
 	defb	'SS2 SS3 DCS PU1 PU2 STS CRH MW  SPA EPA 98  99  9A  CSI '
 	defb	'ST  OSC PM  APC NSP '
 
-HELO:	defb	CR,LF,'Character check. End with "exit"',CR,LF
+HELO:	defb	CR,LF,'Character check. End with "exit"<CR>',CR,LF
 HELOL	equ	$-HELO
 
 EMSG:	defb	CR,LF,'Program finished.',CR
@@ -123,7 +129,7 @@ BUF:	defs	2
 MSG:	defb	'Char:  '
 BUF2:	defs	8
 
-QSTR:	defb	'exit',CR,0
+QSTR:	defb	'EXIT',CR,0
 QPOS:	defs	1
 
 	defs	100
