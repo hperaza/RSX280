@@ -70,7 +70,7 @@ $DBMON:	di
 	cp	'F'		; fill?
 	jp	z,fill
 	IF	CMD_S
-	cp	'S'		; serach?
+	cp	'S'		; search?
 	jp	z,search
 	ENDIF
 	IF	CMD_T
