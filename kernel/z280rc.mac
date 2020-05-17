@@ -198,6 +198,12 @@ sttime:	di
 	call	wrbyte		; write-Protect Off
 	ld	a,0
 	call	wrbyte
+ IF 1
+	ld	a,90h		; write trickle-charge
+	call	wrbyte
+	ld	a,0A5h		; one diode, 2K resistor
+	call	wrbyte
+ ENDIF
 	call	cclose
 	call	copen
 	ld	a,0BEh		; burst write
