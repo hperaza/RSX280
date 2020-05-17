@@ -61,8 +61,6 @@ $ITBL:	dw	0,0		; reserved
 	dw	0,iret2		; reserved
 	; vector tables for INTA...INTC not used
 
-iret3:	inc	sp
-	inc	sp
 iret2:	inc	sp
 	inc	sp
 iret1:	retil
