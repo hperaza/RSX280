@@ -1,0 +1,20 @@
+RSX280 now supports 4 additional terminals on Bill Shen's quad-serial port
+board (OX16C954 chip). If the quad-serial board is not detected when the
+system is booted up, the corresponding units will be set off-line.
+
+The current version of the driver initializes all four ports to 19200 baud,
+8-N-1.
+
+Important:
+----------
+
+For the OX16C954 chip to work properly, any unused receiver input lines must
+*not* be left floating (unconnected), despite what the chip documentation says.
+The receiver inputs are very sensitive to noise and hum pickup, and thus are
+prone to flooding the system with spurious characters when unconnected.
+
+Thus, I'd recommend soldering a 1K..10K resistor from the receiver input lines
+to ground (see accompanying picture quad-serial-resistors-1.jpg). The resistors
+will keep the noise out by grounding the input lines when not used, and will
+not interfere with normal operation.
+
