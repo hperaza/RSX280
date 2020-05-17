@@ -23,7 +23,9 @@
 ;                                                                      ;
 ;   DEV TT: terminal driver (Z280RC version, fully interrupt-driven)   ;
 ;                                                                      ;
-;   Only one terminal is supported at this point (Z280's builtin UART) ;
+;   Five terminals are supported:                                      ;
+;    TT0: = Z280's builtin UART                                        ;
+;    TT1: to TT3: = Bill Shen's Quad-Serial board (OX16C954)           ;
 ;                                                                      ;
 ;----------------------------------------------------------------------;
 ;                                                                      ;
@@ -58,6 +60,70 @@
 
 CR	equ	0Dh
 LF	equ	0Ah
+
+; OX16C954 addresses as seen from the Z280RC
+
+SER0	equ	0D0h		; channel 0
+SER1	equ	0D8h		; channel 1
+SER2	equ	0E0h		; channel 2
+SER3	equ	0E8h		; channel 3
+SERP	equ	0		; quad serial I/O page
+
+; OX16C954 register offsets
+
+_THR	equ	000b		; transmitter holding register
+_RHR	equ	000b		; receiver holding register
+_IER	equ	001b		; interrupt enable register
+_FCR	equ	010b		; FIFO control register
+_ISR	equ	010b		; interrupt status register
+_LCR	equ	011b		; line control register
+_MCR	equ	100b		; modem control register
+_LSR	equ	101b		; line status register
+_MSR	equ	110b		; modem status register
+_SPR	equ	111b		; scratch pad register
+
+; OX16C954 additional standard registers, accessed when LCR:7 = 1
+
+_DLL	equ	000b		; divisor latch register, LSB
+_DLM	equ	001b		; divisor latch register, MSB
+
+; OX16C954 650-compatible registers, accessed when LCR is set to 0BFh
+
+_EFR	equ	010b		; enhanced features register
+_XON1	equ	100b		; automatic in-band flow control
+_XON2	equ	101b		; automatic in-band flow control
+_XOFF1	equ	110b		; automatic in-band flow control
+_XOFF2	equ	111b		; automatic in-band flow control
+
+; OX16C954 950-specific registers
+
+_ASR	equ	001b		; additional status register
+_RFL	equ	011b		; receiver FIFO fill level
+_TFL	equ	100b		; transmitter FIFO fill level
+_ICR	equ	101b		; indexed control register data
+
+; OX16C954 indexed register set
+
+_ACR	equ	00h		; additional control register
+_CPR	equ	01h		; clock prescaler register
+_TCR	equ	02h		; times clock register
+_CKS	equ	03h		; clock select register
+_TTL	equ	04h		; transmitter interrupt trigger level
+_RTL	equ	05h		; receiver interrupt trigger level
+_FCL	equ	06h		; flow control level
+_FCH	equ	07h		; flow control level
+_ID1	equ	08h		; device identification register
+_ID2	equ	09h		; device identification register
+_ID3	equ	0Ah		; device identification register
+_REV	equ	0Bh		; 950 core revision
+_CSR	equ	0Ch		; channel software reset
+_NMR	equ	0Dh		; nine-bit mode register
+_MDM	equ	0Eh		; modem disable mask
+_RFC	equ	0Fh		; readable FCR
+_GDS	equ	10h		; good-data status register
+_DMS	equ	11h		; DMA status register
+_PIDX	equ	12h		; port index register
+_CKA	equ	13h		; clock alteration register
 
 ; Device-dependent UCB parameters
 
@@ -146,7 +212,7 @@ DBGTRP	equ	1		; set to true to enable ^T trap to system
 	cseg
 
 DEVTT::	db	'TT'		; device name
-	db	1		; 1 unit
+	db	5		; 5 units
 	dw	ucbt0		; pointer to list of UCBs
 	jp	init		; entry points
 	jp	ioreq
@@ -155,7 +221,7 @@ DEVTT::	db	'TT'		; device name
 
 	dseg
 
-ucbt0:	dw	0		; link to next
+ucbt0:	dw	ucbt1		; link to next
 	db	0		; unit 0
 	db	0		; status byte
 	ds	2		; back pointer to DCB (set by kernel)
@@ -187,17 +253,147 @@ ucbt0:	dw	0		; link to next
 	dw	kick0		; UX.TXK
 	dw	0		; UX.AST
 
-scb0:	db	0		; status byte
+ucbt1:	dw	ucbt2		; link to next
+	db	1		; unit 1
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb1		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	1		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	dw	0		; UX.TMO
+	dw	tt1iq		; UX.IQ
+	dw	tt1tq		; UX.TQ
+	dw	tt1oq		; UX.OQ
+	dw	tt1xq		; UX.XQ
+	ds	2		; UX.TXP
+	ds	1		; UX.TXB
+	dw	0		; UX.TXC
+	dw	kick1		; UX.TXK
+	dw	0		; UX.AST
+
+ucbt2:	dw	ucbt3		; link to next
+	db	2		; unit 2
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb2		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	1		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	dw	0		; UX.TMO
+	dw	tt2iq		; UX.IQ
+	dw	tt2tq		; UX.TQ
+	dw	tt2oq		; UX.OQ
+	dw	tt2xq		; UX.XQ
+	ds	2		; UX.TXP
+	ds	1		; UX.TXB
+	dw	0		; UX.TXC
+	dw	kick2		; UX.TXK
+	dw	0		; UX.AST
+
+ucbt3:	dw	ucbt4		; link to next
+	db	3		; unit 3
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb3		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	1		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	dw	0		; UX.TMO
+	dw	tt3iq		; UX.IQ
+	dw	tt3tq		; UX.TQ
+	dw	tt3oq		; UX.OQ
+	dw	tt3xq		; UX.XQ
+	ds	2		; UX.TXP
+	ds	1		; UX.TXB
+	dw	0		; UX.TXC
+	dw	kick3		; UX.TXK
+	dw	0		; UX.AST
+
+ucbt4:	dw	0		; link to next
+	db	4		; unit 4
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb4		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	1		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	dw	0		; UX.TMO
+	dw	tt4iq		; UX.IQ
+	dw	tt4tq		; UX.TQ
+	dw	tt4oq		; UX.OQ
+	dw	tt4xq		; UX.XQ
+	ds	2		; UX.TXP
+	ds	1		; UX.TXB
+	dw	0		; UX.TXC
+	dw	kick4		; UX.TXK
+	dw	0		; UX.AST
+
+	IRPC	X,01234
+scb&X:	db	0		; status byte
 	dw	0		; head of I/O packet list
 	dw	0		; address of current I/O packet
 	dw	0		; SX.IFB
 	db	0		;  bank
 	dw	iproc		;  routine address
-	dw	ucbt0		;  context (IY)
+	dw	ucbt&X		;  context (IY)
 	dw	0		; SX.OFB
 	db	0		;  bank
 	dw	oproc		;  routine address
-	dw	ucbt0		;  context (IY)
+	dw	ucbt&X		;  context (IY)
+	ENDM
 
 	cseg
 
@@ -237,6 +433,7 @@ ini0:	res	US.BSY,(iy+U.ST)
 	jr	nz,ini0
 	pop	iy
 	call	tt0ini		; hardware-specific init for primary port
+	call	ttQini		; hardware-specific init for quad-serial port
 	pop	ix
 	ret
 
@@ -1497,10 +1694,10 @@ kick0:	iopage	UARTP
 	ld	ix,(iy+UX.XQ)
 	call	qget		; anything in transmitter queue?
 	ei
-	jr	c,k1		; branch if not
+	jr	c,k0		; branch if not
 	out	(TDR),a		; else send char to restart transmitter
 	ret			; and return
-k1:	in	a,(TCS)
+k0:	in	a,(TCS)
 	res	6,a		; disable TX interrupts
 	out	(TCS),a
 	ret
@@ -1529,7 +1726,7 @@ TT0TX:	push	ix
 	jr	tx3		; no
 tx1:	in	a,(TCS)
 	res	6,a		; disable further ESCC TX interrupts
-	out	(TCS),a		;  or TX will keep interrupting
+	out	(TCS),a		;  or TX will keep interrupting forever
 tx2:	call	ofpq		; setup process to refill queue
 tx3:	pop	iy
 	pop	ix
@@ -1549,13 +1746,355 @@ rx1:	in	a,(RDR)		; fetch char
   ENDIF
 	ld	ix,tt0iq
 	call	qput		; save it in input queue
-	call	ifpq		; arrange deferred processing
 	in	a,(RCS)		; check if more available
 	bit	4,a
 	jr	nz,rx1		; loop until rx buffer empty
+	call	ifpq		; fork input process
 	pop	iy
 	pop	ix
 	ret
+
+;***********************************************************************
+;*                                                                     *
+;*      Unit 1..4 routines                                             *
+;*                                                                     *
+;***********************************************************************
+
+; Init TT1..TT4 (OX16C954 quad-serial)
+
+ttQini:	iopage	SERP
+	call	ident		; read ID
+	jr	c,iniq3		; branch if quad-serial board not in system
+
+	ld	de,TTQINT
+	ld	hl,(ucbt1+U.DCB)
+	ld	a,(hl+D.BANK)
+	ld	c,a
+	ld	a,3		; OX16C954 uses interrupt vector 3 (INTB)
+	call	SETHVC
+
+	ld	e,SER0		; begin with channel 0
+	ld	d,4		; 4 channels to setup
+iniq1:	ld	hl,initbl	; HL = addr of initialization table
+	ld	b,tblen		; B = table length
+iniq2:	ld	a,(hl)		; get register address
+	add	a,e		; add channel base address
+	ld	c,a		; port address in reg C
+	inc	hl
+	ld	a,(hl)		; get value
+	out	(c),a		; set register
+	inc	hl
+	djnz	iniq2		; loop until all registers set
+	ld	c,e
+	in	a,(c)		; flush any spurious char
+	ld	a,e
+	add	a,SER1-SER0	; get address of next channel
+	ld	e,a
+	dec	d		; all channels initialized?
+	jr	nz,iniq1	; loop if not
+	ret
+
+; OX16C954 chip not detected, set units 1..4 offline
+
+iniq3:	ld	iy,ucbt1
+	ld	b,4
+iniq4:	set	US.OFL,(iy+U.ST) ; set unit off-line
+	ldw	iy,(iy+U.LNK)
+	djnz	iniq4
+	ret	
+
+; Check OX16C954 presence by reading the ID registers
+
+ident:	xor	a
+	out	(SER0+_LCR),a
+	out	(SER0+_SPR),a	; select ACR
+	ld	a,01000000b
+	out	(SER0+_ICR),a	; enable indexed register read
+	ld	hl,id
+	ld	e,_ID1		; read _ID1.._ID3 + _REV
+	ld	b,4		; thus 4 registers
+id1:	ld	a,e
+	out	(SER0+_SPR),a	; select register
+	in	a,(SER0+_ICR)	; read value
+	cp	(hl)		; compare with expected
+	scf
+	jr	nz,id2		; error if not same
+	inc	hl
+	inc	e
+	djnz	id1
+	xor	a
+id2:	push	af
+	xor	a
+	out	(SER0+_SPR),a	; select ACR
+	ld	a,00000000b
+	out	(SER0+_ICR),a	; enable access to standard regs again
+	pop	af
+	ret
+
+id:	db	16h,0C9h,54h,04h
+
+; baud rate divisors
+
+d115k2	equ	1		; 115200 baud
+d57k6	equ	2		;  57600 baud
+d38k4	equ	3		;  38400 baud
+d28k8	equ	4		;  28800 baud
+d19k2	equ	6		;  19200 baud
+d9k6	equ	12		;   9600 baud
+d4k8	equ	24		;   4800 baud
+d2k4	equ	48		;   2400 baud
+d1k2	equ	96		;   1200 baud
+d600	equ	192		;    600 baud
+d300	equ	384		;    300 baud
+d110	equ	768		;    110 baud
+d50	equ	2304		;     50 baud
+
+initbl:	db	_LCR,	00000000b	; ensure LCR is not 0BFh
+	db	_SPR,	_CSR		; select CSR register
+	db	_ICR,	0		;  reset UART channel, selects 450 mode
+
+	db	_SPR,	_TCR		; select TCR register
+	db	_ICR,	0		;  zero times clock reg (make SC = 16)
+
+	db	_MCR,	00001000b	; disable prescaler, enable INT pin
+
+	db	_LCR,	10000000b	; enable access to divisor
+;;	db	_DLL,	d115k2 and 0FFh	; set baud rate divisor
+;;	db	_DLM,	d115k2 shr 8	;  (115200 baud)
+	db	_DLL,	d19k2 and 0FFh	; set baud rate divisor
+	db	_DLM,	d19k2 shr 8	;  (19200 baud)
+
+;;	db	_LCR,	00001011b	; 8-O-1
+	db	_LCR,	00000011b	; 8-N-1
+
+	db	_FCR,	00000001b	; enable FIFO
+
+	db	_IER,	00000001b	; enable Rx interrupts
+
+tblen	equ	($-initbl)/2
+
+;-----------------------------------------------------------------------
+
+; TT1..TT4 transmitter restart routines.
+
+kick1:	iopage	SERP
+	in	a,(SER0+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER0+_IER),a
+	in	a,(SER0+_LSR)
+	bit	6,a		; check transmitter empty bit
+	ret	z		; still transmitting, return
+	di
+	ld	ix,(iy+UX.XQ)
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k1		; branch if not
+	out	(SER0+_THR),a	; else send char to restart transmitter
+	ret			; and return
+k1:	in	a,(SER0+_IER)
+	res	1,a		; disable TX interrupts
+	out	(SER0+_IER),a
+	ret
+
+kick2:	iopage	SERP
+	in	a,(SER1+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER1+_IER),a
+	in	a,(SER1+_LSR)
+	bit	6,a		; check transmitter empty bit
+	ret	z		; still transmitting, return
+	di
+	ld	ix,(iy+UX.XQ)
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k2		; branch if not
+	out	(SER1+_THR),a	; else send char to restart transmitter
+	ret			; and return
+k2:	in	a,(SER1+_IER)
+	res	1,a		; disable TX interrupts
+	out	(SER1+_IER),a
+	ret
+
+kick3:	iopage	SERP
+	in	a,(SER2+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER2+_IER),a
+	in	a,(SER2+_LSR)
+	bit	6,a		; check transmitter empty bit
+	ret	z		; still transmitting, return
+	di
+	ld	ix,(iy+UX.XQ)
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k3		; branch if not
+	out	(SER2+_THR),a	; else send char to restart transmitter
+	ret			; and return
+k3:	in	a,(SER2+_IER)
+	res	1,a		; disable TX interrupts
+	out	(SER2+_IER),a
+	ret
+
+kick4:	iopage	SERP
+	in	a,(SER3+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER3+_IER),a
+	in	a,(SER3+_LSR)
+	bit	6,a		; check transmitter empty bit
+	ret	z		; still transmitting, return
+	di
+	ld	ix,(iy+UX.XQ)
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k4		; branch if not
+	out	(SER3+_THR),a	; else send char to restart transmitter
+	ret			; and return
+k4:	in	a,(SER3+_IER)
+	res	1,a		; disable TX interrupts
+	out	(SER3+_IER),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; TT1..TT4 interrupt handling routines.
+
+; OX16C954 interrupts
+; Interrupts are already disabled by the interrupt stub in common memory.
+; AF, HL, DE, BC and the I/O page resgister also have been saved.
+
+TTQINT:	push	ix
+	push	iy
+	iopage	SERP
+	ld	iy,ucbt1
+	in	a,(SER0+_ISR)
+	bit	0,a		; interrupt pending?
+	call	z,tt1int	; handle if yes
+	ld	iy,ucbt2
+	in	a,(SER1+_ISR)
+	bit	0,a		; interrupt pending?
+	call	z,tt2int	; handle if yes
+	ld	iy,ucbt3
+	in	a,(SER2+_ISR)
+	bit	0,a		; interrupt pending?
+	call	z,tt3int	; handle if yes
+	ld	iy,ucbt4
+	in	a,(SER3+_ISR)
+	bit	0,a		; interrupt pending?
+	call	z,tt4int	; handle if yes
+	pop	iy
+	pop	ix
+	ret
+
+tt1int:	in	a,(SER0+_LSR)
+	bit	0,a		; RX data available?
+	jr	nz,tt1rx	; branch if yes
+	bit	5,a		; TX FIFO full?
+	ret	z		; return if yes
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,tx11		; stop output if XOFF bit is set
+	ld	ix,tt1xq
+	call	qget		; get next char to send
+	jr	c,tx11		; jump if no more chars
+	out	(SER0+_THR),a	; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,tx12		; yes
+	ret	nc		; no, return
+tx11:	in	a,(SER0+_IER)
+	res	1,a		; disable further TX interrupts
+	out	(SER0+_IER),a	;  or TX will keep interrupting
+tx12:	jp	ofpq		; setup process to refill queue
+tt1rx:	in	a,(SER0+_RHR)	; fetch char
+	ld	c,a
+	ld	ix,tt1iq
+	call	qput		; save it in input queue
+	in	a,(SER0+_LSR)	; check if more available
+	bit	0,a
+	jr	nz,tt1rx	; loop until rx buffer empty
+	jp	ifpq		; setup input fork process and return
+
+tt2int:	in	a,(SER1+_LSR)
+	bit	0,a		; RX data available?
+	jr	nz,tt2rx	; branch if yes
+	bit	5,a		; TX FIFO full?
+	ret	z		; return if yes
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,tx21		; stop output if XOFF bit is set
+	ld	ix,tt2xq
+	call	qget		; get next char to send
+	jr	c,tx21		; jump if no more chars
+	out	(SER1+_THR),a	; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,tx22		; yes
+	ret	nc		; no, return
+tx21:	in	a,(SER1+_IER)
+	res	1,a		; disable further TX interrupts
+	out	(SER1+_IER),a	;  or TX will keep interrupting
+tx22:	jp	ofpq		; setup process to refill queue
+tt2rx:	in	a,(SER1+_RHR)	; fetch char
+	ld	c,a
+	ld	ix,tt2iq
+	call	qput		; save it in input queue
+	in	a,(SER1+_LSR)	; check if more available
+	bit	0,a
+	jr	nz,tt2rx	; loop until rx buffer empty
+	jp	ifpq		; setup input fork process and return
+
+tt3int:	in	a,(SER2+_LSR)
+	bit	0,a		; RX data available?
+	jr	nz,tt3rx	; branch if yes
+	bit	5,a		; TX FIFO full?
+	ret	z		; return if yes
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,tx31		; stop output if XOFF bit is set
+	ld	ix,tt3xq
+	call	qget		; get next char to send
+	jr	c,tx31		; jump if no more chars
+	out	(SER2+_THR),a	; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,tx32		; yes
+	ret	nc		; no, return
+tx31:	in	a,(SER2+_IER)
+	res	1,a		; disable further TX interrupts
+	out	(SER2+_IER),a	;  or TX will keep interrupting
+tx32:	jp	ofpq		; setup process to refill queue
+tt3rx:	in	a,(SER2+_RHR)	; fetch char
+	ld	c,a
+	ld	ix,tt3iq
+	call	qput		; save it in input queue
+	in	a,(SER2+_LSR)	; check if more available
+	bit	0,a
+	jr	nz,tt3rx	; loop until rx buffer empty
+	jp	ifpq		; setup input fork process and return
+
+tt4int:	in	a,(SER3+_LSR)
+	bit	0,a		; RX data available?
+	jr	nz,tt4rx	; branch if yes
+	bit	5,a		; TX FIFO full?
+	ret	z		; return if yes
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,tx41		; stop output if XOFF bit is set
+	ld	ix,tt4xq
+	call	qget		; get next char to send
+	jr	c,tx41		; jump if no more chars
+	out	(SER3+_THR),a	; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,tx42		; yes
+	ret	nc		; no, return
+tx41:	in	a,(SER3+_IER)
+	res	1,a		; disable further TX interrupts
+	out	(SER3+_IER),a	;  or TX will keep interrupting
+tx42:	jp	ofpq		; setup process to refill queue
+tt4rx:	in	a,(SER3+_RHR)	; fetch char
+	ld	c,a
+	ld	ix,tt4iq
+	call	qput		; save it in input queue
+	in	a,(SER3+_LSR)	; check if more available
+	bit	0,a
+	jr	nz,tt4rx	; loop until rx buffer empty
+	jp	ifpq		; setup input fork process and return
 
 ;-----------------------------------------------------------------------
 ; Queue handling routines
@@ -1705,6 +2244,70 @@ tt0oq:	ds	1	; ipos
 	ds	32	; buf
 
 tt0xq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt1iq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt1tq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt1oq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt1xq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt2iq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt2tq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt2oq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt2xq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt3iq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt3tq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt3oq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt3xq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt4iq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt4tq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt4oq:	ds	1	; ipos
+	ds	1	; opos
+	ds	32	; buf
+
+tt4xq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
 
