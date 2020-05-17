@@ -163,3 +163,14 @@ Changelog
 - MCR: the BRK (break into the system debugger) is now working.
 
 
+14/05/20
+
+- DEVTT: adding support for Bill Shen's quad-serial port board (4 additional
+  terminals).
+
+
+15/05/20
+
+- Kernel: enable trickle charge when setting the DS1302 clock.
+
+

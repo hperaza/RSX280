@@ -6101,3 +6101,16 @@ BUGS:
 
 - VFY: the 'Not enough memory' error message was being output twice.
 
+
+02/05/20
+
+- ZSM4 bug fix: a semicolon immediately following a label, instruction
+  mnemonic or pseudo-operator resulted in a bogus 'N' error.
+
+
+16/05/20
+
+- PIP, RMD, MCR TIM command: don't display garbage if month is invalid
+  (e.g. when DS1302 date is not set).
+
+
