@@ -542,10 +542,8 @@ QSTORE:	ldw	hl,(ix+I.TCB)
 	or	l
 	ret	z
 	push	de
-	ld	de,T.PCB
-	add	hl,de
-	ldw	de,(hl)
-	ld	hl,P.BASE
+	ldw	hl,(hl+T.PCB)
+	ld	de,P.BASE
 	add	hl,de
 	ld	e,(hl)		; E = task bank
 	ldw	hl,(ix+I.QDB+Q.IOSB) ; HL = addr in user space to store result
@@ -704,18 +702,19 @@ CLNUCB:	ldw	hl,(iy+U.SCB)	; get SCB address into HL
 	lda	hl,(hl+S.PKTL)
 	push	hl
 	ex	(sp),ix		; get I/O packet list head address into IX
-ikl1:	ldw	hl,(ix)		; get packet address into DE
+ikl1:	ldw	hl,(ix)		; get packet address into HL
 	ld	a,h
 	or	l		; end of list?
 	jr	z,ikl3		; return if yes
+	push	hl
 	ldw	hl,(hl+I.TCB)	; get TCB address from I/O packet
 	cpw	hl,bc		; match?
 	jr	z,ikl2		; dequeue and free the packet if yes
-	push	hl
 	pop	ix		; else go to next paket in list
 	jr	ikl1		; and loop until all processed
 
-ikl2:	ld	a,TK.EIO
+ikl2:	pop	hl		; restore packet address
+	ld	a,TK.EIO
 	ld	(OIOFLG),a	; set outstanding I/O flag
 	ldw	de,(hl)		; get link field
 	ldw	(ix),de		; dequeue packet
@@ -753,7 +752,7 @@ QIOCLN:	ld	a,TK.EIO
 	ld	a,h
 	or	l
 	ret	z		; return if no ACP assigned to this unit
-				;  (should not appen)
+				;  (should not happen)
 	push	ix
 	push	de
 	push	bc
