@@ -174,3 +174,9 @@ Changelog
 - Kernel: enable trickle charge when setting the DS1302 clock.
 
 
+18/05/20
+
+- Kernel bug fix: aborting a task with outstanding file I/O could corrupt
+  the STD (bug from conversion to Z280 instructions).
+
+
