@@ -891,11 +891,9 @@ TKILL:	call	CHKSYS
 	pop	bc
 	call	$FNTCB		; find task in active list
 	ret	c		; should not happen
-	ld	a,(ix+T.ACTL)
-	ld	(iy),a		; unlink TCB
-	ld	a,(ix+T.ACTL+1)
-	ld	(iy+1),a
 	push	bc
+	ldw	bc,(ix+T.ACTL)
+	ldw	(iy),bc		; unlink TCB
 	ld	iy,$WLIST
 	ld	bc,T.ACTL
 	call	$LKTCB		; move task to wait list
@@ -981,10 +979,8 @@ TKILL2:	; entry point from IODONE and loader routines
 	ld	de,T.TCBL	; find task in STD
 	call	FTCB		; IX=TCB, IY=prev
 	ret	c		; should no happen
-	ld	a,(ix+T.TCBL)	; else remove TCB from task directory
-	ld	(iy),a
-	ld	a,(ix+T.TCBL+1)
-	ld	(iy+1),a
+	ldw	de,(ix+T.TCBL)	; else remove TCB from task directory
+	ldw	(iy),de
 	res	TA.FIX,(ix+T.ATTR) ; and clear the 'fixed' attribute
 
 tk0:	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
