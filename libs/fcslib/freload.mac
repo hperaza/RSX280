@@ -1,0 +1,66 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of FCSLIB, a file I/O library for RSX180.        ;
+;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+	public	?FRELD
+
+	extrn	?CMP24,FRDBLK
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Reload block for modification if file is open in R/W mode.
+; Called by the FWRITE and FPUTCH routines.
+; Preserves BC.
+
+?FRELD:	xor	a
+	res	FS.BV,(ix+FC.MODE) ; valid buffer?
+	ret	nz		   ; return success if yes
+
+	bit	FM.RD,(ix+FC.MODE) ; file open in R/W mode?
+	ret	z		   ; return success if not
+
+	push	bc
+	ld	l,(ix+FC.FDB)
+	ld	h,(ix+FC.FDB+1)
+	ld	de,F.NUSED
+	add	hl,de
+	ld	e,(hl)		; get F.NUSED into BHL
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	b,(hl)
+	ex	de,hl	
+	ld	e,(ix+FC.BLK)	; get FC.BLK into CDE
+	ld	d,(ix+FC.BLK+1)
+	ld	c,(ix+FC.BLK+2)
+	call	?CMP24		; past last block?
+	pop	bc
+	call	c,FRDBLK	; read block for modification if not
+	ret
+
+	end
