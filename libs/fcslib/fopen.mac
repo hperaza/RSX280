@@ -110,12 +110,12 @@ fopn1:	ld	de,F.DEV
 	;   and device closed (no more I/O allowed)
 	;...also no FSIZE/FSEEK/FPOS allowed
 
-	jr	fopn4		; return success
+	jp	fopn4		; return success
 
 	;thus, mode bits:
 	; open for read (may be combined with write or append)
 	; open for write (truncate/create new)
-	; open append
+	; open for append
 	; not a file
 	; terminal device
 	; file currently open
@@ -167,9 +167,38 @@ fopn3:	call	fmode		; get sufbunction code according to mode bits
 	scf
 	ret	nz
 
-	;TODO: if open for append, seek to end of file
+	bit	FM.WA,(ix+FC.MODE) ; file open for append?
+	jr	z,fopn4		   ; reset file pointers and return if not
 
-fopn4:	xor	a
+	ld	e,(ix+FC.FDB)
+	ld	d,(ix+FC.FDB+1)
+	ld	hl,F.NUSED
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+FC.BLK),a	; else seek to last block
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+FC.BLK+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+FC.BLK+2),a
+	xor	a
+	ld	(ix+FC.BLK+3),a
+
+	ld	hl,F.LBCNT
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+FC.CUR),a	; and set byte pointer past last byte in buffer
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+FC.CUR+1),a
+	xor	a
+	ret			; return success
+
+fopn4:	; TODO: if file exists and mode is write (not read/write, not read),
+	; truncate file size to zero?
+
+	xor	a
 	ld	(ix+FC.BLK),a	; clear block number
 	ld	(ix+FC.BLK+1),a
 	ld	(ix+FC.BLK+2),a
