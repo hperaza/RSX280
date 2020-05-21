@@ -23,11 +23,12 @@
 
 	include	SYSFN.INC
 	include	QIO.INC
+	include	FCB.INC
 	include	FCSLIB.INC
 
 	public	FWRBLK
 
-	extrn	QIOBLK,QIOSB
+	extrn	?INC24,?CMP24,FRATTR,QIOBLK,QIOSB
 
 	cseg
 
@@ -63,8 +64,33 @@ FWRBLK:	push	hl
 	scf
 	ret	nz
 	ld	de,(QIOSB+2)
-	res	FS.BM,(ix+FC.MODE)
-	xor	a
+	res	FS.BM,(ix+FC.MODE) ; clear modified bit
+
+	push	bc
+	push	de
+	push	hl
+	ld	l,(ix+FC.FDB)
+	ld	h,(ix+FC.FDB+1)
+	ld	de,F.NUSED
+	add	hl,de
+	ld	e,(hl)		; get F.NUSED into CDE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	ld	hl,(QIOBLK+Q.BLK)
+	ld	a,(QIOBLK+Q.BLK+2)
+	ld	c,a
+	ld	b,0
+	call	?INC24		; BHL = blkno + 1
+	call	?CMP24		; compare to F.NUSED
+	jr	z,upd1		; branch if same (on last block)
+	ld	a,0
+	jr	nc,upd2		; return if within file limits
+upd1:	call	FRATTR		; else update file attributes (get new size)
+upd2:	pop	hl
+	pop	de
+	pop	bc
 	ret
 
 	end
