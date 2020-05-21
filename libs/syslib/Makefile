@@ -81,9 +81,9 @@ syslib.lib: $(OBJS)
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib/e+bin2bcd/e+bcd2bin/e+clrmem/e+cphlde/e+exit/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+getln/e+getch/e+gccl/e+putstr/e+putch/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+rctrlo/e+getln/e+getch/e+gccl/e+putstr/e+putch/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+sleep/e+qioblk/e+crc16/e+md5/e+crypt/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+sleep/e+crc16/e+md5/e+crypt/e"
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib/e+cpy32m/e+cpl32m/e+add32m/e+and32m/e"
 	@cp $@ src.lib
@@ -91,7 +91,7 @@ syslib.lib: $(OBJS)
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib/e+cvtbd/e+cvtbd2/e+cvtwd/e+cvtwh/e+cvtwo/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+rctrlo/e+savrg/e+savreg/e+saval/e+savall/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+qioblk/e+savrg/e+savreg/e+saval/e+savall/e"
 	@rm src.lib
 	$(ZXCC) $(LBR) -",syslib=syslib.lib"
 	$(ZXCC) $(LBR) -",tty:/m=syslib.lib"
