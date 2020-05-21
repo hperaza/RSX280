@@ -34,9 +34,9 @@ bro.tsk: bro.rel syslib.lib
 ccl.tsk: ccl.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=...CCL/pri=90/priv"
 
-# CPU is not really privileged, but it accesses directly the common area
+# CPU is not really privileged, but accesses directly the common area
 cpu.tsk: cpu.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=...CPU"
+	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=...CPU/priv"
 
 dcu.tsk: dcu.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=...DCU/priv"
