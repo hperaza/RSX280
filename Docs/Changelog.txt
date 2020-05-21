@@ -6114,3 +6114,19 @@ BUGS:
   (e.g. when DS1302 date is not set).
 
 
+21/05/20
+
+- More work on FSCLIB:
+  * FOPEN: seek to end of file if file is open for append.
+  * FGETCH: read block if 'buffer valid' bit is not set.
+  * FPUTCH, FWRITE: read block for modification before write if file is open
+    in read/write mode.
+  * FSEEK bug fixes: handle 24-bit block numbers correctly, and allow seeking
+    past end of file.
+  * FSIZE bug fix: handle 24-bit block numbers correctly.
+  * FWRBLK: call FRATTR to update file size after extending the file.
+
+- SYSLIB: place RCTRLO module before QIOBLK in the library file to prevent an
+  undefined reference at link time.
+
+

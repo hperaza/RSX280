@@ -180,3 +180,8 @@ Changelog
   the STD (bug from conversion to Z280 instructions).
 
 
+19/05/20
+
+- RMD: fix uptime day display (Z280 conversion mistake).
+
+
