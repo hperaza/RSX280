@@ -32,7 +32,8 @@ and system call level. More details [here](http://p112.sourceforge.net/index.php
 Bill Shen's Z280RC board with:
 
  * Kernel: Dallas DS1202/DS1302 (RTC and NVRAM)
- * Terminal driver: one serial ports (Z280 internal UART)
+ * Terminal driver: five serial ports (Z280's internal UART and Bill Shen's
+   OX16C950 quad-serial port board)
  * Compact Flash disk driver
 
 ## Bugs and limitations
