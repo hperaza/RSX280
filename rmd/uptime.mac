@@ -37,7 +37,7 @@
 SYSUPT:	VGTOXY	34,0
 	push	ix
 	ld	ix,UPTIME
-	ldw	hl,(ix+5)	; days
+	ldw	hl,(ix+4)	; days
 	ld	a,'0'
 	call	VHLDEC
 	ld	c,'.'
