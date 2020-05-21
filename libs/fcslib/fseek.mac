@@ -30,7 +30,7 @@
 
 	public	FSEEK
 
-	extrn	CPHLDE,FRDBLK,FWRBLK
+	extrn	?CMP24,FWRBLK
 
 	cseg
 
@@ -44,107 +44,50 @@
 
 FSEEK:	ld	a,(ix+FC.MODE)
 	bit	FM.DV,a		; device mode?
-jr z,xx
-xor a
-ret
-;	ld	a,E.BADOP	; return error if yes
-;	scf
-;	ret	nz
-xx:
-
-	push	hl
-	call	fsck0
-	pop	hl
+  IF 0
+	ld	a,E.BADOP	; return error if yes
+	scf
+	ret	nz
+  ELSE
+	jr	z,fs1		; branch if yes
+	xor	a		; else return success (ignore operation)
 	ret
-
-fsck0:	ld	l,c
+fs1:
+  ENDIF
+	ld	(ix+FC.CUR),c
 	ld	a,b
 	and	1
-	ld	h,a		; HL = byte position = pos % 512
-	ld	c,b
-	ld	b,e
-	rr	d
-	rr	b
-	rr	c		; DBC = block number = pos / 512
+	ld	(ix+FC.CUR+1),a	; new byte position = pos % 512
 
-	ld	e,(ix+FC.FDB)
-	ld	d,(ix+FC.FDB+1)
-	push	de
-	ex	(sp),ix
-	call	CHKLIM		; check limits
-	pop	ix
+	push	hl
+	ld	l,b
+	ld	h,e
+	ld	b,d
+	srl	b
+	rr	h
+	rr	l		; BHL = new block number = pos / 512
 
-	ld	a,(ix+F.NUSED)	; check for zero used blocks (empty file)
-	or	(ix+F.NUSED+1)
-  IF 0
-	ld	a,E.EOF
-	scf
-  ELSE
-	ld	a,E.OK
-  ENDIF
-	ret	z		; return error at this point if file is empty
+	bit	FS.BV,(ix+FC.MODE) ; buffer valid?
+	jr	z,fs2		   ; branch if not
 
-	ld	a,(ix+FC.BLK)
-	cp	c		; new block number == current block?
-	jr	nz,fsk1
-	ld	a,(ix+FC.BLK+1)
-	cp	b
-	jr	z,fsk3		; branch if yes (already there)
+	ld	e,(ix+FC.BLK)	; else get current block number
+	ld	d,(ix+FC.BLK+1)
+	ld	c,(ix+FC.BLK+2)
+	call	?CMP24		; same?
+	jr	z,fs3		; return if yes
 
-fsk1:	bit	FS.BM,(ix+FC.MODE)
-	jr	z,fsk2
+	bit	FS.BM,(ix+FC.MODE) ; buffer modified?
+	jr	z,fs2		   ; branch if not
 
-	call	FWRBLK		; write old block if modified
-	ret	c
+	call	FWRBLK		   ; else write changes back
+	jr	c,fs3
 
-fsk2:	ld	(ix+FC.BLK),c	; set new block number
-	ld	(ix+FC.BLK+1),b
-
-	res	FS.BV,(ix+FC.MODE)
-
-fsk3:	bit	FS.BV,(ix+FC.MODE)
-	jr	nz,fsk4		; branch if buffer valid
-
-	call	FRDBLK		; else read new block, sets FC.CNT
-	ret	c
-
-fsk4:	ld	(ix+FC.CUR),l
-	ld	(ix+FC.CUR+1),h
-
-	xor	a		; return success
-	ret
-
-; Check whether the block number (BC) and byte position (HL) are
-; whithin the file limits (IX = FCB), and adjust values accordingly
-; if not.
-
-CHKLIM:	ld	e,(ix+F.NUSED)	; check number of used blocks
-	ld	d,(ix+F.NUSED+1)	;!!!TODO F.NALOC for non-ctg
-	ld	a,d
-	or	e		; empty file?
-	jr	nz,chk1		; jump if not
-	ld	bc,0
-	ld	hl,0		; else return blkno = 0 and bytepos = 0
-	ret
-chk1:	push	hl
-	ld	l,c
-	ld	h,b
-	inc	hl		; HL = blkno + 1
-	call	CPHLDE		; compare with F.NUSED
-	pop	hl
-	jr	c,chk2		; jump if blkno + 1 > F.NUSED (beyond EOF)
-	ret	nz		; return if not equal (values OK)
-	ld	e,(ix+F.LBCNT)	; here if equal (last block)
-	ld	d,(ix+F.LBCNT+1)
-	call	CPHLDE		; compare bytepos (HL) with F.LBCNT
-	ret	nc		; return if HL <= F.LBCNT
-	ex	de,hl		; else set HL = F.LBCNT
-	ret
-chk2:	dec	de
-	ld	c,e
-	ld	b,d		; set blkno = F.NUSED - 1
-	ld	l,(ix+F.LBCNT)	; and bytepos = F.LBCNT (end of file)
-	ld	h,(ix+F.LBCNT+1)
+fs2:	res	FS.BV,(ix+FC.MODE) ; invalidate buffer
+	ld	(ix+FC.BLK),l	; set new block number
+	ld	(ix+FC.BLK+1),h
+	ld	(ix+FC.BLK+2),b
+	xor	a		; and return success
+fs3:	pop	hl
 	ret
 
 	end

@@ -31,48 +31,51 @@
 
 	public	FSIZE
 
+	extrn	?DEC24
+
 	cseg
 
 ; TODO: return error if file not open or channel not assigned to file
 
-FSIZE:	ld	c,(ix+FC.FDB)	; get FDB address into BC
-	ld	b,(ix+FC.FDB+1)
-	ld	hl,F.ATTR
-	add	hl,bc
-	ld	a,(hl)
-	and	FA.CTG		; contiguous file?
+FSIZE:	ld	e,(ix+FC.FDB)	; get FDB address into DE
+	ld	d,(ix+FC.FDB+1)
 	ld	hl,F.NUSED
-	jr	nz,fsz1
-	ld	hl,F.NALOC
-fsz1:	add	hl,bc
+	add	hl,de
+	ld	c,(hl)		; get size in blocks into BHL
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	l,c
+	ld	h,a
+	or	l
+	or	b
+	jr	nz,fs1
+	ld	de,0		; size is 0 if F.NUSED is 0
+	ret
+fs1:	call	?DEC24		; since last block may not be full
+	push	hl
+	ld	hl,F.LBCNT
+	add	hl,de
 	ld	a,(hl)
 	inc	hl
 	ld	h,(hl)
-	ld	l,a		; get size in blocks
-	ld	a,h
-	or	l
-	ld	de,0
-	ret	z		; size is 0 if nblocks is 0
-	dec	hl		; since last block may not be full
-	ex	de,hl		; DE = nblocks - 1
-	ld	hl,F.LBCNT
-	add	hl,bc
-	ld	c,(hl)
-	inc	hl
-	ld	b,(hl)
-	ld	h,0
-	ld	l,d
-	ld	d,e
-	ld	e,0		; HLDE = (nblocks - 1) * 256
+	ld	l,a
+	ex	(sp),hl		; push F.LBCNT, restore F.NUSED
+	ld	d,l
+	ld	l,h
+	ld	h,b
+	xor	a
+	ld	e,a		; HLDE = (F.NUSED - 1) * 256
 	sla	d
 	rl	l
-	rl	h		; HLDE = (nblocks - 1) * 512
+	rl	h		; HLDE = (F.NUSED - 1) * 512
+	pop	bc		; pop F.LBCNT
 	ex	de,hl
 	add	hl,bc
 	ex	de,hl
-	ld	bc,0
-	add	hl,bc		; HLDE += lbcnt
-	xor	a		; return success
-	ret
+	ret	nc
+	inc	hl		; HLDE += F.LBCNT
+	ret			; return success (A was cleared above)
 
 	end
