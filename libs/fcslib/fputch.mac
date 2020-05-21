@@ -27,7 +27,7 @@ CR	equ	0Dh
 
 	public	FPUTCH
 
-	extrn	FWRBLK,CPHLDE,?FINCB
+	extrn	FWRBLK,CPHLDE,?FRELD,?FINCB
 
 	cseg
 
@@ -43,16 +43,15 @@ FPUTCH:	push	hl
 	bit	FS.BM,(ix+FC.MODE)
 	jr	z,fpc0
 	call	FWRBLK		; write block
-				; TODO: if file is open in r/w mode and this
-				; is not the last block, read-in next block
-				; before modifying it
 	jr	c,fpc3
 fpc0:	ld	de,0
 	ld	(ix+FC.CNT),e
 	ld	(ix+FC.CNT+1),d
 	call	?FINCB		; next block
-	;TODO: read block if R/W mode
-fpc1:	ld	l,(ix+FC.BUF)
+fpc1:	push	de
+	call	?FRELD		; load block for modification if R/W mode
+	pop	de
+	ld	l,(ix+FC.BUF)
 	ld	h,(ix+FC.BUF+1)
 	add	hl,de		; index into buffer
 	ld	(hl),c		; store char

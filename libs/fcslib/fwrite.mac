@@ -21,13 +21,12 @@
 
 	.Z80
 
-	include	FCB.INC
 	include	FCSLIB.INC
 	include	ERRORS.INC
 
 	public	FWRITE
 
-	extrn	CPHLDE,FWRBLK,?FINCB
+	extrn	CPHLDE,FWRBLK,?FRELD,?FINCB
 
 	cseg
 
@@ -55,19 +54,22 @@ fwr1:	; write loop
 	push	hl		; save nwritten
 	push	de		; save src address
 
+	call	?FRELD		; reload block for possible modification
+	jp	c,fwr5		; on error, return
+
 	ld	l,(ix+FC.CUR)
 	ld	h,(ix+FC.CUR+1)
 	add	hl,bc		; HL = FC.CUR + len
 	ld	de,512
 	call	CPHLDE		; FC.CUR + len > 512?
-	jr	c,fwr2		; jump if yes
+	jr	c,fwr3		; jump if yes
 
 	; data fits in current buffer
 
 	ld	a,b
 	or	c		; len == 0?
 	ld	a,E.OK
-	jp	z,fwr4		; return if yes (we are done)
+	jp	z,fwr5		; return if yes (we are done)
 
 	ld	l,(ix+FC.BUF)
 	ld	h,(ix+FC.BUF+1)
@@ -89,11 +91,11 @@ fwr1:	; write loop
 	ld	e,(ix+FC.CNT)
 	ld	d,(ix+FC.CNT+1)
 	call	CPHLDE		; FC.CUR > FC.CNT?
-	jr	nc,fwr5		; branch if not
+	jr	nc,fwr2		; branch if not
 	ld	(ix+FC.CNT),l	; else update FC.CNT
 	ld	(ix+FC.CNT+1),h
 
-fwr5:	pop	hl		; pop nwritten
+fwr2:	pop	hl		; pop nwritten
 	add	hl,bc		; nwritten += len
 	ld	b,h
 	ld	c,l		; return nwritten in BC
@@ -101,7 +103,7 @@ fwr5:	pop	hl		; pop nwritten
 	or	a
 	ret
 
-fwr2:	; data will overflow to next block(s)
+fwr3:	; data will overflow to next block(s)
 
 	ld	hl,512		; compute space remaining on this block
 	ld	(ix+FC.CNT),l	; set FC.CNT for FWRBLK call
@@ -113,7 +115,7 @@ fwr2:	; data will overflow to next block(s)
 	sbc	a,(ix+FC.CUR+1)
 	ld	h,a		; nbytes = 512 - FC.CUR
 	or	l		; nbytes > 0?
-	jr	z,fwr3		; jump if not
+	jr	z,fwr4		; jump if not
 
 	; fill the remaining of this buffer
 
@@ -149,34 +151,10 @@ fwr2:	; data will overflow to next block(s)
 	push	hl		; push nwritten
 	push	de		; push src
 
-fwr3:	call	FWRBLK		; write block
-	jr	c,fwr4		; on error return
+fwr4:	call	FWRBLK		; write block
+	jr	c,fwr5		; on error, return
 
 	call	?FINCB		; move to next block
-
-	; update number of blocks in FDB
-
-	ld	l,(ix+FC.BLK)
-	ld	h,(ix+FC.BLK+1)
-
-	ld	e,(ix+FC.FDB)
-	ld	d,(ix+FC.FDB+1)
-	push	de
-	ex	(sp),ix
-
-	ld	e,(ix+F.NUSED)
-	ld	d,(ix+F.NUSED+1)
-	ex	de,hl		; HL = F.NUSED, DE = FC.BLK
-	call	CPHLDE		; F.NUSED > FC.BLK?
-	jr	c,fwr6		; branch if yes
-
-	inc	hl
-	ld	(ix+F.NUSED),l	; else set new F.NUSED
-	ld	(ix+F.NUSED),h
-
-	; TODO: update also F.LBCNT?
-
-fwr6:	pop	ix
 
 	xor	a
 	ld	(ix+FC.CUR),a	; reset FC.CUR
@@ -184,16 +162,13 @@ fwr6:	pop	ix
 	ld	(ix+FC.CNT),a	; reset FC.CNT
 	ld	(ix+FC.CNT+1),a
 
-;;	res	FS.BV,(ix+FC.MODE)
-
-	; TODO: if file is open in r/w mode and this is not the last block,
-	; then call FRDBLK to read-in next block before modifying it
+	res	FS.BV,(ix+FC.MODE)
 
 	pop	de		; restore src
 	pop	hl		;  and nwritten, len still in BC
 	jp	fwr1		; loop until all bytes written
 
-fwr4:	pop	de		; pop dst
+fwr5:	pop	de		; pop dst
 	pop	bc		; return nwritten in BC
 	ret			; return succes/error code
 
