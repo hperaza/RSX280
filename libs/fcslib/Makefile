@@ -11,6 +11,7 @@ SRCS = fopen.mac \
 	fclose.mac \
 	fread.mac \
 	fwrite.mac \
+	freload.mac \
 	frdblk.mac \
 	fwrblk.mac \
 	fputln.mac \
@@ -31,7 +32,10 @@ SRCS = fopen.mac \
 	fgetln.mac \
 	fflush.mac \
 	fincbk.mac \
-	fdecbk.mac
+	fdecbk.mac \
+	finc24.mac \
+	fdec24.mac \
+	fcmp24.mac
 
 INC = sysfn.inc \
 	fcslib.inc \
@@ -52,15 +56,15 @@ $(OBJS): %.rel: %.mac *.inc
 fcslib.lib: $(OBJS)
 	$(ZXCC) $(LBR) -"$@=fgetln/e+fgetch/e+fputstr/e+fputln/e+fputch/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fopen/e+fclose/e+fread/e+fwrite/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+fopen/e+fclose/e+fread/e+fwrite/e+freload/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fseek/e+fpos/e+fsize/e+frattr/e+fwattr/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+fseek/e+fpos/e+fsize/e+fdel/e+fren/e+mkdir/e"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fdel/e+fren/e+mkdir/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+frdblk/e+fwrblk/e+fflush/e+fsync/e"
+	$(ZXCC) $(LBR) -"$@=src.lib/e+fflush/e+fsync/e+frdblk/e+fwrblk/e+frattr/e+fwattr/e"
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib/e+fincbk/e+fdecbk/e+parsefn/e+qioblk/e"
+	@cp $@ src.lib
+	$(ZXCC) $(LBR) -"$@=src.lib/e+finc24/e+fdec24/e+fcmp24/e"
 	@rm src.lib
 	$(ZXCC) $(LBR) -",fcslib=fcslib.lib"
 	$(ZXCC) $(LBR) -",tty:/m=fcslib.lib"
