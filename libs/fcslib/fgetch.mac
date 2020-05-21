@@ -33,8 +33,10 @@
 FGETCH:	push	hl
 	push	de
 	bit	FS.BV,(ix+FC.MODE)
-	jr	z,fgc1
-	ld	e,(ix+FC.CUR)
+	jr	nz,fgc0
+	call	FRDBLK		; read first block if necessary
+	jr	c,fgc3
+fgc0:	ld	e,(ix+FC.CUR)
 	ld	d,(ix+FC.CUR+1)
 	ld	l,(ix+FC.CNT)
 	ld	h,(ix+FC.CNT+1)
