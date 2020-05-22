@@ -30,6 +30,8 @@
 #include "bitmap.h"
 #include "misc.h"
 
+//#define DEBUG
+
 extern unsigned long nblocks;
 extern unsigned long bmblock;
 extern unsigned char clfactor;
@@ -42,20 +44,20 @@ extern unsigned char clfactor;
 unsigned long alloc_cluster(void) {
   struct BUFFER *buf;
   unsigned char bmp, mask;
-  unsigned long i, cnt, bmblk;
+  unsigned long i, offs, bmblk;
 
   /* nblocks is obtained from volume id (second block of BOOT.SYS) */
-  cnt = BMHDRSZ;  /* skip header */
+  offs = BMHDRSZ;  /* skip header */
   bmblk = bmblock;
   buf = get_block(bmblk);
   if (!buf) return 0;
   mask = 0x80;
-  bmp = buf->data[cnt];
+  bmp = buf->data[offs];
   for (i = 0; i < nblocks; ++i) {
     if ((bmp & mask) == 0) {
       /* mark this block as used */
       bmp |= mask;
-      buf->data[cnt] = bmp;
+      buf->data[offs] = bmp;
       buf->modified = 1;
       release_block(buf);
 #ifdef DEBUG
@@ -65,13 +67,13 @@ unsigned long alloc_cluster(void) {
     }
     mask >>= 1;
     if (mask == 0) {
-      if (++cnt == 512) {
+      if (++offs == 512) {
         release_block(buf);
         buf = get_block(++bmblk);
         if (!buf) return 0;
-        cnt = 0;
+        offs = 0;
       }
-      bmp = buf->data[cnt];
+      bmp = buf->data[offs];
       mask = 0x80;
     }
   }
@@ -86,17 +88,17 @@ unsigned long alloc_cluster(void) {
 unsigned long alloc_clusters(unsigned long num) {
   struct BUFFER *buf;
   unsigned char bmp, mask;
-  unsigned long i, j, cstart, cnt, bmblk;
+  unsigned long i, j, cstart, offs, bmblk;
   
   /* nblocks is obtained from volume id (second block of BOOT.SYS) */
   cstart = 0;     /* start of contiguous segment */
   j = 0;          /* contiguous block count */
-  cnt = BMHDRSZ;  /* skip header */
+  offs = BMHDRSZ; /* skip header */
   bmblk = bmblock;
   buf = get_block(bmblk);
   if (!buf) return 0;
   mask = 0x80;
-  bmp = buf->data[cnt];
+  bmp = buf->data[offs];
   for (i = 0; i < nblocks; ++i) {
     if ((bmp & mask) == 0) {
       /* free block, keep looking to see if we have enough in a row */
@@ -108,13 +110,13 @@ unsigned long alloc_clusters(unsigned long num) {
     }
     mask >>= 1;
     if (mask == 0) {
-      if (++cnt == 512) {
+      if (++offs == 512) {
         release_block(buf);
         buf = get_block(++bmblk);
         if (!buf) return 0;
-        cnt = 0;
+        offs = 0;
       }
-      bmp = buf->data[cnt];
+      bmp = buf->data[offs];
       mask = 0x80;
     }
   }
@@ -125,32 +127,32 @@ unsigned long alloc_clusters(unsigned long num) {
   /* now mark blocks as allocated */
 
   mask = (0x80 >> (cstart & 7));
-  cnt = ((cstart >> 3) + BMHDRSZ) & 0x1FF;
+  offs = ((cstart >> 3) + BMHDRSZ) & 0x1FF;
   bmblk = bmblock + ((((cstart >> 3) + BMHDRSZ) >> 9) & 0xFFF);
 
   buf = get_block(bmblk);
   if (!buf) return 0;
-  bmp = buf->data[cnt];
+  bmp = buf->data[offs];
   /* TODO: check this!!! */
   for (i = 0; i < num; ++i) {
     /* mark this block as used */
     bmp |= mask;
     mask >>= 1;
     if (mask == 0) {
-      buf->data[cnt] = bmp;
+      buf->data[offs] = bmp;
       buf->modified = 1;
-      if (++cnt == 512) {
+      if (++offs == 512) {
         release_block(buf);
         buf = get_block(++bmblk);
         if (!buf) return 0;
-        cnt = 0;
+        offs = 0;
       }
-      bmp = buf->data[cnt];
+      bmp = buf->data[offs];
       mask = 0x80;
     }
   }
   if (mask != 0x80) {
-    buf->data[cnt] = bmp;
+    buf->data[offs] = bmp;
     buf->modified = 1;
   }
   release_block(buf);
@@ -164,16 +166,16 @@ unsigned long alloc_clusters(unsigned long num) {
 int free_cluster(unsigned long clno) {
   struct BUFFER *buf;
   unsigned char mask;
-  unsigned long cnt, bmblk;
+  unsigned long offs, bmblk;
 
   mask = (0x80 >> (clno & 7));
-  cnt = ((clno >> 3) + BMHDRSZ) & 0x1FF;
-  bmblk = bmblock + ((cnt >> 9) & 0xFFF);
+  offs = ((clno >> 3) + BMHDRSZ) & 0x1FF;
+  bmblk = bmblock + ((((clno >> 3) + BMHDRSZ) >> 9) & 0xFFF);
   
   buf = get_block(bmblk);
   if (!buf) return 0;
   
-  buf->data[cnt] &= ~mask;
+  buf->data[offs] &= ~mask;
   buf->modified = 1;
   
   release_block(buf);
@@ -191,7 +193,7 @@ int free_cluster(unsigned long clno) {
 unsigned short alloc_inode(void) {
   struct BUFFER *buf;
   unsigned char bmp, mask;
-  unsigned long i, cnt, bmblk, nfiles;
+  unsigned long i, offs, bmblk, nfiles;
 
   bmblk = bmblock;
   buf = get_block(bmblk);
@@ -203,14 +205,14 @@ unsigned short alloc_inode(void) {
   if (!buf) return 0;
 
   nfiles = GET_INT16(buf->data, 0);
-  cnt = BMHDRSZ;  /* skip header */
+  offs = BMHDRSZ;  /* skip header */
   mask = 0x80;
-  bmp = buf->data[cnt];
+  bmp = buf->data[offs];
   for (i = 0; i < nfiles; ++i) {
     if ((bmp & mask) == 0) {
       /* mark this entry as used */
       bmp |= mask;
-      buf->data[cnt] = bmp;
+      buf->data[offs] = bmp;
       buf->modified = 1;
       release_block(buf);
 #ifdef DEBUG
@@ -220,13 +222,13 @@ unsigned short alloc_inode(void) {
     }
     mask >>= 1;
     if (mask == 0) {
-      if (++cnt == 512) {
+      if (++offs == 512) {
         release_block(buf);
         buf = get_block(++bmblk);
         if (!buf) return 0;
-        cnt = 0;
+        offs = 0;
       }
-      bmp = buf->data[cnt];
+      bmp = buf->data[offs];
       mask = 0x80;
     }
   }
@@ -237,7 +239,7 @@ unsigned short alloc_inode(void) {
 int free_inode(unsigned short ino) {
   struct BUFFER *buf;
   unsigned char mask;
-  unsigned long cnt, bmblk, nfiles;
+  unsigned long offs, bmblk, nfiles;
   
   --ino;  /* make it zero-based */
 
@@ -256,19 +258,19 @@ int free_inode(unsigned short ino) {
   if (ino >= nfiles) return 0;
 
   mask = (0x80 >> (ino & 7));
-  cnt = ((ino >> 3) + BMHDRSZ) & 0x1FF;
-  bmblk += (cnt >> 9) & 0x1F;
+  offs = ((ino >> 3) + BMHDRSZ) & 0x1FF;
+  bmblk += (((ino >> 3) + BMHDRSZ) >> 9) & 0x1F;
   
   buf = get_block(bmblk);
   if (!buf) return 0;
   
-  buf->data[cnt] &= ~mask;
+  buf->data[offs] &= ~mask;
   buf->modified = 1;
   
   release_block(buf);
 
 #ifdef DEBUG
-  printf("freeing inode %lu\n", clno);
+  printf("freeing inode %u\n", ino);
 #endif
 
   return 1;
