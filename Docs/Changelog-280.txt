@@ -185,3 +185,10 @@ Changelog
 - RMD: fix uptime day display (Z280 conversion mistake).
 
 
+24/05/20
+
+- DEVTT: fixed a race condition in TT1..TT4 transmitter interrupt handling.
+  Removed the software transmitter queue for TT1..TT4, since the OX16C954
+  quad-UART chip has a hardware one.
+
+
