@@ -6135,3 +6135,8 @@ BUGS:
 - ZSM4: invalidate the (shared) input buffer after closing an include file.
 
 
+24/05/20
+
+- HEL: on login, display UIC in addition to user name.
+
+
