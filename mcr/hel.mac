@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.07'
+	ident	'03.08'
 
 	cseg
 
@@ -993,10 +993,7 @@ lgn12:	pop	hl
 	ld	c,d
 	call	PUTCH
 	pop	af
-	ld	l,a
-	ld	h,0
-	xor	a
-	call	HLDEC
+	call	ADEC
 	ld	c,':'
 	call	PUTCH
 	pop	hl
@@ -1004,6 +1001,18 @@ lgn12:	pop	hl
 	call	PUTSTR		; ' as '
 	ld	hl,uname
 	call	PUTSTR		; display user name
+	ld	c,' '
+	call	PUTCH
+	ld	c,'['
+	call	PUTCH
+	ld	a,(buf+AF.GRP)
+	call	ADEC		; display UIC
+	ld	c,','
+	call	PUTCH
+	ld	a,(buf+AF.USR)
+	call	ADEC
+	ld	c,']'
+	call	PUTCH
 	call	CRLF
 	ld	hl,good		; 'good ... morning, evening, etc.'
 	call	PUTSTR
