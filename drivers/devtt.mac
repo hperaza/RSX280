@@ -140,8 +140,7 @@ UX.TMO	equ	UX.UCC + 1	; timeout counter (2 bytes)
 UX.IQ	equ	UX.TMO + 2	; address of input queue (2 bytes)
 UX.TQ	equ	UX.IQ + 2	; address of typeahead queue (2 bytes)
 UX.OQ	equ	UX.TQ + 2	; address of output queue (2 bytes)
-UX.XQ	equ	UX.OQ + 2	; address of transmitter queue (2 bytes)
-UX.TXP	equ	UX.XQ + 2	; pointer to transmit buffer (2 bytes)
+UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
 UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (1 byte)
 UX.TXC	equ	UX.TXB + 1	; count of bytes to transmit (2 bytes)
 UX.TXK	equ	UX.TXC + 2	; transmitter restart routine addr (2 bytes)
@@ -246,7 +245,6 @@ ucbt0:	dw	ucbt1		; link to next
 	dw	tt0iq		; UX.IQ
 	dw	tt0tq		; UX.TQ
 	dw	tt0oq		; UX.OQ
-	dw	tt0xq		; UX.XQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
@@ -278,7 +276,6 @@ ucbt1:	dw	ucbt2		; link to next
 	dw	tt1iq		; UX.IQ
 	dw	tt1tq		; UX.TQ
 	dw	tt1oq		; UX.OQ
-	dw	tt1xq		; UX.XQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
@@ -310,7 +307,6 @@ ucbt2:	dw	ucbt3		; link to next
 	dw	tt2iq		; UX.IQ
 	dw	tt2tq		; UX.TQ
 	dw	tt2oq		; UX.OQ
-	dw	tt2xq		; UX.XQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
@@ -342,7 +338,6 @@ ucbt3:	dw	ucbt4		; link to next
 	dw	tt3iq		; UX.IQ
 	dw	tt3tq		; UX.TQ
 	dw	tt3oq		; UX.OQ
-	dw	tt3xq		; UX.XQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
@@ -374,14 +369,25 @@ ucbt4:	dw	0		; link to next
 	dw	tt4iq		; UX.IQ
 	dw	tt4tq		; UX.TQ
 	dw	tt4oq		; UX.OQ
-	dw	tt4xq		; UX.XQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick4		; UX.TXK
 	dw	0		; UX.AST
 
-	IRPC	X,01234
+scb0:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+	dw	0		; SX.IFB
+	db	0		;  bank
+	dw	iproc		;  routine address
+	dw	ucbt0		;  context (IY)
+	dw	0		; SX.OFB
+	db	0		;  bank
+	dw	oproc		;  routine address
+	dw	ucbt0		;  context (IY)
+
+	IRPC	X,1234
 scb&X:	db	0		; status byte
 	dw	0		; head of I/O packet list
 	dw	0		; address of current I/O packet
@@ -391,7 +397,7 @@ scb&X:	db	0		; status byte
 	dw	ucbt&X		;  context (IY)
 	dw	0		; SX.OFB
 	db	0		;  bank
-	dw	oproc		;  routine address
+	dw	oproc&X		;  routine address
 	dw	ucbt&X		;  context (IY)
 	ENDM
 
@@ -425,8 +431,6 @@ ini0:	res	US.BSY,(iy+U.ST)
 	call	qinit		; init typeahead queue
 	ldw	ix,(iy+UX.OQ)
 	call	qinit		; init output queue
-	ldw	ix,(iy+UX.XQ)
-	call	qinit		; init transmitter queue
 	ldw	iy,(iy+U.LNK)	; get next UCB into IY
 	ld	a,iyh
 	or	iyl
@@ -608,7 +612,6 @@ wlb2:	bit	U2.CTO,(iy+UX.MOD+1) ; ^O active?
 	ret	nz
 	bit	UM.OUT,(iy+UX.MOD)   ; check output mode
 	ret	z
-	call	refill		     ; refill output queue
 	ld	hl,(iy+UX.TXK)
 	jp	(hl)		     ; and restart the transmitter
 
@@ -1457,36 +1460,6 @@ iend1:	push	bc
 	ldw	de,(iy+UX.CXF)	; transfer count in DE
 	jp	IODONE		; store result and end operation
 
-; Output fork process: refill queue and restart transmitter or end output
-; accordingly.
-
-oproc:	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
-	call	refill		; refill output queue
-	di
-	call	qsize		; anything in output queue?
-	ei
-	jp	z,chkend	; end output operation if not
-	ld	hl,(iy+UX.TXK)
-	jp	(hl)		; else restart transmitter
-
-; Refill transmitter queue
-
-refill:	ldw	ix,(iy+UX.XQ)	; IX = transmitter queue
-r1:	di
-	call	qsize
-	ei
-	cp	31
-	ret	nc
-	push	ix
-	call	nextch		; anthing (else) to send?
-	pop	ix
-	ret	c		; return if not
-	ld	c,a
-	di
-	call	qput		; else store char in queue
-	ei
-	jr	r1		; and loop to process next
-
 ; Get next char to send, either from local output queue or from requesting
 ; task's buffer.
 ; Called with IY = UCB. Returns CY set if no more chars to send.
@@ -1642,7 +1615,10 @@ ifpq:	bit	UM.IFP,(iy+UX.MOD) ; fork process already queued?
 
 ; Init TT0:
 
-tt0ini:	ld	de,TT0RX
+tt0ini:	ld	ix,tt0xq
+	call	qinit		; init software transmitter queue
+
+	ld	de,TT0RX
 	ld	hl,(ucbt0+U.DCB)
 	ld	a,(hl+D.BANK)
 	ld	c,a
@@ -1683,7 +1659,8 @@ tt0ini:	ld	de,TT0RX
 
 ; TT0 transmitter restart routine.
 
-kick0:	iopage	UARTP
+kick0:	call	refill		; refill output queue
+	iopage	UARTP
 	in	a,(TCS)
 	set	6,a		; (re)enable TX interrupts
 	out	(TCS),a
@@ -1691,7 +1668,7 @@ kick0:	iopage	UARTP
 	and	01h		; check transmitter buffer empty bit
 	ret	z
 	di
-	ld	ix,(iy+UX.XQ)
+	ld	ix,tt0xq
 	call	qget		; anything in transmitter queue?
 	ei
 	jr	c,k0		; branch if not
@@ -1701,6 +1678,36 @@ k0:	in	a,(TCS)
 	res	6,a		; disable TX interrupts
 	out	(TCS),a
 	ret
+
+; TT0 output fork process: refill queue and restart transmitter or end output
+; accordingly.
+
+oproc:	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	call	refill		; refill output queue
+	di
+	call	qsize		; anything in output queue?
+	ei
+	jp	z,chkend	; end output operation if not
+	ld	hl,(iy+UX.TXK)
+	jp	(hl)		; else restart transmitter
+
+; Refill transmitter queue
+
+refill:	ld	ix,tt0xq	; IX = transmitter queue
+r1:	di
+	call	qsize
+	ei
+	cp	31
+	ret	nc
+	push	ix
+	call	nextch		; anything (else) to send?
+	pop	ix
+	ret	c		; return if not
+	ld	c,a
+	di
+	call	qput		; else store char in queue
+	ei
+	jr	r1		; and loop to process next
 
 ;-----------------------------------------------------------------------
 
@@ -1856,18 +1863,28 @@ initbl:	db	_LCR,	00000000b	; ensure LCR is not 0BFh
 	db	_SPR,	_TCR		; select TCR register
 	db	_ICR,	0		;  zero times clock reg (make SC = 16)
 
-	db	_MCR,	00001000b	; disable prescaler, enable INT pin
+	db	_MCR,	00001011b	; disable prescaler, enable INT pin,
+					;  DTR and RTS active
 
 	db	_LCR,	10000000b	; enable access to divisor
-;;	db	_DLL,	d115k2 and 0FFh	; set baud rate divisor
-;;	db	_DLM,	d115k2 shr 8	;  (115200 baud)
+ if 0
+	db	_DLL,	d115k2 and 0FFh	; set baud rate divisor
+	db	_DLM,	d115k2 shr 8	;  (115200 baud)
+ else
 	db	_DLL,	d19k2 and 0FFh	; set baud rate divisor
 	db	_DLM,	d19k2 shr 8	;  (19200 baud)
+ endif
 
-;;	db	_LCR,	00001011b	; 8-O-1
+	db	_LCR,	0BFh		; enable access to 650-mode registers
+	db	_EFR,	00010000b	; set enhanced mode
+
+ if 0
+	db	_LCR,	00001011b	; 8-O-1
+ else
 	db	_LCR,	00000011b	; 8-N-1
+ endif
 
-	db	_FCR,	00000001b	; enable FIFO
+	db	_FCR,	00000001b	; enable FIFO, Rx threshold level = 1
 
 	db	_IER,	00000001b	; enable Rx interrupts
 
@@ -1878,79 +1895,145 @@ tblen	equ	($-initbl)/2
 ; TT1..TT4 transmitter restart routines.
 
 kick1:	iopage	SERP
-	in	a,(SER0+_IER)
-	set	1,a		; (re)enable TX interrupts
-	out	(SER0+_IER),a
 	in	a,(SER0+_LSR)
-	bit	6,a		; check transmitter empty bit
+	bit	5,a		; check transmitter empty bit
 	ret	z		; still transmitting, return
-	di
-	ld	ix,(iy+UX.XQ)
-	call	qget		; anything in transmitter queue?
-	ei
-	jr	c,k1		; branch if not
-	out	(SER0+_THR),a	; else send char to restart transmitter
-	ret			; and return
-k1:	in	a,(SER0+_IER)
-	res	1,a		; disable TX interrupts
+	call	refil1		; else refill transmitter FIFO
+	ret	z		; return if nothing sent
+	in	a,(SER0+_IER)
+	set	1,a		; else (re)enable TX interrupts
 	out	(SER0+_IER),a
 	ret
 
 kick2:	iopage	SERP
-	in	a,(SER1+_IER)
-	set	1,a		; (re)enable TX interrupts
-	out	(SER1+_IER),a
 	in	a,(SER1+_LSR)
-	bit	6,a		; check transmitter empty bit
+	bit	5,a		; check transmitter empty bit
 	ret	z		; still transmitting, return
-	di
-	ld	ix,(iy+UX.XQ)
-	call	qget		; anything in transmitter queue?
-	ei
-	jr	c,k2		; branch if not
-	out	(SER1+_THR),a	; else send char to restart transmitter
-	ret			; and return
-k2:	in	a,(SER1+_IER)
-	res	1,a		; disable TX interrupts
+	call	refil2		; else refill transmitter FIFO
+	ret	z		; return if nothing sent
+	in	a,(SER1+_IER)
+	set	1,a		; else (re)enable TX interrupts
 	out	(SER1+_IER),a
 	ret
 
 kick3:	iopage	SERP
-	in	a,(SER2+_IER)
-	set	1,a		; (re)enable TX interrupts
-	out	(SER2+_IER),a
 	in	a,(SER2+_LSR)
-	bit	6,a		; check transmitter empty bit
+	bit	5,a		; check transmitter empty bit
 	ret	z		; still transmitting, return
-	di
-	ld	ix,(iy+UX.XQ)
-	call	qget		; anything in transmitter queue?
-	ei
-	jr	c,k3		; branch if not
-	out	(SER2+_THR),a	; else send char to restart transmitter
-	ret			; and return
-k3:	in	a,(SER2+_IER)
-	res	1,a		; disable TX interrupts
+	call	refil3		; else refill transmitter FIFO
+	ret	z		; return if nothing sent
+	in	a,(SER2+_IER)
+	set	1,a		; else (re)enable TX interrupts
 	out	(SER2+_IER),a
 	ret
 
 kick4:	iopage	SERP
+	in	a,(SER3+_LSR)
+	bit	5,a		; check transmitter empty bit
+	ret	z		; still transmitting, return
+	call	refil4		; else refill transmitter FIFO
+	ret	z		; return if nothing sent
+	in	a,(SER3+_IER)
+	set	1,a		; else (re)enable TX interrupts
+	out	(SER3+_IER),a
+	ret
+
+; TT1..4 output fork process: refill transmitter FIFO.
+
+oproc1:	iopage	SERP
+	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	bit	U2.XOF,(iy+UX.MOD+1)
+	ret	nz		; return if XOFF bit is set
+	call	refil1		; refill transmitter FIFO
+	jp	z,chkend	; end output operation if nothing sent
+	in	a,(SER0+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER0+_IER),a
+	ret
+
+refil1:	ld	b,16
+	ld	c,0
+rf11:	push	bc
+	call	nextch		; anything (else) to send?
+	pop	bc
+	jr	c,rf12		; branch if not
+	out	(SER0+_THR),a	; else send char to transmitter FIFO
+	inc	c
+	djnz	rf11
+rf12:	ld	a,c
+	or	a		; anything sent?
+	ret
+
+oproc2:	iopage	SERP
+	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	bit	U2.XOF,(iy+UX.MOD+1)
+	ret	nz		; return if XOFF bit is set
+	call	refil2		; refill transmitter FIFO
+	jp	z,chkend	; end output operation if nothing sent
+	in	a,(SER1+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER1+_IER),a
+	ret
+
+refil2:	ld	b,16
+	ld	c,0
+rf21:	push	bc
+	call	nextch		; anything (else) to send?
+	pop	bc
+	jr	c,rf22		; branch if not
+	out	(SER1+_THR),a	; else send char to transmitter FIFO
+	inc	c
+	djnz	rf21
+rf22:	ld	a,c
+	or	a		; anything sent?
+	ret
+
+oproc3:	iopage	SERP
+	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	bit	U2.XOF,(iy+UX.MOD+1)
+	ret	nz		; return if XOFF bit is set
+	call	refil3		; refill transmitter FIFO
+	jp	z,chkend	; end output operation if nothing sent
+	in	a,(SER2+_IER)
+	set	1,a		; (re)enable TX interrupts
+	out	(SER2+_IER),a
+	ret
+
+refil3:	ld	b,16
+	ld	c,0
+rf31:	push	bc
+	call	nextch		; anything (else) to send?
+	pop	bc
+	jr	c,rf32		; branch if not
+	out	(SER2+_THR),a	; else send char to transmitter FIFO
+	inc	c
+	djnz	rf31
+rf32:	ld	a,c
+	or	a		; anything sent?
+	ret
+
+oproc4:	iopage	SERP
+	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	bit	U2.XOF,(iy+UX.MOD+1)
+	ret	nz		; return if XOFF bit is set
+	call	refil4		; refill transmitter FIFO
+	jp	z,chkend	; end output operation if nothing sent
 	in	a,(SER3+_IER)
 	set	1,a		; (re)enable TX interrupts
 	out	(SER3+_IER),a
-	in	a,(SER3+_LSR)
-	bit	6,a		; check transmitter empty bit
-	ret	z		; still transmitting, return
-	di
-	ld	ix,(iy+UX.XQ)
-	call	qget		; anything in transmitter queue?
-	ei
-	jr	c,k4		; branch if not
-	out	(SER3+_THR),a	; else send char to restart transmitter
-	ret			; and return
-k4:	in	a,(SER3+_IER)
-	res	1,a		; disable TX interrupts
-	out	(SER3+_IER),a
+	ret
+
+refil4:	ld	b,16
+	ld	c,0
+rf41:	push	bc
+	call	nextch		; anything (else) to send?
+	pop	bc
+	jr	c,rf42		; branch if not
+	out	(SER3+_THR),a	; else send char to transmitter FIFO
+	inc	c
+	djnz	rf41
+rf42:	ld	a,c
+	or	a		; anything sent?
 	ret
 
 ;-----------------------------------------------------------------------
@@ -1989,20 +2072,10 @@ tt1int:	in	a,(SER0+_LSR)
 	jr	nz,tt1rx	; branch if yes
 	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
-	bit	U2.XOF,(iy+UX.MOD+1)
-	jr	nz,tx11		; stop output if XOFF bit is set
-	ld	ix,tt1xq
-	call	qget		; get next char to send
-	jr	c,tx11		; jump if no more chars
-	out	(SER0+_THR),a	; else send char
-	call	qsize
-	cp	16		; time to refill queue?
-	jr	c,tx12		; yes
-	ret	nc		; no, return
-tx11:	in	a,(SER0+_IER)
+	in	a,(SER0+_IER)
 	res	1,a		; disable further TX interrupts
-	out	(SER0+_IER),a	;  or TX will keep interrupting
-tx12:	jp	ofpq		; setup process to refill queue
+	out	(SER0+_IER),a
+	jp	ofpq		; and schedule fork process to refill FIFO
 tt1rx:	in	a,(SER0+_RHR)	; fetch char
 	ld	c,a
 	ld	ix,tt1iq
@@ -2010,27 +2083,18 @@ tt1rx:	in	a,(SER0+_RHR)	; fetch char
 	in	a,(SER0+_LSR)	; check if more available
 	bit	0,a
 	jr	nz,tt1rx	; loop until rx buffer empty
-	jp	ifpq		; setup input fork process and return
+	call	ifpq		; setup input fork process and return
+	jr	tt1int
 
 tt2int:	in	a,(SER1+_LSR)
 	bit	0,a		; RX data available?
 	jr	nz,tt2rx	; branch if yes
 	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
-	bit	U2.XOF,(iy+UX.MOD+1)
-	jr	nz,tx21		; stop output if XOFF bit is set
-	ld	ix,tt2xq
-	call	qget		; get next char to send
-	jr	c,tx21		; jump if no more chars
-	out	(SER1+_THR),a	; else send char
-	call	qsize
-	cp	16		; time to refill queue?
-	jr	c,tx22		; yes
-	ret	nc		; no, return
-tx21:	in	a,(SER1+_IER)
+	in	a,(SER1+_IER)
 	res	1,a		; disable further TX interrupts
-	out	(SER1+_IER),a	;  or TX will keep interrupting
-tx22:	jp	ofpq		; setup process to refill queue
+	out	(SER1+_IER),a
+	jp	ofpq		; and schedule fork process to refill FIFO
 tt2rx:	in	a,(SER1+_RHR)	; fetch char
 	ld	c,a
 	ld	ix,tt2iq
@@ -2038,27 +2102,18 @@ tt2rx:	in	a,(SER1+_RHR)	; fetch char
 	in	a,(SER1+_LSR)	; check if more available
 	bit	0,a
 	jr	nz,tt2rx	; loop until rx buffer empty
-	jp	ifpq		; setup input fork process and return
+	call	ifpq		; setup input fork process and return
+	jr	tt2int
 
 tt3int:	in	a,(SER2+_LSR)
 	bit	0,a		; RX data available?
 	jr	nz,tt3rx	; branch if yes
-	bit	5,a		; TX FIFO full?
-	ret	z		; return if yes
-	bit	U2.XOF,(iy+UX.MOD+1)
-	jr	nz,tx31		; stop output if XOFF bit is set
-	ld	ix,tt3xq
-	call	qget		; get next char to send
-	jr	c,tx31		; jump if no more chars
-	out	(SER2+_THR),a	; else send char
-	call	qsize
-	cp	16		; time to refill queue?
-	jr	c,tx32		; yes
-	ret	nc		; no, return
-tx31:	in	a,(SER2+_IER)
+	bit	5,a		; TX FIFO empty?
+	ret	z		; return if not
+	in	a,(SER2+_IER)
 	res	1,a		; disable further TX interrupts
-	out	(SER2+_IER),a	;  or TX will keep interrupting
-tx32:	jp	ofpq		; setup process to refill queue
+	out	(SER2+_IER),a
+	jp	ofpq		; and schedule fork process to refill FIFO
 tt3rx:	in	a,(SER2+_RHR)	; fetch char
 	ld	c,a
 	ld	ix,tt3iq
@@ -2066,27 +2121,18 @@ tt3rx:	in	a,(SER2+_RHR)	; fetch char
 	in	a,(SER2+_LSR)	; check if more available
 	bit	0,a
 	jr	nz,tt3rx	; loop until rx buffer empty
-	jp	ifpq		; setup input fork process and return
+	call	ifpq		; setup input fork process ;;;and return
+	jr	tt3int
 
 tt4int:	in	a,(SER3+_LSR)
 	bit	0,a		; RX data available?
 	jr	nz,tt4rx	; branch if yes
 	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
-	bit	U2.XOF,(iy+UX.MOD+1)
-	jr	nz,tx41		; stop output if XOFF bit is set
-	ld	ix,tt4xq
-	call	qget		; get next char to send
-	jr	c,tx41		; jump if no more chars
-	out	(SER3+_THR),a	; else send char
-	call	qsize
-	cp	16		; time to refill queue?
-	jr	c,tx42		; yes
-	ret	nc		; no, return
-tx41:	in	a,(SER3+_IER)
+	in	a,(SER3+_IER)
 	res	1,a		; disable further TX interrupts
-	out	(SER3+_IER),a	;  or TX will keep interrupting
-tx42:	jp	ofpq		; setup process to refill queue
+	out	(SER3+_IER),a
+	jp	ofpq		; and schedule fork process to refill FIFO
 tt4rx:	in	a,(SER3+_RHR)	; fetch char
 	ld	c,a
 	ld	ix,tt4iq
@@ -2094,7 +2140,8 @@ tt4rx:	in	a,(SER3+_RHR)	; fetch char
 	in	a,(SER3+_LSR)	; check if more available
 	bit	0,a
 	jr	nz,tt4rx	; loop until rx buffer empty
-	jp	ifpq		; setup input fork process and return
+	call	ifpq		; setup input fork process and return
+	jr	tt4int
 
 ;-----------------------------------------------------------------------
 ; Queue handling routines
@@ -2259,10 +2306,6 @@ tt1oq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
 
-tt1xq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
 tt2iq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
@@ -2272,10 +2315,6 @@ tt2tq:	ds	1	; ipos
 	ds	32	; buf
 
 tt2oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt2xq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
 
@@ -2291,10 +2330,6 @@ tt3oq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
 
-tt3xq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
 tt4iq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
@@ -2304,10 +2339,6 @@ tt4tq:	ds	1	; ipos
 	ds	32	; buf
 
 tt4oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt4xq:	ds	1	; ipos
 	ds	1	; opos
 	ds	32	; buf
 
