@@ -865,7 +865,7 @@ Lopt:	call	GetHex		; L.oad address
 	ld	(LoadAddr),hl	; Set hex
 	ret
 
-Mopt:	call	GetHex		; M.emory size
+Mopt:	call	GetDec		; M.emory size
 	jp	c,CmdError	; error if not valid
 	ld	(MemSize),hl	; Set hex
 	ret
