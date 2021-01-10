@@ -87,7 +87,9 @@ FWRBLK:	push	hl
 	jr	z,upd1		; branch if same (on last block)
 	ld	a,0
 	jr	nc,upd2		; return if within file limits
-upd1:	call	FRATTR		; else update file attributes (get new size)
+upd1:	xor	a
+	bit	FM.DV,(ix+FC.MODE) ; device mode?
+	call	z,FRATTR	; update file attributes if not (get new size)
 upd2:	pop	hl
 	pop	de
 	pop	bc
