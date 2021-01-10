@@ -38,7 +38,7 @@ files = 8192 # max number of files
 seek = 65536 # offset to start of partition in CF card
 
 # Compile a system image, boot sector, mcr, help and utilities
-all: update-incs system filesys libs cli utils progdev test games
+all: update-incs system filesys libs cli utils progdev test games kermit
 
 # Build the Linux tools
 linux-tools:
@@ -142,6 +142,11 @@ progdev: libs system
 	@cp -u libs/syslib/syslib.lib progdev/lbr
 	@cp -u libs/fcslib/fcslib.lib progdev/lbr
 	@(cd progdev; ${MAKE} all)
+
+# Compile Kermit
+kermit: libs system
+	@cp -u libs/syslib/syslib.lib kermit
+	@(cd kermit; ${MAKE} all)
 
 # Compile a few test programs
 test: libs system
@@ -371,10 +376,20 @@ copy-games: games
 	$(VOL180) $(disk) < copy.cmd
 	@rm copy.cmd
 
+# Copy Kermit to the disk image.
+copy-kermit: kermit
+	@echo "cd system" > copy.cmd
+	@echo "delete kermit.tsk" >> copy.cmd
+	@echo "import kermit/kermit.tsk kermit.tsk /c" >> copy.cmd
+	@echo "dir" >> copy.cmd
+	@echo "quit" >> copy.cmd
+	$(VOL180) $(disk) < copy.cmd
+	@rm copy.cmd
+
 # Copy everything to the disk image.
 copy-all: copy-system copy-utils copy-help \
           copy-progdev copy-basic copy-test \
-          copy-games
+          copy-games copy-kermit
 
 # Configure system
 sysvmr-old:
@@ -401,4 +416,4 @@ sysvmr:
 
 # Copy image to compact flash (Z280RC)
 cf-copy:
-	dd if=$(disk) of=/dev/sdf conv=swab bs=512 seek=$(seek)
+	dd if=$(disk) of=/dev/sdc conv=swab bs=512 seek=$(seek)
