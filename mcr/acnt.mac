@@ -1698,6 +1698,7 @@ pwbad:	ld	hl,mspwd6
 
 pcanc:	ld	c,CR
 	call	PUTCH
+	ld	hl,0
 	ld	a,E.ABOP
 	call	SYSERR
 	jp	abort
