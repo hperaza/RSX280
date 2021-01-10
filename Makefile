@@ -176,6 +176,7 @@ clean:
 		(cd $$i; ${MAKE} clean) ; \
 	done
 	@(cd progdev; ${MAKE} clean)
+	@(cd kermit; ${MAKE} clean)
 	@(cd games; ${MAKE} clean)
 	@(cd test; ${MAKE} clean)
 	rm -f *~ *.bak *.rel *.lib *.sub *.sym *.sys *.tsk *.map
