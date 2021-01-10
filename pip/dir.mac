@@ -426,7 +426,7 @@ df0:	call	FRDBLK		; read first block
 	ld	hl,SRCBUF+BMHSZ	; skip header
 	ld	(bufptr),hl
 	ld	hl,(bufcnt)
-	ld	bc,-16
+	ld	bc,-BMHSZ
 	add	hl,bc
 	ld	(bufcnt),hl
 
@@ -489,7 +489,7 @@ df61:	rr	c		; shift mask, note CY clear from above
 	or	l		; all bits counted?
 	jr	nz,df1		; loop if not
 
-df7:	call	accst		; update usage statistics
+	call	accst		; update usage statistics
 	ld	hl,(frebks)
 	ld	a,(frebks+2)
 	ld	b,a
@@ -691,12 +691,9 @@ ino0:	call	FRDBLK		; read first block
 	ld	hl,SRCBUF+BMHSZ	; skip header
 	ld	(bufptr),hl
 	ld	hl,(bufcnt)
-	ld	bc,-16
+	ld	bc,-BMHSZ
 	add	hl,bc
 	ld	(bufcnt),hl
-
-	ld	hl,ctgsz
-	call	CLR24		; clear contiguous block count
 
 	ld	c,0		; bit mask in C
 	ld	hl,0		; free inode count in HL
