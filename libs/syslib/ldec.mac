@@ -19,7 +19,7 @@
 ;                                                                      ;
 ;***********************************************************************
 
-;  Display long number in registers HLDE as decimal, A = filler.                                         ;
+;  Display long number in registers HLDE as decimal, A = filler.
 
 	.Z80
 
