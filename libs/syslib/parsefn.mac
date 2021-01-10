@@ -23,6 +23,10 @@
 
 	include	FCB.INC
 
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+
 	cseg
 
 	public	PFN,PDN,INIFCB
@@ -412,9 +416,11 @@ isdelim:
 	ret	z
 	cp	'|'
 	ret	z
-iseol:	cp	0Dh
+	cp	CR
 	ret	z
-	cp	0Ah
+	cp	LF
+	ret	z
+	cp	ESC
 	ret	z
 	or	a
 	ret
