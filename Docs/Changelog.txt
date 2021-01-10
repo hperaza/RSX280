@@ -6140,3 +6140,162 @@ BUGS:
 - HEL: on login, display UIC in addition to user name.
 
 
+19/10/20
+
+- ACNT, PWD mode: prevent displaying garbage in error message if the operation
+  is aborted via ^Z.
+
+
+27/12/20
+
+- Porting CP/M Kermit-80 V4.11 to RSX180:
+  * code converted to Z80.
+  * replaced call to MOVER routine by Z80 LDIR instruction.
+  * null char now marks the end of strings, so we can use SYSLIB routines.
+
+
+28/12/20
+
+- More work on the Kermit-80 port:
+  * modules are now assembled separately, with split code and data segments
+    and no longer as a monolithic block in an absolute segment (easier to
+    link/test different versions of the modules).
+
+
+30/12/20
+
+- More work on Kermit:
+  * added '@' command as synonym for 'TAKE', for consistency with RSX180/280
+    command files and for compatibility with Kermit-11.
+  * using SYSLIB for terminal I/O.
+  * main loop already working: prompt is displayed, commands can be entered,
+    '?' help works, but remote connections are not yet implemented.
+  * faster STASPD and FNDKYW routines.
+  * replaced STACURD (show current disk) and STUSR (show current user)
+    routines by a single STACWD (show current device and directory).
+  * SHOW command now working, almost all settings are correct.
+  * display host name on startup banner, and also when transferring a file.
+
+
+31/12/20
+
+- More work on Kermit:
+  * rewriting file I/O routines.
+  * directory display is already working.
+
+- ZSM4 for CP/M: fixed a bug in the date conversion routines that caused
+  the program to get stuck in an infinite loop every Dec 31st.
+
+
+01/01/21
+
+- More work on Kermit:
+  * added 'CD' command to change current device and dir (not yet implemented)
+  * changed 'SET DEFAULT-DISK' to 'SET DEFAULT', does the same as the 'CD'
+    command.
+  * removed the CP/M-specific 'SET USER' command.
+  * added 'SET LINE' as synonym for 'SET PORT' for compatibility with
+    Kermit-11.
+  * fixed handling of control chars in command line (entering/deleting control
+    chars screwed up the display)
+  * filename parsing with the original TOPS-20-like filename completion almost
+    done (a few bugs still remaining).
+
+- SYSLIB PFN: added ESC as valid delimiter.
+
+
+02/01/20
+
+- More work on Kermit:
+  * CHRCNT is now a 16-bit variable that contains the cumulative number of
+    chars stored in the big file I/O buffer, SECCNT and NXTBUF are no longer
+    necessary.
+  * TYPE command now works.
+  * ERASE and RENAME commands now working.
+  * added DELETE command as synonym for ERASE.
+  * changed the SET COLLISION command (does not make much sense for RSX180
+    anyway): removed the BACKUP option, and changed RENAME to NEW-VERSION.
+
+
+03/01/20
+
+- More work on Kermit:
+  * CD command: validate device before setting it as default. Allow specifying
+    directory as '[dir]' as well as just 'dir'.
+  * more work on file I/O: code to open a file in append mode. COPY command
+    now working.
+  * writing to log file now works.
+  * Log the characters entered at the terminal when LOCAL-ECHO is ON.
+  * the SET LINE command now sets the comm device, and ensures it is a TTY.
+  * added simple, unbuffered comm line (modem) I/O routines. Linux Kermit
+    can already connect to the RSX180 Kermit, but file transfers fail.
+
+
+04/01/20
+
+- More work on Kermit:
+  * buffering modem I/O improves reliability and performance a lot.
+  * disable TAC character by default.
+  * first successful Kermit file transfer!!!
+  * Remote server commands also working (e.g. REMOTE DIR, FINISH, etc.)
+
+
+05/01/20
+
+- More work on Kermit:
+  * reading commands from a TAKE file is now working.
+  * command tail processing done.
+  * CMKEYW routine: added a workaround for the '@' command so the space
+    after it is no longer required. This makes the syntax consistent with
+    RSX180 conventions.
+  * compute number of file buffers from amount of available memory, but
+    limit initially the size to 8K.
+  * tested under RSX280, 19200 baud: works OK if the PC Kermit keeps packet
+    size is kept below 64. Increasing the read buffer to 128 bytes solved
+    the problem.
+  * implemented long directory display, borrowing code from good'ol PIP :)
+
+
+06/01/21
+
+- More work on Kermit:
+  * DIR command: display summary (number of files and free space) at the
+    end of the listing.
+  * SET DIRECTORY-FILE_SIZE ON/OFF command changed to SET DIRECTORY-LISTING
+    LONG/BRIEF.
+  * the PAUSE command now uses the .MRKT system call for precise delays.
+
+
+08/01/21
+
+- More work on Kermit:
+  * small SDATA routine optimizations (keep pointers in regs, not in memory
+    variables)
+  * removed unused variables.
+  * for auto-completion, lowercase the keyword if the user typed the first
+    part in lowercase.
+  * when typing a command, treat the TAB key as ESC (auto-complete keyword),
+    but when reading the command from a TAKE file, treat the TAB as a blank.
+  * use the TC.ANS terminal characteristics byte to select between VT100 and
+    VT52 screen control sequences.
+  * name changed to Kermit-180 to avoid confusion with the CP/M version.
+
+
+09/01/21
+
+- More work on Kermit:
+  * more precise timeout control for the INPUT command.
+  * the receive packet routine now times out after the given RTIME seconds.
+  * purge modem input on timeout.
+
+- FCSLIB FWRBLK: don't call FRATTR to update file attributes if file opened
+  in device mode. This fixes an spurious ZSM4 error message when directing
+  the listing output to the terminal.
+
+- ZSM4: added a /Iddn:[dir] switch to the RSX180/280 version to specify an
+  alternate include file search path.
+
+- TKB bug fix: the RSX180 version was parsing the argument to the /EXTTSK
+  switch as hexadecimal, when it should have been decimal. That resulted
+  in task image files that requested way more memory than necessary.
+
