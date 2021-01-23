@@ -121,24 +121,16 @@ int create_dir(char *filename, char group, char user) {
   file_seek(mdfcb, 0L);
   for (;;) {
     cpos = file_pos(mdfcb);
-    if (file_read(mdfcb, dirent, 16) == 16) {
-      if (GET_INT16(dirent, 0) == 0) {
-        /* free dir entry */
-        if (!found) {
-          fpos = cpos;
-          found = 1;
-        }
-      } else {
-        if (match(dirent, fname, ext, 0)) {
-          fprintf(stderr, "Directory already exists\n");
-          return 0;
-        }
-      }
-    } else {
-      fpos = cpos;
-      break; /* at the end of directory */
+    if (file_read(mdfcb, dirent, 16) != 16) break; /* at end of directory */
+    if (GET_INT16(dirent, 0) == 0) {
+      if (!found) fpos = cpos;  /* remember this free dir entry */
+      found = 1;
+    } else if (match(dirent, fname, ext, 0)) {
+      fprintf(stderr, "Directory already exists\n");
+      return 0;
     }
   }
+  if (!found) fpos = cpos;  /* if no free entry dir found, create one at the end */
 
   time(&now);
   
