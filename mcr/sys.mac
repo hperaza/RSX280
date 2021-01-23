@@ -36,6 +36,7 @@
 	include	AST.INC
 	include	QIO.INC
 	include	CLKQ.INC
+	include	BDRATES.INC
 	include	ERRORS.INC
 
 CR	equ	0Dh
@@ -436,7 +437,7 @@ fcmd1:	ld	a,(hl)
 	ld	b,a
 	ld	a,(de)
 	cp	b		; match?
-	jp	nz,fcmd2	; jump if not
+	jr	nz,fcmd2	; jump if not
 	or	a		; end of both strings?
 	ld	a,c
 	ret	z		; return if yes, we have a match
@@ -477,10 +478,6 @@ actopt:	ld	de,(lnptr)
 	inc	de
 	ld	(lnptr),de
 	call	getcmd
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '
-	jp	z,CMDERR
 	ld	hl,actswt
 	call	fndcmd		; search for switch name in table
 	or	a
@@ -1276,10 +1273,6 @@ altopt:	ld	de,(lnptr)
 	inc	de
 	ld	(lnptr),de
 	call	getcmd
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '
-	jp	z,CMDERR
 	ld	hl,altswt
 	call	fndcmd		; search for switch name in table
 	or	a
@@ -1469,10 +1462,6 @@ aopt1:	ld	de,(lnptr)
 aopt2:	inc	de
 	ld	(lnptr),de
 	call	getcmd
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '
-	jp	z,CMDERR
 	ld	hl,asnswt
 	call	fndcmd		; search for switch name in table
 	or	a
@@ -1983,14 +1972,10 @@ shdvs:	ex	de,hl
 	inc	de
 	ld	(lnptr),de
 	call	getcmd		; get switch name
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '
-	jp	z,CMDERR	; cannot be empty
 	ld	hl,devswt
 	call	fndcmd		; find switch
 	or	a
-	jp	z,CMDERR
+	jp	z,CMDERR	; error if empty
 	cp	0FFh
 	jp	z,CMDERR
 	cp	2+1		; ensure valid
@@ -3070,12 +3055,10 @@ doset:	ld	de,(lnptr)
 	call	chkneg		; check for NO or -
 	ld	(lnptr),de
 	call	getcmd
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '
-	jp	z,CMDERR	; switch name can't be empty
 	ld	hl,setopt
 	call	fndcmd		; search for switch name in table
+	or	a
+	jp	z,CMDERR	; switch name can't be empty
 	dec	a
 	cp	20		; ensure value is in range
 	jp	nc,CMDERR
@@ -3100,7 +3083,7 @@ msansi:	db	'ANSI',0
 msslav:	db	'SLAVE',0
 mspriv:	db	'PRIV',0
 mspub:	db	'PUB',0
-	db	'SPEED',0
+msspd:	db	'SPEED',0
 	db	'DIR',0
 	db	'HOST',0
 	db	'NODE',0
@@ -3114,7 +3097,7 @@ msswpr:	db	'SWPR',0
 	db	0
 
 setfn:	dw	stbro,stecho,stlowr,stcrt,stansi,stlogn,stslav
-	dw	stpriv,stpub,stiosp,stdir,sthost,sthost,stpool
+	dw	stpriv,stpub,stspd,stdir,sthost,sthost,stpool
 	dw	stlog,strndc,strndh,strndl,stswpc,stswpr
 
 stecho:	; SET /ECHO
@@ -3144,8 +3127,8 @@ stecho:	; SET /ECHO
 	bit	DV.TTY,(ix+U.CW); unit is a terminal?
 	jr	z,ster2		; error if not
 	ld	l,TC.NEC	; L = characteristic bit number
-	ld	a,(negsw)
-	ld	h,a		; H = state
+setn:	ld	a,(negsw)
+setv:	ld	h,a		; H = state
 	ld	de,(tmpdv2)
 	ld	a,(tmpdv2+2)
 	ld	c,a		; DE-C = terminal name
@@ -3161,6 +3144,8 @@ ster1:	call	SYSERR
 ster2:	ld	hl,errnt
 	call	ERRMCR
 	jr	ste2
+
+errnt:	db	'Not a terminal device',0
 
 shecho:	xor	a
 	set	TC.NEC,a
@@ -3205,7 +3190,7 @@ stlowr:	; SET /LOWER
 	jp	c,SYSERR
 	ld	ix,($CTCB)	; needed for TI:
 	KCALL	$FNDEV		; get UCB address
-	jr	c,stle1
+	jp	c,ster1
 	push	hl
 	pop	ix		; IX = UCB address
 	ex	de,hl
@@ -3214,29 +3199,14 @@ stlowr:	; SET /LOWER
 	ld	a,c
 	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
 	call	CHKTI		;  must be privileged
-	jr	c,stle1
+	jp	c,ster1
 	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jr	z,stle2		; error if not
+	jp	z,ster2		; error if not
 	ld	l,TC.SMR	; L = characteristic bit number
-stlw1:	ld	a,(negsw)
+setp:	ld	a,(negsw)
 	cpl
 	and	01h
-	ld	h,a		; H = state
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a		; DE-C = terminal name
-	call	TTSET
-	jr	c,stle1
-stlw2:	ld	c,0
-	SC	.SUPER
-	ret
-
-stle1:	call	SYSERR
-	jr	stlw2
-
-stle2:	ld	hl,errnt
-	call	ERRMCR
-	jr	stlw2
+	jp	setv		; finish via common code
 
 shlowr:	xor	a
 	set	TC.SMR,a
@@ -3260,7 +3230,7 @@ stcrt:	; SET /CRT
 	jp	c,SYSERR
 	ld	ix,($CTCB)	; needed for TI:
 	KCALL	$FNDEV		; get UCB address
-	jr	c,stle1
+	jp	c,ster1
 	push	hl
 	pop	ix		; IX = UCB address
 	ex	de,hl
@@ -3269,11 +3239,11 @@ stcrt:	; SET /CRT
 	ld	a,c
 	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
 	call	CHKTI		;  must be privileged
-	jr	c,stle1
+	jp	c,ster1
 	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jr	z,stle2		; error if not
+	jp	z,ster2		; error if not
 	ld	l,TC.SCP	; L = characteristic bit number
-	jr	stlw1		; continue via common code
+	jr	setp		; continue via common code
 
 shcrt:	xor	a
 	set	TC.SCP,a
@@ -3297,7 +3267,7 @@ stansi:	; SET /ANSI
 	jp	c,SYSERR
 	ld	ix,($CTCB)	; needed for TI:
 	KCALL	$FNDEV		; get UCB address
-	jp	c,stle1
+	jp	c,ster1
 	push	hl
 	pop	ix		; IX = UCB address
 	ex	de,hl
@@ -3306,11 +3276,11 @@ stansi:	; SET /ANSI
 	ld	a,c
 	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
 	call	CHKTI		;  must be privileged
-	jp	c,stle1
+	jp	c,ster1
 	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,stle2		; error if not
+	jp	z,ster2		; error if not
 	ld	l,TC.ANS	; L = characteristic bit number
-	jp	stlw1		; continue via common code
+	jp	setp		; continue via common code
 
 shansi:	xor	a
 	set	TC.ANS,a
@@ -3338,16 +3308,7 @@ stbro:	; SET /BRO
 	SC	.SUPER
 	jp	c,SYSERR
 	ld	l,TC.NBR	; L = characteristic bit number
-	ld	a,(negsw)
-	ld	h,a		; H = state
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a		; DE-C = terminal name
-	call	TTSET
-	jp	c,stle1
-stbr2:	ld	c,0
-	SC	.SUPER
-	ret
+	jp	setn		; finish via common code
 
 shbro:	xor	a
 	set	TC.NBR,a
@@ -3515,7 +3476,7 @@ stslav:	; SET /SLAVE
 	jp	c,SYSERR
 	ld	ix,($CTCB)	; needed for TI:
 	KCALL	$FNDEV		; get UCB address
-	jr	c,stsle1
+	jp	c,ster1
 	push	hl
 	pop	ix		; IX = UCB address
 	ex	de,hl
@@ -3524,31 +3485,11 @@ stslav:	; SET /SLAVE
 	ld	a,c
 	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
 	call	CHKTI		;  must be privileged
-	jr	c,stsle1
+	jp	c,ster1
 	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jr	z,stsle2	; error if not
+	jp	z,ster2		; error if not
 	ld	l,TC.SLV	; L = characteristic bit number
-	ld	a,(negsw)
-	cpl
-	and	01h
-	ld	h,a		; H = state
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a		; DE-C = terminal name
-	call	TTSET
-	jr	c,stsle1
-stslv2:	ld	c,0
-	SC	.SUPER
-	ret
-
-stsle1:	call	SYSERR
-	jr	stslv2
-
-stsle2:	ld	hl,errnt
-	call	ERRMCR
-	jr	stslv2
-
-errnt:	db	'Not a terminal device',0
+	jp	setp		; finish via common code
 
 shslav:	xor	a
 	set	TC.SLV,a
@@ -3661,13 +3602,97 @@ stl2:	ld	c,0
 	SC	.SUPER
 	ret
 
-stiosp:	; SET /SPEED
+stspd:	; SET /SPEED
 
-	ld	a,(negsw)
+	ld	a,(negsw)	; can't be negated
 	or	a
 	jp	nz,CMDERR
-	;...
-	jp	CMDERR
+	call	chkeq		; '=' present?
+	jr	nz,shtisp	; no, display speed of user's terminal TI:
+	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	jp	c,CMDERR
+	push	bc
+	ld	c,1
+	SC	.SUPER
+	pop	bc
+	jp	c,SYSERR
+	ld	ix,($CTCB)	; needed for TI:
+	KCALL	$FNDEV		; get UCB address
+	jp	c,ster1
+	push	hl
+	pop	ix		; IX = UCB address
+	ex	de,hl
+	KCALL	$UCBDN
+	ld	(tmpdv2),de
+	ld	a,c
+	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
+	call	CHKTI		;  must be privileged
+	jp	c,ster1
+	bit	DV.TTY,(ix+U.CW); unit is a terminal?
+	jp	z,ster2		; error if not
+	call	getcmd
+	ld	hl,bdrtbl	; address of baud rate table
+	call	fndcmd		; search speed in table
+	or	a		; no speed specified?
+	jr	z,shspd0	; then display speed for the specified terminal
+	cp	S.115K2+1
+	jp	nc,CMDERR	; ensure value is in range
+	ld	l,TC.SPD	; L = characteristic name
+	jp	setv		; continue via common code
+
+shspd0:	ld	c,0
+	SC	.SUPER
+	jr	shspd
+
+shtisp:	ld	hl,'TI'
+	ld	(tmpdv2),hl
+	xor	a
+	ld	(tmpdv2+2),a
+shspd:	ld	c,LF
+	call	PUTCH
+	ld	hl,msspd
+	call	PUTSTR
+	ld	c,'='
+	call	PUTCH
+	ld	hl,(tmpdv2)
+	ld	c,l
+	call	PUTCH		; show physical device name
+	ld	c,h
+	call	PUTCH
+	ld	a,(tmpdv2+2)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	;...get speed from UX.SPD or U.CW2?
+	ld	c,CR
+	jp	PUTCH
+
+bdrtbl:	db	'50',0
+	db	'75',0
+	db	'110',0
+	db	'134',0
+	db	'150',0
+	db	'200',0
+	db	'300',0
+	db	'600',0
+	db	'1200',0
+	db	'1800',0
+	db	'2000',0
+	db	'2400',0
+	db	'3600',0
+	db	'4800',0
+	db	'7200',0
+	db	'9600',0
+	db	'14400',0
+	db	'19200',0
+	db	'28800',0
+	db	'38400',0
+	db	'57600',0
+	db	'76800',0
+	db	'115200',0
+	db	0
 
 stdir:	; SET /DIR
 
@@ -4451,7 +4476,7 @@ CHKPRV:	ld	hl,lcbbuf
 	ret
 
 ; Set single terminal characteristic. Called with terminal name in DE-C,
-; L = characteristic (bit number), H = state.
+; L = characteristic code, H = value.
 
 TTSET:	ld	(ttchr),hl	; store characteristic and state
 	ld	b,1
