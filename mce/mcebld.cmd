@@ -3,7 +3,7 @@
 .;
         .Sets VERS 	"V4.29"
 .;
-.;	Port of the DECUS RSX-11M MCE version V4.28
+.;	Port of the DECUS RSX-11M MCE version V4.28, (C) Hector Peraza, 2018
 .;	Original MCE is Copyright (C) 1987-1998 J. H. Hamakers,
 .;	pAkUiT International
 .;
@@ -585,6 +585,7 @@
 .570$:
 	.IfNdf $HLPDR	.Sets	$HLPDR "[HELP]"
 	.Asks [::$HLPDR] $HLPDR MCEBLD -- What is your Help Directory? [D:'$HLPDR']: 
+.600$:
 ;
 .580$:
 ;				*****
@@ -1156,7 +1157,7 @@
         .Data ; MCE Macro build file
         .Data ; Created on '<Date>' '<Time>' by MCEBLD.CMD Version: 'VERS'
         .Data ;
-        .Data MCE,MCE='$SRC'
+        .Data MCE,MCE='$SRC'/ILB:[SYSTEM]
         .Close
         .Ift MCR 	PIP MCEASM.CMD/PU/NM
         .Iff MCR 	PURGE MCEASM.CMD
