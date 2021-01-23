@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.39'
+	ident	'2.40'
 
 	include	ICP.INC
 	include	SYSFN.INC

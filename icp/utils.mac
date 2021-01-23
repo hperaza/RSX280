@@ -63,7 +63,7 @@ atoi1:	ld	a,(de)
 	ret	nc
 	sub	'0'
 	push	bc
-	call	adddig		; note CY on overflow
+	call	adddig		; sets CY on overflow
 	pop	bc
 	inc	de
 	jr	nc,atoi1
