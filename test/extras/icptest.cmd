@@ -10,80 +10,86 @@
 ; 1a) Simple .SETT, .SETF, .SETN, .SETL, .SETS
 ;
 	.SETT LT
-; LT = 'LT' (expected T)
+	; LT = 'LT' (expected T)
 	.SETF LF
-; LF = 'LF' (expected F)
+	; LF = 'LF' (expected F)
 	.SETN N1 123
-; N1 = 'N1' (expected 123)
+	; N1 = 'N1' (expected 123)
 	.SETN N2 -456
-; N2 = 'N2%S' (expected -456)
-	.SETL LL T
-; LL = 'LL' (expected T)
-	.SETL LL F
-; LL = 'LL' (expected F)
+	; N2 = 'N2%S' (expected -456)
+	.SETL LL 1
+	; LL = 'LL' (expected T)
+	.SETL LL 0
+	; LL = 'LL' (expected F)
 	.SETS STR "A string"
-; STR = "'STR'" (expected "A string")
+	; STR = "'STR'" (expected "A string")
 ;
 ; 1b) .SETN, .SETL and .SETS with expressions
 ;
 	.SETN N1 2+3*5
-; N1 = 'N1' (expected 17)
+	; N1 = 'N1' (expected 17)
 	.SETN N2 2*3+5
-; N2 = 'N2' (expected 11)
+	; N2 = 'N2' (expected 11)
 	.SETN N3 (2+3)*5
-; N3 = 'N3' (expected 25)
+	; N3 = 'N3' (expected 25)
 	.SETN N4 N1-N3/5+N2
-; N4 = 'N4' (expected 23)
+	; N4 = 'N4' (expected 23)
+	.SETL L1 N1-N3/5+N2
+	; L1 = 'L1' (expected T)
+	.SETL L2 7&8
+	; L2 = 'L2' (expected F)
+	.SETL L3 7!8
+	; L3 = 'L3' (expected T)
 	.SETS STR STR+" with spaces"&"."
-; STR = "'STR'" (expected "A string with spaces.")
+	; STR = "'STR'" (expected "A string with spaces.")
 	.SETS QS "String with embedded ""quotes"""
-; QS = "'QS'" (expected "String with embedded "quotes"")
+	; QS = "'QS'" (expected "String with embedded "quotes"")
 ;
 ; 2a) .ASK, .ASKN and .ASKS without options
 ;
 	.ASK L
-; Answer: L = 'L'
+	; Answer: L = 'L'
 	.ASKN N
-; Answer: N = 'N'
+	; Answer: N = 'N'
 	.ASKS S
-; Answer: S = "'S'" <STRLEN>='<STRLEN>'
+	; Answer: S = "'S'" <STRLEN>='<STRLEN>'
 ;
 ; 2b) .ASK, .ASKN and .ASKS with prompt string
 ;
 	.ASK L Yes or No
-; Answer: L = 'L'
+	; Answer: L = 'L'
 	.ASKN N Enter a number
-; Answer: N = 'N'
+	; Answer: N = 'N'
 	.ASKS S Enter a string
-; Answer: S = "'S'" <STRLEN>='<STRLEN>'
+	; Answer: S = "'S'" <STRLEN>='<STRLEN>'
 ;
 ; 2c) .ASK, .ASKN and .ASKS with options
 ;
 	.SETN TMO 10
 	.ASK [L] L
-; Answer: L = 'L'
+	; Answer: L = 'L'
 	.ASK [<TRUE>:TMO] L Yes or No
-; Answer: L = 'L'
+	; Answer: L = 'L'
 	.SETN N 10
 	.ASKN [N:N+10:N+5:5] N Enter a number
-; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
+	; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
 	.ASKN [:::5] N Enter another number
-; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
+	; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
 	.ASKN [1:10] N And another
-; Answer: N = 'N'
+	; Answer: N = 'N'
 	.SETS DEFS "Default string"
 	.ASKS [10:20:DEFS:20] S Enter a string
-; Answer: S = "'S'" <STRLEN>='<STRLEN>'
+	; Answer: S = "'S'" <STRLEN>='<STRLEN>'
 	.ASKS [::"Hello"] S Enter another string
-; Answer: S = "'S'" <STRLEN>='<STRLEN>', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
+	; Answer: S = "'S'" <STRLEN>='<STRLEN>', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
 ;
 ; 3a) .GOTO test (forward): skip comment lines, nothing should be printed
 ;     between the vvvv and ^^^^ lines.
-; vvvv
+	; vvvv
 	.GOTO skip
-; THIS TEXT SHOULD NOT APPEAR
+	; THIS TEXT SHOULD NOT APPEAR
 .skip:
-; ^^^^
+	; ^^^^
 ;
 ; 3b) .GOTO test (backwards): print in a loop numbers from 1 to 10
 ;
@@ -97,28 +103,30 @@
 ;
 	.SETS cmd "TESTFILE IND,MCR,,LOA"
 	.PARSE cmd " ," file a1 a2 a3 a4 a5
-; "'cmd'" -> "'file'", "'a1'", "'a2'", "'a3'", "'a4'", "'a5'"  <STRLEN>='<STRLEN>'
+	; "'cmd'" -> "'file'", "'a1'", "'a2'", "'a3'", "'a4'", "'a5'"  <STRLEN>='<STRLEN>'
 	.PARSE "dy:[dir]myfile.ext;5" "[].;" dev dir file ext ver
-; dy:[dir]myfile.ext;5 => 'dev'['dir']'file'.'ext';'ver'  <STRLEN>='<STRLEN>'
-;   device    = 'dev'
-;   directory = 'dir'
-;   file name = 'file'
-;   extension = 'ext'
-;   version   = 'ver'
-;
+	; dy:[dir]myfile.ext;5 => 'dev'['dir']'file'.'ext';'ver'  <STRLEN>='<STRLEN>'
+	;   device    = 'dev'
+	;   directory = 'dir'
+	;   file name = 'file'
+	;   extension = 'ext'
+	;   version   = 'ver'
+	;
 	.SETS TM "'<TIME>'"
 	.PARSE TM ":" HH MM SS
-;   current time = 'TM' -> 'HH' hours, 'MM' minutes, 'SS' seconds
+	;   current time = 'TM' -> 'HH' hours, 'MM' minutes, 'SS' seconds
 ;
 ; 5) .INC and .DEC test
 ;
+	.ENABLE OVERFLOW
 	.ASKN n Enter a number
 	.SETN n1 n
 	.INC n
-; After increment N='n'
+	; After increment N='n'
 	.SETN n n1
 	.DEC n
-; After decrement N='n'
+	; After decrement N='n'
+	.DISABLE OVERFLOW
 ;
 ; 6) .GOSUB and .RETURN
 ;
@@ -131,12 +139,12 @@
 	.GOSUB sub2
 	.GOTO continue
 .sub1:
-; ***** on sub 1
+	; ***** on sub 1
 	.RETURN
 .sub2:
-; ***** on sub 2 before call to sub 1
+	; ***** on sub 2 before call to sub 1
 	.GOSUB sub1
-; ***** on sub 2 after call to sub 1
+	; ***** on sub 2 after call to sub 1
 	.RETURN
 .continue:
 ;
@@ -144,17 +152,17 @@
 ;
 	.ASKN n1 Enter first number
 	.ASKN n2 Enter second number
-;
+	;
 	.IF n1 = n2  ; 'n1' = 'n2'
 	.IF n1 < n2  ; 'n1' < 'n2'
 	.IF n1 > n2  ; 'n1' > 'n2'
 	.IF n1 <= n2 ; 'n1' <= 'n2'
 	.IF n1 >= n2 ; 'n1' >= 'n2'
 	.IF n1 <> n2 ; 'n1' <> 'n2'
-;
+	;
 	.ASKS s1 Enter first string
 	.ASKS s2 Enter second string
-;
+	;
 	.IF s1 = s2  ; 's1' = 's2'
 	.IF s1 <> s2 ; 's1' <> 's2'
 	.IF s1 > s2  ; 's1' > 's2'
@@ -200,33 +208,33 @@
 	.SETN num -10
 ; 8a) Numeric output
 ;
-;     Decimal (default):              >'num'<
-;     Decimal signed:                 >'num%S'<
-;     Hexadecimal:                    >'num%H'<
-;     Octal:                          >'num%O'<
-;     Left-justified:                 >'num%L10'<
-;     Right-justified:                >'num%R10'<
-;     Right-justified with zero fill: >'num%DZR10'<
+	;     Decimal (default):              >'num'<
+	;     Decimal signed:                 >'num%S'<
+	;     Hexadecimal:                    >'num%H'<
+	;     Octal:                          >'num%O'<
+	;     Left-justified:                 >'num%L10'<
+	;     Right-justified:                >'num%R10'<
+	;     Right-justified with zero fill: >'num%DZR10'<
 ;
 ; 8b) String output
 ;
-;     Default:                        >'str'<
-;     Left-justified:                 >'str%L30'<
-;     Right-justified:                >'str%R30'<
-;     Truncated:                      >'str%L10'<
-;     Condensed:                      >'str%C'<
+	;     Default:                        >'str'<
+	;     Left-justified:                 >'str%L30'<
+	;     Right-justified:                >'str%R30'<
+	;     Truncated:                      >'str%L10'<
+	;     Condensed:                      >'str%C'<
 ;
 ; 8c) Numeric as char output
 ;
 	.SETN esc 27
 	.SETN nc 65
-;     ASCII value of 'nc' corresponds to char 'nc%V'
-;     'esc%V'[1mBold 'esc%V'[0mNormal
+	;     ASCII value of 'nc' corresponds to char 'nc%V'
+	;     'esc%V'[1mBold 'esc%V'[0mNormal
 ;
 ; 8d) String char output as numeric
 ;
 	.SETS sc "A"
-;     Char 'sc' has an ASCII value of 'sc%V'
+	;     Char 'sc' has an ASCII value of 'sc%V'
 ;
 ; 9) .TEST
 ;
@@ -323,6 +331,11 @@
 	;   Partition Size         = 'ISIZE'K
 	;   Partition Type         = 'TYPE'
 ;
+; 14) .DELAY
+;
+	; Sleeping for 5 seconds
+	.DELAY 5S
+;
 ; Still unimplemented:
 ;
 ;   .ERASE LOCAL
@@ -334,8 +347,6 @@
 ;   .CHAIN filename
 ;
 ;   .BEGIN - .END blocks
-;
-;   .DELAY
 ;
 ;   .PAUSE
 ;
