@@ -4,7 +4,7 @@
 
 	IDENT	-V4.29-		; This ident code appears in MCE messages
 
-;	Port of the DECUS RSX-11M MCE version V4.28
+;	Port of the DECUS RSX-11M MCE version V4.28, (C) Hector Peraza, 2018
 ;	Original MCE is Copyright (C) 1987-1998 J. H. Hamakers,
 ;	pAkUiT International
 
@@ -118,23 +118,7 @@ MAXHLP	equ	' '
 	ENDIF
 	ENDIF
 
-; StopFor/WaitFor I/O DPBs
-;
-; Normally we STOP for I/O. When MCE is aborted we WAIT for I/O.
-; We use the WTSE$ directive here to copy the DIC-code to STOPIO.
-; (See  EXAST:)
-
-	DSEG	; R/O
-
-  if 0
-WAITIO:	WTSE$
-  endif
-
 	DSEG	; R/W
-
-  if 0
-STOPIO:	STSE$	EFN
-  endif
 
 ; DBPs
 
@@ -187,17 +171,14 @@ SYLDEV:	defb	'SYS$LOGIN:'	; SYS$LOGIN on RSX-11M-Plus
 SYDEVL	equ	$-SYLDEV
 	ENDIF
 
-DIR:	defb	'SYSTEM   '
-DIRL	equ	$-DIR
-
 	DSEG	; R/W
 
 ; Default startup filename block
 ;
 ; Default filename (if no alternate CLI support) is 'MCEINI.CMD'.
-; Default device is SY: (but overwritten as LB: in FDSPT).
+; Default device is LB:, later set to SY:
 ;
-; SY: in the FDB will be effective for files specified in the invoking
+; SY: in the FDB will be set also for files specified in the invoking
 ; MCR/DCL command line. Specifying 'MCE XXX' thus results in file name
 ; 'SY0:XXX.CMD'.
 ;
@@ -205,9 +186,9 @@ DIRL	equ	$-DIR
 ; (see GETCLI).
 
 FDB:	defw	0
-	defb	FN.DEV OR FN.NAME OR FN.EXT
-	defb	'SY',0
-	defb	'         '
+	defb	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	defb	'LB',0
+	defb	'SYSTEM   '
 	defb	'MCEINI   ','CMD'
 	defw	0
 	defs	FINFSZ-($-FDB)
@@ -521,7 +502,11 @@ TMPPTR:	defs	2		; misc pointer
 TMPLEN:	defs	2		; saved LEN (see DOEXEC, WRISEL)
 	ENDIF
 
+NUMBUF:	defs	5		; buffer for numeric conversion
+
+	IF	$-GTKBUF LT GTKSZ
 	org	GTKBUF+GTKSZ
+	ENDIF
 
 FIFPTR:	defw	0		; ptr to current entry (for UP, DOWN keys
 				;  and PRICMD, PRIFIF)
@@ -529,6 +514,8 @@ FIFCNT:	defb	0		; number of entries in FIFO
 CHAR:	defb	0		; input character
 
 ; -------------------------------------------------------------
+
+WAITSW:	defw	STIO		; StopFor/WaitFor switch
 
 CURPTR:	defw	CMDBUF		; pointer to current char in CMDBUF
 ENDPTR:	defw	CMDBUF		; pointer to end of text in CMDBUF
@@ -692,7 +679,7 @@ RCLBUF:	defs	CMDSIZ		; recall buffer
 ;  - CLI name to test if DCL	CLISUP
 ;  - CLI name as filetype	CLISUP and FILE
 ;  - Prompt			CLISUP
-;  - Current Directory		FILE (only if GDIR fails)
+;  - Current Directory		FILE (only if .GDIR fails)
 
 CLIBSZ	equ	50
 CLIBUF:	defs	CLIBSZ		; information buffer
@@ -706,19 +693,12 @@ CLINAM	equ	CLIBUF+G.CICL	; CLI name
 	IF	FILE
   if 0
 CLIUIC	equ	CLIBUF+G.CICU	; Current UIC
-
-; Buffer to receive Directory information (M+)
-
-GD.LOG	equ	5
-
-GDIR:	GDIR$	GD.LOG,CURDIR,CURDRL,GDIRL
-GDIRL:	defw	0		; length of directory string
-
-; Current directory string
-
-CURDRL	equ	40
-CURDIR:	defs	CURDRL
   endif
+
+; Login (home) directory string
+
+LOGDIR:	defs	9
+
 	ENDIF	;FILE
 
 ; ---- THE WHOLE AREA IS CLEARED SO DO NOT SPLIT. --------------v
@@ -929,7 +909,11 @@ START:	ld	sp,stack	; setup stack
 
 	; specify exit AST to cleanup things when MCE gets aborted
 
-;!!	SREX$S	#EXAST		; specify exit AST
+  if 0
+	ld	de,EXAST
+	ld	c,AST.EX
+	SC	.ASTDF		; specify exit AST
+  endif
 
 	ld	ix,FREE		; IX => free memory listhead
 	ld	hl,(GTKBUF+GT.END)
@@ -1071,15 +1055,13 @@ RESTAR:	; attach the terminal
 
 	; set our task's default directory
 
-  if 0
-SD.TI	equ	6
-	SDIR$S	#SD.TI		; set task DDS to terminal DDS
-  endif
-
 	IF	CLISUP OR FILE
 	; get information from our current CLI
 
 	call	GETCLI		; get CLI information
+	ld	hl,LOGDIR
+	ld	c,SD.TI
+	SC	.SDIR		; set task's default dir to Login dir
 	ENDIF	;CLISUP OR FILE
 
 	IF	STATUS
@@ -2041,7 +2023,7 @@ dls1:	; save deleted line for UNDLIN
 	call	SAVE		; save line
 	ENDIF
 
-;!!TODO: just use ldir
+	;TODO: just use ldir
 
 	ld	c,e
 	ld	b,d
@@ -2793,12 +2775,10 @@ exe5:	pop	bc		; drop return address
 
 EXAST:	; change STOP to WAIT
 
-	ld	bc,IO.KIL	;; kill
-	call	IO		;;  pending read
-  if 0
-	MOV	WAITIO,STOPIO	;; change DIC-code
-	DIR$	#STOPIO		;; wait for I/O
-  endif
+	ld	hl,WTIO		; switch to wait-for-I/O
+	ld	(WAITSW),hl
+	ld	bc,IO.KIL	; kill
+	call	IO		;  pending read
 
 ; Task exit
 
@@ -2813,6 +2793,17 @@ EXIT:
 
 EXITI:	ld	hl,0
 	SC	.EXIT		; exit
+
+; Normally we STOP for I/O. When MCE is aborted we WAIT for I/O
+
+WAITIO:	ld	hl,(WAITSW)
+	jp	(hl)
+
+WTIO:	SC	.WTSE		; wait for event flag
+	ret
+
+STIO:	SC	.STSE		; stop for event flag
+	ret
 
 ; Clear status line and detach terminal
 
@@ -3982,7 +3973,7 @@ FILOP2:	call	GETCLI		; get CLI info
 	ld	a,(FILDEF)
 	or	a		; was it first default file?
 	jr	z,fil1		; error if not
-	call	FILOP3		; open 'SY:xxx.CLI'
+	call	FILOP3		; else open 'SY:xxx.CLI'
 	ret	nc		;  OK: => return
 	ld	a,(FILINI)
 	or	a		; startup?
@@ -3990,19 +3981,26 @@ FILOP2:	call	GETCLI		; get CLI info
 fil1:	ld	hl,FILTXT	; error
 	jp	IOMSG		;  message
 
-FILOP3:
+FILOP3:	xor	a
+	ld	(FILDEF),a	; no more files after this
+	ld	hl,'SY'		; try file 'SY:xxx.CLI'
+	ld	(FDB+F.DEV),hl
 	xor	a
-	ld	(FILDEF),a
- if 0
-	CLR	FDIR		; no directory descriptor
-	MOV	#"SY,DEV	; try file 'SY:xxx.CLI'
- endif
+	ld	(FDB+F.UNIT),a
+	ld	hl,LOGDIR
+	ld	de,FDB+F.DIR
+	ld	bc,9
+	ldir			; set FDB directory to Login directory
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	ld	(FDB+F.ATTR),a	; since FCSLIB messes with it
+
 	IF	FILE AND SYLOGIN
-	FEAT$S	#FE$LOG		; Logical Names supported?
-	CMP	$DSW,#EX$SUC	; EX$SUC means yes
-	BMI	FILOP4		;  No: => FILOP4
-	MOV	#SYLDEV,FDSPT+2	; Try file 'SYS$LOGIN:xxx.CLI'
-	MOV	#SYDEVL,FDSPT	; Copy to FDSPT table
+	ld	hl,FE$LOG
+	SC	.FEAT		; Logical Names supported?
+	jr	c,FILOP4	;  no: => FILOP4
+	ld	hl,SYLDEV	; try file 'SYS$LOGIN:xxx.CLI'
+	ld	bc,SYDEVL
+	;...			; TODO
 	ENDIF	;FILE AND SYLOGIN
 
 FILOP4:	xor	a
@@ -4222,16 +4220,18 @@ gb6:	ld	hl,(ENDPTR)
 
 	IF	CLISUP OR FILE
 
-; Get CLI information
+; Get CLI information and Login directory name
 
 GETCLI:	xor	a
 	ld	(CLIFLG),a	; clear GETCLI OK flag
-  if 0
+
+	IF	CLISUP
 	ld	hl,CLIBUF
 	SC	.GCLI		; cet CLI information
 	jr	c,gc1		; error is CY set
 	ld	a,1
 	ld	(CLIFLG),a	; set CGLI OK flag
+	ENDIF	;CLISUP
 
 	IF	CLISUP AND FILE
 	ld	hl,CLINAM
@@ -4241,26 +4241,10 @@ GETCLI:	xor	a
 	ENDIF	;CLISUP AND FILE
 gc1:
 	IF	FILE
-	DIR$	#GDIR		; get directory information
-	jr	c,gc2		; error: => 20$
-	MOV	#CURDIR,R2	; R2 => String
-	MOV	GDIRL,R1	; R1 =  Length
-	jr	gc3
-
-gc2:	ld	a(CLIFLG)
-	or	a		; GCLI OK?
-	ret	z		;  No: => return
-	MOV	#CURDIR,R2	; R2 => Ascii Current directory
-	MOV	CLIUIC,R3	; Binary value from GCLI
-	CLR	R4		; Parameters (No lea. zeroes, add separ.)
-	call	.PPASC		; Convert to ASCII
-	MOV	R2,R1		; Calculate
-	MOV	#CURDIR,R2	;    length
-	SUB	R2,R1		;       and point to Ascii
-gc3:	jp	.WDFDR		; Write default directory [in FSR$]
-  else
+	ld	hl,LOGDIR
+	ld	c,GD.LOG
+	SC	.GDIR		; get login directory
 	ret
-  endif
 	ELSE
 	ret
 	ENDIF	;FILE
@@ -4304,30 +4288,10 @@ GETFIL:	; reset FDB file-name pointers
 
 	ld	a,1
 	ld	(FILDEF),a
-  if 0
-	push	hl
-	push	de
-	push	bc
-	ld	hl,'LB'
-	ld	(FDB+F.DEV),hl	; reset default file volume
-	xor	a
-	ld	(FDB+F.UNIT),a
-	ld	hl,DIR
-	ld	de,FDB+F.DIR
-	ld	bc,9
-	ldir			; restore pointer to default directory
-	pop	bc
-	pop	de
-	pop	hl
-	ld	a,(FDB+F.ATTR)
-	or	FN.DIR
-	ld	(FDB+F.ATTR),a
-  endif
-
 	ld	bc,FDB		; reset FDB pointer in FDBIN
 	ld	(FDBIN+FC.FDB),bc
 
-	ld	a,d		; any length?
+	ld	a,d		; any command tail?
 	or	e
 	ret	z		; return if not
 	ld	b,e
@@ -4345,7 +4309,7 @@ gtf2:	ld	ix,FDB2
 	call	PFN		; parse file name
 	jr	c,gtf3		; no file: ignore it
 
-	; override the default FDB pointing to MCEINI.CMD:
+	; override the default FDB pointer in FDBIN to the new filespec
 
 	ld	hl,FDB2		; new FDB pointer
 	ld	(FDBIN+FC.FDB),hl
@@ -4379,12 +4343,8 @@ IO:	push	hl
 
 	ld	hl,QIODIR
 	SC	.QIO		; do I/O
-  if 0
-	DIR$	#STOPIO		; stop for I/O (or wait when aborted)
-  else
 	ld	e,EFN
-	SC	.WTSE
-  endif
+	call	WAITIO		; stop for I/O (or wait when aborted)
 	pop	de
 	pop	hl
 	ret
@@ -4865,10 +4825,14 @@ sf3:
 
 	ENDIF	;TMOSET
 
-  if 0
-	MOV	#15012,R2	; Params. (decimal,w=3,0fill)
-	call	$CBTA		; Convert
-  endif
+	push	hl		; save dest pointer
+	ld	hl,NUMBUF
+	ld	a,'0'
+	call	CVTWD		; convert value to decimal with leading zeros
+	ld	hl,NUMBUF+2	; use only the last 3 digits
+	pop	de		; dest in DE
+	ld	bc,3
+	ldir			; copy to status line
 sf4:
 	ENDIF	;TIMOUT
 
