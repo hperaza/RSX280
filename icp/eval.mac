@@ -25,10 +25,11 @@
 
 	include	ICP.INC
 
-	public	EVAL,SEVAL,VNAME,ERRTYP,ERRUND,ERRSTL,ERRMEM
+	public	EVAL,SEVAL,VNAME,ERRTYP,ERROVF,ERRUFL,ERRSTL
+	public	ERRMEM
 
 	extrn	ATOI,HLNEG,ISDIG,GETVAR,ALLOC,UCASE,SKIPBL
-	extrn	LNPTR,ERROR,CMDERR,STRLEN
+	extrn	ISBLNK,LNPTR,ERROR,CMDERR,ERRUDF,STRLEN,MODE
 
 s$null	equ	0	; symbol types used in expression eval
 s$var	equ	1
@@ -116,8 +117,6 @@ nv4:	ld	a,(hl)		; ignore all extra chars of name
 
 ; Process string expression.
 
-; TODO: handle [n1:n2] and <vars>
-
 ; Evaluate string expression, return pointer to new string in the
 ; dynamic area in HL and in 'dsptr' (the last done by ALLOC).
 
@@ -149,17 +148,15 @@ exps1:	call	SKIPBL
 	ld	de,idname
 	call	VNAME		; extract variable name into idname
 	ld	(LNPTR),hl	; remember position to continue afterwards
-	pop	bc		; pop counter
-	jr	c,exps21	; jump if error
-	push	bc
+	jp	c,CMDERR	; jump if error
 	ld	de,idname
 	ld	a,(idspec)
 	call	GETVAR		; else search for variable
+	jp	c,ERRUDF	; error if not found
 	ld	a,c		; get type into A
-	pop	bc
-	jr	c,exps2		; error if not found
+	pop	bc		; pop counter
 	cp	V.STR		; string variable?
-	jr	nz,exps23	; error if not
+	jr	nz,ERRTYP	; error if not
 	call	strseg		; check for [n:m]
 	pop	de		; pop dst pos
 	inc	c
@@ -179,19 +176,10 @@ emsstl:	db	'String too long',0
 exps5:	ld	hl,(LNPTR)	; use new src pointer
 	jp	exps1		; loop to process next term
 
-exps23:	pop	de
 ERRTYP:	ld	hl,emstyp
 	jp	ERROR
 
-exps2:	pop	de		; error, pop dst
-ERRUND:	ld	hl,emsund
-	jp	ERROR
-
 emstyp:	db	'Type mismatch',0
-emsund:	db	'Undefined variable',0
-
-exps21:	pop	de		; else error, pop dst
-	jp	CMDERR
 
 concat:	ld	a,(symtyp)
 	or	a
@@ -338,14 +326,14 @@ qs3:	or	a		; success, return with CY clear
 
 ; Numeric expresssion evaluation routines
 
-; --- getsym
+; Get next symbol, return type in 'symtyp' and value (which can be
+; numeric, operator or identifier name) in 'idname'.
 
 getsym:	ld	a,s$null
-	ld	(symtyp),a
+	ld	(symtyp),a	; default to none
 	ld	hl,(LNPTR)
-	call	SKIPBL		; skip spaces
-	ld	(LNPTR),hl
-	or	a		; end of line?
+	ld	a,(hl)		; end of expression?
+	call	ISBLNK
 	ret	z		; return symtyp = s$null if yes
   if 1
 	cp	'['
@@ -357,28 +345,28 @@ getsym:	ld	a,s$null
   endif
 	push	af
 	ld	a,s$err
-	ld	(symtyp),a
+	ld	(symtyp),a	; got something, default to error
 	pop	af
 	call	isvs		; if letter, $ or _ try variable name
 	jr	nc,gsvar
-	cp	'<'
+	cp	'<'		; check for special variable
 	jr	z,gsvar
 	call	ISDIG		; if number, convert it
 	jr	nc,gsnum
 	ex	de,hl
-	ld	hl,ops
+	ld	hl,ops		; else check for operator
 	ld	c,a
 gsym1:	ld	a,(hl)
 	or	a
-	ret	z
+	ret	z		; not an operator, return symtyp = s$err
 	cp	c
 	inc	hl
 	jr	nz,gsym1
 	ex	de,hl
-	inc	hl
-	ld	(LNPTR),hl
+	inc	hl		; found, skip it
+	ld	(LNPTR),hl	; store line pointer
 	ld	a,s$op
-	ld	(symtyp),a
+	ld	(symtyp),a	; say we got an operator
 	ld	hl,idname
 	ld	(hl),c		; store operator
 	inc	hl
@@ -390,11 +378,12 @@ gsvar:	ld	de,idname
 ;	ret	c
 	ld	(LNPTR),hl
 	ld	a,s$var
-	ld	(symtyp),a
+	ld	(symtyp),a	; return symtyp = s$var
 	ret
 
 gsnum:	ex	de,hl
-	call	ATOI		; TODO: check for overflow!
+	call	ATOI		; convert string to integer
+	call	c,errovf	; handle possible overflow
 	ld	(idname),hl	; use idname to return the number
 	ex	de,hl
 	ld	(LNPTR),hl
@@ -402,189 +391,253 @@ gsnum:	ex	de,hl
 	ld	(symtyp),a
 	ret
 
-ops:	db	'+-*/%()',0
+ops:	db	'!&+-*/%#()',0
 
-; --- factor
+ERROVF:	ld	a,(MODE+1)
+	bit	B1.OVF,a	; .OVERFLOW mode enabled?
+	ret	nz		; yes, ignore overflow
+	ld	hl,ovmsg
+	jp	ERROR
 
-factor:	ld	a,(symtyp)
-	cp	s$null
-	ret	z
-	cp	s$var
-	jr	z,fvar
-	cp	s$num
-	jr	z,fnum
-	cp	s$op
-	jr	z,fop
-	jp	CMDERR
+ovmsg:	db	'Numeric overflow',0
+
+ERRUFL:	ld	a,(MODE+1)
+	bit	B1.OVF,a	; .OVERFLOW mode enabled?
+	ret	nz		; yes, ignore underflow
+	ld	hl,unmsg
+	jp	ERROR
+
+unmsg:	db	'Numeric underflow',0
+
+; Get next factor
+
+factor:	ld	a,(symtyp)	; get symbol type
+	cp	s$null		; null?
+	ret	z		; return if yes
+	cp	s$var		; variable?
+	jr	z,fvar		; load it if yes
+	cp	s$num		; number?
+	jr	z,fnum		; if yes, convert it
+	cp	s$op		; operator?
+	jr	z,fop		; if yes, process it
+	jp	CMDERR		; else is an error
 
 fvar:	ld	de,idname
 	ld	a,(idspec)
-	call	GETVAR
-	ex	de,hl
-	jp	c,ERRUND	; error if not found
+	call	GETVAR		; get variable value
+	ex	de,hl		;  into DE
+	jp	c,ERRUDF	; error if not found
 	ld	a,c
 	cp	V.NUM		; numeric variable?
 	jp	nz,ERRTYP	; error if not
 fcv1:	push	de
-	call	getsym
+	call	getsym		; get next symbol
 	pop	de
 	ret
 
 fnum:	ld	de,(idname)
 	jr	fcv1
 
-fop:	ld	a,(idname)
-	cp	'('
+fop:	ld	a,(idname)	; here only a sub-expression in parenthesis
+	cp	'('		;  is allowed
 	jp	nz,CMDERR
-	call	EVAL		; expr
+	call	EVAL		; evaluate sub-expression
 	ld	a,(symtyp)
-	cp	s$op
+	cp	s$op		; must be followed by the closing parenthesis
 	jp	nz,CMDERR
 	ld	a,(idname)
 	cp	')'
 	jp	nz,CMDERR
-	jr	fcv1
+	jr	fcv1		; get next symbol and return
 
-; --- term
+; Evaluate next term
 
-term:	call	factor
+term:	call	factor		; get a factor
 term0:	ld	a,(symtyp)
-	cp	s$op
-	ret	nz
+	cp	s$op		; operator follows?
+	ret	nz		; no, return
 	ld	a,(idname)
-	cp	'*'
+	cp	'*'		; else must be * / or %
 	jr	z,term1
 	cp	'/'
 	jr	z,term1
 	cp	'%'
 	ret	nz
 term1:	push	af
-	push	de		; n
+	push	de		; save n
 	call	getsym
-	call	factor		; m in DE
-	pop	hl		; n in HL
+	ld	a,(symtyp)
+	cp	s$null
+	jp	z,CMDERR	; can't be null
+	call	factor		; get next factor
+	ld	c,e		; m in BC
+	ld	b,d
+	pop	de		; n in DE
 	pop	af
 	cp	'*'
 	jr	nz,term2
-	call	mult		; HL = HL * DE
-	ex	de,hl
+	call	mult		; HL = DE * BC
+	ex	de,hl		; result in DE
 	jr	term0
-term2:	cp	'/'
+term2:	ld	l,a
+	ld	a,b
+	or	c		; dividing by zero?
+	call	z,errovf	; error if yes
+	ld	a,l
+	cp	'/'
 	jr	nz,term3
-	call	div		; HL = HL / DE
-	ex	de,hl
+	call	div		; DE = DE / BC
 	jr	term0
-term3:	call	div		; DE = HL % DE
+term3:	call	div		; HL = DE % BC
+	ex	de,hl		; result in DE
 	jr	term0
 
-; --- expr
+; Evaluate arithmetic expression
+
+aexp:	call	term		; evaluate term
+aexp0:	ld	a,(symtyp)
+	cp	s$op		; operator follows?
+	ret	nz		; no, return
+	ld	a,(idname)
+	cp	'+'		; else must be + or -
+	jr	z,aexp1
+	cp	'-'
+	ret	nz
+aexp1:	push	af
+	push	de		; save n
+	call	getsym		; get next symbol
+	ld	a,(symtyp)
+	cp	s$null
+	jp	z,CMDERR	; can't be null
+	call	term		; evaluate next term
+	ex	de,hl		; m in HL
+	pop	de		; n in DE
+	pop	af
+	cp	'-'
+	jr	z,aexp2
+	add	hl,de
+	jr	aexp3
+aexp2:	ex	de,hl
+	sbc	hl,de		; note CY clear from cp '-' operation above
+aexp3:	call	c,errovf	; handle possible overflow
+	ex	de,hl		; result in DE
+	jr	aexp0
+
+; Evaluate bitwise AND expression
+
+lterm:	call	aexp		; get logical factor
+lterm0:	ld	a,(symtyp)
+	cp	s$op		; operator follows?
+	ret	nz		; no, return
+	ld	a,(idname)
+	cp	'&'		; else must be &
+	ret	nz
+	push	de		; save n
+	call	getsym
+	ld	a,(symtyp)
+	cp	s$null
+	jp	z,CMDERR	; can't be null
+	call	aexp		; m in DE
+	pop	hl		; n in HL
+	ld	a,l
+	and	e
+	ld	e,a		; result in DE
+	ld	a,h
+	and	d
+	ld	d,a
+	jr	lterm0
 
 ; Evaluate numeric expression, return result in DE
 
-EVAL:	call	getsym
+EVAL:	ld	hl,(LNPTR)
+	call	SKIPBL		; skip spaces
+	ld	(LNPTR),hl
+	call	getsym		; get first symbol
 	ld	a,(symtyp)
-	cp	s$op
-	jr	nz,exp2
+	cp	s$op		; operator?
+	jr	nz,exp2		; no
 	ld	a,(idname)
-	cp	'+'
+	cp	'+'		; unary +, - or # ?
+	jr	z,exp1		; yes
+	cp	'-'
 	jr	z,exp1
-	cp	'-'
-	jr	nz,exp2
-exp1:	push	af
-	call	getsym
-	call	term
+	cp	'#'
+	jr	nz,exp2		; no, go evaluate expression
+exp1:	push	af		; remember unary operator
+	call	getsym		; get next symbol
+	ld	a,(symtyp)
+	cp	s$null
+	jp	z,CMDERR	; can't be null
+	call	lterm		; evaluate logical term
 	pop	af
-	cp	'-'
+	cp	'+'		; unary + ?
+	jr	z,exp3		; if yes, ignore it
+	push	af
 	ex	de,hl
-	call	z,HLNEG
+	call	HLNEG		; else negate result
 	ex	de,hl
+	pop	af
+	cp	'#'		; bitwise NOT?
+	jr	nz,exp3		; no
+	dec	de		; yes, fix result
 	jr	exp3
-exp2:	call	term
+
+exp2:	call	lterm		; evaluate logical term
 exp3:	ld	a,(symtyp)
-	cp	s$op
-	ret	nz
+	cp	s$null		; end of expression?
+	ret	z		; return if yes
+	cp	s$op		; else an operator follows?
+	jp	nz,CMDERR	; syntax error if not
 	ld	a,(idname)
-	cp	'+'
-	jr	z,exp4
-	cp	'-'
-	ret	nz
-exp4:	push	af
-	push	de
-	call	getsym
-	call	term
-	ex	de,hl		; m
-	pop	de		; n
-	pop	af
-	cp	'-'
-	call	z,HLNEG		; -m
-	add	hl,de
-	ex	de,hl
+	cp	')'
+	ret	z
+	cp	'!'		; else must be !
+	jp	nz,CMDERR
+	push	de		; save n
+	call	getsym		; get next symbol
+	ld	a,(symtyp)
+	cp	s$null
+	jp	z,CMDERR	; can't be null
+	call	lterm		; evaluate next logical term
+	pop	hl		; m in DE, n in HL
+	ld	a,l
+	or	e
+	ld	e,a		; result in DE
+	ld	a,h
+	or	d
+	ld	d,a
 	jr	exp3
 
-; HL = HL * DE
+; HL = DE * BC
 
-mult:	push	bc
-	ld	c,d
-	ld	a,e
-	ex	de,hl
-	ld	hl,0
-	call	mult1
-	ld	a,c
-	call	mult1
-	pop	bc
-	ret
-
-mult1:	ld	b,8
-mu1:	rra
-	jr	nc,mu2
-	add	hl,de
-mu2:	ex	de,hl
-	add	hl,hl
-	ex	de,hl
-	djnz	mu1
-	ret
-
-; HL = HL / DE, remainder in DE (signed)
-
-div:	ld	a,h
-	xor	d
-	push	af		; remember if quotient sign has to be changed
-	ld	a,h
-	or	a
-	push	af		; remember dividend sign
-	call	m,HLNEG
-	ex	de,hl
-	ld	a,h
-	or	a
-	call	m,HLNEG
-	ld	c,l
-	ld	b,h
-	ld	hl,0
+mult:	ld	hl,0
 	ld	a,16
-dv1:	push	af
+mu1:	add	hl,hl
+	ex	de,hl
 	add	hl,hl
 	ex	de,hl
-	sub	a
-	add	hl,hl
-	ex	de,hl
-	adc	a,l
-	sub	c
-	ld	l,a
-	ld	a,h
-	sbc	a,b
-	ld	h,a
-	inc	de
+	jr	nc,mu2
+	add	hl,bc
+mu2:	dec	a
+	jr	nz,mu1
+	or	a
+	ret
+
+; DE = DE / BC, remainder in HL
+
+div:	ld	hl,0
+	ld	a,16
+dv1:	rl	e
+	rl	d
+	adc	hl,hl
+	sbc	hl,bc
 	jr	nc,dv2
 	add	hl,bc
-	dec	de
-dv2:	pop	af
+dv2:	ccf
 	dec	a
 	jr	nz,dv1
-	pop	af
-	call	m,HLNEG
-	ex	de,hl
-	pop	af
-	call	m,HLNEG		; remainder has same sign as dividend
+	rl	e
+	rl	d
 	ret
 
 ;-----------------------------------------------------------------------
