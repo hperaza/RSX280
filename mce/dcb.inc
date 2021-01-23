@@ -71,6 +71,14 @@ TC.SMR	equ	5		; uppercase conversion on input disabled
 TC.NBR	equ	6		; not receiving broadcast messages
 TC.ANS	equ	7		; ANSI terminal
 
+; Additional Terminal characteristics codes, not present in U.CW
+
+TC.SPD	equ	8		; serial speed, if supported
+TC.PAR	equ	9		; parity, if supported (0=none, 1=odd, 3=even)
+TC.BPC	equ	10		; bits per character, if supported
+TC.STP	equ	11		; stop bits, if supported
+TC.FLC	equ	12		; flow control type, if supported
+
 ; Status Control Block, one per controller (statically allocated)
 
 S.ST	equ	0		; controller status (1 byte)
