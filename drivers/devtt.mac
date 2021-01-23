@@ -144,7 +144,8 @@ UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
 UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (1 byte)
 UX.TXC	equ	UX.TXB + 1	; count of bytes to transmit (2 bytes)
 UX.TXK	equ	UX.TXC + 2	; transmitter restart routine addr (2 bytes)
-UX.AST	equ	UX.TXK + 2	; unsolicited char AST routine addr (2 bytes)
+UX.SSP	equ	UX.TXK + 2	; set serial speed routine (2 bytes)
+UX.AST	equ	UX.SSP + 2	; unsolicited char AST routine addr (2 bytes)
 
 ; Device-dependent SCB fields
 
@@ -249,6 +250,7 @@ ucbt0:	dw	ucbt1		; link to next
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick0		; UX.TXK
+	dw	tt0spd		; UX.SSP
 	dw	0		; UX.AST
 
 ucbt1:	dw	ucbt2		; link to next
@@ -280,6 +282,7 @@ ucbt1:	dw	ucbt2		; link to next
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick1		; UX.TXK
+	dw	tt1spd		; UX.SSP
 	dw	0		; UX.AST
 
 ucbt2:	dw	ucbt3		; link to next
@@ -311,6 +314,7 @@ ucbt2:	dw	ucbt3		; link to next
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick2		; UX.TXK
+	dw	tt2spd		; UX.SSP
 	dw	0		; UX.AST
 
 ucbt3:	dw	ucbt4		; link to next
@@ -342,6 +346,7 @@ ucbt3:	dw	ucbt4		; link to next
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick3		; UX.TXK
+	dw	tt3spd		; UX.SSP
 	dw	0		; UX.AST
 
 ucbt4:	dw	0		; link to next
@@ -373,6 +378,7 @@ ucbt4:	dw	0		; link to next
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
 	dw	kick4		; UX.TXK
+	dw	tt4spd		; UX.SSP
 	dw	0		; UX.AST
 
 scb0:	db	0		; status byte
@@ -412,13 +418,10 @@ init:	ld	(ttdcb),de	; store DCB address for timeout routine
 	push	iy
 	ld	iy,ucbt0
 ini0:	res	US.BSY,(iy+U.ST)
-	ld	l,(iy+U.SCB)
-	ld	h,(iy+U.SCB+1)
-	push	hl
-	pop	ix		; get SCB address into IX
-	xor	a
+	ldw	ix,(iy+U.SCB)	; get SCB address into IX
 	ld	hl,0
 	ldw	(ix+S.CPKT),hl
+	xor	a
 	ld	(ix+S.ST),a
 	ldw	(iy+UX.MOD),hl	; clear all mode bits
 	ld	(iy+UX.UCC),a	; clear unsolicited char count
@@ -706,7 +709,7 @@ ttsmc1:	ld	a,b
 	call	$UGETB		; get byte from user space
 	inc	hl
 	cp	8		; ensure bit value is in range
-	jp	nc,ierr
+	jr	nc,ttsmc5
 	ld	d,a
 	ld	a,80h
 	inc	d
@@ -733,6 +736,19 @@ ttsmc4:	push	bc
 	pop	bc
 	dec	bc
 	jr	ttsmc1
+
+ttsmc5:	sub	8		; TC.SPD?
+	jp	nz,ierr
+	call	$UGETB		; get speed code
+	inc	hl
+	push	hl
+	push	bc
+	ld	hl,(iy+UX.SSP)
+	call	(hl)
+	pop	bc
+	pop	hl
+	jp	c,ierr
+	jp	ttsmc4
 
 ;-----------------------------------------------------------------------
 
@@ -1632,17 +1648,17 @@ tt0ini:	ld	ix,tt0xq
 	ld	a,14		; TX uses interrupt vector 14
 	call	SETHVC
 
-	iopage	UARTP
   if 0
-	ld	hl,bauddiv
-	dec	hl
-	ld	c,TC1
-	outw	(c),hl
+	iopage	CTP
 	ld	a,10001000b	; CT1: continuous, timer, output
 	out	(CR1),a
 	ld	a,11100000b	; enable CT1
 	out	(CS1),a
+	ld	a,S.115K2
+	call	tt0spd
   endif
+
+	iopage	UARTP
 	ld	a,10000001b	; enable TX, but disable interrupts
 	out	(TCS),a
 	ld	a,11000000b	; enable RX and RX interrupts
@@ -1654,6 +1670,41 @@ tt0ini:	ld	ix,tt0xq
 	in	a,(RDR)		; discard any spurious char
 	in	a,(RDR)
 	ret
+
+; Set serial speed, A = baud rate code
+
+tt0spd:	dec	a		; skip S.0
+	ret	m
+	cp	S.115K2		; ensure within allowed range
+	ccf
+	ret	c
+	iopage	CTP
+	ld	hl,brdiv	; get divisor table address
+	add	a,a
+	add	hl,a		; index into table
+	ld	hl,(hl)		; fetch value
+	dec	hl		; -1 for counter
+	ld	c,TC1
+	outw	(c),hl
+  if 1
+	ld	a,10001000b	; CT1: continuous, timer, output
+	out	(CR1),a
+	ld	a,11100000b	; enable CT1
+	out	(CS1),a
+  endif
+	iopage	UARTP
+  if 0
+	ld	a,11001010b	; 8 data bits, no parity, clk rate x16
+	out	(UCR),a
+  else
+	in	a,(UCR)
+	set	3,a		; select CT1 as clock source
+	out	(UCR),a
+  endif
+	in	a,(RDR)		; discard any spurious char
+	in	a,(RDR)
+	xor	a		; success
+	ret	
 
 ;-----------------------------------------------------------------------
 
@@ -1792,8 +1843,13 @@ iniq2:	ld	a,(hl)		; get register address
 	out	(c),a		; set register
 	inc	hl
 	djnz	iniq2		; loop until all registers set
-	ld	c,e
-	in	a,(c)		; flush any spurious char
+
+include BDRATES.INC
+
+	ld	a,S.19K2
+	call	ttQspd		; set baud rate
+;;	ld	c,e
+;;	in	a,(c)		; flush any spurious char
 	ld	a,e
 	add	a,SER1-SER0	; get address of next channel
 	ld	e,a
@@ -1840,40 +1896,85 @@ id2:	push	af
 
 id:	db	16h,0C9h,54h,04h
 
-; baud rate divisors
+; Set serial speed, A = baud rate code
 
-d115k2	equ	1		; 115200 baud
-d57k6	equ	2		;  57600 baud
-d38k4	equ	3		;  38400 baud
-d28k8	equ	4		;  28800 baud
-d19k2	equ	6		;  19200 baud
-d9k6	equ	12		;   9600 baud
-d4k8	equ	24		;   4800 baud
-d2k4	equ	48		;   2400 baud
-d1k2	equ	96		;   1200 baud
-d600	equ	192		;    600 baud
-d300	equ	384		;    300 baud
-d110	equ	768		;    110 baud
-d50	equ	2304		;     50 baud
+tt1spd:	ld	e,SER0
+	jr	tt4s1
+
+tt2spd:	ld	e,SER1
+	jr	tt4s1
+
+tt3spd:	ld	e,SER2
+	jr	tt4s1
+
+tt4spd:	ld	e,SER3
+tt4s1:	iopage	SERP
+	; continue below
+
+; Set serial speed, E = channel base address, A = baud rate code
+
+ttQspd:	dec	a		; skip S.0
+	ret	m
+	cp	S.115K2		; ensure within allowed range
+	ccf
+	ret	c
+	ld	hl,brdiv	; get divisor table address
+	add	a,a
+	add	hl,a		; index into table
+	ld	a,_LCR		; select LCR register
+	add	a,e
+	ld	c,a
+	ld	b,a		; remember LCR address
+	in	a,(c)
+	set	7,a		; enable access to divisor
+	out	(c),a
+	ld	a,_DLL		; select divisor register
+	add	a,e
+	ld	c,a
+	ld	a,(hl)
+	out	(c),a
+	inc	hl
+	inc	c		; _DLM
+	ld	a,(hl)
+	out	(c),a
+	ld	c,b		; select again LCR register
+	in	a,(c)
+	res	7,a		; disable access to divisor
+	out	(c),a
+	ld	c,e
+	in	a,(c)		; flush any spurious char
+	xor	a		; success
+	ret	
+
+; Baud rate divisors for clk rate = 7.3728MHz / 2 / 16 = 230400 Hz
+
+brdiv:	dw	4608		; S.50
+	dw	3072		; S.75
+	dw	2095		; S.110		; 2094.55
+	dw	1713		; S.134
+	dw	1536		; S.150
+	dw	1152		; S.200
+	dw	768		; S.300
+	dw	384		; S.600
+	dw	192		; S.1200
+	dw	128		; S.1800
+	dw	115		; S.2000	; 115.2
+	dw	96		; S.2400
+	dw	64		; S.3600
+	dw	48		; S.4800
+	dw	32		; S.7200
+	dw	24		; S.9600
+	dw	16		; S.14K4
+	dw	12		; S.19K2
+	dw	8		; S.28K8
+	dw	6		; S.38K4
+	dw	4		; S.57K6
+	dw	3		; S.76K8
+	dw	2		; S.115K2
 
 initbl:	db	_LCR,	00000000b	; ensure LCR is not 0BFh
 	db	_SPR,	_CSR		; select CSR register
 	db	_ICR,	0		;  reset UART channel, selects 450 mode
-
-	db	_SPR,	_TCR		; select TCR register
-	db	_ICR,	0		;  zero times clock reg (make SC = 16)
-
-	db	_MCR,	00001011b	; disable prescaler, enable INT pin,
-					;  DTR and RTS active
-
-	db	_LCR,	10000000b	; enable access to divisor
- if 0
-	db	_DLL,	d115k2 and 0FFh	; set baud rate divisor
-	db	_DLM,	d115k2 shr 8	;  (115200 baud)
- else
-	db	_DLL,	d19k2 and 0FFh	; set baud rate divisor
-	db	_DLM,	d19k2 shr 8	;  (19200 baud)
- endif
 
 	db	_LCR,	0BFh		; enable access to 650-mode registers
 	db	_EFR,	00010000b	; set enhanced mode
@@ -1883,6 +1984,14 @@ initbl:	db	_LCR,	00000000b	; ensure LCR is not 0BFh
  else
 	db	_LCR,	00000011b	; 8-N-1
  endif
+	db	_SPR,	_TCR		; select TCR register
+	db	_ICR,	0		;  zero times clock reg (make SC = 16)
+
+	db	_SPR,	_CPR		; select CPR register
+	db	_ICR,	00010000b	; M=2, N=0 (divide by 2)
+
+	db	_MCR,	10001011b	; enable prescaler, enable INT pin,
+					;  DTR and RTS active
 
 	db	_FCR,	00000001b	; enable FIFO, Rx threshold level = 1
 
