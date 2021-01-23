@@ -57,9 +57,9 @@ cnd$ge	equ	6
 	extrn	INDSTP,INDEOF,CLRVAR,GSBTBL,GSBLVL,GETPOS,SETPOS
 	extrn	ISBLNK,ISDIG,ISALPN,PRCMD,VNAME,ADDHLA,STRLEN
 	extrn	DECSTR,PRMSG,EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT
-	extrn	FDB,LNBUF,SUBST,ERRMEM,ERRTYP,FNDEV
+	extrn	FDB,LNBUF,SUBST,ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL
 
-	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF
+	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF,SLEEP
 	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
 
 CMD	MACRO	name,addr
@@ -367,8 +367,8 @@ askv2:	; input ended with escape
 	ld	a,e
 	ret
 askv10:	ld	hl,errans
-	call	PRMSG
-	jp	askv4		; ask again
+	call	PRMSG		; display error message
+	jp	askv4		; and ask again
 
 errans:	db	'Invalid answer or terminator',0
 
@@ -748,34 +748,39 @@ erase:	call	CLRVAR		; erase all variables
 ; .SETT varname
 
 sett:	call	getvn2		; get variable name into 'varnam'
-	ld	hl,0FFFFh
+	ld	hl,0FFFFh	; <TRUE> value
 	ld	de,varnam
-	call	SETLV
+	call	SETLV		; assign to logical variable
 	xor	a
 	ret
 
 ; .SETF varname
 
 setf:	call	getvn2		; get variable name into 'varnam'
-	ld	hl,0
+	ld	hl,0		; <FALSE> value
 	ld	de,varnam
-	call	SETLV
+	call	SETLV		; assign to logical variable
 	xor	a
 	ret
 
 ; .SETN varname expr
 
 setn:	call	getvn2		; get variable name into 'varnam'
-	call	EVAL
+	call	EVAL		; evaluate following expression
 	ex	de,hl
 	ld	de,varnam
-	call	SETNV
+	call	SETNV		; assign result to numeric variable
 	xor	a
 	ret
 
 ; .SETL varname expr
 
-setl:
+setl:	call	getvn2		; get variable name into 'varnam'
+	call	EVAL		; evaluate following expression
+	ex	de,hl
+	ld	de,varnam
+	call	SETLV		; assign result to logical variable
+	xor	a
 	ret
 
 ; .SETS varname expr
@@ -1102,16 +1107,15 @@ onerr:
 ifx:	call	getvn		; get variable name into 'varnam'
 	ld	de,varnam
 	ld	a,c
-	call	GETVAR
-	jp	c,ERRUDF
-	ld	a,c
-	cp	V.STR
+	call	GETVAR		; find variable in symbol table
+	jp	c,ERRUDF	; error if undefined
+	ld	a,c		; check type
+	cp	V.STR		; string?
 	jr	z,ifs
-	cp	V.NUM
+	cp	V.NUM		; numeric?
 	jr	z,ifn
-
-	scf			; TODO: logical
-	ret
+	scf
+	jp	ERRTYP		; logical variables not allowed in .IF
 
 ifs:	push	hl
 	call	relop
@@ -1317,7 +1321,7 @@ ift:	call	getvn		; get variable name into 'varnam'
 	call	GETVAR
 	jp	c,ERRUDF	; error if not found
 	ld	a,c
-	cp	V.LOG
+	cp	V.LOG		; type must be logical
 	scf
 	jp	nz,ERRTYP	; type mismatch
 	ld	a,h
@@ -1333,7 +1337,7 @@ iff:	call	getvn		; get variable name into 'varnam'
 	call	GETVAR
 	jp	c,ERRUDF	; error if not found
 	ld	a,c
-	cp	V.LOG
+	cp	V.LOG		; type must be logical
 	scf
 	jp	nz,ERRTYP	; type mismatch
 	ld	a,h
@@ -1963,18 +1967,16 @@ tstfil:	call	GETNB		; skip spaces
 	ld	ix,FDB
 	call	PFN		; parse file name
 	ld	a,E.BADF
-	jr	c,tstset
+	jr	c,tstset	; error if invalid
 	ld	hl,datext
-	call	ADDEXT
+	call	ADDEXT		; force .DAT extension if none was specified
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a
-	ld	b,LUNDEV
-	SC	.ALUN
-	jr	c,tstset
-	
-	; TODO: get LUN info in case is TI:, etc.
-
+	call	FNDEV		; assign LUN and get device info (for TI: case)
+	ld	(FDB+F.DEV),de	; store physical name in FDB for <FILSPC>
+	ld	a,c
+	ld	(FDB+F.UNIT),a
 	ld	hl,IO.ACC OR (SF.ACR OR SF.SHR) SHL 8
 	ld	a,LUNDEV
 	ld	(qio1+Q.LUN),a
@@ -2223,9 +2225,9 @@ exit:	call	GETNB
 stop:	call	GETNB
 	or	a
 	jp	z,INDSTP
-	call	EVAL
-	ld	(EXSTAT),de
-	jp	INDSTP
+	call	EVAL		; evaluate argument
+	ld	(EXSTAT),de	; set exit status to result
+	jp	INDSTP		; end execution
 
 ; .INC varname
 
@@ -2239,6 +2241,9 @@ incx:	call	getvn2		; get variable name into 'varnam'
 	scf
 	jp	nz,ERRTYP	; type mismatch
 	inc	hl
+	ld	a,h
+	or	l		; check for overflow
+	call	z,ERROVF
 	ld	de,varnam
 	call	SETNV
 	ret
@@ -2254,12 +2259,55 @@ decx:	call	getvn2		; get variable name into 'varnam'
 	cp	V.NUM
 	scf
 	jp	nz,ERRTYP	; type mismatch
+	ld	a,h
+	or	l		; check for underflow
+	call	z,ERRUFL
 	dec	hl
 	ld	de,varnam
 	call	SETNV
 	ret
 
-delay:
+; .DELAY nnu (u = Ticks, Seconds, Minutes, Hours)
+
+delay:	call	GETNB		; skip spaces, get char
+	call	ISDIG		; digit?
+	jp	c,CMDERR	; error if not
+	call	ATOU		; else convert value, returns magnitude in HL
+	jp	c,CMDERR
+	ld	a,(de)		; get units
+	call	UCASE
+	ld	b,1
+	cp	'T'		; ticks?
+	jr	z,dly1
+	inc	b
+	cp	'S'		; seconds?
+	jr	z,dly1
+	inc	b
+	cp	'M'		; minutes?
+	jr	z,dly1
+	inc	b
+	cp	'H'		; hours?
+	jp	nz,CMDERR
+dly1:	ex	de,hl
+	ld	hl,dlyms1	; 'Delaying'
+	call	dly2
+	ex	de,hl		; get magnitude back into HL
+	ld	d,b		; and units into B
+	call	SLEEP		; sleep for the specified amount
+	jp	c,SYSERR
+	ld	hl,dlyms2	; 'Continuing'
+dly2:	ld	a,(MODE+1)
+	bit	B1.QIE,a	; quiet mode?
+	ret	nz		; return if yes (note CY is clear)
+	call	PRMSG		; else output message
+	xor	a
+	ret			; return success
+
+dlyms1:	db	'Delaying',0
+dlyms2:	db	'Continuing',0
+
+; .PAUSE
+
 pause:
 	ret
 
