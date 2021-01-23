@@ -6204,7 +6204,7 @@ BUGS:
 - SYSLIB PFN: added ESC as valid delimiter.
 
 
-02/01/20
+02/01/21
 
 - More work on Kermit:
   * CHRCNT is now a 16-bit variable that contains the cumulative number of
@@ -6217,7 +6217,7 @@ BUGS:
     anyway): removed the BACKUP option, and changed RENAME to NEW-VERSION.
 
 
-03/01/20
+03/01/21
 
 - More work on Kermit:
   * CD command: validate device before setting it as default. Allow specifying
@@ -6231,7 +6231,7 @@ BUGS:
     can already connect to the RSX180 Kermit, but file transfers fail.
 
 
-04/01/20
+04/01/21
 
 - More work on Kermit:
   * buffering modem I/O improves reliability and performance a lot.
@@ -6240,7 +6240,7 @@ BUGS:
   * Remote server commands also working (e.g. REMOTE DIR, FINISH, etc.)
 
 
-05/01/20
+05/01/21
 
 - More work on Kermit:
   * reading commands from a TAKE file is now working.
@@ -6298,4 +6298,52 @@ BUGS:
 - TKB bug fix: the RSX180 version was parsing the argument to the /EXTTSK
   switch as hexadecimal, when it should have been decimal. That resulted
   in task image files that requested way more memory than necessary.
+
+
+17/01/21
+
+- More work on Kermit:
+  * bug fix: the original terminal settings were not restored on exit.
+  * implemented the SET SPEED command (using TC.SPD to set the terminal
+    baud rate)
+
+- Linux vol180 utility: a bug in create_dir() prevented reusing deleted
+  directory entries when creating a new directory.
+
+
+21/01/21
+
+- MCE:
+  * process first LB:[SYSTEM]MCEINI.CMD if it exists, then SY:[LogDir]
+    MCEINI.CMD.
+  * if a file name is specified in the command tail, process only that file.
+  * stop for I/O, but switch to wait for I/O when exiting.
+  * fixed a missing label bug in MCEBLD.CMD.
+  * use the /I switch to tell the assembler where to find the system include
+    files.
+  * updated the docs.
+
+
+23/01/21
+
+- ICP:
+  * implemented logical bitwise AND (&), OR (!) and NOT (#). Since the '!'
+    conflicts with the start of comments, spaces are no longer allowed
+    inside expressions (RSX-11M doesn't seem to allow them either for the
+    same reason.)
+  * implemented the .SETL statement: logical expressions are simply treated
+    as numerical, only the target variable gets the 'logical' bit set.
+  * logical variables are not allowed in .IF statements (much like numeric
+    variables were not allowed in .IFT/.IFF statements.)
+  * more strict expression syntax checking.
+  * addition and subtraction operations now test for (unsigned) overflow.
+  * dividing by zero now causes an overflow error.
+  * .INC and .DEC now produce an overflow/undeflow error if the value wraps
+    around zero.
+  * 'Numeric overflow/underflow' errors can be now suppressed with .ENABLE
+    OVERFLOW.
+  * implemented the .DELAY statement.
+  * .TESTFILE now returns the physical device name for TI: as it should.
+  * added .SETL and .DELAY tests to the ICPTEST.CMD file.
+
 

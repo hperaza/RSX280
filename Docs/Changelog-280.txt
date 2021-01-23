@@ -6,9 +6,9 @@ Changelog
 
 03/04/20
 
-- First RSX280 version will be for Bill Shen's Z280RC board. The the clever
-  ROM-less design, the simpler ZZmon and the built-in CF interface makes it
-  easier to develop and test programs for the Z280RC than for the Tilmann
+- First RSX280 version will be for Bill Shen's Z280RC board. The clever
+  ROM-less design, the simpler ZZmon and the built-in CF interface makes
+  it easier to develop and test programs for the Z280RC than for the Tilmann
   Reh's CPU280 board, whose ROM mainly implements a CP/M 3 BIOS with no
   possibility of booting any foreign-OS disks. The CPU280 ROM BIOS also
   limits programs to run in user mode, meaning no privileged instructions
@@ -190,5 +190,31 @@ Changelog
 - DEVTT: fixed a race condition in TT1..TT4 transmitter interrupt handling.
   Removed the software transmitter queue for TT1..TT4, since the OX16C954
   quad-UART chip has a hardware one.
+
+
+10/01/21
+
+- DEVTT: added codes for future control of serial comm parameters. Added
+  a set of codes for standard baud rates from 50 to 115200 baud.
+
+
+11/01/21
+
+- DEVTT: the code that sets the baud rate for the quad-serial port is now
+  in a separate routine, so it could be called by a SF.SMC QIO function.
+  Also, the prescaler now divides the clock frequency by 2 and not by 4 so
+  the ubiquitous 76800 baud rate could be supported.
+
+
+15/01/21
+
+- DEVTT: implemented TC.SPD subfunction of SF.SMC, the baud rates for the
+  Z280 UART and quad-port now can be set via QIO call.
+
+
+16/01/21
+
+- Implemented the 'SET /SPEED' MCR command. Setting the baud rate works,
+  but displaying the current speed value is not done yet.
 
 
