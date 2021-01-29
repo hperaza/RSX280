@@ -36,10 +36,11 @@
 	include	DCB.INC
 	include	FCSLIB.INC
 	include	QIO.INC
+	include	ERRORS.INC
 
 	public	FCREAT,FOPEN
 
-	extrn	QIOBLK,QIOSB
+	extrn	?FDECB,FRDBLK,QIOBLK,QIOSB
 
 	cseg
 
@@ -170,27 +171,40 @@ fopn3:	call	fmode		; get sufbunction code according to mode bits
 	bit	FM.WA,(ix+FC.MODE) ; file open for append?
 	jr	z,fopn4		   ; reset file pointers and return if not
 
+	bit	FM.TT,(ix+FC.MODE) ; device mode?
+	jr	nz,fopn4	   ; skip seek operation if yes
+
 	ld	e,(ix+FC.FDB)
 	ld	d,(ix+FC.FDB+1)
 	ld	hl,F.NUSED
 	add	hl,de
 	ld	a,(hl)
 	ld	(ix+FC.BLK),a	; else seek to last block
+	ld	c,a
 	inc	hl
 	ld	a,(hl)
 	ld	(ix+FC.BLK+1),a
+	or	c
+	ld	c,a
 	inc	hl
 	ld	a,(hl)
 	ld	(ix+FC.BLK+2),a
+	or	c
+	ld	c,a
 	xor	a
 	ld	(ix+FC.BLK+3),a
-
-	ld	hl,F.LBCNT
-	add	hl,de
-	ld	a,(hl)
-	ld	(ix+FC.CUR),a	; and set byte pointer past last byte in buffer
-	inc	hl
-	ld	a,(hl)
+	ld	a,c
+	or	a
+	jr	z,fopn5
+	call	?FDECB
+	call	FRDBLK		; load last block for eventual modification
+	jr	nc,fopn6
+	cp	E.EOF
+	scf
+	ret	nz
+fopn6:	ld	a,(ix+FC.CNT)
+	ld	(ix+FC.CUR),a	; set byte pointer past last byte in buffer
+	ld	a,(ix+FC.CNT+1)
 	ld	(ix+FC.CUR+1),a
 	xor	a
 	ret			; return success
@@ -203,7 +217,7 @@ fopn4:	; TODO: if file exists and mode is write (not read/write, not read),
 	ld	(ix+FC.BLK+1),a
 	ld	(ix+FC.BLK+2),a
 	ld	(ix+FC.BLK+3),a
-	ld	(ix+FC.CNT),a	; clear char count
+fopn5:	ld	(ix+FC.CNT),a	; clear char count
 	ld	(ix+FC.CNT+1),a
 	ld	(ix+FC.CUR),a	; clear current index
 	ld	(ix+FC.CUR+1),a
@@ -218,7 +232,7 @@ fm1:	bit	FM.WR,(ix+FC.MODE)
 	or	SF.ACW
 fm2:	bit	FM.WA,(ix+FC.MODE)
 	ret	z
-	or	SF.ACW
+	or	SF.ACR OR SF.ACW
 	ret
 
 	dseg
