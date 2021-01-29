@@ -6347,3 +6347,18 @@ BUGS:
   * added .SETL and .DELAY tests to the ICPTEST.CMD file.
 
 
+29/01/21
+
+- FCSLIB bug fixes:
+  * file open in append mode requires R/W access.
+  * seeking to end-of-file wrongly set the block pointer past last block
+    of the file.
+  * append mode did not preload the last block of a file.
+
+- PIP:
+  * implemented merge operation, e.g.: PIP DOC.TXT=TOC.TXT,CHAPTER*.TXT/ME
+  * implemented append operation, e.g.: PIP DOC.TXT=INDEX.TXT/AP
+
+- Updated the PIP.HLP file.
+
+
