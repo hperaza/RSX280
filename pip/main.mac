@@ -27,7 +27,7 @@
 	.Z80
 
 	TITLE	PIP - Peripheral Interchange Program
-	IDENT	'M0120'
+	IDENT	'M0121'
 
 	cseg
 
@@ -307,9 +307,7 @@ pip1:	ld	a,(ix)		; check switches
 	ld	a,(ix+4)
 	bit	S5.MD,a		; /MD?
 ;	jp	nz,PIPMKD
-	bit	S5.RD,a		; /RD?
-;	jp	nz,PIPRMD
-	bit	S5.CH,a		; /CH?
+	bit	S5.DF,a		; /DF?
 ;	jp	nz,PIPCHD
 
 	bit	S1.ID,(ix+0)	; /ID?
@@ -319,8 +317,17 @@ pip1:	ld	a,(ix)		; check switches
 
 pmult:	; multiple-file operations
 
-	bit	S3.ME,(ix+2)	; /ME?
-;	jp	nz,PIPMRG
+	ld	a,(ix+2)	; check for option conflicts
+	and	0 OR (1 SHL S3.ME) OR (1 SHL S3.AP)
+	cp	0 OR (1 SHL S3.ME) OR (1 SHL S3.AP)
+	ld	hl,tmserr
+	jp	z,ERROR		; /ME can't be specified with /AP
+
+
+;;	bit	S3.ME,(ix+2)	; /ME?
+;;	jp	nz,PIPCPY	; merge is done via copy
+;;	bit	S3.AP,(ix+2)	; /AP?
+;;	jp	nz,PIPCPY	; append is done via copy
 
 	bit	S4.MV,(ix+3)	; /MV?
 ;	jp	nz,PIPMV
@@ -328,7 +335,8 @@ pmult:	; multiple-file operations
 	bit	S4.RE,(ix+3)	; /RE?
 	jp	nz,PIPREN
 
-	jp	PIPCPY		; else try just plain copy
+	jp	PIPCPY		; else try just plain copy (also handles
+				;  /ME and /AP)
 
 	jp	CMDERR
 
@@ -681,8 +689,8 @@ swtab:	; directory listing switches
 	; directory operations
 
 	db	'MD',00h,(4 SHL 4) OR S5.MD
-	db	'RD',00h,(4 SHL 4) OR S5.RD
-	db	'CH',00h,(4 SHL 4) OR S5.CH
+	db	'DF',00h,(4 SHL 4) OR S5.DF
+	db	'WI',00h,(4 SHL 4) OR S5.WI
 
 	db	0	; end of table
 

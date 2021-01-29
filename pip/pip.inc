@@ -50,9 +50,8 @@ S4.FO	equ	3	; preserve output file owner of file copy
 S4.LD	equ	4	; list files being deleted (used with /DE)
 S4.BL	equ	5	; pre-allocate blocks to contiguous file (used with /CO)
 
-; 5th byte - directory operations
+; 5th byte - directory operations and other misc options
 
 S5.MD	equ	0	; create directory
-S5.RD	equ	1	; delete directory
-S5.CH	equ	2	; set current directory
-
+S5.DF	equ	1	; set current directory
+S5.WI	equ	2	; wide output for full directory listing

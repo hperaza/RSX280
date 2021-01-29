@@ -36,7 +36,7 @@
 	extrn	LFNB,RFNB,CRFNB,ASGN,NRPARM,SWBITS,SWVAL,SEARCH
 	extrn	FCREAT,FOPEN,FREAD,FWRITE,FCLOSE,FWATTR,SETDIR
 	extrn	SETNAM,SETEXT,SRCFDB,DSTFDB,NFILES,STRBUF,FRDBLK
-	extrn	FWRBLK,FGETLN,FPUTLN,?FINCB
+	extrn	FGETLN,FPUTLN,?FINCB
 
 	extrn	SYSERR,ERRNF,ERRFNB
 
@@ -55,36 +55,60 @@ LF	equ	0Ah
 
 ;-----------------------------------------------------------------------
 
-PIPCPY:	ld	hl,RFNB
-	ld	(CRFNB),hl
+PIPCPY:	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	jr	nz,cp1		; yes
+	bit	S3.AP,a		; append operation?
+	jr	z,cp2		; no, ordinary copy
+
+cp1:	ld	hl,DSTFDB
+	ld	(ERRFNB),hl
+	call	OPNDST		; else open single destination file
+	jp	c,SYSERR	; or error, quit
+
+cp2:	ld	hl,RFNB
+	ld	(CRFNB),hl	; start with first source filespec
 
 loop:	call	CHKSDV		; check source device
-	jp	c,SYSERR
+	jp	c,cp5
 	bit	DV.DIR,a	; directory device?
-	jr	nz,cp1		; jump if yes to search for files
+	jr	nz,cp3		; jump if yes to search for files
 
 	ld	hl,(CRFNB)
 	ld	de,SRCFDB
 	ld	bc,FDBSZ
 	ldir
 	call	cpfile		; else copy from device
-	jp	c,SYSERR
-	jr	cp2
+	jp	c,cp5		; on error, exit
+	jr	cp4
 
-cp1:	ld	ix,(CRFNB)
+cp3:	ld	ix,(CRFNB)
 	ld	hl,docpy	; HL = callback routine address
 	call	SEARCH		; search for files
-	jp	c,SYSERR
+	jp	c,cp5		; on error, exit
 
-cp2:	ld	hl,NRPARM
+cp4:	ld	hl,NRPARM
 	dec	(hl)		; any more filespecs in command line?
-	ret	z		; return if not
+	jr	z,cp5		; finish if not
 
 	ld	hl,(CRFNB)
 	ld	de,FNSZ
 	add	hl,de
 	ld	(CRFNB),hl	; else select next filespec
 	jr	loop		; and loop until all processed
+
+cp5:	call	c,SYSERR	; report copy error, if any
+	xor	a		; clear CY
+	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	jr	nz,cp6		; yes
+	bit	S3.AP,a		; append operation?
+	ret	z		; no, return
+cp6:	ld	hl,DSTFDB
+	ld	(ERRFNB),hl
+	call	CLSDST		; close destination file
+	jp	c,SYSERR	; report file close error
+	ret
 
 ;-----------------------------------------------------------------------
 
@@ -173,6 +197,12 @@ cpfile:	ld	hl,SRCFDB
 	call	OPNSRC		; open source file
 	jp	c,cpye2		; jump on error
 
+	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	jr	nz,cpy3		; yes, output file already open
+	bit	S3.AP,a		; append operation?
+	jr	nz,cpy3		; ditto
+
 	ld	hl,DSTFDB
 	ld	(ERRFNB),hl
 	call	OPNDST		; open destination file
@@ -186,11 +216,7 @@ cpy3:	ld	a,(SRCFBK+FC.MODE)
 	bit	FM.TT,a
 	jr	nz,cpyln
 
-cpyblk:	ld	hl,SRCBUF	; share buffer for block-mode copy
-	ld	(SRCFBK+FC.BUF),hl
-	ld	(DSTFBK+FC.BUF),hl
-
-cpyb0:	ld	ix,SRCFBK
+cpyblk:	ld	ix,SRCFBK
 	call	FRDBLK		; read block from source file
 	jr	nc,cpyb1
 
@@ -200,11 +226,11 @@ cpyb0:	ld	ix,SRCFBK
 	call	nz,SYSERR
 	jr	cpyend
 
-cpyb1:	ld	hl,(SRCFBK+FC.CNT)
-	ld	(DSTFBK+FC.CNT),hl
-
+cpyb1:	ld	c,e		; number of bytes to write
+	ld	b,d
+	ld	de,SRCBUF	; from source buffer
 	ld	ix,DSTFBK
-	call	FWRBLK		; write block to dest file
+	call	FWRITE		; write block to dest file
 	jr	nc,cpyb2
 
 	ld	hl,(DSTFBK+FC.FDB)
@@ -214,11 +240,7 @@ cpyb1:	ld	hl,(SRCFBK+FC.CNT)
 
 cpyb2:	ld	ix,SRCFBK
 	call	?FINCB		; next block
-	ld	hl,(SRCFBK+FC.BLK)
-	ld	(DSTFBK+FC.BLK),hl
-	ld	hl,(SRCFBK+FC.BLK+2)
-	ld	(DSTFBK+FC.BLK+2),hl
-	jr	cpyb0
+	jr	cpyblk
 
 cpyln:	ld	ix,SRCFBK
 	ld	hl,STRBUF
@@ -242,7 +264,15 @@ cpln1:	ld	ix,DSTFBK
 	call	SYSERR
 
 cpyend:	call	CLSSRC		; close source file
-	call	CLSDST		; close destination file
+
+	xor	a		; clear CY
+	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	ret	nz		; yes, return
+	bit	S3.AP,a		; append operation?
+	ret	nz		; ditto
+
+	call	CLSDST		; else close destination file
 	ld	hl,(DSTFBK+FC.FDB)
 	ld	(ERRFNB),hl
 	call	c,SYSERR	; display error if dest close failed
@@ -296,6 +326,8 @@ OPNSRC:	ld	hl,SRCFDB
 	call	FOPEN		; open source file or device
 	ret
 
+; Close source file
+
 CLSSRC:	ld	ix,SRCFBK
 	call	FCLOSE		; close the input file
 	ret
@@ -307,14 +339,35 @@ OPNDST:	ld	hl,LFNB		; create output file on device
 	ld	bc,FNSZ
 	ldir
 
+	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	jr	nz,opnd0	; yes
+	bit	S3.AP,a		; append operation?
+	jr	z,opnd1		; no
+
+opnd0:	ld	a,(DSTFDB+F.WLDC)
+	or	a		; any wildcards?
+;;	ld	hl,err1
+	ld	a,E.BADF	; wilcards in output file not allowed for /ME
+	scf
+	ret	nz
 	ld	a,(DSTFDB+F.ATTR)
+	and	FN.NAME OR FN.EXT
+	cp	FN.NAME OR FN.EXT ; name and extension specified?
+;;	ld	hl,err2
+	ld	a,E.BADF
+	scf
+	ret	nz		; no, output file must be explicit
+	jp	opnd7		; else open/create output file
+
+opnd1:	ld	a,(DSTFDB+F.ATTR)
 	and	FN.NAME		; filename specified?
-	jr	z,opnd1		; if not, use filename from source file
+	jr	z,opnd2		; if not, use filename from source file
 	ld	a,(DSTFDB+F.WLDC)
 	and	FN.NAME		; wildcards in filename?
-	jr	z,opnd2		; branch if not
+	jr	z,opnd3		; branch if not
 
-opnd1:	ld	hl,SRCFDB+F.NAME
+opnd2:	ld	hl,SRCFDB+F.NAME
 	ld	de,DSTFDB+F.NAME
 	ld	bc,9		; else use filename from source file
 	ldir
@@ -322,14 +375,14 @@ opnd1:	ld	hl,SRCFDB+F.NAME
 	or	FN.NAME		; set 'filename specified' bit
 	ld	(DSTFDB+F.ATTR),a
 
-opnd2:	ld	a,(DSTFDB+F.ATTR)
+opnd3:	ld	a,(DSTFDB+F.ATTR)
 	and	FN.EXT		; extension specified?
-	jr	z,opnd3		; if not, use extension from source file
+	jr	z,opnd4		; if not, use extension from source file
 	ld	a,(DSTFDB+F.WLDC)
 	and	FN.EXT		; wildcards in extension?
-	jr	z,opnd4		; branch if not
+	jr	z,opnd5		; branch if not
 
-opnd3:	ld	hl,SRCFDB+F.EXT
+opnd4:	ld	hl,SRCFDB+F.EXT
 	ld	de,DSTFDB+F.EXT
 	ld	bc,3		; else use extension from source file
 	ldir
@@ -338,69 +391,85 @@ opnd3:	ld	hl,SRCFDB+F.EXT
 	or	FN.EXT		; set 'extension specified' bit
 	ld	(DSTFDB+F.ATTR),a
 
-opnd4:	ld	a,(DSTFDB+F.ATTR)
+opnd5:	ld	a,(DSTFDB+F.ATTR)
 	and	FN.VER		; version specified?
-	jr	z,opnd5		; if not, use version from source file
+	jr	z,opnd6		; if not, use version from source file
 	ld	a,(DSTFDB+F.WLDC)
 	and	FN.VER		; wildcards in version?
-	jr	z,opnd6		; branch if not
+	jr	z,opnd7		; branch if not
 
-opnd5:	ld	hl,(SRCFDB+F.VER) ; else use version from source file
+opnd6:	ld	hl,(SRCFDB+F.VER) ; else use version from source file
 	ld	(DSTFDB+F.VER),hl
 
 	ld	a,(DSTFDB+F.ATTR)
 	or	FN.VER		; set 'version specified' bit
 	ld	(DSTFDB+F.ATTR),a
 
-opnd6:	ld	a,(SWBITS+2)
+opnd7:	ld	a,(SWBITS+2)
+	bit	S3.AP,a		; append operation?
+	jr	nz,opnd8	; ignore /NV if yes
 	bit	S3.NV,a		; force new version?
-	jr	z,opnd7		; branch if not
+	jr	z,opnd8		; branch if not
 
 	ld	a,(DSTFDB+F.ATTR)
 	and	NOT FN.VER	; else clear 'version specified' bit
 	ld	(DSTFDB+F.ATTR),a
 
-opnd7:	ld	hl,DSTFDB
+opnd8:	ld	hl,DSTFDB
 	ld	de,(DSTFBK+FC.FDB)
 	ld	bc,FDBSZ
 	ldir			; set FDB in DSTFBK
 
 	ld	a,(SWBITS+2)
+	bit	S3.AP,a		; append operation?
+	jr	nz,opnd9	; ignore /SU if yes
 	bit	S3.SU,a		; supersede switch specified?
-	jr	z,opnd8		; jump if not
+	jr	z,opnd9		; jump if not
 
 	bit	S3.NV,a
-	jr	nz,opnd8	; /SU meaningless if /NV specified
+	jr	nz,opnd9	; /SU meaningless if /NV specified
 
 	ld	de,(DSTFDB+F.DEV) ; else if dest file exists, delete it
 	ld	a,(DSTFDB+F.UNIT)
 	ld	c,a
 	ld	b,LUNDST
-	SC	.ALUN
+	SC	.ALUN		; assign LUNDST
 	ret	c
 
 	ld	hl,qio1
 	SC	.QIO		; delete destination file, if it exists
-	ret	c		; return error if could not delete the file
+	ret	c
+	ld	a,(iosb)
+	or	a
+	jr	z,opnd9
+	cp	E.FNF		; 'file not found' error is OK
+	scf
+	ret	nz		; return error if could not delete the file
 				; TODO: more specific error message?
 
-opnd8:	ld	h,0		; default is non-contiguous file
+opnd9:	ld	h,0		; default is non-contiguous file
+
+	ld	a,(SWBITS+2)
+	bit	S3.ME,a		; merge operation?
+	jr	nz,opnd12	; force non-contiguous output if yes
+				; TODO: allow contiguous only with /BL:n
+
 	ld	ix,(SRCFBK+FC.FDB)
 	ld	a,(ix+F.ATTR)
 	and	FA.CTG		; is source file contiguous?
-	jr	nz,opnd9	; jump if yes
+	jr	nz,opnd10	; jump if yes
 	ld	a,(SWBITS+2)
 	bit	S3.CO,a		; force contiguous file?
-	jr	z,opnd10	; jump if not
-opnd9:	dec	h		; else set flag in reg H accordingly
+	jr	z,opnd12	; jump if not
+opnd10:	dec	h		; else set flag in reg H accordingly
 	ld	a,(SWBITS+3)
 	bit	S4.BL,a		; /BL switch specified?
-	jr	z,opnd91	; jump if not
+	jr	z,opnd11	; jump if not
 	ld	de,(SWVAL)	; else use the specified number of blocks
 	ld	a,(SWVAL+2)
 	ld	c,a
-	jr	opnd10
-opnd91:
+	jr	opnd12
+opnd11:
   IF 0
 	ld	e,(ix+F.NALOC)	; use same number of allocated blocks
 	ld	d,(ix+F.NALOC+1);  as original file
@@ -410,11 +479,20 @@ opnd91:
 	ld	d,(ix+F.NUSED+1);  actually used in the original file
 	ld	c,(ix+F.NUSED+2)
   ENDIF
-opnd10:	ld	ix,DSTFBK
+opnd12:	ld	ix,DSTFBK
+	ld	a,(SWBITS+2)
+	bit	S3.AP,a		; append operation?
+	jr	nz,append	; open file in append mode if yes
 	ld	(ix+FC.MODE),1 SHL FM.WR
 	ld	a,h
-	call	FCREAT
+	call	FCREAT		; else create file
 	ret
+
+append:	ld	(ix+FC.MODE),1 SHL FM.WA
+	call	FOPEN		; open file in append mode
+	ret
+
+; Close output file
 
 CLSDST:	ld	ix,DSTFBK
 	bit	FM.DV,(ix+FC.MODE) ; device mode?

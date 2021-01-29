@@ -68,6 +68,8 @@ and sw1, sw2, etc. (for input files) can be:
 
   /NV - force new version of output file
   /SU - supersede an existing version of the output file
+  /ME - merge files into a single output file
+  /AP - append files to an existing file
   /RE - rename file; the /CO output switch is not allowed
   /CD - preserve creation date
   /NM - suppress "file not found" messages
