@@ -1116,7 +1116,7 @@ pretdb:	ex	de,hl		; DE = ptr to command file name
 	ret
 
 loginv:	db	'Invalid account',0
-logmse:	db	'Other user logged in',0
+logmse:	db	'Other user logged on',0
 logdis:	db	'Logins are disabled',0
 
 logprm:	db	CR,LF,'Account or name: ',0
@@ -1236,7 +1236,7 @@ gc2:	xor	a
 	ld	(hl),a		; replace terminator with a null
 	ret
 
-tmomsg:	db	'Timeout in response',0
+tmomsg:	db	'Timeout on response',0
 
 ;-----------------------------------------------------------------------
 

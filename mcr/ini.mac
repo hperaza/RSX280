@@ -70,7 +70,7 @@ DEFSW	equ	0		; default switch value
 ; switches can be (use /NOsw or /-sw to negate action):
 ;  VF = verify. Default is no verify.
 ;  WB = write boot loader (optionally from external file /WB:filename)
-;       and update system file information in boot blocks. Default
+;       and update system file information on the boot blocks. Default
 ;       is to use built-in loaders if they match the device type (else
 ;       a warning is issued) [or INI dev:label,filename/wb]
 ;  LB = set volume label only. Default is null label.
@@ -373,7 +373,7 @@ ck1:	ld	a,(SWNUM)
 	jr	z,swmf
 	cp	SW.PR
 	jr	z,swpr
-	ld	hl,argerr	; now other switches can have arguments
+	ld	hl,argerr	; no other switches can have arguments
 	scf
 	ret
 
