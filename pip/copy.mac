@@ -44,8 +44,6 @@ CR	equ	0Dh
 LF	equ	0Ah
 
 ; TODO:
-; - if /ME switch specified, then LFNB is mandatory (no wildcards)
-;   and all src files will be merged into a single dst
 ; - if /MV switch supplied (excludes /ME, LFNB should be a directory
 ;   name) then simply copy the directory entry to the new dir and
 ;   mark srcs as deleted (better in a separate MOVE routine).
