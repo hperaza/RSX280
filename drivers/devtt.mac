@@ -1681,7 +1681,7 @@ tt0spd:	dec	a		; skip S.0
 	iopage	CTP
 	ld	hl,brdiv	; get divisor table address
 	add	a,a
-	add	hl,a		; index into table
+	add	hl,a		; index into table (A is still positive)
 	ld	hl,(hl)		; fetch value
 	dec	hl		; -1 for counter
 	ld	c,TC1
@@ -1920,7 +1920,7 @@ ttQspd:	dec	a		; skip S.0
 	ret	c
 	ld	hl,brdiv	; get divisor table address
 	add	a,a
-	add	hl,a		; index into table
+	add	hl,a		; index into table (A is still positive)
 	ld	a,_LCR		; select LCR register
 	add	a,e
 	ld	c,a
