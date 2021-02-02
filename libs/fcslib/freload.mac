@@ -38,11 +38,11 @@
 ; Preserves BC.
 
 ?FRELD:	xor	a
-	res	FS.BV,(ix+FC.MODE) ; valid buffer?
+	bit	FS.BV,(ix+FC.MODE) ; valid buffer?
 	ret	nz		   ; return success if yes
 
-	bit	FM.RD,(ix+FC.MODE) ; file open in R/W mode?
-	ret	z		   ; return success if not
+	bit	FM.RD,(ix+FC.MODE) ; file open in read-write mode?
+	ret	z		   ; return success if not (write-only)
 
 	push	bc
 	ld	l,(ix+FC.FDB)
