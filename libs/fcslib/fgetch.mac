@@ -26,7 +26,7 @@
 
 	public	FGETCH
 
-	extrn	FRDBLK,CPHLDE,?FINCB
+	extrn	FWRBLK,FRDBLK,CPHLDE,?FINCB
 
 	cseg
 
@@ -42,7 +42,11 @@ fgc0:	ld	e,(ix+FC.CUR)
 	ld	h,(ix+FC.CNT+1)
 	call	CPHLDE		; FC.CUR < FC.CNT?
 	jr	c,fgc2		; branch if yes
-	call	?FINCB		; prepare to read next block
+	bit	FS.BM,(ix+FC.MODE)
+	jr	z,fgc4
+	call	FWRBLK		; save any modifications (R/W mode)
+	jr	c,fgc3
+fgc4:	call	?FINCB		; prepare to read next block
 fgc1:	call	FRDBLK		; read block
 	jr	c,fgc3
 	ld	a,d

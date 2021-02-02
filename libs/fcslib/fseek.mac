@@ -57,7 +57,7 @@ fs1:
 	ld	(ix+FC.CUR),c
 	ld	a,b
 	and	1
-	ld	(ix+FC.CUR+1),a	; new byte position = pos % 512
+	ld	(ix+FC.CUR+1),a	   ; new byte position = pos % 512
 
 	push	hl
 	ld	l,b
@@ -65,29 +65,29 @@ fs1:
 	ld	b,d
 	srl	b
 	rr	h
-	rr	l		; BHL = new block number = pos / 512
+	rr	l		   ; BHL = new block number = pos / 512
 
 	bit	FS.BV,(ix+FC.MODE) ; buffer valid?
-	jr	z,fs2		   ; branch if not
+	jr	z,fs3		   ; no, set new block number and return
 
-	ld	e,(ix+FC.BLK)	; else get current block number
+	ld	e,(ix+FC.BLK)	   ; else get current block number
 	ld	d,(ix+FC.BLK+1)
 	ld	c,(ix+FC.BLK+2)
-	call	?CMP24		; same?
-	jr	z,fs3		; return if yes
+	call	?CMP24		   ; same?
+	jr	z,fs4		   ; yes, return
 
 	bit	FS.BM,(ix+FC.MODE) ; buffer modified?
-	jr	z,fs2		   ; branch if not
+	jr	z,fs2		   ; no, invalidate buffer, set blkno and return
 
 	call	FWRBLK		   ; else write changes back
-	jr	c,fs3
+	jr	c,fs5
 
 fs2:	res	FS.BV,(ix+FC.MODE) ; invalidate buffer
-	ld	(ix+FC.BLK),l	; set new block number
+fs3:	ld	(ix+FC.BLK),l	   ; set new block number
 	ld	(ix+FC.BLK+1),h
 	ld	(ix+FC.BLK+2),b
-	xor	a		; and return success
-fs3:	pop	hl
+fs4:	xor	a		   ; and return success
+fs5:	pop	hl
 	ret
 
 	end

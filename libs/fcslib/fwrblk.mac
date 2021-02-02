@@ -83,7 +83,7 @@ FWRBLK:	push	hl
 	ld	c,a
 	ld	b,0
 	call	?INC24		; BHL = blkno + 1
-	call	?CMP24		; compare to F.NUSED
+	call	?CMP24		; compare with F.NUSED
 	jr	z,upd1		; branch if same (on last block)
 	ld	a,0
 	jr	nc,upd2		; return if within file limits

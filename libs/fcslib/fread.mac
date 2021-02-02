@@ -27,7 +27,7 @@
 
 	public	FREAD
 
-	extrn	CPHLDE,FRDBLK,?FINCB,?FDECB
+	extrn	CPHLDE,FWRBLK,FRDBLK,?FINCB,?FDECB
 
 ;-----------------------------------------------------------------------
 
@@ -143,7 +143,13 @@ frd3:	; read operation crosses block boundary
 
 frd4:	; time to read next block
 
-	call	?FINCB
+	bit	FS.BM,(ix+FC.MODE)
+	jr	z,frd7
+
+	call	FWRBLK 		; save any pending changes (R/W mode)
+	jr	c,frd8
+
+frd7:	call	?FINCB
 	res	FS.BV,(ix+FC.MODE)
 
 	call	FRDBLK		; read next data block
@@ -158,7 +164,7 @@ frd4:	; time to read next block
 	ld	(ix+FC.CUR),l
 	ld	(ix+FC.CUR+1),h
 
-	pop	de		; discard dst
+frd8:	pop	de		; discard dst
 	pop	bc		; pop nread into BC
 ;;	ld	a,b
 ;;	or	c
