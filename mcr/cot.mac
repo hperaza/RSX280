@@ -898,7 +898,7 @@ wrdat:	ld	hl,datbuf
 	add	a,a		; *4
 	ex	de,hl
 	ld	hl,months
-	add	hl,a
+	add	hl,a		; A is always positive here
 	ld	bc,5
 	ldir
 	ex	de,hl

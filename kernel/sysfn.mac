@@ -73,7 +73,7 @@ SYSFN:	ld	hl,SVRSLT
 	push	hl		; save HL
 	ld	hl,fntab
 	add	a,a		; *2
-	add	hl,a
+	add	hl,a		; note A is still positive
 	ldw	hl,(hl)		; function address in HL
 	ex	(sp),hl		; push function address, restore HL
 	ret			; exec function

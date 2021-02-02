@@ -85,7 +85,7 @@ pr1:	push	hl
 PR3:	ld	c,a
 	add	a,a		; *2
 	add	a,c		; *3
-	add	hl,a
+	add	hl,a		; A is still positive (no sign extension)
 	ld	b,3
 pm:	ld	c,(hl)
 	call	VPUTC

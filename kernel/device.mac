@@ -211,7 +211,7 @@ $ASGN:	ld	(RECTYP),a	; save record type
 	pop	bc		; discard logical device name
 	pop	de		;  and unit, physical unit in C
 	ld	a,N.UCB
-	add	hl,a
+	add	hl,a		; OK to use 'add hl,a' since A is positive
 	jr	asn3
 
 	; not found, append a new entry
@@ -582,14 +582,14 @@ $ALUN:	ldw	hl,(ix+T.CTX)	; get task context block address into HL
 	or	l
 	jr	z,badlun	; invalid LUN
 	ld	a,TX.LUT
-	add	hl,a		; index into LUN table
+	add	hl,a		; index into LUN table (A is positive)
 	ld	a,b
 	dec	a		; 1..16 -> 0..15
 	cp	16
 	jr	nc,badlun
 	rlca			; *2
 	rlca			; *4
-	add	hl,a		; index into table
+	add	hl,a		; index into table (A is always positive here)
 	push	hl		; save pointer
 
 	; check if old device is attached to the issuing task
