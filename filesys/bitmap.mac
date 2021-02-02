@@ -474,6 +474,7 @@ bmc7:	inc	hl		; point to next byte in buffer
 	ld	a,b
 	or	h
 	or	l
+	ld	a,E.NCSPC
 	scf
 	ret	z
 	ld	(bmlen),hl
