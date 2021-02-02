@@ -218,3 +218,9 @@ Changelog
   but displaying the current speed value is not done yet.
 
 
+31/01/21
+
+- Optimized a bit the $MCOPY routine (note: beware of 'add hl,a', which
+  sign-extends A).
+
+

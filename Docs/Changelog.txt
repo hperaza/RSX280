@@ -6362,3 +6362,26 @@ BUGS:
 - Updated the PIP.HLP file.
 
 
+30/01/21
+
+- PIP:
+  * display file ID as (inode,seqno) in full directory listing.
+  * by default, display a narrower version of the full directory listing
+    (two rows per file), unless the /WI wide-listing subswitch is specified.
+  * if an output filespec is specified for the directory listing command,
+    ensure it has no wildcards (e.g. PIP *.TXT=/LI is not allowed).
+  * decode /OW:[grp,usr] and /PR:[rwed,rwed,rwed,rwed] switch arguments
+    (not yet used); wildcards are allowed.
+
+
+02/02/21
+
+- FCSLIB bug fixes:
+  * when seeking into a middle of an existing block, ?FRELD failed to load
+    the old block for modifications.
+  * in R/W mode, FGETCH and FREAD did not save any modifications done to
+    the current buffer before loading the next block.
+- SYSFCP: the BMCNTG routine some times failed to return the correct error
+  code.
+
+
