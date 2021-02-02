@@ -103,7 +103,7 @@ process:
 	jr	nc,fnerr
 	add	a,a
 	ld	hl,fntab
-	add	hl,a
+	add	hl,a		; note A is always positive (no sign extend)
 	ld	hl,(hl)
 	push	fnsto		; push return address
 	jp	(hl)
