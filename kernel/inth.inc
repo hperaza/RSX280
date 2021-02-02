@@ -192,86 +192,74 @@ INCTKC:	ld	hl,TICCNT
 ; Notes:
 ; - if using DMA, be sure to use a channel that is not in use used by
 ;   any device driver!
-; - uses B'C'
+; - supports only 8-bit RSX180-style bank numbers
 
 $MCOPY:	ld	a,b		; check count
 	or	c		; anything to move?
 	ret	z		; return if not
 
-	push	hl
-	push	de
-	push	bc
+	push	hl		; push src address
+	push	de		; push dst address
+	push	bc		; push count
 
-	push	hl
-	push	bc
+	push	hl		; push src address (2)
+	push	bc		; push count (2)
 	iopage	DMAP
 	ld	c,TDR2
 	ld	hl,0
-	outw	(c),hl
-	pop	bc
-	pop	hl
+	outw	(c),hl		; disable DMA while we mess around
 
-	push	hl
-	ld	l,c
-	ld	h,b
+	pop	hl		; pop count (2)
 	ld	c,DCR2
 	outw	(c),hl		; set DMA count
-	pop	hl
 
-	push	hl
+	pop	hl		; pop src address (2)
 	ld	c,SAL2
 	ld	a,h
-	or	11110000b
+	ld	b,a		; save high nibble
+	or	11110000b	; set DMA bits
 	ld	h,a
 	outw	(c),hl		; set low half of src address
-	pop	hl
-	ld	a,h
-	rrca
-	rrca
-	rrca
-	rrca
-	and	0Fh
 	exx
-	add	a,e		; add src bank address
+	ld	a,e		; get src bank address
 	exx
 	ld	l,a
 	ld	h,0
+	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	add	hl,hl
-	ld	a,l
-	or	0Fh
-	ld	l,a
+	ld	a,b		; get high nibble of address
+	or	00001111b	; set DMA bits
+	add	l		; add to bank address
+	ld	l,a		;  (can't use 'add hl,a' here because
+	ld	a,h		;   it sign-extends A)
+	adc	0
+	ld	h,a
 	inc	c		; SAH2
 	outw	(c),hl		; set high half of src address
 
-	ex	de,hl
-	push	hl
+	ex	de,hl		; get dst address into HL
 	ld	c,DAL2
 	ld	a,h
-	or	11110000b
+	ld	b,a		; save high nibble
+	or	11110000b	; set DMA bits
 	ld	h,a
 	outw	(c),hl		; set low half of dst address
-	pop	hl
-	ld	a,h
-	rrca
-	rrca
-	rrca
-	rrca
-	and	0Fh
 	exx
-	add	a,d		; add dst bank address
+	ld	a,d		; get dst bank address
 	exx
 	ld	l,a
 	ld	h,0
+	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	add	hl,hl
-	ld	a,l
-	or	0Fh
-	ld	l,a
+	ld	a,b		; get high nibble of address
+	or	00001111b	; set DMA bits
+	ld	e,a
+	ld	d,0
+	add	hl,de		; add to bank address
 	inc	c		; DAH2
 	outw	(c),hl		; set high half of dst address
 
@@ -283,12 +271,12 @@ $MCOPY:	ld	a,b		; check count
 	ld	hl,8100h	; continuous, byte size, inc src & dst
 	outw	(c),hl
 
-	pop	bc
-	pop	de
-	pop	hl
-	add	hl,bc
-	ex	de,hl
-	add	hl,bc
+	pop	bc		; pop count
+	pop	de		; pop dst address
+	pop	hl		; pop src address
+	add	hl,bc		; adjust src
+	ex	de,hl		;  and dst addresses
+	add	hl,bc		;   to point past moved block
 	ex	de,hl
 	ret
 
@@ -305,6 +293,7 @@ $UGETB:	push	hl
 	pop	hl
 	ldup	a,(hl)
 	ret
+
 ; Write byte in A to bank E, address HL.
 
 $UPUTB:	push	af
