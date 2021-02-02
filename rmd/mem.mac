@@ -883,7 +883,9 @@ dd_attr	equ	(1 SHL st_dev) OR (1 SHL st_fix)
 	add	hl,hl
 	add	hl,hl		; bank << 4
 	ld	a,(ix+D.START+1)
-	add	hl,a		; + hi(start) = base page
+	ld	e,a
+	ld	d,0
+	add	hl,de		; + hi(start) = base page
 	ld	(tmpent+1),hl	; base
 
   IF 1
@@ -970,8 +972,10 @@ upd2:	ldw	hl,(ix+T.PCB)
 	ld	a,(iy+P.SIZE)	; num of 4K pages
 	add	a,a
 	add	a,a		; *4
+	ld	e,a
+	ld	d,0
 	ld	hl,(szout)
-	add	hl,a
+	add	hl,de
 	ld	(szout),hl
 
 	bit	PS.BSY,(iy+P.STAT)
@@ -982,8 +986,10 @@ upd3:	inc	(numin)
 upd31:	ld	a,(iy+P.SIZE)	; num of 4K pages
 	add	a,a
 	add	a,a		; *4
+	ld	e,a
+	ld	d,0
 	ld	hl,(szin)
-	add	hl,a
+	add	hl,de
 	ld	(szin),hl
 	ld	l,(iy+P.BASE)
 	ld	h,0
@@ -992,7 +998,9 @@ upd31:	ld	a,(iy+P.SIZE)	; num of 4K pages
 	add	hl,hl
 	add	hl,hl		; base page << 4
 	ld	a,(ix+T.STRT+1)
-	add	hl,a		; + hi(start) = base page
+	ld	e,a
+	ld	d,0
+	add	hl,de		; + hi(start) = base page
 	ld	(tmpent+1),hl	; base
 
 	ld	l,(iy+P.SIZE)
