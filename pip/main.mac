@@ -400,7 +400,7 @@ getfs:	ld	a,(de)
 gf1:	xor	a
 	ret
 
-; Read a decimal number from input line into HL'HL.
+; Read a 32-bit decimal number from input line into HL'HL.
 ; Returns CY if the number contains invalid chars or if overflow happens.
 
 GETDEC:	ld	de,(lnptr)
@@ -451,6 +451,44 @@ adddig:	ld	c,l
 	exx
 	adc	hl,bc		; add digit
 	exx
+	ret
+
+; Read a 16-bit hexadecimal number from input line into HL.
+; Returns CY if the number contains invalid chars or if overflow happens.
+
+GETHEX:	ld	de,(lnptr)
+	call	getnb
+	ld	hl,0
+gh1:	call	getfs
+	jr	z,gh3		; note no CY
+	call	UCASE
+	sub	'0'
+	jr	c,gh3		; note CY
+	cp	10
+	jr	c,gh2		; note CY
+	cp	11h
+	jr	c,gh3
+	cp	17h
+	ccf
+	jr	c,gh3
+	sub	7
+gh2:	call	addhex		; note CY on overflow
+	inc	de
+	jr	nc,gh1
+gh3:	ld	(lnptr),de
+	ret
+
+addhex:	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,hl		; *16
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; add hex digit
 	ret
 
 ;-----------------------------------------------------------------------
@@ -514,7 +552,7 @@ par01:	ld	a,(hl)		; see where PFN stopped
 	jr	z,par3		; then process it
 	cp	'!'		; a comment?
 	ret	z		; then just return - ignore it
-	ld	de,snerr	; else is error
+par0e:	ld	de,snerr	; else is error
 	scf
 	ret
 
@@ -614,10 +652,10 @@ par3e:	ld	de,swerr
 	scf
 	ret
 
-par4:	; process switch argument
-	; 01 = :n
-	; 02 = :[gid,uid]
-	; 03 = :[rwed,...]
+par4:	; process switch argument, coded in the table as follows:
+	;   01 = :n           n is a 32-bit decimal value
+	;   02 = :[gid,uid]   UIC, gid and uid are 8-bit decimal values
+	;   03 = :[rwed,...]  protection bits, forming a 16-bit word
 	; hi-bit set means argument required, else is optional
 	; note that in all cases above the argument result is 1 word
 
@@ -627,14 +665,107 @@ par4:	; process switch argument
 	ret	nz		; return if not
 	inc	hl
 	dec	c
-	jr	z,par4n
+	jp	z,par4n
 	dec	c
-	jr	z,par4u
-	; [rwed...] ...
+	jp	z,par4u
+
+	; get access protection bits, [rwed,rwed,rwed,rwed] or hex value
+
+	ex	de,hl
+	call	getnb
+	cp	'['		; check for [rwed...] format
+	jr	z,par4p
+	ld	(lnptr),de
+	call	GETHEX		; else get hexadecimal value
+	jp	c,par0e		; exit on overflow error
+	ld	a,c
+	or	a
+	jp	z,par0e		; can't be empty string
+	ld	(SWVAL),de	; store result
+	ld	hl,(lnptr)
 	ret
 
-par4n:	ld	(lnptr),hl
+par4p:	; decode [rwed...] access bits
+
+	ld	hl,0		; start with null aceess bits
+	exx
+	ld	hl,0		; and null mask
+	exx
+	ld	b,4		; number of groups
+par4p2:	inc	de
+	call	getnb		; skip spaces, get char
+	cp	']'
+	jr	z,par4p4
+	cp	','		; group separator?
+	jr	z,par4p3	; branch if yes
+	cp	'*'		; wildcard?
+	jr	nz,par4p5	; no
+	exx
+	ld	a,l
+	exx
+	and	0Fh		; already set?
+	jp	nz,par0e	; yes, error
+	or	0Fh		; else set mask
+	exx
+	ld	l,a
+	exx
+	jr	par4p2		; and loop to process next
+
+par4p5:	call	gtrwed		; get single protection bit
+	jp	c,par0e
+	ld	a,l
+	and	c		; already set?
+	jp	nz,par0e	; yes, error
+	ld	a,l
+	or	c
+	ld	l,a		; else set bit
+	jr	par4p2		; and loop to process next
+
+par4p3:	add	hl,hl		; shift mask
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	exx
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	exx
+	djnz	par4p2		; and loop to process next group
+	jp	par0e
+
+par4p4:	dec	b
+	jp	nz,par0e	; all groups must have been specified
+	ld	(SWVAL),hl	; store result
+	exx
+	ld	(SWVAL+2),hl
+	exx
+	inc	de
+	ex	de,hl
+	ld	(lnptr),hl
+	ret
+
+gtrwed:	call	UCASE
+	ld	c,08h
+	cp	'R'		; Read = 80h
+	ret	z
+	srl	c
+	cp	'W'		; Write = 04h
+	ret	z
+	srl	c
+	cp	'E'		; Extend = 02h
+	ret	z
+	srl	c
+	cp	'D'		; Delete = 01h
+	ret	z
+	scf
+	ret
+
+par4n:	; get 32-bit decimal value
+
+	ld	(lnptr),hl
 	call	GETDEC
+	jp	c,par0e
 	ld	(SWVAL),hl
 	exx
 	ld	(SWVAL+2),hl
@@ -642,7 +773,58 @@ par4n:	ld	(lnptr),hl
 	ld	hl,(lnptr)
 	ret
 
-par4u:	; [g,u]
+par4u:	; get UIC specification [g,u]
+
+	ex	de,hl
+	call	getnb
+	cp	'['		; opening bracket required
+	jp	nz,par0e
+	inc	de
+	call	par8b		; get group
+	jp	c,par0e
+	or	a
+	jp	z,par0e		; zero is not allowed
+	ld	(SWVAL),a	; store group ID
+	ld	a,c
+	ld	(SWVAL+2),a	; store group wildcard, if present
+	call	getnb
+	cp	','		; comma separator required
+	jp	nz,par0e
+	inc	de
+	call	par8b		; get user
+	jp	c,par0e
+	or	a
+	jp	z,par0e		; zero is not allowed
+	ld	(SWVAL+1),a	; store user ID
+	ld	a,c
+	ld	(SWVAL+3),a	; store user wildcard, if present
+	call	getnb
+	cp	']'		; closing bracket required
+	jp	nz,par0e
+	ex	de,hl
+	inc	hl
+	ld	(lnptr),hl
+	ret
+
+par8b:	call	getnb
+	cp	'*'		; wildcard?
+	jr	nz,par8b1	; no
+	ld	c,0FFh		; else set mask
+	ld	a,1
+	or	a
+	ret
+par8b1:	ld	(lnptr),de
+	call	GETDEC		; get decimal value
+	ret	c
+	ld	c,0
+	exx
+	ld	a,h		; ensure is a 8-bit value
+	or	l
+	exx
+	or	h
+	ld	a,l
+	ret	z
+	scf
 	ret
 
 swtab:	; directory listing switches
