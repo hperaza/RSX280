@@ -5590,7 +5590,7 @@ BUGS:
 
 - We need support for pseudo-devices: the T.LIB field of the TCB right now
   contains the full device name of the load device, meaning a lookup is
-  required everytime a task is loaded. If we switch to a UCB pointer, no
+  required every time a task is loaded. If we switch to a UCB pointer, no
   lookup will be necessary. In order to be able to locate tasks when booting
   from a different drive the logical device LB: is used, which doesn't have
   a UCB address since it ASN-ed. Thus, we need a true pseudo-device with a
@@ -5626,7 +5626,7 @@ BUGS:
 
 - New F.UCB field of FCB (shared with F.DEV). The filesystem task now stores
   there the UCB address of the device containing the file. This also avoids
-  a name lookup everytime the file is accessed.
+  a name lookup every time the file is accessed.
 
 - Added SY: pseudo-device.
 
@@ -5885,7 +5885,7 @@ BUGS:
 - Found a bug in the vol180 utility: the master directory is kept normally
   open so user directories can be located, but for write operations (e.g.
   when creating a new directory) a new copy of the FCB is created. This
-  can cause certain FCB fields to go out of sync with the primamry copy,
+  can cause certain FCB fields to go out of sync with the primary copy,
   which could potentially cause files to be lost (never ran into that issue,
   though??). Now shared files share the main part of the FCB, and that
   automatically solves the sync problem.
@@ -6338,7 +6338,7 @@ BUGS:
   * more strict expression syntax checking.
   * addition and subtraction operations now test for (unsigned) overflow.
   * dividing by zero now causes an overflow error.
-  * .INC and .DEC now produce an overflow/undeflow error if the value wraps
+  * .INC and .DEC now produce an overflow/underflow error if the value wraps
     around zero.
   * 'Numeric overflow/underflow' errors can be now suppressed with .ENABLE
     OVERFLOW.
@@ -6378,10 +6378,45 @@ BUGS:
 
 - FCSLIB bug fixes:
   * when seeking into a middle of an existing block, ?FRELD failed to load
-    the old block for modifications.
-  * in R/W mode, FGETCH and FREAD did not save any modifications done to
+    the old block contents for modifications.
+  * in R/W mode, FGETCH and FREAD did not save any modifications made to
     the current buffer before loading the next block.
 - SYSFCP: the BMCNTG routine some times failed to return the correct error
   code.
+- ICP:
+  * on startup, set the <EXSTRI> variable to the task's version ID.
+  * implemented the .CHAIN statement.
+
+
+03/02/21
+
+- ICP:
+  * when GLOBAL mode is enabled (and is enabled by default) symbols that
+    begin with a '$' are considered global and therefore passed to nested
+    and/or chained files.
+  * implemented all .ERASE options (GLOBAL, LOCAL, SYMBOL ssss).
+  * local symbols defined in a nested file are now erased when that file
+    exits.
+  * .CHAIN now also erases local symbols.
+
+
+04/02/21
+
+- ICP:
+  * new command-line switches: /TR (same as .ENABLE TRACE), /MC (same as
+    .ENABLE MCR, set by default) and /DE (same as .ENABLE DELETE, not yet
+    used). Switches can be negated: /-sw or /NOsw.
+  * .ENABLE/.DISABLE mode bits are now reset to their default values when
+    @calling (or .CHAINing to) a new command file; old mode bits are saved
+    into the file context structure (frame), and restored when the nested
+    file exits.
+  * do not send commands to the CLI if disabled by .DISABLE MCR or by the
+    /-MC switch; commands are still displayed, but preceded by a '!' to
+    indicate that the command is treated as a comment.
+  * when the input file is a terminal (interactive mode), update the FDB
+    (and thus <FILSPC>) with the physical device name.
+  * use the COMMAN variable to pass any .GOSUB arguments to the called
+    routine.
+  * implemented the .PAUSE command.
 
 
