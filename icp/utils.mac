@@ -38,6 +38,7 @@ ESC	equ	1Bh
 	public	SKIPBL,SKPNAM,STRCPY,STRLEN,GETNAM,GETNB,GETFS
 	public	ATOI,ATOU,ISDIG,ISALPN,ISBLNK,ISEOL,STRPEL,HLNEG
 	public	FNDCMD,DECSTR,HEXSTR,OCTSTR,AHEX2,ADDHLA,FNBSTR
+	public	CPNAM
 
 	extrn	UCASE
 
@@ -328,9 +329,9 @@ FNBSTR:	push	hl
 ; Copy name (CPNAME) or extension (CPEXT) from (HL) to (DE).
 
 CPNAME:	ld	b,9
-	jr	cpn1
+	jr	CPNAM
 CPEXT:	ld	b,3
-cpn1:	ld	a,(hl)
+CPNAM:	ld	a,(hl)
 	or	a
 	ret	z
 	cp	' '
@@ -338,7 +339,7 @@ cpn1:	ld	a,(hl)
 	ld	(de),a
 	inc	hl
 	inc	de
-	djnz	cpn1
+	djnz	CPNAM
 	ret
 
 ;-----------------------------------------------------------------------

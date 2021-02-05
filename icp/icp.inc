@@ -52,3 +52,10 @@ FB.BUF	equ	FB.CUR + 2	; buffer (512 bytes)
 
 FBFSZ	equ	FB.BUF + 512	; structure size
 
+; Macro for building command tables
+
+CMD	MACRO	name,addr
+	db	name,0
+	dw	addr
+	ENDM
+

@@ -39,11 +39,6 @@
 
 	cseg
 
-CMD	MACRO	name,addr
-	db	name,0
-	dw	addr
-	ENDM
-
 ;-----------------------------------------------------------------------
 
 SPECV:	ex	de,hl

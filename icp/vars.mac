@@ -36,10 +36,11 @@ LF	equ	0Ah
 	extrn	PUTCH,PUTSTR,CRLF,HLDEC,HLHEX,HLNEG
 	ENDIF
 
-	public	CLRVAR,FNDVAR,GETVAR,SETNV,SETSV,SETLV,ALLOC
-	public	FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
+	public	CLRVAR,FNDVAR,GETVAR,DELVAR,SETNV,SETSV,SETLV
+	public	ALLOC,FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
+	public	DELLCL,DELGBL
 
-	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG
+	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG,MODE
 	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR
 
 ;-----------------------------------------------------------------------
@@ -308,7 +309,8 @@ av1:	pop	bc
 ;-----------------------------------------------------------------------
 
 ; Find variable, name is in (DE)
-; If found, return pointer to value in HL and type bits in A.
+; If found, return BC = addr of variable, HL = pointer to value, and
+; A = type bits.
 ; If not found, return CY and HL pointing to end of var area.
 
 FNDVAR:	ld	hl,(stvar)	; point to start of variables
@@ -780,7 +782,7 @@ MOVARS:	ex	de,hl		; DE = dst
 	ld	a,h
 	sbc	a,d
 	jr	c,mv1		; branch if not
-	ldir			; else move down
+mv0:	ldir			; else move down
 	dec	de
 	ld	(endvar),de	; set new end
 	jr	mv2
@@ -819,6 +821,118 @@ mv3:	ld	a,(hl)
 	ld	(hl),c
 	ex	de,hl
 	jr	mv3
+
+;-----------------------------------------------------------------------
+
+; Delete a single variable, DE points to name.
+
+; TODO: simply mark it as deleted? space could be reclaimed during
+; garbage collection.
+
+DELVAR:	call	FNDVAR		; find variable
+	ret	c		; not found, return
+	ld	e,(hl)		; get value field into DE
+	inc	hl		;  and point to start of next variable
+	ld	d,(hl)
+	inc	hl
+	cp	V.STR		; string variable?
+	jr	nz,dv1		; no
+	ld	a,d
+	or	e
+	jr	z,dv1		; skip null pointer (should not happen)
+	xor	a
+	dec	de
+	ld	(de),a		; else free the space taken by the old string
+	dec	de
+	ld	(de),a
+dv1:	ex	de,hl		; DE = src
+	ld	hl,(endvar)
+	or	a
+	sbc	hl,de		; get block length
+	ex	de,hl		; HL = src
+	push	bc
+	ld	c,e		; BC = len
+	ld	b,d
+	inc	bc		; include end marker
+	pop	de		; DE = dst
+	jp	mv0		; move vars down and adjust string pointers
+
+; Delete all local variables.
+
+DELLCL:	ld	ix,cmplcl
+	jr	del0
+
+DELGBL:	ld	ix,cmpgbl
+del0:	ld	hl,(stvar)	; HL = src
+	ld	e,l		; DE = dst
+	ld	d,h
+del1:	ld	a,(hl)
+	inc	a		; end of vars
+	jr	z,del2		; yes
+	inc	hl
+	ld	c,(hl)		; get first char of name
+	dec	hl
+	call	jpix		; delete this variable?
+	jr	nz,keep		; no, keep it
+
+	ld	a,(hl)
+	push	af
+	and	3Fh
+	inc	hl		; skip length field
+	call	ADDHLA
+	inc	hl		; skip trailing null
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	inc	hl		; HL = start of next var
+	pop	af
+	and	0C0h		; get variable type
+	cp	V.STR		; string variable?
+	jr	nz,del1		; no, loop to process next
+	ld	a,b
+	or	c		; null string pointer?
+	jr	z,del1		; yes, loop to process next var
+	xor	a
+	dec	bc
+	ld	(bc),a		; free the string
+	dec	bc
+	ld	(bc),a
+	jr	del1		; and loop to process next var
+
+keep:	ld	a,(hl)
+	and	3Fh		; get length
+	ld	c,a
+	ld	b,0
+	inc	bc		; include length field,
+	inc	bc		;  value and
+	inc	bc		;   null terminator
+	inc	bc
+	ldir			; copy to new location
+	jr	del1		; continue
+
+del2:	ex	de,hl
+	ld	(hl),0FFh
+	ld	(endvar),hl	; set new end of variables
+	jp	mv2		; fix string pointers and return
+
+jpix:	jp	(ix)
+
+cmpgbl:	ld	a,(MODE+1)
+	cpl
+	and	1 SHL B1.GBL	; GLOBAL mode enabled?
+	ret	nz		; no, all variables are local
+	ld	a,c
+	sub	'$'		; else return Z if global variable
+	ret
+
+cmplcl:	ld	a,(MODE+1)
+	and	1 SHL B1.GBL	; GLOBAL mode enabled?
+	ret	z		; no, all variables are local
+	ld	a,c
+	sub	'$'		; else return Z if local variable
+	sub	1
+	sbc	a,a
+	ret
 
 ;-----------------------------------------------------------------------
 
