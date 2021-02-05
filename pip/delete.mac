@@ -338,7 +338,7 @@ dopur1:	ld	a,c
 
 	; TODO: safety check? (compare filename and ext)
 
-	ld	hl,(SWVAL+2)
+	ld	hl,(SWVAL+2)	; get number of versions to retain
 	ld	a,h
 	or	l
 	jp	nz,CMDERR
