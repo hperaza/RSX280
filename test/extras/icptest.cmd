@@ -148,6 +148,20 @@
 	.RETURN
 .continue:
 ;
+; 6c) Passing arguments
+;
+	.SETS expect "abc def ghi"
+	.GOSUB sub3 abc def ghi
+	.SETS expect S
+	.GOSUB sub3 'S'
+	.SETS expect "123"
+	.GOSUB sub3 123!456
+	.GOTO cont2
+.sub3:
+	; **** on sub 3, got 'COMMAN' ('expect' expected)
+	.RETURN
+.cont2:
+;
 ; 7) .IF test
 ;
 	.ASKN n1 Enter first number
@@ -336,29 +350,27 @@
 	; Sleeping for 5 seconds
 	.DELAY 5S
 ;
-; Still unimplemented:
+; 15) .PAUSE
 ;
-;   .ERASE LOCAL
-;   .ERASE GLOBAL
-;   .ERASE SYMBOL name
+	.PAUSE
+;
+; Still unimplemented:
 ;
 ;   .ONERR label
 ;
-;   .CHAIN filename
-;
 ;   .BEGIN - .END blocks
 ;
-;   .PAUSE
-;
-;   nested command files
-;   many special variables are also missing
+;   several special variables are also missing:
+;   <ERSEEN> <ERRCTL> <ERRNUM> <ERRSEV> <MEMSIZ> <LOGDEV> <FILATR>
 ;
 ; This file doesn''t test:
 ;
-;   .ERASE
+;   .CHAIN filename
+;   .ERASE [LOCAL|GLOBAL|SYMBOL name]
 ;   .EXIT [value]
 ;   .STOP [value]
 ;   .WAIT taskname
 ;   .XQT taskname args ...
+;   nested command files
 ;
 .;.DEBUG
