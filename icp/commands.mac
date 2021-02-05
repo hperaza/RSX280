@@ -52,20 +52,16 @@ cnd$ge	equ	6
 	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI
 
 	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU
-	extrn	ALLOC,SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY
+	extrn	ALLOC,SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM
 	extrn	INPBUF,LNPTR,EVAL,SEVAL,GPRMPT,RDCMD,PROCLN
 	extrn	INDSTP,INDEOF,CLRVAR,GSBTBL,GSBLVL,GETPOS,SETPOS
 	extrn	ISBLNK,ISDIG,ISALPN,PRCMD,VNAME,ADDHLA,STRLEN
 	extrn	DECSTR,PRMSG,EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT
 	extrn	FDB,LNBUF,SUBST,ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL
+	extrn	DELLCL,DELGBL,DELVAR,CHNIND,COMMAN
 
 	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF,SLEEP
 	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
-
-CMD	MACRO	name,addr
-	db	name,0
-	dw	addr
-	ENDM
 
 ;-----------------------------------------------------------------------
 
@@ -735,12 +731,37 @@ gtln3:	xor	a
 
 ;-----------------------------------------------------------------------
 
-; .ERASE
 ; .ERASE LOCAL
 ; .ERASE GLOBAL
 ; .ERASE SYMBOL varname
 
-erase:	call	CLRVAR		; erase all variables
+erase:	ex	de,hl
+	call	SKIPBL
+	ld	de,ERAOPT
+	call	FNDCMD		; get option
+	jp	c,CMDERR	; error if not found
+	ld	(LNPTR),de
+	push	bc
+	ret
+
+ERAOPT:	CMD	'GLOBAL',	eragbl
+	CMD	'LOCAL',	eralcl
+	CMD	'SYMBOL',	erasym
+	db	0
+
+eragbl:	call	DELGBL		; delete all global variables
+	xor	a
+	ret
+
+eralcl:	call	DELLCL		; erase all local variables
+	xor	a
+	ret
+
+erasym:	call	getvn2		; get variable name
+	ld	de,varnam
+	call	DELVAR
+	jp	c,ERRUDF
+	xor	a
 	ret
 
 ;-----------------------------------------------------------------------
@@ -989,7 +1010,7 @@ incsl:	ld	hl,(strp)
 ; - .GOTO targets can be only within the current .BEGIN-.END block!
 
 goto:	call	getlbl		; get label name into 'varnam'
-	ld	hl,0		; blk #
+gto0:	ld	hl,0		; blk #
 	ld	de,0		; char offset
 	ld	bc,1		; line #
 	call	SETPOS		; reset indirect file
@@ -1029,22 +1050,41 @@ cmplbl:	ld	a,(hl)
 ; .GOSUB label args
 
 ; label can be anywhere in the file.
+; args are stored in the COMMAN local string variable.
 
 ; TODO:
 ; - .BEGIN-.END block context must be saved on entry, and restored
 ;   on .RETURN
-; - args that follow .GOSUB label up to a comment and are stored
-;   in the _reserved_ _local_ COMMAN variable. If user redefined
-;   COMMAN erase and recreate it.
 
-gosub:	ld	a,(GSBLVL)
-	inc	a
-	cp	MAXGSB
-	jr	c,gsb1
+gosub:	call	getlbl		; get label name into 'varnam'
+	call	GETNB		; skip blanks
+	ld	hl,askbuf	; use askbuf as string arg buffer
+	push	hl
+gsb1:	ld	a,(de)
+	ld	(hl),a		; copy everything that follows
+	or	a
+	jr	z,gsb2
+	cp	'!'		; but stop at '!'
+	jr	z,gsb2
+	inc	hl
+	inc	de
+	jr	gsb1
+gsb2:	ld	(hl),0		; end string with a null
+	pop	hl
+	call	ALLOC		; allocate dynamic string
+	jp	c,ERRMEM
+	ld	de,COMMAN
+	call	SETSV		; set COMMAN variable
+	ret	c
+
+	ld	a,(GSBLVL)
+	inc	a		; increase .GOSUB nesting level
+	cp	MAXGSB		; maximum reached?
+	jr	c,gsb3		; not yet
 	ld	hl,egsb
-	jp	ERROR
+	jp	ERROR		; else exit with error
 
-gsb1:	ld	(GSBLVL),a
+gsb3:	ld	(GSBLVL),a
 	dec	a
 	add	a,a		; *2
 	ld	c,a
@@ -1063,7 +1103,7 @@ gsb1:	ld	(GSBLVL),a
 	ld	(ix+4),c
 	ld	(ix+5),b
 	pop	de
-	jp	goto
+	jp	gto0		; goto label
 
 egsb:	db	'.GOSUB nesting too deep',0
 
@@ -1188,7 +1228,7 @@ relop1:	call	UCASE
 	ld	a,(hl)
 	call	UCASE
 	cp	'Q'
-	ld	c,cnd$eq
+	ld	c,cnd$eq	; EQ
 	jr	z,rel2
 	jp	CMDERR
 
@@ -1198,7 +1238,7 @@ rel4:	cp	'N'
 	ld	a,(hl)
 	call	UCASE
 	cp	'E'
-	ld	c,cnd$ne
+	ld	c,cnd$ne	; NE
 	jr	z,rel2
 	jp	CMDERR
 
@@ -1208,10 +1248,10 @@ rel5:	cp	'L'
 	ld	a,(hl)
 	call	UCASE
 	cp	'E'
-	ld	c,cnd$le
+	ld	c,cnd$le	; LE
 	jr	z,rel2
 	cp	'T'
-	ld	c,cnd$lt
+	ld	c,cnd$lt	; LT
 	jr	z,rel2
 	jp	CMDERR
 
@@ -1221,10 +1261,10 @@ rel6:	cp	'G'
 	ld	a,(hl)
 	call	UCASE
 	cp	'E'
-	ld	c,cnd$ge
+	ld	c,cnd$ge	; GE
 	jr	z,rel2
 	cp	'T'
-	ld	c,cnd$gt
+	ld	c,cnd$gt	; GT
 	jr	z,rel2
 	jp	CMDERR
 
@@ -2004,8 +2044,12 @@ tstset:	ld	(FILERR),a
 
 ; .CHAIN filespec args...
 
-chain:
-	scf
+; TODO:
+; - erase local vars (but don't close data files)
+; - clear .ONERR arguments
+; - process args? [RSX-11M apparently doesn't]
+
+chain:	call	CHNIND		; chain to specified file
 	ret
 
 ; Get file number (assumes spaces have been skipped)
@@ -2210,21 +2254,21 @@ bend:
 ; .EXIT
 ; .EXIT value
 
-exit:	call	GETNB
+exit:	call	GETNB		; argument specified?
 	or	a
-	jp	z,INDEOF
-	call	EVAL
-	ld	(EXSTAT),de
-	jp	INDEOF
+	jp	z,INDEOF	; no
+	call	EVAL		; else evaluate expression
+	ld	(EXSTAT),de	; store exit status
+	jp	INDEOF		; end this level
 
 ;-----------------------------------------------------------------------
 
 ; .STOP
 ; .STOP value
 
-stop:	call	GETNB
+stop:	call	GETNB		; argument specified?
 	or	a
-	jp	z,INDSTP
+	jp	z,INDSTP	; no
 	call	EVAL		; evaluate argument
 	ld	(EXSTAT),de	; set exit status to result
 	jp	INDSTP		; end execution
@@ -2290,13 +2334,13 @@ delay:	call	GETNB		; skip spaces, get char
 	jp	nz,CMDERR
 dly1:	ex	de,hl
 	ld	hl,dlyms1	; 'Delaying'
-	call	dly2
+	call	dly3
 	ex	de,hl		; get magnitude back into HL
 	ld	d,b		; and units into B
 	call	SLEEP		; sleep for the specified amount
 	jp	c,SYSERR
-	ld	hl,dlyms2	; 'Continuing'
-dly2:	ld	a,(MODE+1)
+dly2:	ld	hl,dlyms2	; 'Continuing'
+dly3:	ld	a,(MODE+1)
 	bit	B1.QIE,a	; quiet mode?
 	ret	nz		; return if yes (note CY is clear)
 	call	PRMSG		; else output message
@@ -2308,8 +2352,37 @@ dlyms2:	db	'Continuing',0
 
 ; .PAUSE
 
-pause:
+pause:	ld	hl,pmsg
+	ld	de,askbuf	; prepare message
+	push	de
+	call	STRCPY
+	push	hl
+	ld	hl,GTBUF+GT.NAME
+	ld	b,6
+	call	CPNAM
+	pop	hl
+	inc	hl
+	call	STRCPY
+	pop	hl
+ if 0
+	call	dly3		; output message
+ else
+	call	PRMSG		; output message
+ endif
+	call	GPRMPT		; followed by the CLI prompt
+	call	PUTSTR
+	call	TTFLSH		; ensure all output is displayed
+	ld	hl,0
+	SC	.STOP		; stop task
+	jp	c,SYSERR
+ if 0
+	jp	dly2		; finish via common code
+ else
+	xor	a
 	ret
+ endif
+
+pmsg:	db	'Pausing. To continue type "RES ',0,'<ESC>"',0
 
 ; .WAIT taskname
 
@@ -2319,11 +2392,12 @@ wait:	call	GETNB
 	ld	a,(hl)		; ensure task name is valid
 	cp	' '
 	jp	z,CMDERR	; TODO: empty task name means TTnn
-	;...check if task in table (started by us)
-	;...if yes, wait for flag
-	;...else check if task is active
-	;........if yes, connect to task and wait
-	;........else set <EXSTAT> to -1??
+	; TODO:
+	; - check if task in table (started by us)
+	; - if yes, wait (stop) for flag
+	;   else check if task is active
+	;     if yes, connect to task and wait
+	;     else set <EXSTAT> to -1??
 	ld	e,XQTFLG
 	SC	.STSE		; stop for event flag
 	ret
@@ -2333,8 +2407,8 @@ wait:	call	GETNB
 ; TODO:
 ; - use table of tasks started by us so we can trace exit status
 
-exec:	call	GETNB
-	ld	(LNPTR),de
+exec:	call	GETNB		; skip blanks
+	ld	(LNPTR),de	; pass the rest of the line to MCR
 	ld	a,1
 	ld	(XQTMOD),a	; set no-wait flag
 	jp	PRMCR		; send command to MCR
