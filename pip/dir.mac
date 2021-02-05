@@ -47,7 +47,6 @@ BMHSZ	equ	16
 
 ; TODO:
 ; - check for ambiguous switches
-; - left filespec, if specified, must not contain wildcards
 
 ;-----------------------------------------------------------------------
 
@@ -64,7 +63,12 @@ PIPDIR:	ld	a,(ASGN)
 	ld	(ix+F.UNIT),0
 	ld	(ix+F.ATTR),FN.DEV
 
-dir0:	ld	hl,LFNB
+dir0:	ld	a,(LFNB+F.WLDC)
+	or	a		; output filespec can't contain wildcards
+	ld	a,E.BADF
+	jp	nz,SYSERR	; TODO: better error message
+
+	ld	hl,LFNB
 	ld	de,(DSTFBK+FC.FDB)
 	ld	bc,FNSZ
 	ldir			; set FDB in DSTFBK
@@ -227,20 +231,14 @@ dpf:	push	ix
 	xor	a		; (no filler)
 	ex	de,hl
 	call	CVTWD		; output version number
-	ex	de,hl
-
 	neg
 	add	a,5
-	jr	z,dpf4
-	ld	b,a
-	ld	a,' '		; left-justify version number
-dpf3:	ld	(de),a
-	inc	de
-	djnz	dpf3
+	call	pad		; left-justify version number
+	ex	de,hl
 
-dpf4:	ld	a,(SWBITS)
+	ld	a,(SWBITS)
 	bit	S1.BR,a		; brief mode?
-	jr	z,dpf8		; jump if not
+	jr	z,dpf7		; jump if not
 
 	xor	a		; clear CY (success) for 'ret nz' below
 	ld	(de),a
@@ -254,13 +252,41 @@ dpf4:	ld	a,(SWBITS)
 	xor	a
 	ret
 
-dpf8:	push	de
+dpf7:	push	de
 	ld	bc,(ino)
 	call	RDINOD
 	pop	de
 	ret	c
 
-	push	de
+	ld	a,(SWBITS)
+	bit	S1.FU,a		; full mode?
+	jr	z,dpf8		; jump if not
+
+	ex	de,hl
+	ld	(hl),' '
+	inc	hl
+	ld	(hl),'('	; else display file ID
+	inc	hl
+	ld	de,(ino)
+	xor	a
+	call	CVTWD		; as '(ino,seqno)'
+	ld	b,a
+	ld	(hl),','
+	inc	hl
+	ld	de,(inode+IE.SEQN)
+	xor	a
+	call	CVTWD
+	add	a,b
+	ld	b,a
+	ld	(hl),')'
+	inc	hl
+
+	ld	a,5+5+1		; twice max 16-bit decimal digits + sep
+	sub	b
+	call	nc,pad
+	ex	de,hl
+
+dpf8:	push	de
 	ld	hl,(inode+IE.USED) ; get number of used data blocks into BHL
 	ld	a,(inode+IE.USED+2)
 	ld	b,a
@@ -325,26 +351,32 @@ dpf2:	ld	c,e
 	ld	(hl),'['
 	inc	hl
 	ld	a,(inode+IE.GRP)
-	call	CVTBD
+	call	CVTBD		; else output group
 	ld	e,a
 	ld	(hl),','
 	inc	hl
 	ld	a,(inode+IE.USER)
-	call	CVTBD
+	call	CVTBD		; and owner
 	add	a,e
 	ld	e,a
 	ld	(hl),']'
 	inc	hl
+	ld	(hl),0
 
-	ld	a,7
+	ld	a,(SWBITS+4)
+	bit	S5.WI,a		; wide format?
+	jr	nz,dpf3		; jump if yes
+
+	call	WRSTR		; else output current line
+	ld	a,48
+	call	pad		; pad to file protection column
+	jr	dpf4
+
+dpf3:	ld	a,3+3+1		; twice max 8-bit decimal digits + sep
 	sub	e
-	jr	z,dpf6
-	ld	b,a
-dpf7:	ld	(hl),' '
-	inc	hl
-	djnz	dpf7
+	call	nc,pad		; pad to next column
 
-dpf6:	ld	(hl),'['
+dpf4:	ld	(hl),'['
 	inc	hl
 	ld	de,(inode+IE.PROT)
 	call	FPSTR		; display file protection
@@ -363,6 +395,14 @@ dpf5:	xor	a
 
 	xor	a
 	ret			; and return success
+
+pad:	or	a
+	ret	z
+	ld	b,a
+pad1:	ld	(hl),' '
+	inc	hl
+	djnz	pad1
+	ret
 
 ;-----------------------------------------------------------------------
 
