@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.40'
+	ident	'2.41'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -48,11 +48,12 @@ ESC	equ	1Bh
 	public	GETPOS,SETPOS,RDCMD,STPFLG,INPBUF,SYSERR,PROCLN
 	public	EOFMSG,INDSTP,INDEOF,GSBTBL,GSBLVL,GTBUF,PRCMD
 	public	ERROR,CMDERR,EXSTAT,XQTMOD,PRMCR,FDB,EXTEND,ADDEXT
+	public	CHNIND,COMMAN
 
 	extrn	INTCMD,SKIPBL,SKPNAM,STRLEN,CLRVAR,SUBST,GCCL,PFN
 	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
 	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
-	extrn	CPHLDE
+	extrn	DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE
 
 ;-----------------------------------------------------------------------
 
@@ -113,7 +114,11 @@ INIT:	ld	hl,0
 	ld	(STPFLG),a
 	ld	(GSBLVL),a	; clear .GOSUB level
 	ld	(XQTMOD),a
-	ld	(EXSTRI),a	; reset <EXSTRI> variable
+	ld	hl,GTBUF+GT.VID
+	ld	de,EXSTRI	; set <EXSTRI> variable to task version ID
+	ld	bc,6
+	ldir
+	ld	(de),a
 	ld	hl,prompt
 	ld	(hl),CR
 	inc	hl
@@ -130,14 +135,6 @@ INIT:	ld	hl,0
 	ld	(hl),0
 	ld	hl,EX.SUC
 	ld	(EXSTAT),hl
-	ld	ix,MODE
-	ld	(ix+0),0
-	ld	(ix+1),0
-	ld	(ix+2),0
-	set	B0.DPY,(ix+0)	; .enable display
-	set	B1.GBL,(ix+1)	; .enable global
-	set	B1.LWC,(ix+1)	; .enable lowercase
-	set	B1.TMO,(ix+1)	; .enable timeout
 	call	GETDPR		; get CLI default prompt
 	ret
 
@@ -173,7 +170,7 @@ PRCMD:	call	SKIPBL
 	jp	z,INTCMD	; jump if yes
 	cp	'/'		; stop command?
 	jr	z,INDSTP
-	cp	'@'		; open indirect file? [only for inter. mode?]
+	cp	'@'		; open indirect file?
 	jr	z,INDOPN
 
 PRMCR:	ld	hl,(LNPTR)	; else send command to MCR
@@ -307,21 +304,27 @@ echo0:	bit	B0.DPY,(ix+0)	; display mode?
 	ld	hl,mcrdpr	; else display MCR prompt
 	call	PUTSTR
 	call	TTFLSH
-	jr	echo3
+	jr	echo2
 echo1:	call	CRLF
-echo3:	ld	hl,LNBUF
+echo2:	ld	hl,LNBUF
 	ld	a,(hl)
 	cp	';'		; comment line?
 	push	af
-	jr	nz,echo2
+	jr	nz,echo3	; branch if not
 	bit	B0.DPY,(ix+0)	; display mode?
-	jr	nz,echo2	; jump if yes
+	jr	nz,echo4	; jump if yes
 	inc	hl		; else do not display the semicolon
-echo2:	call	PUTSTR		; output command
+	jr	echo4
+echo3:	bit	B1.MCR,(ix+1)	; MCR mode?
+	ld	c,'!'		; if not, display a comment char to tell
+	call	z,PUTCH		;  that commands are not being sent to MCR
+echo4:	call	PUTSTR		; output command
 	call	TTFLSH
 	pop	af
 	scf
 	ret	z		; return with CY set if comment line
+	bit	B1.MCR,(ix+1)
+	ret	z		; return with CY set if MCR is disabled
 	xor	a		; else return with CY clear
 	ret
 
@@ -378,9 +381,11 @@ ERRMSG:	push	hl
 PRLN:	ld	a,(indlvl)
 	or	a
 	ret	z
-	add	a,a
-	add	a,a
-	add	a,a		; *8 (push-down list struct size)
+	add	a,a		; *2
+	add	a,a		; *4
+	ld	c,a
+	add	a,a		; *8
+	add	a,c		; *12 (push-down list struct size)
 	ld	c,a
 	ld	b,0
 	ld	hl,indpdl
@@ -436,19 +441,19 @@ ieeof:	db	'@ <EOF>',CR,0
 
 ;-----------------------------------------------------------------------
 
-; Get MCR prompt if display mode is enabled.
+; Get MCR prompt and return with CY clear if display mode is enabled.
 
-GPRMPT:	ld	ix,MODE
+GPRMPT:	ld	hl,mcrdpr
+	ld	ix,MODE
 	bit	B0.DPY,(ix+0)	; display mode?
 	scf
 	ret	z		; return with CY set if not
-	ld	hl,mcrdpr
 	or	a
 	ret
 
 ;-----------------------------------------------------------------------
 
-; Open indirect command file
+; Push current context and open next indirect command file.
 
 OPNCMD:	ld	a,(indlvl)	; check nesting level
 	cp	MAXIND		; at maximum?
@@ -460,24 +465,29 @@ OPNCMD:	ld	a,(indlvl)	; check nesting level
 
 ind1:	or	a
 	call	nz,CPUSH	; push current context
-
-	ld	hl,-1
-	ld	(indblk),hl	; reset blkno
 	ld	hl,(LNPTR)
-	call	SKIPBL		; skip blanks, empty command tail?
-	jr	nz,ind5		; branch if not
-	ld	hl,TICMD	; else fake a "TI:" argument
-ind5:	ld	(LNPTR),hl
+	call	SKIPBL		; skip blanks
+	ld	(LNPTR),hl
 	push	hl
 	call	SETCMN		; set COMMAN variable
 	pop	hl
 	ret	c
-	ld	ix,FDB
+	call	OPEN		; open the file
+	ret	c
+	ld	hl,indlvl
+	inc	(hl)		; increase nesting level
+	ret
+
+OPEN:	ld	ix,FDB
 	call	PFN		; get file name
 	ld	(LNPTR),hl
-	ld	hl,CMDEXT
-	call	ADDEXT		; add CMD extension if necessary
+	call	SETDEF		; set defaults for any missing fields
+	call	INITMD		; reset MODE bits
+	call	PROCSW		; process switches
+	jp	c,CMDERR
 
+	ld	hl,-1
+	ld	(indblk),hl	; reset blkno
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a		; device name in DE-C
@@ -487,7 +497,7 @@ ind5:	ld	(LNPTR),hl
 	ld	(qio2+Q.LUN),a
 	ld	b,a		; LUN in B
 	SC	.ALUN		; assign LUN
-	jr	c,ind3
+	jr	c,opn1
 
 	ld	hl,luninf
 	ld	a,(indlvl)
@@ -498,37 +508,111 @@ ind5:	ld	(LNPTR),hl
 
 	ld	a,(luninf+4)
 	bit	DV.DIR,a	; directory device?
-	jr	z,ind4		; branch if not
+	jr	z,opn3		; branch if not
 
 	ld	l,IO.ACC
 	ld	h,SF.ACR OR SF.SHR
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; open the command file
-	jr	c,ind3
+	jr	c,opn1
 	ld	a,(res)		; get result code (lo-byte)
 	or	a
-	jr	z,ind2
-ind3:	ld	hl,iefnf
+	jr	z,opn2
+opn1:	ld	hl,iefnf
 	call	ERRMSG		; on error, display message and return
 	scf
 	ret
 
-ind2:	ld	hl,IO.RAT
+opn2:	ld	hl,IO.RAT
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,FINFSZ
 	ld	(qio1+Q.LEN),hl
 	ld	hl,qio1
 	SC	.QIO		; read attrib to get full filespec
-ind4:	ld	hl,indlvl
-	inc	(hl)		; increase nesting level
-	ld	hl,0
+	jr	opn4
+
+opn3:	ld	hl,luninf
+	ld	de,FDB+F.DEV
+	ld	bc,3
+	ldir
+opn4:	ld	hl,0
 	ld	(lnnum),hl	; clear current line number
 	ld	(indcnt),hl	; invalidate input buffer
 	ret
 
-TICMD:	db	'TI:',0
-CMDEXT:	db	'CMD'
+; Initialize MODE bits
+
+INITMD:	ld	ix,MODE
+	ld	(ix+0),0
+	ld	(ix+1),0
+	ld	(ix+2),0
+	set	B0.DPY,(ix+0)	; .enable display
+	set	B1.GBL,(ix+1)	; .enable global
+	set	B1.LWC,(ix+1)	; .enable lowercase
+	set	B1.MCR,(ix+1)	; .enable MCR
+	set	B1.TMO,(ix+1)	; .enable timeout
+	ret
+
+; Process command line switches
+
+PROCSW:	ld	hl,(LNPTR)
+	ld	a,(hl)		; get char following file name or prev switch
+	call	ISBLNK		; blank?
+	ret	z		; yes, return
+	cp	'/'		; switch delimiter?
+	scf
+	ret	nz		; no, return error
+	inc	hl		; skip delimiter
+	call	CHKNEG		; see if negated
+	ld	de,SWTBL
+	call	FNDCMD		; find switch in table
+	ret	c		; error if not found
+	ld	(LNPTR),de	; remember where we stopped
+	ld	a,80h		; initial bit mask
+	inc	c
+sw1:	rlca			; get bit into position
+	dec	c
+	jr	nz,sw1
+	ld	c,a
+	ld	hl,MODE
+	ld	a,b
+	call	ADDHLA		; index into MODE array
+	ld	a,(res)
+	or	a		; negated switch?
+	ld	a,c
+	jr	z,sw2		; no, set bit
+	cpl
+	and	(hl)		; else clear bit
+	jr	sw3
+sw2:	or	(hl)		; set bit
+sw3:	ld	(hl),a
+	jr	PROCSW		; loop to process next
+
+CHKNEG:	xor	a
+	ld	(res),a		; use 'res' as temporary storage
+	ld	a,(hl)
+	cp	'-'
+	jr	z,neg1
+	call	UCASE
+	cp	'N'
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'O'
+	jr	z,neg1
+	dec	hl
+	ret
+neg1:	inc	hl
+	ld	a,0FFh
+	ld	(res),a
+	ret
+
+SWTBL:	CMD	'DE',	<(0 SHL 8) OR B0.DEL>
+	CMD	'MC',	<(1 SHL 8) OR B1.MCR>
+	CMD	'TR',	<(1 SHL 8) OR B1.TRC>
+	db	0
 
 ; Set variable COMMAN to command line
 
@@ -667,21 +751,37 @@ IREAD:	ld	hl,(indblk)
 	xor	a
 	ret
 
-; Close indirect file, if open.
+; Close current indirect file, if open, and pop previous one.
 
-CLSIND:	ld	a,(indlvl)
+CLSIND:	call	DELLCL		; delete local symbols
+	ld	a,(indlvl)
 	or	a
 	ret	z
-	ld	a,(luninf+4)
+	call	CLOSE		; close the file
+	ld	hl,indlvl
+	dec	(hl)
+	call	nz,CPOP		; pop previous context
+	ret
+
+CLOSE:	ld	a,(luninf+4)
 	bit	DV.DIR,a
-	jr	z,cls1
+	ret	z
 	ld	hl,IO.DEA
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; close the file
-cls1:	ld	hl,indlvl
+	ret
+
+; Close current indirect file, if open, and chain to next.
+
+CHNIND:	call	DELLCL		; delete local symbols
+	call	CLOSE		; close current file
+	ld	hl,indlvl
 	dec	(hl)
-	call	nz,CPOP		; pop previous context
+	ld	hl,(LNPTR)
+	call	OPEN		; open next
+	ld	hl,indlvl
+	inc	(hl)
 	ret
 
 ielvl:	db	'Too many nested command files',0
@@ -728,9 +828,11 @@ CPUSH:	ld	a,(indlvl)
 	or	a
 	ret	z
 	dec	a
-	add	a,a
-	add	a,a
-	add	a,a		; *8 (push-down struct size)
+	add	a,a		; *2
+	add	a,a		; *4
+	ld	c,a
+	add	a,a		; *8
+	add	a,c		; *12 (push-down struct size)
 	ld	c,a
 	ld	b,0
 	ld	hl,indpdl
@@ -738,25 +840,31 @@ CPUSH:	ld	a,(indlvl)
 	ld	a,(indlvl)
 	dec	a
 	add	a,LUNIND
-	ld	(hl),a
+	ld	(hl),a		; store LUN
 	inc	hl
 	ld	a,(luninf+4)
-	ld	(hl),a
+	ld	(hl),a		; store device type
 	inc	hl
 	ld	bc,(indblk)
-	ld	(hl),c
+	ld	(hl),c		; store current block
 	inc	hl
 	ld	(hl),b
 	inc	hl
 	ld	bc,(indpos)
-	ld	(hl),c
+	ld	(hl),c		; store offset into block
 	inc	hl
 	ld	(hl),b
 	inc	hl
 	ld	bc,(lnnum)
-	ld	(hl),c
+	ld	(hl),c		; store line number
 	inc	hl
 	ld	(hl),b
+	inc	hl
+	ex	de,hl
+	ld	hl,MODE
+	ld	bc,3
+	ldir			; store MODE bits
+				; one byte reserved for local variable frame#
 	ret
 
 ; Pop current command file context
@@ -765,35 +873,41 @@ CPOP:	ld	a,(indlvl)
 	or	a
 	ret	z
 	dec	a
-	add	a,a
-	add	a,a
-	add	a,a		; *8 (push-down struct size)
+	add	a,a		; *2
+	add	a,a		; *4
+	ld	c,a
+	add	a,a		; *8
+	add	a,c		; *12 (push-down struct size)
 	ld	c,a
 	ld	b,0
 	ld	hl,indpdl
 	add	hl,bc
-	ld	a,(hl)
-	ld	(qio1+Q.LUN),a
+	ld	a,(hl)		; get LUN
+	ld	(qio1+Q.LUN),a	; restore QIO blocks
 	ld	(qio2+Q.LUN),a
 	inc	hl
-	ld	a,(hl)
+	ld	a,(hl)		; get device type
 	ld	(luninf+4),a
 	push	af
 	inc	hl
-	ld	c,(hl)
+	ld	c,(hl)		; get old block number
 	inc	hl
 	ld	b,(hl)
 	ld	(indblk),bc
 	inc	hl
-	ld	c,(hl)
+	ld	c,(hl)		; get old block offset
 	inc	hl
 	ld	b,(hl)
 	ld	(indpos),bc
 	inc	hl
-	ld	c,(hl)
+	ld	c,(hl)		; get old line number
 	inc	hl
 	ld	b,(hl)
 	ld	(lnnum),bc
+	inc	hl
+	ld	de,MODE
+	ld	bc,3
+	ldir			; restore MODE bits
 	pop	af
 	bit	DV.DIR,a
 	call	nz,STPOS	; restore file position
@@ -801,15 +915,33 @@ CPOP:	ld	a,(indlvl)
 
 ;-----------------------------------------------------------------------
 
-; Add extension @HL to filename in FDB, if none was specified
+; Default to TI: if no file name was specified, and set the extension
+; to .CMD if none was specified.
 
-ADDEXT:	ld	a,(FDB+F.ATTR)
+SETDEF:	ld	a,(ix+F.ATTR)
+	and	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	jr	nz,std1
+	ld	hl,TIDEV
+	ld	de,FDB+F.DEV
+	ld	bc,3
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.DEV
+	ld	(ix+F.ATTR),a
+std1:	ld	hl,CMDEXT
+ADDEXT:	ld	a,(ix+F.ATTR)
 	and	FN.EXT
 	ret	nz
 	ld	de,FDB+F.EXT
 	ld	bc,3
 	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
 	ret
+
+TIDEV:	db	'TI',0
+CMDEXT:	db	'CMD'
 
 ;-----------------------------------------------------------------------
 
@@ -856,7 +988,7 @@ indpos:	ds	2		; offset to current char in indbuf
 indcnt:	ds	2		; number of bytes left in indbuf
 indblk:	ds	2		; current indirect file block number
 
-indpdl:	ds	MAXIND*8	; indirect nesting push-down list
+indpdl:	ds	MAXIND*12	; indirect nesting push-down list
 
 qio1:	QIOW$	IO.ACC,LUNIND,9,res,,<FDB,0>
 qio2:	QIOW$	IO.RVB,LUNIND,9,res,,<indbuf,512,0,0,0>
