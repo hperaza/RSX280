@@ -36,22 +36,22 @@ MAXBP	equ	8		; max number of breakpoints
 
 	cseg
 
-	public	DEBUG$,DBG$IN,?D$HLX,?D$AX
+	public	ODT$,ODT$IN,?HLHEX,?AHEX
 
-	extrn	DBG$CI,DBG$CO,DBG$CS,DBG$EX,DIS280
+	extrn	ODT$CI,ODT$CO,ODT$CS,ODT$EX,DIS280
 
 ;-----------------------------------------------------------------------
 
 ; Init entry point.
 
-DBG$IN:	ld	hl,sstvt
+ODT$IN:	ld	hl,sstvt
 	SC	.SVTBL		; setup SST table
 	ret
 
 ; Debugger entry point.
 ; Called with HL = initial user PC and DE = initial user SP.
 
-DEBUG$:	ld	(pgm_pc),hl	; save initial PC
+ODT$:	ld	(pgm_pc),hl	; save initial PC
 	ld	(lastd),hl	; also as default for D and L commands
 	ld	(lastz),hl
 	dec	de		; adjust SP, assume PC was pushed
@@ -105,20 +105,20 @@ cmd_loop:
 	cp	'L'		; list?
 	jp	z,disasm
 	cp	'Q'		; quit?
-	jp	z,DBG$EX
+	jp	z,ODT$EX
 error:	call	cr_lf
 	ld	c,'?'		; unknown command
-	call	DBG$CO
+	call	ODT$CO
 	jr	cmd_loop
 
-banner:	db	CR,LF,'DEBUG V0.1',CR,0
+banner:	db	CR,LF,'ODT V0.1',CR,0
 prompt:	db	CR,LF,'@',0
 
 ; get command line
 
 getln:	ld	hl,lnbuf	; HL = start of command buffer
 	ld	b,1
-get:	call	DBG$CI		; get char
+get:	call	ODT$CI		; get char
 	cp	CR
 	jr	z,eol		; CR ends command
 	cp	8
@@ -133,7 +133,7 @@ get:	call	DBG$CI		; get char
 	ld	a,b
 	cp	40-1		; max length reached?
 	jr	nc,get		; ignore extra input if yes
-	call	DBG$CO		; echo char
+	call	ODT$CO		; echo char
 	ld	(hl),c		; store in buffer
 	inc	hl		; advance pointer
 	inc	b		;  and counter
@@ -141,15 +141,15 @@ get:	call	DBG$CI		; get char
 bkspc:	dec	b
 	jr	z,getln
 	ld	c,8
-	call	DBG$CO		; erase prev char from the screen
+	call	ODT$CO		; erase prev char from the screen
 	call	space
 	ld	c,8
-	call	DBG$CO
+	call	ODT$CO
 	dec	hl
 	jr	get
 eol:	ld	(hl),0		; end of input, append null char
 	ld	c,a
-	call	DBG$CO
+	call	ODT$CO
 	ret
 ctrlc:	ld	hl,ctlcm
 	call	print
@@ -172,7 +172,7 @@ print:	ld	a,(hl)
 	or	a
 	ret	z
 	ld	c,a
-	call	DBG$CO
+	call	ODT$CO
 	inc	hl
 	jr	print
 
@@ -272,15 +272,15 @@ cmp_eq:	inc	sp
 
 ; check for ^C abort or XON/XOFF
 
-?stop:	call	DBG$CS
+?stop:	call	ODT$CS
 	or	a
 	ret	z
-	call	DBG$CI
+	call	ODT$CI
 	cp	3		; ^C aborts
 	jp	z,ctrlc
 	cp	13h		; ^S suspends output
 	ret	nz
-	call	DBG$CI
+	call	ODT$CI
 	cp	3
 	jp	z,ctrlc
 	ret
@@ -324,7 +324,7 @@ dmpa:	ld	a,(hl)		; get byte
 	jr	c,char
 outdot:	ld	a,'.'		; output a dot if not
 char:	ld	c,a
-	call	DBG$CO
+	call	ODT$CO
 	call	?stop		; check for ^C abort
 	cpw	hl,de
 	ret	z		; return when done
@@ -352,12 +352,12 @@ search:	ld	a,c
 	ld	a,(hl)
 	call	outbyte		; output prev byte
 	ld	c,'('
-	call	DBG$CO
+	call	ODT$CO
 	inc	hl
 	ld	a,(hl)
-	call	?D$AX		; output matching byte
+	call	?AHEX		; output matching byte
 	ld	c,')'
-	call	DBG$CO
+	call	ODT$CO
 	call	space
 	inc	hl
 	ld	a,(hl)
@@ -395,7 +395,7 @@ cont:	inc	hl
 
 word:	call	out_addr	; output address
 	ld	hl,(hl)
-	jp	?D$HLX		; output contents
+	jp	?HLHEX		; output contents
 
 ; B
 ; display current Breakpoints
@@ -413,7 +413,7 @@ addbrk:	ld	ix,bptbl	; get breakpoint table address into IX
 	ld	de,3
 dispbp:	ld	hl,(ix)
 	call	cr_lf
-	call	?D$HLX		; display breakpoint address
+	call	?HLHEX		; display breakpoint address
 	add	ix,de
 	djnz	dispbp		; loop to process next
 	ret
@@ -479,11 +479,11 @@ dis2:	ld	a,d
 	ld	hl,(arg1)
 	call	out_addr	; output address
 	ld	c,TAB
-	call	DBG$CO		; output TAB separator
+	call	ODT$CO		; output TAB separator
 	call	DIS280		; output mnemonic (instruction address in HL)
 	ld	(arg1),hl
 	ld	c,CR
-	call	DBG$CO
+	call	ODT$CO
 	call	?stop		; check for ^C abort
 	ld	hl,(arg2)
 	dec	hl		; decrement count
@@ -564,47 +564,47 @@ trnext:	ld	ix,(pgm_sp)
 
 out_addr:
 	call	cr_lf
-	call	?D$HLX		; output address word
+	call	?HLHEX		; output address word
 	ld	c,':'
-	call	DBG$CO		; output colon
+	call	ODT$CO		; output colon
 	jr	space		; output space and return
 
 ; display 8-bit value followed by a space
 
 outbyte:
-	call	?D$AX
+	call	?AHEX
 space:	ld	c,' '
-	jp	DBG$CO
+	jp	ODT$CO
 
 ; display 16-bit hexadecimal value
 
-?D$HLX:	ld	a,h
-	call	?D$AX
+?HLHEX:	ld	a,h
+	call	?AHEX
 	ld	a,l
-?D$AX:	push	af
+?AHEX:	push	af
 	rrca
 	rrca
 	rrca
 	rrca
-	call	?D$NX
+	call	nhex
 	pop	af
-?D$NX:	and	0Fh
+nhex:	and	0Fh
 	add	a,90h
 	daa
 	adc	a,40h
 	daa
 	push	bc
 	ld	c,a
-	call	DBG$CO
+	call	ODT$CO
 	pop	bc
 	ret
 
 ; output newline
 
 cr_lf:	ld	c,CR
-	call	DBG$CO
+	call	ODT$CO
 	ld	c,LF
-	jp	DBG$CO
+	jp	ODT$CO
 
 ; trap entry point: saves all registers and jumps to the command loop.
 
@@ -639,8 +639,8 @@ debug_trap:
 	ld	hl,(pgm_pc)
 	ld	(arg1),hl
 	ld	c,TAB
-	call	DBG$CO
-	call	DBG$CO
+	call	ODT$CO
+	call	ODT$CO
 	call	DIS280		; display next instruction (address in HL)
 	ld	a,(reason)
 	dec	a		; single-stepping?
@@ -683,7 +683,7 @@ pr1:	call	print		; display reason
 	ld	hl,atpc_msg
 	call	print		; else display trap address
 	ld	hl,(pgm_pc)
-	jp	?D$HLX		; output address
+	jp	?HLHEX		; output address
 
 brk_msg:
 	db	CR,LF,"Break",0
@@ -755,11 +755,11 @@ chrg3:	call	cr_lf
 	ld	a,'='
 	cp	(hl)
 	ld	c,a
-	call	nz,DBG$CO	; follow alt regs with '='
+	call	nz,ODT$CO	; follow alt regs with '='
 	ex	de,hl
 	push	hl
 	ldw	hl,(hl)
-	call	?D$HLX		; output reg value
+	call	?HLHEX		; output reg value
 	call	space
 	call	getln		; read line
 	pop	de
@@ -823,7 +823,7 @@ srg1:	ldw	de,(hl)		; get pointer to register value into DE
 	ex	de,hl
 	call	print		; output register name
 	ex	(sp),hl
-	call	?D$HLX		; output value
+	call	?HLHEX		; output value
 	pop	hl
 	inc	hl
 	jr	srg1

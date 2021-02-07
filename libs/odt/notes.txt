@@ -7,26 +7,26 @@ conflicts to a minimum.
 
 The user must supply a few routines (still subject to changes):
 
- DBG$CI  - console input, returns single character in the accum.
- DBG$CO  - console output, single character in reg C (OK to use the PUTCH
+ ODT$CI  - console input, returns single character in the accum.
+ ODT$CO  - console output, single character in reg C (OK to use the PUTCH
            SYSLIB routine)
- DBG$CS  - console status: returns A=0 if no character is ready at the
+ ODT$CS  - console status: returns A=0 if no character is ready at the
            terminal, non-zero otherwise.
- DBG$EX  - exit debugger (or the debugged task) in response to the 'Q'
+ ODT$EX  - exit debugger (or the debugged task) in response to the 'Q'
            command.
 
 The first 3 routines above must save HL, DE and BC registers.
 
 See the 'odttest.mac' example in the 'test' directory.
 
-The user code must call the DBG$IN initialization routine (no arguments
+The user code must call the ODT$IN initialization routine (no arguments
 required) before calling the debugger's main loop.  Check the CY flag on
 return: if set, the debugger failed to set the SST vector table (typically
 when running on an older system).
 
 The debugger itself can be entered in two ways:
 
-1. Calling the DEBUG$ entry point, supplying in HL the staring address of
+1. Calling the ODT$ entry point, supplying in HL the starting address of
    the code to debug and in DE the initial stack pointer.
 
 2. Via a breakpoint (HALT instruction in the code).
@@ -60,8 +60,9 @@ Things to watch out for
 - Possible LUN conflicts: keep an eye on the LUN used for terminal I/O
   by the debugger; don't reassign it to anything else.
 
-- Debugging routines used by (or shared with) the debugger, e.g. DBG$CO
-  may call SYSLIB's PUTCH, so avoid single-stepping there. Etc.
+- Debugging routines used by (or shared with) the debugger, e.g. ODT$CO
+  may call SYSLIB's PUTCH, so avoid single-stepping there, etc. (single-
+  stepping over direct QIO calls is OK.)
 
 
 Debugger Commands

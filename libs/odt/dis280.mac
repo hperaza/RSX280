@@ -30,7 +30,7 @@ TAB	equ	9
 
 	public	DIS280
 
-	extrn	DBG$CO,?D$AX,?D$HLX
+	extrn	ODT$CO,?AHEX,?HLHEX
 
 ;-----------------------------------------------------------------------
 
@@ -108,7 +108,7 @@ op_000:	ld	a,(prefix)
 	and	03h
 	call	outcc		; output condition code
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outjrt		; output target address
 
 opnop:	call	outs		; 00 is NOP
@@ -152,7 +152,7 @@ op_001:	ld	a,(op)
 	db	'ADD',TAB,0
 	call	outihl		; output HL/IX/IY according to prefix
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	rrca			; op shr 4
 	and	03h
@@ -170,7 +170,7 @@ op112:	call	outldw		; 'LDW'
 	and	03h
 	call	outxrp
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outn16
 
 ; 02,12,22,32 and 0A,1A,2A,3A
@@ -186,12 +186,12 @@ op_002:	ld	a,(op)
 	jr	nz,op121	; no, load
 	call	outi16
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outihl
 
 op121:	call	outihl
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outi16
 
 op122:	ld	a,(prefix)
@@ -270,7 +270,7 @@ op601:	call	outld		; 'LD'
 	ld	a,(opshr3)
 	call	outxr
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outn8
 
 ; 07,17,27,37 and 0F,1F,2F,3F
@@ -335,7 +335,7 @@ op421:	ld	a,(opshr3)
 op422:	ld	a,(opshr3)
 	call	outir
 op423:	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(op)
 	cp	74h
 	jr	z,op424
@@ -378,7 +378,7 @@ outop1:	rrca
 	ld	hl,optbl1
 outop:	call	otx1
 	ld	c,TAB
-	jp	DBG$CO
+	jp	ODT$CO
 
 optbl1:	db	'ADD',0
 	db	'ADC',0
@@ -447,7 +447,7 @@ opc14:	ld	a,c
 	db	'JP',TAB,'(',0
 	call	outihl
 	ld	c,')'
-	jp	DBG$CO
+	jp	ODT$CO
 
 opc15:	call	outldw		; 'LDW'
 	call	outs
@@ -473,7 +473,7 @@ op_CC2:	call	outs
 	ld	a,(opshr3)
 	call	outcc		; output condition code
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outjpt
 
 op_CC3:	ld	a,(op)
@@ -519,7 +519,7 @@ opin:	ld	a,(prefix)
 	db	'IN',TAB,'A,(',0
 	call	outn8
 	ld	c,')'
-	jp	DBG$CO
+	jp	ODT$CO
 
 opsphl:	call	outs
 	db	'EX',TAB,'(SP),',0
@@ -557,7 +557,7 @@ op_CC4:	call	outs
 	ld	a,(opshr3)
 	call	outcc		; output condition code
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outjpt
 
 op_CC5:	ld	a,(op)
@@ -614,7 +614,7 @@ op_CC7:	ld	a,(prefix)
 	db	'RST',TAB,0
 	ld	a,(op)
 	and	38h
-	jp	?D$AX		; output byte
+	jp	?AHEX		; output byte
 
 ;-----------------------------------------------------------------------
 
@@ -663,9 +663,9 @@ dcb3:	ld	a,c
 	and	07h
 	add	a,'0'
 	ld	c,a
-	call	DBG$CO		; output bit number
+	call	ODT$CO		; output bit number
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 dcb4:	ld	a,(prefix)
 	or	a		; IX/IY prefixed?
 	jr	nz,dcb5		; branch if yes
@@ -674,12 +674,12 @@ dcb4:	ld	a,(prefix)
 	jp	outr		; else output register operand
 
 dcb5:	ld	c,'('
-	call	DBG$CO
+	call	ODT$CO
 	call	outihl		; output index reg name
 	ld	a,(offs)
 	call	disp8		; output displacement
 	ld	c,')'
-	jp	DBG$CO
+	jp	ODT$CO
 
 tblCB1:	db	'RLC',0
 	db	'RRC',0
@@ -739,7 +739,7 @@ ed02:	call	outs
 	db	'LDA',TAB,0
 	call	outihl
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	jp	outea
 
@@ -756,7 +756,7 @@ ed03:	ld	a,(prefix)
 ed04:	call	outldw		; 'LDW'
 	call	outihl
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	jp	outea
 
@@ -764,7 +764,7 @@ ed05:	call	outldw		; 'LDW'
 	ld	a,(opshr3)
 	call	outea
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outihl
 
 ed06:	ld	a,(op)
@@ -773,7 +773,7 @@ ed06:	ld	a,(op)
 	call	outldw		; 'LDW (HL),...'
 	call	outm
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	rrca			; op shr 4
 	and	03h
@@ -785,7 +785,7 @@ ed601:	call	outldw		; 'LDW ...,(HL)'
 	and	03h		; op shr 4
 	call	outrp
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outm
 
 ed07:	ld	a,(prefix)
@@ -870,7 +870,7 @@ ed421:	call	outs
 	db	'SBC',TAB,0
 ed422:	call	outihl
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	rrca			; op shr 4
 	and	03h
@@ -895,13 +895,13 @@ ed43:	ld	a,(prefix)
 	ld	c,a
 	call	outrp
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outi16
 
 ed431:	call	outldw		; 'LDW'
 	call	outi16
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	ld	a,(opshr3)
 	rrca			; op shr 4
 	and	03h
@@ -979,7 +979,7 @@ ed46:	ld	a,(prefix)
 	ld	hl,imtbl
 	add	hl,a
 	ld	c,(hl)
-	jp	DBG$CO
+	jp	ODT$CO
 
 imtbl:	db	'0312'
 
@@ -1125,7 +1125,7 @@ ed851:	call	outs
 ed852:	ld	a,(opshr3)
 	call	outea
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outepu
 
 ed86:	ld	a,(op)
@@ -1168,7 +1168,7 @@ ed865:	call	outs
 	db	'EPUM',TAB,0
 ed866:	call	outm
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outepu
 
 ed87:	ld	a,(opshr3)
@@ -1223,7 +1223,7 @@ ed_AF:	ld	a,(prefix)
 	db	'MEPU',TAB,0
 eda71:	call	outi16
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outepu
 
 ed_B7:	ld	a,(prefix)
@@ -1340,7 +1340,7 @@ outs1:	ld	a,(hl)
 	or	a
 	jr	z,outs2
 	ld	c,a
-	call	DBG$CO
+	call	ODT$CO
 	jr	outs1
 outs2:	pop	bc
 	ex	(sp),hl
@@ -1521,7 +1521,7 @@ outjrt:	call	GETB		; get displacement
 	add	hl,de
 otr1:	ld	de,(iptr)
 	add	hl,de		; add current address
-	jp	?D$HLX		; output word
+	jp	?HLHEX		; output word
 
 ; Output target address of JP or CALL instruction
 
@@ -1571,18 +1571,18 @@ expand:	ld	a,(hl)
 	dec	a		; 4 = n8
 	jp	z,outn8
 exp1:	ld	c,a
-	jp	DBG$CO
+	jp	ODT$CO
 
 ; Output 8-bit operand
 
 outn8:	call	GETB
-	jp	?D$AX		; output byte
+	jp	?AHEX		; output byte
 
 ; Output 16-bit operand
 
 outn16:	push	hl
 	call	GETW
-	call	?D$HLX		; output word
+	call	?HLHEX		; output word
 	pop	hl
 	ret
 
@@ -1603,9 +1603,9 @@ disp8:	cp	80h
 	neg	a
 	ld	c,'-'
 d81:	push	af
-	call	DBG$CO
+	call	ODT$CO
 	pop	af
-	jp	?D$AX		; output byte
+	jp	?AHEX		; output byte
 
 ; Output signed 16-bit displacement
 
@@ -1617,8 +1617,8 @@ outd16:	push	hl
 	jr	c,d161
 	neg	hl
 	ld	c,'-'
-d161:	call	DBG$CO
-	call	?D$HLX		; output word
+d161:	call	ODT$CO
+	call	?HLHEX		; output word
 	pop	hl
 	ret
 
@@ -1640,13 +1640,13 @@ tblea:	db	'(SP',1,')',0
 
 outepu:	call	outn8
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	call	outn8
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	call	outn8
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jp	outn8
 
 ; Output 'unknown' instruction
@@ -1656,12 +1656,12 @@ unknw:	call	outs
 	ld	hl,(iaddr)	; start address in HL
 	ld	de,(iptr)	; end address in DE
 u1:	ld	a,(hl)
-	call	?D$AX		; output byte @iaddr
+	call	?AHEX		; output byte @iaddr
 	inc	hl
 	cpw	hl,de
 	ret	nc
 	ld	c,','
-	call	DBG$CO
+	call	ODT$CO
 	jr	u1
 
 ; Return next opcode byte
