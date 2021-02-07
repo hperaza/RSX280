@@ -46,6 +46,7 @@ struct symbol {
 struct symbol symtab[] = {
   { "SYSDAT", 0, 0 },
   { "SYSVER", 0, 0 },
+  { "SYSTYP", 0, 0 },
   { "SYSTOP", 0, 0 },
   { "$HOSTN", 0, 0 },
   { "SYSEND", 0, 0 },
@@ -869,7 +870,7 @@ static int load_task(address tcb) {
 void fix_task(char *name) {
   address poolsize, tcb, size, mainpcb, subpcb, ctx;
   byte stat, attr, bank;
-  int i;
+  int i, ctxsz;
   
   /* We are loading the task directly here. Alternatively, we could
      just allocate the PCB, set the TA_FIX bit and place the TCB in
@@ -926,12 +927,14 @@ void fix_task(char *name) {
   sys_putb(bank, DBGRST, 0xC3);
   sys_putw(bank, DBGRST+1, get_sym("$DBTRP"));
   /* allocate context block */
-  ctx = pool_alloc(CTXSZ);
+  i = sys_getb(0, get_sym("SYSTYP"));
+  ctxsz = (i == 2) ? CTX280SZ : CTX180SZ;
+  ctx = pool_alloc(ctxsz);
   if (!ctx) {
     // ...delete subpartition
   }
   sys_putw(0, tcb + T_CTX, ctx);
-  for (i = 0; i < CTXSZ; ++i) sys_putb(0, ctx + i, 0);
+  for (i = 0; i < ctxsz; ++i) sys_putb(0, ctx + i, 0);
   attr = sys_getb(0, tcb + T_ATTR);
   attr |= (1 << TA_FIX);
   sys_putb(0, tcb + T_ATTR, attr);
@@ -1375,7 +1378,9 @@ int open_system_image(char *imgfile, char *symfile) {
   addr = get_sym("SYSVER");
   b2 = sys_getb(0, addr++);
   b1 = sys_getb(0, addr);
-  printf("System image V%d.%02d, size 0%04Xh", b1, b2, syssz);
+  i = sys_getb(0, get_sym("SYSTYP"));
+  p = (i == 2) ? "RSX280" : "RSX180";
+  printf("System image %s V%d.%02d, size 0%04Xh", p, b1, b2, syssz);
   addr = get_sym("$POLSZ");
   addr = sys_getw(0, addr);
   if (addr == 0) printf(", not yet configured");
