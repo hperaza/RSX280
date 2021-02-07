@@ -28,7 +28,8 @@ SRCS = hello.mac \
 	exstat.mac \
 	ds1820.mac \
 	tecken.mac \
-	qtest.mac
+	qtest.mac \
+	sst.mac
 
 OBJS = $(SRCS:.mac=.rel)
 TSKS = $(SRCS:.mac=.tsk)
