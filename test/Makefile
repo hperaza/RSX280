@@ -29,7 +29,8 @@ SRCS = hello.mac \
 	ds1820.mac \
 	tecken.mac \
 	qtest.mac \
-	sst.mac
+	sst.mac \
+	odttest.mac
 
 OBJS = $(SRCS:.mac=.rel)
 TSKS = $(SRCS:.mac=.tsk)
@@ -53,6 +54,9 @@ block0.tsk: block0.rel syslib.lib
 
 dmpres.tsk: dmpres.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/priv"
+
+odttest.tsk: odttest.rel odt.lib syslib.lib
+	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,odt/lb,syslib/lb"
 
 ckp.tsk: ckp.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/priv/task=...CKP"
