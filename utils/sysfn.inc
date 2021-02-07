@@ -40,8 +40,9 @@
 .GTSK	equ	37	; get task info
 .GTPAR	equ	38	; get partition info
 .GIN	equ	39	; get general info
+.SVTBL	equ	40	; specify SST vector table
 
-MAXFN	equ	39
+MAXFN	equ	40
 
 SYSRST	equ	20h	; system call RST is RST 4
 DBGRST	equ	30h	; debug breakpoint RST is RST 6
