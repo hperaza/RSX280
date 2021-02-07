@@ -92,11 +92,13 @@
 #define	TX_DIR	(TX_GID + 1)	// task's current directory (9 bytes)
 #define	TX_SWM	(TX_DIR + 9)	// saved flag wait mask during AST (4 bytes)
 #define	TX_LUT	(TX_SWM + 4)	// LUN translation table (64 bytes)
-#define TX_REGS (TX_LUT + 64)	// saved register bank (RSX280) (28 bytes)
+#define	TX_SST	(TX_LUT + 64)	// user SST vector table (2 bytes)
+#define TX_REGS (TX_SST + 2)	// saved register bank (RSX280) (28 bytes)
 
 /* Context Block size */
 
-#define	CTXSZ	(TX_REGS + 28)
+#define	CTX180SZ	(TX_SST + 2)
+#define	CTX280SZ	(TX_REGS + 28)
 
 /* Task File Header offsets */
 
