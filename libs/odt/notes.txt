@@ -1,0 +1,114 @@
+Quick HowTo
+-----------
+
+The debugger is implemented as a library to be linked to the user's task.
+This simplifies the debugger core and keeps LUN and memory management
+conflicts to a minimum.
+
+The user must supply a few routines (still subject to changes):
+
+ DBG$CI  - console input, returns single character in the accum.
+ DBG$CO  - console output, single character in reg C (OK to use the PUTCH
+           SYSLIB routine)
+ DBG$CS  - console status: returns A=0 if no character is ready at the
+           terminal, non-zero otherwise.
+ DBG$EX  - exit debugger (or the debugged task) in response to the 'Q'
+           command.
+
+The first 3 routines above must save HL, DE and BC registers.
+
+See the 'odttest.mac' example in the 'test' directory.
+
+The user code must call the DBG$IN initialization routine (no arguments
+required) before calling the debugger's main loop.  Check the CY flag on
+return: if set, the debugger failed to set the SST vector table (typically
+when running on an older system).
+
+The debugger itself can be entered in two ways:
+
+1. Calling the DEBUG$ entry point, supplying in HL the staring address of
+   the code to debug and in DE the initial stack pointer.
+
+2. Via a breakpoint (HALT instruction in the code).
+
+Once the debugger is entered, execution can continue in single-step mode,
+continuous mode with up to 8 breakpoints, or continuous mode until a Z280
+exception is encountered.
+
+The debugger core uses less than 2K of memory, while the disassembler
+takes about 3.6K of code. If desired, the disassembler module can be left
+out by defining an empty public function named DIS280, for example:
+
+DIS280::
+	ret
+
+In that case, the instruction mnemonic will not appear in the Trace command
+and the List command will be useless.
+
+
+Things to watch out for
+-----------------------
+
+- Debugging AST routines: not recommended, as a number of kernel services
+  are not available inside an AST routine and things like the event flag
+  mask are saved/restored on AST entry/exit, which can conflict with QIO
+  processing. Thus, don't put a breakpoint inside an AST handler.
+
+- Debugging SST routines: not recommended either, since that can lead to
+  infinite loops.
+
+- Possible LUN conflicts: keep an eye on the LUN used for terminal I/O
+  by the debugger; don't reassign it to anything else.
+
+- Debugging routines used by (or shared with) the debugger, e.g. DBG$CO
+  may call SYSLIB's PUTCH, so avoid single-stepping there. Etc.
+
+
+Debugger Commands
+-----------------
+
+D addr1,addr2 -- Dump memory from addr1 to addr2 inclusive. If addr1 is
+                 omitted, the dump will continue from where the last dump
+                 operation stopped, or from the current contents of the
+                 user's HL register after hitting a breakpoint or after a
+                 single-step operation. If addr2 is omitted, a full 256-byte
+                 page will be output.
+
+L addr,n      -- List (disassemble) n instructions starting from addr.
+                 If addr is not specified, the disassembly will continue
+                 from where the last L command ended, or from the current
+                 user PC after a breakpoint or single-step operation.
+                 If n is omitted, the next 16 instructions are displayed.
+                 Note that n is in hexadecimal.
+
+E addr        -- Examine/modify memory starting from addr. The address of the
+                 memory location is displayed, followed by the old contents.
+                 Entering a new value modifies the contents, pressing Enter
+                 on an empty line leaves the contents unchanged. End with
+                 Ctrl-C or with a dot.
+
+F addr1,addr2,byte -- Fill memory region from addr1 to addr2 inclusive with
+                 byte. Any omitted parameter is assumed to be zero.
+
+S addr1,addr2,byte -- Search memory region from addr1 to addr2 inclusive
+                 for byte. Any omitted parameter is assumed to be zero.
+
+B addr        -- Place a breakpoint (HALT instruction) at address addr.
+                 Up to eight breakpoints can be specified. Without the addr
+                 argument the command lists the current breakpoints.
+
+C addr        -- Clear breakpoint at addr.
+
+G addr        -- Go to address addr. Starts executing the user code until
+                 a breakpoint is hit. If addr is not specified, the execution
+                 will continue from the current user PC value.
+
+T n           -- Trace the next n instructions (one if n is not specified)
+                 starting from the current user PC value. Note that n is in
+                 hexadecimal.
+
+W addr        -- Display 16-bit word contents at the memory location addr.
+
+X             -- Display the contents of the CPU registers.
+X rp          -- Examine/modify CPU register pair rp.
+

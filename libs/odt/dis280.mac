@@ -1,0 +1,1699 @@
+;**********************************************************************;
+;                                                                      ;
+;   Simple Z280 disassembler.                                          ;
+;   Copyright (C) 2020, Hector Peraza.                                 ;
+;                                                                      ;
+;   Part of this code is based on Luc Rooijakker's generic Z80/Z280    ;
+;   disassembler written in C language, (C) 1989.                      ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+TAB	equ	9
+
+	cseg
+
+	public	DIS280
+
+	extrn	DBG$CO,?D$AX,?D$HLX
+
+;-----------------------------------------------------------------------
+
+; Decode single instruction. Called with HL = instruction address,
+; returns HL = address of next.
+
+DIS280:	xor	a
+	ld	(prefix),a	; clear IX/IY prefix
+	ld	(iaddr),hl
+	ld	(iptr),hl
+	call	dis_op
+	ld	hl,(iptr)
+	ret
+
+dis_op:	call	GETB		; get next instruction byte
+	ld	(op),a		; save it
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	and	07h
+	ld	(opshr3),a	; will need this often
+	ld	hl,opcgrp
+	ld	a,c
+	and	0C0h		; first-level decoding
+	rlca
+	rlca
+switch:	add	a,a
+	add	hl,a
+	ldw	hl,(hl)
+	jp	(hl)
+
+opcgrp:	dw	grp_00		; LD-16, INC, DEC, ADD-16, JR, etc.
+	dw	grp_40		; LD-8
+	dw	grp_80		; CALL, RET, PUSH, POP, etc.
+	dw	grp_C0		; ADD/SUB/CP-8, logical ops, CALL, RET, etc.
+
+; 00xxxxxx group
+
+grp_00:	ld	a,(op)
+	and	7
+	ld	hl,optbl0
+	jp	switch
+
+optbl0:	dw	op_000		; JRs, NOP, EXAF
+	dw	op_001		; LD rp,n16 and ADD HL,rp
+	dw	op_002		; LD A/HL,(...) and LD (...),A/HL
+	dw	op_003		; INC/DEC rp
+	dw	op_004		; INC r8
+	dw	op_005		; DEC r8
+	dw	op_006		; LD r8,n8
+	dw	op_007		; RLCA, RRCA, RLA, RRA, CPL, DAA, SCF, CCF
+
+; 00,10,20,30 and 08,18,28,38: JRs, NOP, EXAF
+
+op_000:	ld	a,(prefix)
+	or	a		; prefixed instruction?
+	jr	nz,op11		; branch if yes
+
+	ld	a,(op)
+	or	a
+	jr	z,opnop
+	cp	08h
+	jr	z,opexaf
+	cp	10h
+	jr	z,opdjnz
+	call	outs		; the rest are relative jumps
+	db	'JR',TAB,0
+	ld	a,(op)
+	cp	20h		; unconditional relative jump?
+	jp	c,outjrt	; if yes, output target address and return
+	rrca
+	rrca
+	rrca
+	and	03h
+	call	outcc		; output condition code
+	ld	c,','
+	call	DBG$CO
+	jp	outjrt		; output target address
+
+opnop:	call	outs		; 00 is NOP
+	db	'NOP',0
+	ret
+
+opexaf:	call	outs		; 08 is EX AF,AF'
+	db	'EX',TAB,'AF,AF''',0
+	ret
+
+opdjnz:	call	outs		; 10 is DJNZ
+	db	'DJNZ',TAB,0
+	jp	outjrt		; output target address
+
+op11:	cp	0DDh
+	jp	nz,unknw	; nothing here with FD prefix...
+
+	ld	a,(op)
+	ld	c,a
+	and	37h
+	cp	20h
+	jp	nz,unknw
+
+	ld	a,c
+	cp	20h
+	jr	nz,op107
+	call	outs
+	db	'JAR',TAB,0
+	jp	outjrt
+
+op107:	call	outs
+	db	'JAF',TAB,0
+	jp	outjrt
+
+; 01,11,21,31 and 09,19,29,39
+
+op_001:	ld	a,(op)
+	and	08h		; ADD HL,rp group?
+	jr	z,op111		; branch if not, LD rp,n16 group
+	call	outs
+	db	'ADD',TAB,0
+	call	outihl		; output HL/IX/IY according to prefix
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outirp		; output src reg pair
+
+op111:	ld	a,(prefix)
+	cp	0FDh		; IX prefix?
+	jr	nz,op112	; IY prefix used for additional Z280 instr
+	ld	a,(op)
+	cp	21h		; only LD IX,n16 allowed
+	jp	nz,unknw
+op112:	call	outldw		; 'LDW'
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	call	outxrp
+	ld	c,','
+	call	DBG$CO
+	jp	outn16
+
+; 02,12,22,32 and 0A,1A,2A,3A
+
+op_002:	ld	a,(op)
+	and	37h
+	cp	22h		; LD HL,(n16) or LD (n16),HL?
+	jr	nz,op122	; no, is LD A,(n8) or LD (n8),A
+
+	call	outldw		; 'LDW'
+	ld	a,(op)
+	cp	22h		; store?
+	jr	nz,op121	; no, load
+	call	outi16
+	ld	c,','
+	call	DBG$CO
+	jp	outihl
+
+op121:	call	outihl
+	ld	c,','
+	call	DBG$CO
+	jp	outi16
+
+op122:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw	; can't be prefixed
+	call	outld		; 'LD'
+	ld	a,(opshr3)
+	ld	hl,tbl01
+	jp	otx1
+
+tbl01:	db	'(BC),A',0
+	db	'A,(BC)',0
+	db	'(DE),A',0
+	db	'A,(DE)',0
+	db	0
+	db	0
+	db	'(',3,'),A',0	; 3 = n16
+	db	'A,(',3,')',0
+
+; 03,13,23,33 and 0B,1B,2B,3B
+
+op_003:	ld	a,(prefix)
+	cp	0FDh
+	ld	a,(op)
+	jr	nz,op301
+	cp	30h
+	jp	nc,unknw	; >= 30h
+
+op301:	and	08h
+	jr	z,op303
+	call	outs
+	db	'DECW',TAB,0
+	jr	op304
+op303:	call	outs
+	db	'INCW',TAB,0
+op304:	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outxrp
+
+; 04,14,24,34 and 0C,1C,2C,3C
+
+op_004:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,op401
+	ld	a,(op)
+	cp	3Ch
+	jp	z,unknw
+op401:	call	outs
+	db	'INC',TAB,0
+	ld	a,(opshr3)
+	jp	outxr
+
+; 05,15,25,35 and 0D,1D,2D,3D
+
+op_005:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,op501
+	ld	a,(op)
+	cp	3Dh
+	jp	z,unknw
+op501:	call	outs
+	db	'DEC',TAB,0
+	ld	a,(opshr3)
+	jp	outxr
+
+; 06,16,26,36 and 0E,1E,2E,3E
+
+op_006:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,op601
+	ld	a,(op)
+	cp	3Eh
+	jp	z,unknw
+op601:	call	outld		; 'LD'
+	ld	a,(opshr3)
+	call	outxr
+	ld	c,','
+	call	DBG$CO
+	jp	outn8
+
+; 07,17,27,37 and 0F,1F,2F,3F
+
+op_007:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,(opshr3)
+	ld	hl,tbl07
+	call	otx1		; output instruction from table
+	ld	a,(op)
+	cp	2Fh		; only CPL has 'A' argument
+	ret	nz
+	call	outs
+	db	TAB,'A',0
+	ret
+
+tbl07:	db	'RLCA',0
+	db	'RRCA',0
+	db	'RLA',0
+	db	'RRA',0
+	db	'DAA',0
+	db	'CPL',0
+	db	'SCF',0
+	db	'CCF',0
+
+; 01xxxxxx group: 8-bit r-r loads and HALT
+
+grp_40:	ld	a,(op)
+	cp	76h		; HALT?
+	jr	nz,op41		; branch if not
+	ld	a,(prefix)
+	or	a
+	jp	nz,unknw	; can't be prefixed
+	call	outs
+	db	'HALT',0
+	ret
+
+op41:	ld	a,(prefix)
+	or	a
+	jr	z,op42
+	ld	a,(op)
+	cp	60h
+	jr	c,op420
+	cp	7Fh
+	jr	nz,op42
+op420:	and	07h
+	cp	04h
+	jp	c,unknw
+	cp	06h+1
+	jp	nc,unknw
+op42:	call	outld		; 'LD'
+	ld	a,(op)
+	cp	66h
+	jr	z,op421
+	cp	6Eh
+	jr	nz,op422
+op421:	ld	a,(opshr3)
+	call	outr
+	jr	op423
+
+op422:	ld	a,(opshr3)
+	call	outir
+op423:	ld	c,','
+	call	DBG$CO
+	ld	a,(op)
+	cp	74h
+	jr	z,op424
+	cp	75h
+	jr	nz,op425
+op424:	and	07h
+	jp	outr
+	
+op425:	cp	78h
+	jr	c,op426
+	and	07h
+	jp	outxr
+
+op426:	and	07h
+	jp	outir
+
+; 10xxxxxx group
+
+grp_80:	ld	a,(prefix)
+	cp	0FDh
+	ld	a,(op)
+	ld	e,a
+	jr	nz,op801
+	and	07h
+	cp	07h
+	jp	z,unknw
+
+op801:	ld	a,e
+	call	outop1
+	ld	a,e
+	call	outa		; 'A,'
+	ld	a,e
+	and	07h
+	jp	outxr
+
+outop1:	rrca
+	rrca
+	rrca
+	and	07h
+	ld	hl,optbl1
+outop:	call	otx1
+	ld	c,TAB
+	jp	DBG$CO
+
+optbl1:	db	'ADD',0
+	db	'ADC',0
+	db	'SUB',0
+	db	'SBC',0
+	db	'AND',0
+	db	'XOR',0
+	db	'OR',0
+	db	'CP',0
+
+; 11xxxxxx group
+
+grp_C0:	ld	a,(op)
+	and	7
+	ld	hl,optbl4
+	jp	switch
+
+optbl4:	dw	op_CC0
+	dw	op_CC1
+	dw	op_CC2
+	dw	op_CC3
+	dw	op_CC4
+	dw	op_CC5
+	dw	op_CC6
+	dw	op_CC7
+
+op_CC0:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'RET',TAB,0
+	ld	a,(opshr3)
+	jp	outcc		; output condition code
+
+op_CC1:	ld	a,(op)
+	ld	c,a
+	and	0EFh
+	cp	0C9h
+	jr	nz,opc11
+	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+opc11:	ld	a,c
+	and	08h
+	jr	z,opc12
+
+	ld	a,c
+	cp	0C9h
+	jr	nz,opc13
+	call	outs
+	db	'RET',0
+	ret
+
+opc13:	ld	a,c
+	cp	0D9h
+	jr	nz,opc14
+	call	outs
+	db	'EXX',0
+	ret
+
+opc14:	ld	a,c
+	cp	0E9h
+	jr	nz,opc15
+	call	outs
+	db	'JP',TAB,'(',0
+	call	outihl
+	ld	c,')'
+	jp	DBG$CO
+
+opc15:	call	outldw		; 'LDW'
+	call	outs
+	db	'SP,',0
+	jp	outihl
+
+opc12:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,opc16
+	ld	a,(op)
+	cp	0E1h
+	jp	nz,unknw
+
+opc16:	call	outs
+	db	'POP',TAB,0
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outprp
+
+op_CC2:	call	outs
+	db	'JP',TAB,0
+	ld	a,(opshr3)
+	call	outcc		; output condition code
+	ld	c,','
+	call	DBG$CO
+	jp	outjpt
+
+op_CC3:	ld	a,(op)
+	cp	0C3h
+	jp	z,opjmp
+	cp	0CBh
+	jp	z,dis_CB
+	cp	0D3h
+	jp	z,opout
+	cp	0DBh
+	jp	z,opin
+	cp	0E3h
+	jp	z,opsphl
+	cp	0EBh
+	jp	z,opxchg
+	cp	0F3h
+	jp	z,opdi
+	cp	0FBh
+	jp	z,opei
+	jp	unknw
+
+opjmp:	ld	a,(prefix)
+	cp	0DDh
+	jp	z,unknw
+	call	outs
+	db	'JP',TAB,0
+	jp	outjpt
+
+opout:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'OUT',TAB,'(',0
+	call	outn8
+	call	outs
+	db	'),A',0
+	ret
+
+opin:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'IN',TAB,'A,(',0
+	call	outn8
+	ld	c,')'
+	jp	DBG$CO
+
+opsphl:	call	outs
+	db	'EX',TAB,'(SP),',0
+	jp	outihl
+
+opxchg:	call	outs
+	db	'EX',TAB,0
+	ld	a,(prefix)
+	or	a
+	jr	nz,opex1
+	call	outs
+	db	'DE',0
+	jr	opex2
+opex1:	call	outihl
+opex2:	call	outs
+	db	',HL',0
+	ret
+
+opdi:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'DI',0
+	ret
+
+opei:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'EI',0
+	ret
+
+op_CC4:	call	outs
+	db	'CALL',TAB,0
+	ld	a,(opshr3)
+	call	outcc		; output condition code
+	ld	c,','
+	call	DBG$CO
+	jp	outjpt
+
+op_CC5:	ld	a,(op)
+	ld	c,a
+	and	08h
+	jr	z,opc51
+
+	ld	a,c
+	cp	0CDh
+	jr	nz,opc52
+	call	outs
+	db	'CALL',TAB,0
+	jp	outjpt
+
+opc52:	cp	0EDh		; ED?
+	jp	z,dis_ED	; jump to decode ED-instruction
+
+	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,c
+	ld	(prefix),a
+	jp	dis_op		; loop back
+
+opc51:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,opc54
+	ld	a,c
+	cp	0E0h
+	jp	c,unknw
+
+opc54:	call	outs
+	db	'PUSH',TAB,0
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outprp
+
+op_CC6:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,(op)
+	ld	e,a
+	call	outop1
+	ld	a,e
+	call	outa		; 'A,'
+	jp	outn8
+
+op_CC7:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'RST',TAB,0
+	ld	a,(op)
+	and	38h
+	jp	?D$AX		; output byte
+
+;-----------------------------------------------------------------------
+
+; Decode CB-instruction
+
+dis_CB:	ld	a,(prefix)
+	or	a		; IX/IY prefixed?
+	jr	nz,dcb1		; branch if yes
+	call	GETB		; get byte following CB
+	ld	(op),a		; store it
+	ld	c,a
+	jr	dcb2		; contnue below
+
+dcb1:	call	GETB		; get displacement
+	ld	(offs),a	; store it
+	call	GETB		; get CB-opcode
+	ld	(op),a
+	ld	c,a
+	and	07h
+	cp	6
+	jp	nz,unknw
+
+dcb2:	ld	a,c
+	and	0C0h		; bit manipulation opcodes?
+	jr	nz,dcb3		; branch if yes
+
+	ld	a,(op)		; else is a rotate or TSET
+	rrca
+	rrca
+	rrca
+	and	07h
+	ld	hl,tblCB1
+	call	outop		; output instruction name from table
+	jr	dcb4		; continue below
+
+dcb3:	ld	a,c
+	rlca
+	rlca
+	and	03h
+	ld	hl,tblCB2
+	call	outop		; output instruction name from table
+	ld	a,(op)
+	rrca
+	rrca
+	rrca
+	and	07h
+	add	a,'0'
+	ld	c,a
+	call	DBG$CO		; output bit number
+	ld	c,','
+	call	DBG$CO
+dcb4:	ld	a,(prefix)
+	or	a		; IX/IY prefixed?
+	jr	nz,dcb5		; branch if yes
+	ld	a,(op)
+	and	07h
+	jp	outr		; else output register operand
+
+dcb5:	ld	c,'('
+	call	DBG$CO
+	call	outihl		; output index reg name
+	ld	a,(offs)
+	call	disp8		; output displacement
+	ld	c,')'
+	jp	DBG$CO
+
+tblCB1:	db	'RLC',0
+	db	'RRC',0
+	db	'RL',0
+	db	'RR',0
+	db	'SLA',0
+	db	'SRA',0
+	db	'TSET',0
+	db	'SRL',0
+
+tblCB2:	db	0
+	db	'BIT',0
+	db	'RES',0
+	db	'SET',0
+
+;-----------------------------------------------------------------------
+
+; Decode ED-instruction
+
+dis_ED:	call	GETB		; get byte following ED
+	ld	(op),a		; store it
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	and	07h
+	ld	(opshr3),a	; will need this often below
+	ld	a,c
+	rlca
+	rlca
+	and	03h
+	ld	hl,edgrp
+	jp	switch		; process by group
+
+edgrp:	dw	ed_00
+	dw	ed_40
+	dw	ed_80
+	dw	ed_C0
+
+; 00xxxxxx
+
+ed_00:	ld	a,(op)
+	and	07h
+	ld	hl,edgrp0
+	jp	switch
+
+edgrp0:	dw	unknw
+	dw	unknw
+	dw	ed02		; LDA
+	dw	ed03		; LD store with extended addressing
+	dw	ed04		; LDW load with extended addressing
+	dw	ed05		; LDW store with extended addressing
+	dw	ed06		; LDW (HL)
+	dw	ed07		; EX A,...
+
+ed02:	call	outs
+	db	'LDA',TAB,0
+	call	outihl
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	jp	outea
+
+ed03:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw	; can't be prefixed
+	call	outld		; 'LD'
+	ld	a,(opshr3)
+	call	outea
+	call	outs
+	db	',A',0
+	ret
+
+ed04:	call	outldw		; 'LDW'
+	call	outihl
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	jp	outea
+
+ed05:	call	outldw		; 'LDW'
+	ld	a,(opshr3)
+	call	outea
+	ld	c,','
+	call	DBG$CO
+	jp	outihl
+
+ed06:	ld	a,(op)
+	and	08h
+	jr	z,ed601
+	call	outldw		; 'LDW (HL),...'
+	call	outm
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outrp
+
+ed601:	call	outldw		; 'LDW ...,(HL)'
+	ld	a,(opshr3)
+	rrca
+	and	03h		; op shr 4
+	call	outrp
+	ld	c,','
+	call	DBG$CO
+	jp	outm
+
+ed07:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,ed701
+	ld	a,(op)
+	cp	3Fh
+	jp	z,unknw
+ed701:	call	outs
+	db	'EX',TAB,'A,',0
+	ld	a,(opshr3)
+	jp	outxr
+
+; 01xxxxxx
+
+ed_40:	ld	a,(op)
+	and	07h
+	ld	hl,edgrp4
+	jp	switch
+
+edgrp4:	dw	ed40		; TSTI, IN
+	dw	ed41		; SC, OUT
+	dw	ed42		; ADC, SBC
+	dw	ed43		; LDW
+	dw	ed44		; NEG, EXTS
+	dw	ed45		; ADD HL,A, RETI, RETN, RETIL, PCACHE
+	dw	ed46		; IM, LDCTL
+	dw	ed47		; LD I&R, EI/DI, RRD, RLD
+
+ed40:	ld	a,(op)
+	cp	70h
+	jr	nz,ed401
+	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'TSTI',TAB,'(C)',0
+	ret
+
+ed401:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,ed402
+	ld	a,(op)
+	cp	78h
+	jp	z,unknw
+ed402:	call	outs
+	db	'IN',TAB,0
+	ld	a,(opshr3)
+	call	outxr
+	call	outs
+	db	',(C)',0
+	ret
+
+ed41:	ld	a,(op)
+	cp	71h
+	jr	nz,ed411
+	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'SC',TAB,0
+	jp	outn16
+
+ed411:	ld	a,(prefix)
+	cp	0FDh
+	jr	nz,ed412
+	ld	a,(op)
+	cp	79h
+	jp	z,unknw
+ed412:	call	outs
+	db	'OUT',TAB,'(C),',0
+	ld	a,(opshr3)
+	jp	outxr
+
+ed42:	ld	a,(op)
+	and	08h
+	jr	z,ed421
+	call	outs
+	db	'ADC',TAB,0
+	jr	ed422
+ed421:	call	outs
+	db	'SBC',TAB,0
+ed422:	call	outihl
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outirp
+
+ed43:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,(op)
+	and	0F7h
+	cp	63h
+	jp	z,unknw
+
+	ld	a,(op)
+	and	08h
+	jr	z,ed431
+
+	call	outldw		; 'LDW'
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	ld	c,a
+	call	outrp
+	ld	c,','
+	call	DBG$CO
+	jp	outi16
+
+ed431:	call	outldw		; 'LDW'
+	call	outi16
+	ld	c,','
+	call	DBG$CO
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	ld	c,a
+	jp	outrp
+
+ed44:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(op)
+	cp	44h		; NEG A
+	jr	z,edneg1
+	cp	4Ch		; NEG HL
+	jr	z,edneg2
+	cp	64h		; EXTS A
+	jr	z,edexs1
+	cp	6Ch		; EXTS HL
+	jr	z,edexs2
+	jp	unknw
+
+edneg1:	call	outs
+	db	'NEG',TAB,'A',0
+	ret
+
+edneg2:	call	outs
+	db	'NEG',TAB,'HL',0
+	ret
+
+edexs1:	call	outs
+	db	'EXTS',TAB,'A',0
+	ret
+
+edexs2:	call	outs
+	db	'EXTS',TAB,'HL',0
+	ret
+
+ed45:	ld	a,(op)
+	cp	6Dh
+	jr	nz,ed451
+	call	outs
+	db	'ADD',TAB,0
+	call	outihl
+	call	outs
+	db	',A',0
+	ret
+
+ed451:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,(opshr3)
+	cp	3
+	jr	c,ed452
+	dec	a		; make PCACHE = 03 to keep table short
+	cp	4
+	jp	nc,unknw
+ed452:	ld	hl,tbl45
+	jp	outop
+
+tbl45:	db	'RETN',0
+	db	'RETI',0
+	db	'RETIL',0
+	db	'PCACHE',0
+
+ed46:	ld	a,(prefix)
+	or	a
+	jr	nz,ed461
+	ld	a,(op)
+	cp	60h
+	jr	nc,ed461
+	call	outs
+	db	'IM',TAB,0
+	ld	a,(opshr3)
+	and	03h
+	ld	hl,imtbl
+	add	hl,a
+	ld	c,(hl)
+	jp	DBG$CO
+
+imtbl:	db	'0312'
+
+ed461:	ld	a,(op)
+	cp	66h
+	jr	nz,ed462
+	call	outldc		; 'LDCTL'
+	call	outihl
+	call	outs
+	db	',(C)',0
+	ret
+
+ed462:	cp	6Eh
+	jp	nz,unknw
+	call	outldc		; 'LDCTL'
+	call	outs
+	db	'(C),',0
+	jp	outihl
+
+ed47:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(opshr3)
+	push	af
+	sub	4
+	jr	nc,ed471
+	call	outld		; 'LD'
+	jr	ed472
+ed471:	ld	hl,tbl471
+	call	outop
+ed472:	pop	af
+	ld	hl,tbl472
+	jp	otx1
+
+tbl471:	db	'RRD',0
+	db	'RLD',0
+	db	'DI',0
+	db	'EI',0
+
+tbl472:	db	'I,A',0
+	db	'R,A',0
+	db	'A,I',0
+	db	'A,R',0
+	db	0
+	db	0
+	db	4,0
+	db	4,0
+
+; 10xxxxxx
+
+ed_80:	ld	a,(op)
+	and	07h
+	ld	hl,edgrp8
+	jp	switch
+
+edgrp8:	dw	ed80		; LDIR, LDDR, etc.
+	dw	ed81		; CPIR, CPDR, etc.
+	dw	ed82		; INIR, INDR, etc.
+	dw	ed83		; OTIR, OTDR, etc.
+	dw	ed84		; EPUM, MEPU
+	dw	ed85		; EPUM, MEPU
+	dw	ed86		; LDUD, LDUP
+	dw	ed87		; LDCTL, INW, OUTW, etc.
+
+ed80:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(opshr3)
+	sub	4
+	jp	c,unknw
+	ld	hl,tbl80
+	jp	otx1
+
+tbl80:	db	'LDI',0
+	db	'LDD',0
+	db	'LDIR',0
+	db	'LDDR',0
+
+ed81:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(opshr3)
+	sub	4
+	jp	c,unknw
+	ld	hl,tbl81
+	jp	otx1
+
+tbl81:	db	'CDI',0
+	db	'CPD',0
+	db	'CPIR',0
+	db	'CPDR',0
+
+ed82:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(opshr3)
+	ld	hl,tbl82
+	jp	otx1
+
+tbl82:	db	'INIW',0
+	db	'INDW',0
+	db	'INIRW',0
+	db	'INDRW',0
+	db	'INI',0
+	db	'IND',0
+	db	'INIR',0
+	db	'INDR',0
+
+ed83:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+
+	ld	a,(opshr3)
+	ld	hl,tbl83
+	jp	otx1
+
+tbl83:	db	'OUTIW',0
+	db	'OUTDW',0
+	db	'OTIRW',0
+	db	'OTDRW',0
+	db	'OUTI',0
+	db	'OUTD',0
+	db	'OTIR',0
+	db	'OTDR',0
+
+ed84:
+ed85:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,(op)
+	and	0C7h
+	cp	84h
+	jr	z,ed851
+	call	outs
+	db	'EPUM',TAB,0
+	jr	ed852
+ed851:	call	outs
+	db	'MEPU',TAB,0
+ed852:	ld	a,(opshr3)
+	call	outea
+	ld	c,','
+	call	DBG$CO
+	jp	outepu
+
+ed86:	ld	a,(op)
+	ld	c,a
+	cp	0A0h
+	jr	nc,ed861
+	cp	90h
+	jr	nc,ed862
+	call	outs
+	db	'LDUD',TAB,0
+	jr	ed863
+
+ed862:	call	outs
+	db	'LDUP',TAB,0
+ed863:	ld	a,c
+	and	08h
+	jr	z,ed864
+	call	outm		; '(HL),A'
+	call	outs
+	db	',A',0
+	ret
+
+ed864:	call	outa		; 'A,(HL)'
+	jp	outm
+
+ed861:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	ld	a,c
+	and	0F7
+	cp	0A6h
+	jp	nz,unknw
+	ld	a,c
+	and	08h
+	jr	z,ed865
+	call	outs
+	db	'MEPU',TAB,0
+	jr	ed866
+ed865:	call	outs
+	db	'EPUM',TAB,0
+ed866:	call	outm
+	ld	c,','
+	call	DBG$CO
+	jp	outepu
+
+ed87:	ld	a,(opshr3)
+	ld	hl,egrp87
+	jp	switch
+
+egrp87:	dw	ed_87		; LDCTL xx,USP
+	dw	ed_8F		; LDCTL USP,xx
+	dw	ed_97		; EPUF
+	dw	ed_9F		; EPUI
+	dw	ed_A7		; EPUM
+	dw	ed_AF		; MEPU
+	dw	ed_B7		; INW
+	dw	ed_BF		; OUTW
+
+ed_87:	call	outldc		; 'LDCTL'
+	call	outihl
+	call	outs
+	db	',USP',0
+	ret
+
+ed_8F:	call	outldc		; 'LDCTL'
+	call	outs
+	db	'USP,',0
+	jp	outihl
+
+ed_97:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'EPUF',TAB,0
+	jp	outepu
+
+ed_9F:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'EPUI',TAB,0
+	jp	outepu
+
+ed_A7:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'EPUM',TAB,0
+	jr	eda71
+
+ed_AF:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'MEPU',TAB,0
+eda71:	call	outi16
+	ld	c,','
+	call	DBG$CO
+	jp	outepu
+
+ed_B7:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'INW',TAB,'HL,(C)',0
+	ret
+
+ed_BF:	ld	a,(prefix)
+	or	a
+	jp	nz,unknw
+	call	outs
+	db	'OUTW',TAB,'(C),HL',0
+	ret
+
+; 11xxxxxx
+
+ed_C0:	ld	a,(op)
+	and	07h
+	ld	hl,edgrpC
+	jp	switch
+
+edgrpC:	dw	edC0		; MULT
+	dw	edC1		; MULTU
+	dw	edC2		; DIVW
+	dw	edC3		; DIVUW
+	dw	edC4		; DIV
+	dw	edC5		; DIVU
+	dw	edC6		; SUBW, ADDW
+	dw	edC7		; CPW, EX HL,...
+
+edC0:	call	outs
+	db	'MULT',TAB,'A,',0
+	jr	edc11
+			
+edC1:	call	outs
+	db	'MULTU',TAB,'A,',0
+edc11:	ld	a,(opshr3)
+	jp	outxr
+
+edC2:	ld	a,(op)
+	and	08h
+	jr	z,edc21
+	call	outs
+	db	'DIVW',TAB,'DEHL,',0
+	jr	edc22
+
+edc21:	call	outs
+	db	'MULTW',TAB,'HL,',0
+edc22:	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outxrp
+			
+edC3:	ld	a,(op)
+	and	08h
+	jr	z,edc31
+	call	outs
+	db	'DIVUW',TAB,'DEHL,',0
+	jr	edc22
+
+edc31:	call	outs
+	db	'MULTUW',TAB,'HL,',0
+	jr	edc22
+			
+edC4:	call	outs
+	db	'DIV',TAB,'HL,',0
+	jp	edc11
+			
+edC5:	call	outs
+	db	'DIVU',TAB,'HL,',0
+	jp	edc11
+			
+edC6:	ld	a,(op)
+	and	08h
+	jr	z,edc61
+	call	outs
+	db	'SUBW',TAB,0
+	jr	edc62
+edc61:	call	outs
+	db	'ADDW',TAB,0
+edc62:	call	outs
+	db	'HL,',0
+	jp	edc22
+
+edC7:	ld	a,(prefix)
+	or	a
+	ld	a,(op)
+	jr	nz,edc71
+	cp	0EFh
+	jr	nz,edc71
+	call	outs
+	db	'EX',TAB,'H,L',0
+	ret
+
+edc71:	and	08h
+	jp	nz,unknw
+	call	outs
+	db	'CPW',TAB,'HL,',0
+	ld	a,(opshr3)
+	rrca			; op shr 4
+	and	03h
+	jp	outxrp
+
+;-----------------------------------------------------------------------
+
+; Output string following call
+
+outs:	ex	(sp),hl
+	push	bc
+outs1:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,outs2
+	ld	c,a
+	call	DBG$CO
+	jr	outs1
+outs2:	pop	bc
+	ex	(sp),hl
+	ret
+
+; outxr: Output single register argument, according to mode
+; outm:  Output "M" register argument (HL), (IX+d8), etc. according to mode.
+; C = reg code
+
+outm:	ld	a,6
+outxr:	ld	c,a
+	ld	a,(prefix)
+	or	a
+	ld	hl,tblsr
+	jr	z,otx0
+	cp	0DDh
+	ld	hl,tblrdd
+	jr	z,otx0
+	ld	hl,tblrfd
+otx0:	ld	a,c
+otx1:	or	a
+	jp	z,expand
+	ld	b,a
+otx2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,otx2
+	djnz	otx2
+	jp	expand
+
+; single registers, unprefixed
+
+tblsr:	db	'B',0
+	db	'C',0
+	db	'D',0
+	db	'E',0
+	db	'H',0
+	db	'L',0
+	db	'(HL)',0
+	db	'A',0
+
+; single registers, DD prefix
+
+tblrdd:	db	'(SP',1,')',0	; 1 = d16
+	db	'(HL+IX)',0
+	db	'(HL+IY)',0
+	db	'(IX+IY)',0
+	db	'IXH',0
+	db	'IXL',0
+	db	'(IX',2,')',0	; 2 = d8
+	db	'(',3,')',0	; 3 = n16
+
+; single registers, FD prefix
+
+tblrfd:	db	'(PC',1,')',0
+	db	'(IX',1,')',0
+	db	'(IY',1,')',0
+	db	'(HL',1,')',0
+	db	'IYH',0
+	db	'IYL',0
+	db	'(IY',2,')',0
+	db	4,0		; 4 = n8
+
+; Output single-register argument
+; A = reg code
+
+outr:	ld	hl,tblsr
+	jr	otx1
+
+; A = reg code
+
+outir:	cp	4
+	jr	c,outr
+	cp	6+1
+	jr	nc,outr
+	jp	outxr
+
+; Output register pair argument, according to mode
+; A = rp code
+
+outxrp:	ld	c,a
+	ld	a,(prefix)
+	or	a
+	ld	hl,tblrp
+	jp	z,otx0
+	cp	0DDh
+	ld	hl,tblpdd
+	jp	z,otx0
+	ld	hl,tblpfd
+	jp	otx0
+
+; unprefixed register pairs
+
+tblrp:	db	'BC',0
+	db	'DE',0
+	db	'HL',0
+	db	'SP',0
+
+; register pairs, DD prefix
+
+tblpdd:	db	'(HL)',0
+tbli16:	db	'(',3,')',0
+	db	'IX',0
+	db	'(PC',1,')',0
+
+; register pairs, FD prefix
+
+tblpfd:	db	'(IX',1,')',0
+	db	'(IY',1,')',0
+	db	'IY',0
+	db	3,0
+
+; Output register pair
+; A = rp code
+
+outrp:	ld	hl,tblrp
+	jp	otx1
+
+; Output push/pop register pair argument
+; A = rp code
+
+outprp:	ld	c,a
+	ld	a,(prefix)
+	or	a
+	ld	a,c
+	jr	nz,outxrp
+	cp	3
+	jr	nz,outxrp
+	call	outs
+	db	'AF',0
+	ret
+
+; Output register pair, HL/IX/IY is output according to mode
+; A = rp code
+
+outihl:	ld	a,2
+outirp:	ld	c,a
+	ld	hl,tblrp
+	cp	2		; HL?
+	jp	nz,otx0
+	ld	a,(prefix)
+	or	a
+	jp	z,otx0
+	cp	0DDh
+	jr	nz,outiy
+	call	outs
+	db	'IX',0
+	ret
+outiy:	call	outs
+	db	'IY',0
+	ret
+
+; Output branch condition code
+; A = condition code
+
+outcc:	ld	hl,tblcc
+	jp	otx1
+
+; condition codes
+
+tblcc:	db	'NZ',0
+	db	'Z',0
+	db	'NC',0
+	db	'C',0
+	db	'NV',0		; 'PO',0
+	db	'V',0		; 'PE',0
+	db	'P',0
+	db	'M',0
+
+; Output target address of relative jump
+
+outjrt:	call	GETB		; get displacement
+	ld	l,a
+	ld	h,0
+	cp	80h
+	jr	c,otr1
+	ld	de,-100h
+	add	hl,de
+otr1:	ld	de,(iptr)
+	add	hl,de		; add current address
+	jp	?D$HLX		; output word
+
+; Output target address of JP or CALL instruction
+
+outjpt:	ld	a,(prefix)
+	or	a
+	jp	z,outn16	; absolute target
+	cp	0FDh
+	ld	hl,tblrfd
+	jp	z,expand	; relative PC target
+	cp	0DDh
+	ret	nz
+	call	outs
+	db	'(HL)',0
+	ret
+
+outa:	call	outs
+	db	'A,',0
+	ret
+
+outld:	call	outs
+	db	'LD',TAB,0
+	ret
+
+outldw:	call	outs
+	db	'LDW',TAB,0
+	ret
+
+outldc:	call	outs
+	db	'LDCTL',TAB,0
+	ret
+
+; HL = pointer to string with special embedded codes
+
+expand:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	push	expand
+	cp	20h
+	jr	nc,exp1
+	dec	a		; 1 = d16
+	jp	z,outd16
+	dec	a		; 2 = d8
+	jp	z,outd8
+	dec	a		; 3 = n16
+	jp	z,outn16
+	dec	a		; 4 = n8
+	jp	z,outn8
+exp1:	ld	c,a
+	jp	DBG$CO
+
+; Output 8-bit operand
+
+outn8:	call	GETB
+	jp	?D$AX		; output byte
+
+; Output 16-bit operand
+
+outn16:	push	hl
+	call	GETW
+	call	?D$HLX		; output word
+	pop	hl
+	ret
+
+; Output indirect 16-bit operand "(n16)"
+
+outi16:	push	hl
+	ld	hl,tbli16
+	call	expand
+	pop	hl
+	ret
+
+; Output signed 8-bit displacement
+
+outd8:	call	GETB
+disp8:	cp	80h
+	ld	c,'+'
+	jr	c,d81
+	neg	a
+	ld	c,'-'
+d81:	push	af
+	call	DBG$CO
+	pop	af
+	jp	?D$AX		; output byte
+
+; Output signed 16-bit displacement
+
+outd16:	push	hl
+	call	GETW
+	ld	a,h
+	cp	80h
+	ld	c,'+'
+	jr	c,d161
+	neg	hl
+	ld	c,'-'
+d161:	call	DBG$CO
+	call	?D$HLX		; output word
+	pop	hl
+	ret
+
+; A = extended addressing code
+
+outea:	ld	hl,tblea
+	jp	otx1
+
+tblea:	db	'(SP',1,')',0
+	db	'(HL+IX)',0
+	db	'(HL+IY)',0
+	db	'(IX+IY)',0
+	db	'(PC',1,')',0
+	db	'(IX',1,')',0
+	db	'(IY',1,')',0
+	db	'(HL',1,')',0
+
+; Output extended instruction arguments
+
+outepu:	call	outn8
+	ld	c,','
+	call	DBG$CO
+	call	outn8
+	ld	c,','
+	call	DBG$CO
+	call	outn8
+	ld	c,','
+	call	DBG$CO
+	jp	outn8
+
+; Output 'unknown' instruction
+
+unknw:	call	outs
+	db	'???=',0
+	ld	hl,(iaddr)	; start address in HL
+	ld	de,(iptr)	; end address in DE
+u1:	ld	a,(hl)
+	call	?D$AX		; output byte @iaddr
+	inc	hl
+	cpw	hl,de
+	ret	nc
+	ld	c,','
+	call	DBG$CO
+	jr	u1
+
+; Return next opcode byte
+
+GETB:	push	hl
+	ld	hl,(iptr)
+	ld	a,(hl)		; get opcode byte
+	inc	hl
+	ld	(iptr),hl
+	pop	hl
+	ret
+
+; Return next instruction word.
+
+GETW:	ld	hl,(iptr)
+	ld	e,(hl)		; get word
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(iptr),hl
+	ex	de,hl
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+iaddr:	ds	2		; address of first byte of instruction
+iptr:	ds	2		; pointer to current byte of instruction
+prefix:	ds	1		; instruction prefix, if any
+op:	ds	1		; instruction opcode
+opshr3:	ds	1		; cached opcode shr 3
+offs:	ds	1		; index register offset
+
+	end
