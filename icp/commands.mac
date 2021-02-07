@@ -2382,7 +2382,7 @@ pause:	ld	hl,pmsg
 	ret
  endif
 
-pmsg:	db	'Pausing. To continue type "RES ',0,'<ESC>"',0
+pmsg:	db	'Pausing. To continue type "UNS ',0,'<ESC>"',0
 
 ; .WAIT taskname
 
