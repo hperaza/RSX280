@@ -58,6 +58,7 @@ libs:
 	@(cd libs/syslib; ${MAKE} all)
 	@(cd libs/fcslib; ${MAKE} all)
 	@(cd libs/bcdflt; ${MAKE} all)
+	@(cd libs/odt; ${MAKE} all)
 
 # Build the system image
 system: syssrcs system.sys
@@ -153,6 +154,7 @@ test: libs system
 	@cp -u libs/syslib/syslib.lib test
 	@cp -u libs/fcslib/fcslib.lib test
 	@cp -u libs/bcdflt/bcdflt.lib test
+	@cp -u libs/odt/odt.lib test
 	@cp -u system.inc test
 	@(cd test; ${MAKE} all)
 
@@ -167,6 +169,7 @@ clean:
 	@(cd libs/syslib; ${MAKE} clean)
 	@(cd libs/fcslib; ${MAKE} clean)
 	@(cd libs/bcdflt; ${MAKE} clean)
+	@(cd libs/odt; ${MAKE} clean)
 	@for i in ${sysdirs}; do \
 		echo Cleaning in $$i ; \
 		(cd $$i; ${MAKE} clean) ; \
@@ -260,6 +263,8 @@ copy-system: system cli
 	@echo "import libs/fcslib/fcslib.lib fcslib.lib" >> copy.cmd
 	@echo "delete bcdflt.lib" >> copy.cmd
 	@echo "import libs/bcdflt/bcdflt.lib bcdflt.lib" >> copy.cmd
+	@echo "delete odt.lib" >> copy.cmd
+	@echo "import libs/odt/odt.lib odt.lib" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(disk) < copy.cmd
