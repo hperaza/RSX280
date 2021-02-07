@@ -84,7 +84,7 @@ m2:	outw	(c),hl		; setup system PDRs 0..15
 	djnz	m2
 
 	ld	c,TCR
-	ld	hl,0
+	ld	hl,00000100b
 	ldctl	(c),hl		; inhibit user I/O, EPU and stack ovfl warning
 
 	ld	hl,8800h	; enable user and system address translate
