@@ -224,3 +224,16 @@ Changelog
   sign-extends A).
 
 
+07/02/21
+
+- Added a new system call that allows a task to specify a Synchronous System
+  Trap (SST) vector table. When a task causes a Z280 trap to happen, the
+  corresponding SST routine is now called. The task is aborted only if the
+  user did not specify a SST table, or if the table contained a null vector
+  for the specific trap type.
+
+- Kernel bug fix: inhibit user I/O instructions.
+
+- The kernel now traps the privileged RETIL instruction, which can be used
+  by a user task to enter single-step mode.
+
