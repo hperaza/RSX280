@@ -1,0 +1,192 @@
+	.Z280
+
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	PUTCH,PUTSTR,PERROR,HLHEX,EXIT
+
+;-----------------------------------------------------------------------
+
+; Program to test Synchronous System Trap (SST) handling.
+
+	cseg
+
+EXSTAT::
+	ld	sp,stack
+	ld	hl,sstvt
+	SC	.SVTBL		; specify SST vector table
+	jr	c,error
+
+	epuf			; extended instruction, EPU to A
+	db	5,6,7,8
+
+	epum	(1234h)		; extended instruction, EPU to mem
+	db	5,6,7,8
+
+	out	(c),a		; privileged instruction
+
+	SC	99h		; bad system call
+
+	ld	(0FFFFh),a	; access violation
+
+	xor	a
+	div	hl,a		; division exception
+
+	push	iaddr		; push new PC
+	push	0100h		; push new MSR with SS bit set, SSP clear
+	retil			; enter single-step
+
+iaddr:	nop
+
+	halt			; breakpoint
+
+	ld	hl,0
+	SC	.SVTBL		; disable SSTs
+	jr	c,error
+
+	out	(c),a		; and die with a 'privileged instruction' error
+
+	ld	hl,EX.SUC	; should not reach this...
+	jp	EXIT
+
+error:	push	af
+	ld	hl,msg
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	ld	hl,EX.SEV
+	jp	EXIT
+
+msg:	db	CR,LF,'Fatal error: ',0
+
+sstvt:	dw	eivec		; extended instruction, EPU->reg
+	dw	e2vec		; extended instruction, EPU->mem
+	dw	prvec		; privileged instruction
+	dw	scvec		; unrecognized system call
+	dw	acvec		; access violation
+	dw	dvvec		; division exception
+	dw	ssvec		; single-step
+	dw	bpvec		; breakpoint-on-halt
+
+; Extended instruction handlers
+
+eivec:	ld	hl,eimsg
+	call	PUTSTR
+	pop	hl		; address of EPU template
+	call	HLHEX
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+e2vec:	ld	hl,eimsg
+	call	PUTSTR
+	ex	(sp),hl		; address of EPU template
+	call	HLHEX
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	pop	hl		; address of operand in memory
+	call	HLHEX
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+eimsg:	db	CR,LF,'Extended instruction: Template @',0,', Operand @',0
+
+; Privileged instruction handler
+
+prvec:	ld	hl,prmsg
+	call	PUTSTR
+	pop	hl		; address of instruction causing trap
+	call	HLHEX
+	inc	hl		; skip 'out (c),a' instruction
+	inc	hl
+	push	hl
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+prmsg:	db	CR,LF,'Privileged instruction @',0
+
+; Unrecognized system call handler
+
+scvec:	ld	hl,scmsg
+	call	PUTSTR
+	pop	hl		; SC reason code
+	call	HLHEX
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+scmsg:	db	CR,LF,'Unrecognized system call, code = ',0
+
+; Access violation handler
+
+acvec:	ld	hl,acmsg
+	call	PUTSTR
+	pop	hl		; address of instruction causing trap
+	call	HLHEX
+	inc	hl		; skip 'ld (...),a' instruction
+	inc	hl
+	inc	hl
+	push	hl
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+acmsg:	db	CR,LF,'Access violation @',0
+
+; Division exception handler
+
+dvvec:	ld	hl,dvmsg
+	call	PUTSTR
+	pop	hl		; address of instruction causing trap
+	call	HLHEX
+	inc	hl		; skip 'div' instruction
+	inc	hl
+	push	hl
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+dvmsg:	db	CR,LF,'Division exception @',0
+
+; Single-Step trap handler
+
+ssvec:	ld	hl,ssmsg
+	call	PUTSTR
+	pop	hl
+	call	HLHEX
+	push	hl
+	ld	c,CR
+	call	PUTCH
+	push	hl
+	ret			; return to next instruction
+
+ssmsg:	db	CR,LF,'Single-step trap, next PC = ',0
+
+; Breakpoint-on-halt handler
+
+bpvec:	ld	hl,bpmsg
+	call	PUTSTR
+	pop	hl		; address of halt instruction
+	call	HLHEX
+	inc	hl		; skip halt instruction
+	push	hl
+	ld	c,CR
+	call	PUTCH
+	ret			; return to next instruction
+
+bpmsg:	db	CR,LF,'Breakpoint-on-halt @',0
+
+	dseg
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	EXSTAT
