@@ -122,6 +122,7 @@ fntab:	dw	EXIT		; exit task
 	dw	GTTSK		; get task info
 	dw	GTPAR		; get partition info
 	dw	GIN		; get general info
+	dw	SVTBL		; define SST vector table
 
 ;-----------------------------------------------------------------------
 
@@ -531,6 +532,19 @@ UFSTLO:	ld	de,DTBUF
 
 UEXTSK:	ld	ix,($CTCB)	; get task TCB into IX
 	jp	EXTTSK
+
+;-----------------------------------------------------------------------
+
+SVTBL:	ld	ix,($CTCB)
+	ldw	iy,(ix+T.CTX)
+	ld	a,iyh
+	or	iyl
+	ld	a,E.INV
+	scf
+	ret	z		; should not happen
+	ldw	(iy+TX.SST),hl
+	xor	a
+	ret
 
 ;-----------------------------------------------------------------------
 

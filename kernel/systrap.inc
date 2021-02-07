@@ -61,35 +61,48 @@ $ITBL:	dw	0,0		; reserved
 	dw	0,iret2		; reserved
 	; vector tables for INTA...INTC not used
 
+nmint:
 iret2:	inc	sp
 	inc	sp
 iret1:	retil
 
-bptrp:
-sstrp:	push	0		; fake trap reason code
+exti2:	ldw	(SSTVEC),SST.E2	; SST vector offset
+	ld	(TRPFLG),TK.EXT	; set abort code
+	pop	(EIARG2)	; pop additional argument
+	ld	(TRPARG),2	; two arguments
+	jp	trp1		; continue below
+
+exti1:	ldw	(SSTVEC),SST.EI	; SST vector offset
+	ld	(TRPFLG),TK.EXT	; set abort code
+	ld	(TRPARG),1	; one arguments
+	jp	trp1		; continue below
+
+bptrp:	ldw	(SSTVEC),SST.BP	; SST vector offset
 	ld	(TRPFLG),TK.SSB	; set abort code
-	jp	SYSENT		; abort task via SYSENT
+	jp	TRPENT		; continue below
 
-exti2:	inc	sp
-	inc	sp
-exti1:	ld	(TRPFLG),TK.EXT	; set abort code
-	jp	SYSENT		; abort task via SYSENT
+sstrp:	ldw	(SSTVEC),SST.SS	; SST vector offset
+	ld	(TRPFLG),TK.SSB	; set abort code
+	jp	TRPENT		; continue below
 
-divtrp:	push	0		; fake trap reason code
+divtrp:	ldw	(SSTVEC),SST.DV	; SST vector offset
 	ld	(TRPFLG),TK.DIV	; set abort code
-	jp	SYSENT		; abort task via SYSENT
+	jp	TRPENT		; continue below
 
-prvins:	push	0		; fake trap reason code
+prvins:	ldw	(SSTVEC),SST.PR	; SST vector offset
 	ld	(TRPFLG),TK.PRV	; set abort code
-	jp	SYSENT		; abort task via SYSENT
+	jp	TRPENT		; continue below
 
-acvtrp:	push	0		; fake trap reason code
+acvtrp:	ldw	(SSTVEC),SST.AC	; SST vector offset
 	ld	(TRPFLG),TK.PROT; set abort code
-	jp	SYSENT		; abort task via SYSENT
-
-nmint:	inc	sp		; TODO: call the debugger
-	inc	sp
-	retil
+TRPENT:	push	0		; fake trap reason code
+	ld	(TRPARG),0	; no additional arguments
+trp1:	push	af
+	ld	a,(SYSLVL)	; trap from system state?
+	or	a
+	jp	p,sys1		; no, continue via SYSENT
+	pop	af
+	jp	$DBTRP		; else enter debugger (system crash?)
 
 ; System trap entry:
 ; - all registers are saved into the task's context block.
@@ -99,7 +112,7 @@ nmint:	inc	sp		; TODO: call the debugger
 ; - interrupts are reenabled.
 
 SYSENT:	push	af		; system stack points to current task's
-	push	bc		;  context register bank 
+sys1:	push	bc		;  context register bank 
 	push	de
 	push	hl
 	ex	af,af'
@@ -122,12 +135,100 @@ SYSENT:	push	af		; system stack points to current task's
 
 	ld	a,(TRPFLG)	; check trap flag
 	or	a		; abnormal task exit?
-	jr	z,normal	; proceed normally if not
+	jp	z,normal	; proceed normally if not
 
 	ld	e,a		; E = reason code
 	xor	a
 	ld	(TRPFLG),a
-	ld	bc,($CTCB)	; else abort the current task
+
+	; TODO: ensure T.SP is within task limits, else abort with a
+	;       'SST: bad stack' error
+
+	ldw	iy,(ix+T.CTX)	; get task context
+	ld	a,e
+	cp	TK.PRV		; privileged instruction?
+	jr	nz,skip
+
+	ldw	hl,(iy+TX.REGS+24)
+	ldup	a,(hl)
+	cp	0EDh
+	jr	nz,skip
+	inc	hl
+	ldup	a,(hl)
+	cp	55h		; RETIL instruction?
+	jr	nz,skip		; no
+
+	call	upop		; pop new MSR
+	ld	a,b
+	and	00000011b	; keep only SSP and SS bits
+	ld	b,a
+	ld	a,(iy+TX.REGS+22+1)
+	and	11111100b
+	or	b		; new MSR
+	ld	(iy+TX.REGS+22+1),a
+
+	call	upop		; pop new PC
+	ld	(iy+TX.REGS+24),bc
+	jp	SYSXIT
+
+skip:	ldw	hl,(iy+TX.SST)
+	ld	a,h
+	or	l		; task specified an SST vector table?
+	jr	z,abort		; no, abort task
+	addw	hl,(SSTVEC)	; index into user table
+	ldup	a,(hl)		; get SST vector
+	ld	c,a		; note that user PDRs are still mapped to task
+	inc	hl		; (but this may change with loadable drivers)
+	ldup	a,(hl)
+	ld	b,a
+	or	c		; valid entry?
+	jr	z,abort		; no, abort
+
+	ld	a,(iy+TX.REGS+22+1)
+	and	11111100b	; clear SSP and SS bits
+	ld	(iy+TX.REGS+22+1),a
+
+	push	bc
+	ldw	bc,(iy+TX.REGS+24)
+	call	upush		; push old PC value on user's stack
+	pop	bc		;  and set new PC to SST vector
+	ldw	(iy+TX.REGS+24),bc
+
+	ld	a,(TRPARG)
+	or	a		; any arguments to push?
+	jp	z,SYSXIT	; no, we're ready
+
+	ld	e,a
+	ldw	bc,(iy+TX.REGS+20)
+	call	upush		; else push the one already saved
+	dec	e		; more arguments to push?
+	jp	z,SYSXIT	; no
+	
+	ld	bc,(EIARG2)
+	call	upush		; yes, push second argument
+	jp	SYSXIT		; and we're done
+
+upush:	ldw	hl,(ix+T.SP)
+	dec	hl
+	ld	a,b
+	ldup	(hl),a
+	dec	hl
+	ld	a,c
+	ldup	(hl),a
+	ldw	(ix+T.SP),hl
+	ret
+	
+upop:	ldw	hl,(ix+T.SP)
+	ldup	a,(hl)
+	ld	c,a
+	inc	hl
+	ldup	a,(hl)
+	ld	b,a
+	inc	hl
+	ldw	(ix+T.SP),hl
+	ret
+	
+abort:	ld	bc,($CTCB)	; else abort the current task
 	call	TKILL
 	jr	SYSXIT		; TKILL never returns, anyway
 
@@ -226,4 +327,7 @@ SYSLVL:	ds	1		; system level:
 				;  0 = priv task accessing kernel data
 				; -1 = system state
 TRPFLG:	ds	1		; trap flag
+TRPARG:	ds	1		; trap argument count
+EIARG2:	ds	2		; 2nd arg of extended instruction, if present
+SSTVEC:	ds	2		; SST vector offset
 

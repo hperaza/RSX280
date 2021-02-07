@@ -33,6 +33,7 @@
 	include	TCB.INC
 	include	PCB.INC
 	include	SYSFN.INC
+	include	SST.INC
 	include	TKN.INC
 
 	public	SYSCOM		; System Common segment address
@@ -42,8 +43,6 @@
 
 SYSCOM	equ	0F000h
 
-;;SCMSEG:
-;;	.phase	SYSCOM
 	aseg
 	org	SYSCOM
 
@@ -53,8 +52,6 @@ SCMSEG:
 	include	SYSTRAP.INC	; system call trap handler
 	include	INTH.INC	; interrupt hadler stubs for drivers, etc.
 	include	DEBUG.INC	; system debugger/monitor
-
-;;	.dephase
 
 SCMLEN	equ	$ - SCMSEG
 
