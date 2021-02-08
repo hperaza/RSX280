@@ -237,3 +237,23 @@ Changelog
 - The kernel now traps the privileged RETIL instruction, which can be used
   by a user task to enter single-step mode.
 
+- Working on a task-level debugger, based on the standalone Debug280. The
+  idea is to have an ODT-like object module that can be linked to the user
+  application (simplifies the debugger core in comparison with a standalone
+  task and reduces chances of LUN and memory-management conflicts):
+  * MMU-related code removed, since the debugger is meant to run only
+    in user space.
+  * Z280 interrupt-trap vector table initialization replaced by a SST
+    vector table.
+  * removed the I/O port-related commands, since user tasks are not allowed
+    to access them anyway.
+  * do not reenter the debug_trap routine from debug mode to avoid thrashing
+    user task registers (traps can happen in debug mode too, e.g. when using
+    the Dump command to display memory outside the allocated task limits.)
+
+
+08/02/21
+
+- The ODT debugger is now usable. Added an example program to the 'test'
+  directory showing how to use the debugger.
+
