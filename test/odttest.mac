@@ -14,7 +14,7 @@ LF	equ	0Ah
 ESC	equ	1Bh
 CTRLC	equ	03h
 
-TTEFN	equ	3
+TTEFN	equ	10
 
 TQ.IP	equ	0
 TQ.OP	equ	TQ.IP+1
