@@ -1,0 +1,228 @@
+; Example program that links to ODT to debug the application.
+
+	.Z280
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	ERRORS.INC
+
+FALSE	equ	0
+TRUE	equ	NOT FALSE
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+CTRLC	equ	03h
+
+TTEFN	equ	3
+
+TQ.IP	equ	0
+TQ.OP	equ	TQ.IP+1
+TQ.BUF	equ	TQ.OP+1
+
+	extrn	ATTACH,DETACH,PUTCH,PUTSTR,TTFLSH,TTLUN,EXIT
+
+DEBUG	equ	TRUE
+
+  IF DEBUG
+	extrn	ODT$IN		; debugger initialization routine
+	extrn	ODT$		; debugger entry point
+
+	public	ODT$CI		; console input routine for debugger
+	public	ODT$CO		; console output routine for debugger
+	public	ODT$CS		; console status routine for debugger
+	public	ODT$EX		; debugger exit
+  ENDIF
+
+;-----------------------------------------------------------------------
+
+TEST::	ld	sp,STACK
+	ld	ix,TTQ
+	call	QINIT		; init terminal queue
+	ld	de,'TI'
+	ld	c,0
+	ld	a,(TTLUN)
+	ld	b,a
+	SC	.ALUN		; assign LUN to terminal
+	ld	de,TTAST
+	ld	c,b
+	call	ATTACH		; attach to terminal with ASTs
+
+  IF DEBUG
+	call	ODT$IN		; initialize the debugger
+	jp	c,dbgerr	; on error, exit
+	ld	hl,START	; HL = code start address
+	ld	de,STACK	; DE = initial stack pointer
+	jp	ODT$		; enter debugger
+
+dbgerr:	ld	hl,errmsg
+	call	PUTSTR
+	ld	hl,EX.SEV
+	jp	EXIT
+
+errmsg:	db	CR,LF,'Failed to setup debugger',CR,0
+
+ODT$CI:	jp	GETC		; debugger console input, using ASTs
+
+ODT$CO:	jp	PUTCH		; debugger console output, using SYSLIB
+
+ODT$CS:	ld	ix,TTQ		; debugger console status
+	jp	QEMPTY		; returns zero if input queue is empty
+
+ODT$EX:	jp	quit		; debugger exit
+  ENDIF
+
+; ----- Here begins the code we want to debug
+
+	extrn	MD5INI,MD5END,CVTBH
+
+START::	call	MD5INI
+	ld	hl,STRING
+	ld	e,STRLEN
+	call	MD5END
+	ex	de,hl		; pointer to MD5 hash in DE
+	ld	hl,BUF		; output buffer address in HL
+	ld	(hl),LF
+	inc	hl
+	ld	b,16		; MD5 hash length
+cvt:	ld	a,(de)		; get hast byte
+	call	CVTBH		; convert to hexadecimal
+	inc	de
+	djnz	cvt		; loop until all processed
+	ld	(hl),CR		; end line
+	ld	a,(TTLUN)
+	ld	(MD5OUT+Q.LUN),a
+	ld	hl,MD5OUT
+	SC	.QIO
+	jr	c,error
+	ld	a,(IOSB)
+	or	a
+	jr	nz,error
+	jr	ok
+
+  IF DEBUG
+error:
+ok:
+	halt
+  ELSE
+error:	ld	hl,EX.SEV
+	jp	EXIT
+ok:	ld	hl,EX.SEV
+	jp	EXIT
+  ENDIF
+
+quit:	ld	hl,EX.SUC
+	jp	EXIT
+
+; See SYSLIB's md5.mac for the expected result.
+
+STRING:	db	'The quick brown fox jumps over the lazy dog'
+STRLEN	equ	$-STRING
+
+;-----------------------------------------------------------------------
+
+; I/O routines
+
+; Terminal AST handler
+
+TTAST:	ex	(sp),hl		; fetch argument
+	push	de		; save registers
+	push	bc
+	push	ix
+	ld	ix,TTQ
+	ld	c,l		; get char into C for QPUT
+	ld	a,c
+	cp	CTRLC		; Ctrl-C?
+	call	z,QINIT		; reset queue if yes
+	call	QPUT		; store char
+	ld	e,TTEFN
+	SC	.SETF		; set event flag
+	pop	ix		; restore registers
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX		; and exit AST state
+
+; Initialize terminal input queue
+
+QINIT:	xor	a
+	ld	(ix+TQ.IP),a	; clear input
+	ld	(ix+TQ.OP),a	;  and output pointers
+	ret
+
+; Get character from terminal, if any
+
+QGET:	ld	a,(ix+TQ.OP)	; check queue
+	cp	(ix+TQ.IP)	; empty?
+	scf
+	ret	z		; return with CY set if yes
+	ld	e,a
+	inc	a		; else advance output pointer
+	and	3Fh		; wrap around
+	ld	(ix+TQ.OP),a	; and save it
+	ld	d,0
+	push	ix
+	add	ix,de		; index into queue buffer
+	ld	a,(ix+TQ.BUF)	; fetch the character
+	pop	ix
+	or	a		; and return success
+	ret
+
+; Save terminal character into queue
+
+QPUT:	ld	a,(ix+TQ.IP)	; get input pointer
+	ld	e,a
+	inc	a		; advance it
+	and	3Fh		; wrap around
+	cp	(ix+TQ.OP)	; queue full?
+	scf
+	ret	z		; return with CY set if yes
+	ld	(ix+TQ.IP),a	; else update input pointer
+	ld	d,0
+	push	ix
+	add	ix,de		; index into queue
+	ld	(ix+TQ.BUF),c	; store character
+	pop	ix
+	or	a		; and return success
+	ret
+
+; Check if terminal queue is empty
+
+QEMPTY:	ld	a,(ix+TQ.IP)
+	sub	(ix+TQ.OP)	; compare pointers
+	or	a		; clear CY, keep Z/NZ flag
+	ret
+
+; Get char from terminal, wait if none is available
+
+GETC:	push	de
+	call	TTFLSH		; flush any pending output
+gc1:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag before accessing the queue
+	ld	ix,TTQ
+	call	QGET		; char available?
+	jr	nc,gc2		; yes, return
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for event flag
+	jr	gc1		; and try again
+gc2:	pop	de
+	and	7Fh		; clear parity bit just in case
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+TTQ:	ds	1		; TQ.IP
+	ds	1		; TQ.OP
+	ds	64		; TQ.BUF
+
+BUF:	ds	16*2+2		; buffer to print MD5 hash
+
+MD5OUT:	QIOW$	IO.WVB,5,1,IOSB,,<BUF,16*2+2,,,,0>
+IOSB:	ds	4
+
+	ds	256
+STACK	equ	$		; stack space
+
+	end	TEST
