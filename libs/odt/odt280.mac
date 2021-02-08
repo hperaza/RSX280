@@ -111,8 +111,8 @@ error:	call	cr_lf
 	call	ODT$CO
 	jr	cmd_loop
 
-banner:	db	CR,LF,'ODT V0.1',CR,0
-prompt:	db	CR,LF,'@',0
+banner:	db	CR,LF,"ODT V0.1",CR,0
+prompt:	db	CR,LF,"@",0
 
 ; get command line
 

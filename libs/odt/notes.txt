@@ -64,6 +64,8 @@ Things to watch out for
   may call SYSLIB's PUTCH, so avoid single-stepping there, etc. (single-
   stepping over direct QIO calls is OK.)
 
+- Don't debug the debugger, either :)
+
 
 Debugger Commands
 -----------------
