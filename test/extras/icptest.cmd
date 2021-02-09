@@ -68,17 +68,17 @@
 	.SETN TMO 10
 	.ASK [L] L
 	; Answer: L = 'L'
-	.ASK [<TRUE>:TMO] L Yes or No
+	.ASK [<TRUE>:'TMO'S] L Yes or No
 	; Answer: L = 'L'
 	.SETN N 10
-	.ASKN [N:N+10:N+5:5] N Enter a number
+	.ASKN [N:N+10:N+5:5S] N Enter a number
 	; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
-	.ASKN [:::5] N Enter another number
+	.ASKN [:::5S] N Enter another number
 	; Answer: N = 'N', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
 	.ASKN [1:10] N And another
 	; Answer: N = 'N'
 	.SETS DEFS "Default string"
-	.ASKS [10:20:DEFS:20] S Enter a string
+	.ASKS [10:20:DEFS:20S] S Enter a string
 	; Answer: S = "'S'" <STRLEN>='<STRLEN>'
 	.ASKS [::"Hello"] S Enter another string
 	; Answer: S = "'S'" <STRLEN>='<STRLEN>', <TIMOUT>='<TIMOUT>', <DEFAUL>='<DEFAUL>'
@@ -243,7 +243,7 @@
 	.SETN esc 27
 	.SETN nc 65
 	;     ASCII value of 'nc' corresponds to char 'nc%V'
-	;     'esc%V'[1mBold 'esc%V'[0mNormal
+	;     'esc%V'[1mBold 'esc%V'[0mNormal 'esc%V'[4mUnderline'esc%V'[0m
 ;
 ; 8d) String char output as numeric
 ;

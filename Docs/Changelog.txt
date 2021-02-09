@@ -6420,3 +6420,18 @@ BUGS:
   * implemented the .PAUSE command.
 
 
+09/02/21
+
+- ICP:
+  * allow null default value for .ASK (logical variant) statement.
+  * the timeout specification for all .ASKx statements has now the form
+    'nnu', where nn is the magnitude and u the units (T=ticks, S=seconds,
+    M=minutes, H=hours)
+  * null (empty) response in .ASKN and .ASKS statements is now also tested
+    against the specified range, except when ESC is used to terminate the
+    input.
+  * before opening a file, ensure that the ICP's current directory is set
+    to the terminal's current directory, as the command file may have
+    issued an MCR command that changed it.
+
+

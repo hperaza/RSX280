@@ -51,14 +51,14 @@ cnd$ge	equ	6
 	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
 	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI
 
-	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU
-	extrn	ALLOC,SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM
-	extrn	INPBUF,LNPTR,EVAL,SEVAL,GPRMPT,RDCMD,PROCLN
-	extrn	INDSTP,INDEOF,CLRVAR,GSBTBL,GSBLVL,GETPOS,SETPOS
-	extrn	ISBLNK,ISDIG,ISALPN,PRCMD,VNAME,ADDHLA,STRLEN
-	extrn	DECSTR,PRMSG,EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT
-	extrn	FDB,LNBUF,SUBST,ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL
-	extrn	DELLCL,DELGBL,DELVAR,CHNIND,COMMAN
+	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU,ALLOC
+	extrn	SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM,INPBUF
+	extrn	LNPTR,EVAL,SEVAL,GPRMPT,RDCMD,PROCLN,INDSTP,INDEOF
+	extrn	CLRVAR,GSBTBL,GSBLVL,GETPOS,SETPOS,ISBLNK,ISDIG
+	extrn	ISALPN,PRCMD,VNAME,ADDHLA,STRLEN,DECSTR,PRMSG
+	extrn	EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT,FDB,LNBUF,SUBST
+	extrn	ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL,DELLCL,DELGBL
+	extrn	DELVAR,CHNIND,COMMAN,SETDIR
 
 	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF,SLEEP
 	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
@@ -203,18 +203,7 @@ ask2:	ld	de,varnam
 
 askn:	ld	a,V.NUM
 	call	askvar		; get variable, display prompt, get response
-	ld	a,b
-	or	c		; empty response?
-	jr	nz,askn1	; jump if not
-	ld	a,(askopb)
-	bit	1,a		; a default value was specified?
-	ld	hl,(askdf)
-	jr	nz,askn2	; jump if yes, use it
-askn1:	ld	de,askbuf
-	call	GETNB
-	call	ATOU		; TODO: signed option?
-	;;;jp	c,ovflw or error
-askn2:	ld	de,varnam
+	ld	de,varnam
 	call	SETNV
 	xor	a
 	ret
@@ -229,7 +218,7 @@ asks:	ld	a,V.STR
 	or	c		; empty string?
 	jr	nz,asks1	; jump if not, use it
 	ld	a,(askopb)
-	bit	1,a		; a default string was specified?
+	bit	1,a		; default string specified?
 	jr	z,asks2		; jump if not
 	ld	hl,(askdf)	; else use it
 	ld	(DSPTR),hl	; make it the current string
@@ -254,7 +243,7 @@ asks3:	call	STRLEN
 	ret
 
 asks4:	ld	a,(askopb)
-	bit	1,a		; default string was specified?
+	bit	1,a		; default string specified?
 	ret	z		; return if not
 	xor	a
 	ld	hl,(askdf)
@@ -300,8 +289,8 @@ askv4:	xor	a
 	ld	(SVTMO),a	;   <TIMOUT>
 	ld	(SVDFLT),a	;    and <DEFAUL>
 	call	tgetln		; get user response with optional timeout
-	call	stpeol		; strip terminator, return it in A, adj length
 	ld	ix,MODE
+	ld	a,e		; check terminator
 	cp	EOF		; terminator was ^Z?
 	jp	z,askv3		; jump if yes
 	cp	ESC		; was it ESC?
@@ -311,25 +300,33 @@ askv4:	xor	a
 	jr	nz,askv5	; branch if not
 	ld	a,1
 	ld	(SVDFLT),a	; else set <DEFAUL> to true
-	ret
-
-askv5:	ld	a,(askopb)
-	bit	0,a		; range specified?
-	ret	z		; return if not
-	ld	a,(vartyp)
+askv5:	ld	a,(vartyp)
 	cp	V.LOG
 	ret	z		; no range checking for logical var
 	cp	V.STR
 	jp	z,askv6
 
-	; check numeric range
+	; get numeric result
 
-	ld	de,askbuf
+	ld	a,b
+	or	c		; empty response?
+	jr	nz,askv7	; jump if not
+	ld	a,(askopb)
+	bit	1,a		; was a default value specified?
+	ld	hl,(askdf)
+	jr	nz,askv8	; jump if yes, use it
+askv7:	ld	de,askbuf
 	call	GETNB
 	call	ATOU		; get numeric response
-	;;;jp	c,ovflw or error
+	jp	c,askv10
+
+askv8:	; check numeric range
+
+	ld	a,(askopb)
+	bit	0,a		; range specified?
+	ret	z		; return if not (response value in HL)
 	call	chklim		; value in range?
-	ret	nc		; return if yes
+	ret	nc		; return if yes (response value in HL)
 	ld	hl,errval
 	call	PRMSG		; else display error message
 	jp	askv4		; and ask again
@@ -338,11 +335,23 @@ errval:	db	'Value not in range',0
 
 askv6:	; check string length range
 
+	ld	a,(askopb)
+	bit	0,a		; range specified?
+	ret	z		; return if not
 	ld	hl,askbuf
+	ld	a,b
+	or	c		; empty string?
+	jr	nz,askv9	; jump if not, use it
+	ld	a,(askopb)
+	bit	1,a		; was a default string specified?
+	jr	z,askv9		; jump if not
+	ld	hl,(askdf)	; else use it
+askv9:	push	bc
 	call	STRLEN		; get string length
 	ld	l,c
 	ld	h,b
 	call	chklim		; length within limits?
+	pop	bc
 	ret	nc		; return if yes
 	ld	hl,errlen	; else display error message
 	call	PRMSG
@@ -360,6 +369,7 @@ askv2:	; input ended with escape
 	jr	nz,askv10	; if not, ask again
 	ld	a,1
 	ld	(SVESC),a	; set <ESCAPE> special var to true
+	ld	hl,0
 	ld	a,e
 	ret
 askv10:	ld	hl,errans
@@ -376,6 +386,9 @@ askv3:	; input ended with ^Z
 	ld	ix,MODE
 	bit	B0.CTZ,(ix+0)	; control-z option enabled?
 	jp	z,INDSTP	; stop indirect if not
+	xor	a
+	ld	(askbuf),a
+	ld	hl,0
 	ld	a,e
 	ret
 
@@ -455,7 +468,12 @@ askp35:	bit	2,(ix)		; timeout specified?
 	call	STRCPY
 	ld	hl,(asktmo)
 	xor	a
-	call	DECSTR
+	call	DECSTR		; output magnitude
+	ld	a,(asktmc)
+	ld	(de),a		; output units
+	inc	de
+	xor	a
+	ld	(de),a
 	ret
 
 askstr:	db	'* ',0,'? [',0,']: ',0
@@ -480,6 +498,9 @@ askopt:	ld	hl,0
 	ld	a,(vartyp)	; get variable type
 	cp	V.LOG
 	jr	nz,askop1	; branch if numeric or string
+	call	GETNB
+	cp	':'		; check for empty default value
+	jp	z,askop8
 	call	getvn		; get variable name
 	ld	de,varnam
 	ld	a,c
@@ -500,7 +521,7 @@ askop1:	call	GETNB
 	ld	de,(LNPTR)
 	call	GETNB
 	cp	':'
-	jp	nz,CMDERR	; high limit must follow
+	jp	nz,asker1	; high limit must follow
 	inc	de
 	ld	(LNPTR),de
 	call	EVAL		; get high limut
@@ -538,7 +559,7 @@ askop7:	inc	de
 askop6:	inc	de
 	call	GETNB
 	cp	':'		; if low is null, then high must be null too
-	jp	nz,CMDERR
+	jr	nz,asker1
 	jr	askop7
 
 askop2:	call	EVAL		; get default numeric value
@@ -551,9 +572,14 @@ askop3:	set	1,(ix)		; set default value bit
 	cp	':'
 	jr	nz,askop4
 askop8:	inc	de
+	call	gettmo		; get timeout magnitude and units
+	jp	c,CMDERR
+	inc	de
 	ld	(LNPTR),de
-	call	EVAL		; get timeout value
-	ld	(asktmo),de
+	ld	(asktmo),hl
+	ld	(asktmc),a
+	ld	a,b
+	ld	(asktmu),a
 	ld	a,(MODE+1)
 	bit	B1.TMO,a	; timeouts disabled?
 	jr	z,askop5	; then ignore it
@@ -571,10 +597,34 @@ askop0:	xor	a
 	ret	z		; return if yes
 	call	chklim		; else check limits
 	ret	nc
-	ld	hl,erspec	; error if outside range
+asker1:	ld	hl,erspec	; error if outside range
 	jp	ERROR
 
 erspec:	db	'Bad range or default specification',0
+
+; get timeout argument, returns magnitude in HL and units in B.
+
+gettmo:	call	GETNB		; skip spaces, get char
+	call	ISDIG		; digit?
+	ret	c		; error if not
+	call	ATOU		; else convert value, returns magnitude in HL
+	ret	c
+	ld	a,(de)		; get units
+	call	UCASE
+	ld	b,1
+	cp	'T'		; ticks?
+	ret	z
+	inc	b
+	cp	'S'		; seconds?
+	ret	z
+	inc	b
+	cp	'M'		; minutes?
+	ret	z
+	inc	b
+	cp	'H'		; hours?
+	ret	z
+	scf
+	ret
 
 ; Check value in HL against hi/lo limits.
 
@@ -586,22 +636,6 @@ chklim:	ld	de,(askhi)
 	call	CPHLDE		; value < lo?
 	ex	de,hl
 	ret			; return CY if yes
-
-; Strip end-of-line char from string @HL = buffer, BC = length.
-; Return old end-of-line char in A.
-
-stpeol:	ld	a,b
-	or	c
-	ret	z
-	push	hl
-	add	hl,bc
-	dec	hl
-	ld	a,(hl)		; return old terminator in A
-	ld	(hl),0
-	dec	bc		; adjust length
-	pop	hl
-	or	a
-	ret
 
 ; Get variable name into 'varnam' buffer. Called with DE = pointer to line.
 ; Returns CY set if name is invalid.
@@ -672,8 +706,9 @@ getlbl:	ld	hl,varnam
 	ld	(LNPTR),de
 	ret
 
-; Get user response with a optional timeout.
-; Returns actual length in BC.
+; Get user response with an optional timeout.
+; Returns the response length (not counting the terminator) in BC
+; and the terminator char in E. CY set on error and error code in A.
 
 tgetln:	ld	a,(TTLUN)
 	ld	(qio3+Q.LUN),a
@@ -683,7 +718,8 @@ tgetln:	ld	a,(TTLUN)
 	bit	2,a		; timeout specified?
 	jr	z,gtln1		; branch if not
 	ld	hl,(asktmo)	; get time interval magnitude into HL
-	ld	d,2		; units = seconds
+	ld	a,(asktmu)
+	ld	d,a		; get units into D
 	ld	e,9		; same event flag number as for QIO
 	ld	bc,0		; no AST
 	SC	.MRKT		; mark time
@@ -698,6 +734,7 @@ gtln1:	ld	hl,qio3
 	ld	a,(iosb)	; fetch return code
 	or	a		; success?
 	jr	z,gtln2		; brach if yes
+	ld	e,CR
 	ld	bc,0
 	cp	E.PEND		; request pending (timeout)?
 	scf
@@ -717,11 +754,13 @@ gtln2:	ld	hl,askbuf
 	ld	bc,(iosb+2)	; fetch byte count
 	ld	a,b
 	or	c		; zero?
+	ld	e,CR
 	jr	z,gtln3		; return if yes
+	dec	bc
 	add	hl,bc
-	dec	hl
 	ld	a,(hl)		; get terminator
-	cp	1Ah		; EOF?
+	ld	e,a
+	cp	EOF		; ^Z?
 	ld	a,E.EOF
 	scf
 	ret	z		; return with CY set if yes
@@ -1618,6 +1657,8 @@ fsetup:	call	GETNB		; skip spaces
 	jp	c,SYSERR
 	ld	hl,datext
 	call	ADDEXT
+	call	SETDIR		; set task's dir to terminal's current dir
+	jp	c,SYSERR	;  in case the user changed it
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a
@@ -2010,6 +2051,8 @@ tstfil:	call	GETNB		; skip spaces
 	jr	c,tstset	; error if invalid
 	ld	hl,datext
 	call	ADDEXT		; force .DAT extension if none was specified
+	call	SETDIR		; ensure the directory is the current one
+	jr	c,tstset
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a
@@ -2313,34 +2356,17 @@ decx:	call	getvn2		; get variable name into 'varnam'
 
 ; .DELAY nnu (u = Ticks, Seconds, Minutes, Hours)
 
-delay:	call	GETNB		; skip spaces, get char
-	call	ISDIG		; digit?
-	jp	c,CMDERR	; error if not
-	call	ATOU		; else convert value, returns magnitude in HL
+delay:	call	gettmo		; get interval magnitude and units
 	jp	c,CMDERR
-	ld	a,(de)		; get units
-	call	UCASE
-	ld	b,1
-	cp	'T'		; ticks?
-	jr	z,dly1
-	inc	b
-	cp	'S'		; seconds?
-	jr	z,dly1
-	inc	b
-	cp	'M'		; minutes?
-	jr	z,dly1
-	inc	b
-	cp	'H'		; hours?
-	jp	nz,CMDERR
-dly1:	ex	de,hl
+	ex	de,hl
 	ld	hl,dlyms1	; 'Delaying'
-	call	dly3
+	call	dly2
 	ex	de,hl		; get magnitude back into HL
 	ld	d,b		; and units into B
 	call	SLEEP		; sleep for the specified amount
 	jp	c,SYSERR
-dly2:	ld	hl,dlyms2	; 'Continuing'
-dly3:	ld	a,(MODE+1)
+dly1:	ld	hl,dlyms2	; 'Continuing'
+dly2:	ld	a,(MODE+1)
 	bit	B1.QIE,a	; quiet mode?
 	ret	nz		; return if yes (note CY is clear)
 	call	PRMSG		; else output message
@@ -2364,23 +2390,15 @@ pause:	ld	hl,pmsg
 	inc	hl
 	call	STRCPY
 	pop	hl
- if 0
-	call	dly3		; output message
- else
 	call	PRMSG		; output message
- endif
 	call	GPRMPT		; followed by the CLI prompt
 	call	PUTSTR
 	call	TTFLSH		; ensure all output is displayed
 	ld	hl,0
 	SC	.STOP		; stop task
 	jp	c,SYSERR
- if 0
-	jp	dly2		; finish via common code
- else
-	xor	a
+	xor	a		; here after UNStopping
 	ret
- endif
 
 pmsg:	db	'Pausing. To continue type "UNS ',0,'<ESC>"',0
 
@@ -2441,6 +2459,7 @@ askhi:	ds	2		; .ASKx hi-range value
 askdf:	ds	2		; .ASKx default value
 asktmo:	ds	2		; .ASKx timeout value
 asktmu:	ds	1		; .ASKx timeout units
+asktmc:	ds	1		; .ASKx timeout unit representation
 askopb:	ds	1		; .ASKx option bits:
 				;        bit 0 = range specified
 				;        bit 1 = default value specified
