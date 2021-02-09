@@ -48,7 +48,7 @@ ESC	equ	1Bh
 	public	GETPOS,SETPOS,RDCMD,STPFLG,INPBUF,SYSERR,PROCLN
 	public	EOFMSG,INDSTP,INDEOF,GSBTBL,GSBLVL,GTBUF,PRCMD
 	public	ERROR,CMDERR,EXSTAT,XQTMOD,PRMCR,FDB,EXTEND,ADDEXT
-	public	CHNIND,COMMAN
+	public	CHNIND,COMMAN,SETDIR
 
 	extrn	INTCMD,SKIPBL,SKPNAM,STRLEN,CLRVAR,SUBST,GCCL,PFN
 	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
@@ -510,6 +510,9 @@ OPEN:	ld	ix,FDB
 	bit	DV.DIR,a	; directory device?
 	jr	z,opn3		; branch if not
 
+	call	SETDIR		; set task directory to current directory
+	jp	c,SYSERR	;  in case the user changed ot
+
 	ld	l,IO.ACC
 	ld	h,SF.ACR OR SF.SHR
 	ld	(qio1+Q.FUNC),hl
@@ -943,6 +946,16 @@ ADDEXT:	ld	a,(ix+F.ATTR)
 TIDEV:	db	'TI',0
 CMDEXT:	db	'CMD'
 
+; Set task's defalut directory to current directory
+
+SETDIR:	ld	hl,dirnam
+	ld	c,GD.TI
+	SC	.GDIR
+	ret	c
+	ld	c,SD.TSK
+	SC	.SDIR
+	ret
+
 ;-----------------------------------------------------------------------
 
 ; Extend task limits by the specified amount
@@ -982,6 +995,7 @@ LNPTR:	ds	2
 FDB:	ds	FINFSZ		; FDB for cmd file, .OPEN command, etc
 
 luninf:	ds	6		; .GTLUN buffer
+dirnam:	ds	9		; name of current directory
 indlvl:	ds	1		; current indirect file nesting level
 indbuf:	ds	512		; buffer for indirect file I/O
 indpos:	ds	2		; offset to current char in indbuf
