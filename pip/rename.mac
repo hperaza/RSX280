@@ -33,7 +33,7 @@
 	public	PIPREN
 
 	extrn	LFNB,RFNB,CRFNB,NRPARM,SWBITS,SEARCH
-	extrn	SETDIR,SETNAM,SETEXT,NFILES,SYSERR,ERROR
+	extrn	SETDEV,SETDIR,SETNAM,SETEXT,NFILES,SYSERR,ERROR
 	extrn	SRCFDB,DSTFDB,ERRNF
 
 CR	equ	0Dh
@@ -82,14 +82,7 @@ doren:	ld	a,c
 
 	ld	hl,F.DEV
 	add	hl,de
-	ld	a,(hl)
-	ld	(ix+F.DEV),a	; set also device name and unit
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.DEV+1),a
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.UNIT),a
+	call	SETDEV		; set also device name and unit
 	xor	a		; return success
 	ret
 

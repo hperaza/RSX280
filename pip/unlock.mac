@@ -32,8 +32,8 @@
 
 	public	PIPUNL
 
-	extrn	RFNB,CRFNB,NRPARM,SWBITS,SEARCH,SRCHDR
-	extrn	DIRFNB,SETDIR,SETNAM,SETEXT,SRCFDB,DSTFDB
+	extrn	RFNB,CRFNB,NRPARM,SWBITS,SEARCH,SRCHDR,DIRFNB
+	extrn	SETDEV,SETDIR,SETNAM,SETEXT,SRCFDB,DSTFDB
 	extrn	NFILES
 
 	extrn	SYSERR,ERROR,ERRNF,VERR
@@ -88,14 +88,7 @@ dounlk:	ld	a,c
 
 	ld	hl,F.DEV
 	add	hl,de
-	ld	a,(hl)
-	ld	(ix+F.DEV),a	; set also device name and unit
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.DEV+1),a
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.UNIT),a
+	call	SETDEV		; set also device name and unit
 	xor	a		; return success
 	ret
 

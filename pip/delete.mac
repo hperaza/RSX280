@@ -33,9 +33,9 @@
 	public	PIPDEL,PRFNB,VERR
 
 	extrn	RFNB,CRFNB,ASGN,NRPARM,SWBITS,SEARCH,SRCHDR
-	extrn	DIRFNB,SETDIR,SETNAM,SETEXT,SRCBUF,CPSTR
-	extrn	CPNAME,CPEXT,GETLN,UCASE,CRLF,PUTCH,PUTSTR
-	extrn	SWVAL,CPHLDE,SRCFDB,DSTFDB,NFILES,CVTWD,STRBUF
+	extrn	DIRFNB,SETDEV,SETDIR,SETNAM,SETEXT,SRCBUF,CPSTR
+	extrn	CPNAME,CPEXT,GETLN,UCASE,CRLF,PUTCH,PUTSTR,SWVAL
+	extrn	CPHLDE,SRCFDB,DSTFDB,NFILES,CVTWD,STRBUF
 
 	extrn	CMDERR,SYSERR,ERROR,ERRNF
 
@@ -148,14 +148,7 @@ dodel:	ld	a,c
 
 	ld	hl,F.DEV
 	add	hl,de
-	ld	a,(hl)
-	ld	(ix+F.DEV),a	; set also device name and unit
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.DEV+1),a
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.UNIT),a
+	call	SETDEV		; set also device name and unit
 	xor	a		; return success
 	ret
 

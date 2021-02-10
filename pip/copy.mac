@@ -35,8 +35,8 @@
 
 	extrn	LFNB,RFNB,CRFNB,ASGN,NRPARM,SWBITS,SWVAL,SEARCH
 	extrn	FCREAT,FOPEN,FREAD,FWRITE,FCLOSE,FWATTR,SETDIR
-	extrn	SETNAM,SETEXT,SRCFDB,DSTFDB,NFILES,STRBUF,FRDBLK
-	extrn	FGETLN,FPUTLN,?FINCB
+	extrn	SETDEV,SETNAM,SETEXT,SRCFDB,DSTFDB,NFILES,STRBUF
+	extrn	FRDBLK,FGETLN,FPUTLN,?FINCB
 
 	extrn	SYSERR,ERRNF,ERRFNB
 
@@ -130,14 +130,7 @@ docpy:	ld	a,c
 
 	ld	hl,F.DEV
 	add	hl,de
-	ld	a,(hl)
-	ld	(ix+F.DEV),a	; set also device name and unit
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.DEV+1),a
-	inc	hl
-	ld	a,(hl)
-	ld	(ix+F.UNIT),a
+	call	SETDEV		; set also device name and unit
 	xor	a		; return with success code
 	ret
 
