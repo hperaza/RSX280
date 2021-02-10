@@ -6434,4 +6434,7 @@ BUGS:
     to the terminal's current directory, as the command file may have
     issued an MCR command that changed it.
 
+- PIP:
+  * file owner and protection bits can now be changed with the /OW:[g,u]
+    and /PR:[sw,ow,gr,wo] switches respectively.
 
