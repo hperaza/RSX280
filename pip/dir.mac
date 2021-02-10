@@ -115,7 +115,7 @@ dir1:	ld	ix,(CRFNB)
 
 				; TODO: if next filespec points to another
 				; device we will have to close and open the
-				; idenx file again!
+				; index file again!
 
 dir2:	call	GTOTAL		; display grand total if required
 
