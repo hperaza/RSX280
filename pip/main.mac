@@ -27,7 +27,7 @@
 	.Z80
 
 	TITLE	PIP - Peripheral Interchange Program
-	IDENT	'M0121'
+	IDENT	'M0122'
 
 	cseg
 
@@ -50,7 +50,7 @@ ESC	equ	1Bh
 	public	NFILES,ASGN,SWBITS,SWVAL,LFNB,RFNB,CRFNB,ERRFNB
 	public	NRPARM
 
-	extrn	PIPDIR,PIPCPY,PIPDEL,PIPUNL,PIPREN
+	extrn	PIPDIR,PIPCPY,PIPDEL,PIPUNL,PIPREN,PIPATR
 
 	extrn	ATTACH,DETACH,PFN,PDN,PERROR,CRLF,UCASE,GCML,RCML
 	extrn	RCTRLO,HLDEC,PUTCH,PUTSTR,TTFLSH,TTLUN,PRFNB
@@ -295,6 +295,12 @@ pip1:	ld	a,(ix)		; check switches
 
 	; single-file operations
 
+	bit	S2.PR,(ix+1)	; /PR?
+	jp	nz,PIPATR
+
+	bit	S2.OW,(ix+1)	; /OW?
+	jp	nz,PIPATR
+
 	bit	S2.DE,(ix+1)	; /DE?
 	jp	nz,PIPDEL
 
@@ -392,9 +398,15 @@ getfs:	ld	a,(de)
 	ret	z
 	cp	'='
 	ret	z
+	cp	':'
+	ret	z
 	cp	','
 	ret	z
 	cp	'/'
+	ret	z
+	cp	'['
+	ret	z
+	cp	']'
 	ret	z
 	ret
 gf1:	xor	a
@@ -700,11 +712,16 @@ par4p2:	inc	de
 	jr	z,par4p3	; branch if yes
 	cp	'*'		; wildcard?
 	jr	nz,par4p5	; no
+	ld	a,l
+	and	0Fh		; protection bits set on this field?
+	jp	nz,par0e	; yes, error
 	exx
 	ld	a,l
 	exx
+	ld	c,a
 	and	0Fh		; already set?
 	jp	nz,par0e	; yes, error
+	ld	a,c
 	or	0Fh		; else set mask
 	exx
 	ld	l,a
@@ -716,17 +733,22 @@ par4p5:	call	gtrwed		; get single protection bit
 	ld	a,l
 	and	c		; already set?
 	jp	nz,par0e	; yes, error
+	exx
+	ld	a,l
+	exx
+	and	0Fh		; wildcard seen on this field?
+	jp	nz,par0e	; yes, error
 	ld	a,l
 	or	c
 	ld	l,a		; else set bit
 	jr	par4p2		; and loop to process next
 
-par4p3:	add	hl,hl		; shift mask
+par4p3:	add	hl,hl		; shift access bits
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
 	exx
-	add	hl,hl
+	add	hl,hl		; and mask
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
@@ -784,9 +806,9 @@ par4u:	; get UIC specification [g,u]
 	jp	c,par0e
 	or	a
 	jp	z,par0e		; zero is not allowed
-	ld	(SWVAL),a	; store group ID
+	ld	(SWVAL+1),a	; store group ID
 	ld	a,c
-	ld	(SWVAL+2),a	; store group wildcard, if present
+	ld	(SWVAL+3),a	; store group wildcard, if present
 	call	getnb
 	cp	','		; comma separator required
 	jp	nz,par0e
@@ -795,9 +817,9 @@ par4u:	; get UIC specification [g,u]
 	jp	c,par0e
 	or	a
 	jp	z,par0e		; zero is not allowed
-	ld	(SWVAL+1),a	; store user ID
+	ld	(SWVAL),a	; store user ID
 	ld	a,c
-	ld	(SWVAL+3),a	; store user wildcard, if present
+	ld	(SWVAL+2),a	; store user wildcard, if present
 	call	getnb
 	cp	']'		; closing bracket required
 	jp	nz,par0e
@@ -809,7 +831,8 @@ par4u:	; get UIC specification [g,u]
 par8b:	call	getnb
 	cp	'*'		; wildcard?
 	jr	nz,par8b1	; no
-	ld	c,0FFh		; else set mask
+	inc	de		; else skip it
+	ld	c,0FFh		; and set mask
 	ld	a,1
 	or	a
 	ret

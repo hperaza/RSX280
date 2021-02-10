@@ -12,6 +12,7 @@ TKB    = ../Tools/cpm/tkb.com
 SRCS = main.mac \
 	dir.mac \
 	copy.mac \
+	attr.mac \
 	delete.mac \
 	unlock.mac \
 	rename.mac \
@@ -28,7 +29,7 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 $(PROG): $(OBJS) fcslib.lib syslib.lib
-	$(ZXCC) $(TKB) -"$@,,pip=main/ofmt=tsk,dir,copy,delete,unlock,rename,search,match,fcslib/lb,syslib/lb/task=...PIP/asg=SY:1-4:6-7,TI:5"
+	$(ZXCC) $(TKB) -"$@=main/ofmt=tsk,dir,copy,attr,delete,unlock,rename,search,match,fcslib/lb,syslib/lb/task=...PIP/asg=SY:1-4:6-7,TI:5"
 
 clean:
 	rm -f $(PROG) *.rel *.prn *.sym *.map core *.bin *.tsk *~ *.\$$\$$\$$

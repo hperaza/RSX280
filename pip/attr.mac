@@ -1,0 +1,232 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of PIP, a Peripheral Interchange Program for     ;
+;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.z80
+
+	cseg
+
+	include	PIP.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	SYSFN.INC
+	include	ERRORS.INC
+
+	public	PIPATR
+
+	extrn	LFNB,RFNB,CRFNB,ASGN,NRPARM,SWBITS,SWVAL
+	extrn	SEARCH,SETDEV,SETDIR,SETNAM,SETEXT,SYSERR
+	extrn	ERRNF,SRCFDB,NFILES
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+; TODO:
+; - check for ambiguous switches
+
+;-----------------------------------------------------------------------
+
+; Change file file attributes (owner or protection bits).
+
+PIPATR:	ld	hl,RFNB
+	ld	(CRFNB),hl
+
+loop:	ld	ix,(CRFNB)
+	ld	hl,doattr	; HL = callback routine address
+	call	SEARCH		; search for files
+
+	call	c,SYSERR	; on error, display message and continue
+
+	ld	hl,NRPARM
+	dec	(hl)		; any more filespecs?
+	ret	z		; return if not
+
+	ld	hl,(CRFNB)
+	ld	de,FNSZ
+	add	hl,de
+	ld	(CRFNB),hl	; else set pointer to next filespec
+	jr	loop		; and loop to process it
+
+;-----------------------------------------------------------------------
+
+; Callback function to process a single file.
+
+doattr:	ld	a,c
+	or	a		; first time?
+	jr	nz,attr1	; branch if not
+
+	ex	de,hl
+
+	ld	ix,SRCFDB
+	ld	hl,F.NAME
+	add	hl,de		; HL = directory name in finfo
+	push	de
+	call	SETDIR		; set directory name in FDB for next calls
+	pop	de
+
+	ld	hl,F.DEV
+	add	hl,de
+	call	SETDEV		; set also device name and unit
+	xor	a
+	ret
+
+attr1:	dec	c		; matched entry?
+	jr	z,attr2		; branch if yes
+
+	ld	a,(SWBITS)
+	bit	S1.NM,a		; /NM?
+	ret	nz		; return if set (note CY still clear)
+	ld	hl,(NFILES)
+	ld	a,h
+	or	l		; any files found?
+	call	z,ERRNF		; display warning if not
+	xor	a
+	ret
+
+attr2:	ld	hl,(NFILES)
+	inc	hl
+	ld	(NFILES),hl
+
+	push	ix
+	pop	de		; DE = dir entry
+
+	ld	ix,SRCFDB
+	ld	hl,DE.NAME
+	add	hl,de
+	push	de
+	call	SETNAM		; set file name in SRCFDB
+	pop	de
+
+	ld	hl,DE.EXT
+	add	hl,de
+	push	de
+	call	SETEXT		; set extension
+	pop	de
+
+	ld	hl,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	ld	(ix+F.VER),a	; set version number
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+F.VER+1),a
+
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(ix+F.ATTR),a
+
+	ld	de,(SRCFDB+F.DEV)
+	ld	a,(SRCFDB+F.UNIT)
+	ld	c,a
+	ld	b,LUNDST
+	SC	.ALUN		; assign LUN
+	jp	c,attr3
+
+	ld	hl,qio1
+	SC	.QIO		; open file
+	jp	c,attr3
+	ld	a,(iosb)
+	or	a
+	jp	nz,attr3
+
+	ld	hl,qio2
+	SC	.QIO		; read attributes
+	jp	c,attr3
+	ld	a,(iosb)
+	or	a
+	jp	nz,attr3
+
+	ld	ix,finfo
+	ld	(ix+F.WAT),0	; clear F.WAT (nothing set yet)
+
+	ld	a,(SWBITS+1)
+	bit	S2.PR,a		; /PR switch set?
+	jr	z,attr4		; no, skip
+
+	ld	hl,(SWVAL)	; protection bits in HL
+	ld	de,(SWVAL+2)	; mask in DE
+	ld	a,(ix+F.PROT)	; get original bits
+	and	e		; clear bits to modify, leave others
+	or	l		; set new bits
+	ld	(ix+F.PROT),a	; store value back
+	ld	a,(ix+F.PROT+1)	; get original bits
+	and	d		; clear bits to modify, leave others
+	or	h		; set new bits
+	ld	(ix+F.PROT+1),a	; store value back
+
+	ld	(ix+F.WAT),a
+	or	FA.PROT		; set bit in F.WAT
+	ld	(ix+F.WAT),a
+
+attr4:	ld	a,(SWBITS+1)
+	bit	S2.OW,a		; /OW switch set?
+	jr	z,attr5		; no, skip
+
+	ld	hl,(SWVAL)	; user and group in HL
+	ld	de,(SWVAL+2)	; mask in DE
+	ld	a,e
+	or	a		; keep original user?
+	jr	nz,attr41	; yes
+	ld	(ix+F.USER),l	; else set new user ID
+attr41:	ld	a,d
+	or	a		; keep original group?
+	jr	nz,attr42	; yes
+	ld	(ix+F.GROUP),h	; else set new group ID
+
+attr42:	ld	(ix+F.WAT),a
+	or	FA.USER OR FA.GRP
+	ld	(ix+F.WAT),a	; set bits in F.WAT
+
+attr5:	ld	hl,qio3
+	SC	.QIO		; write attributes
+	jr	c,attr3
+	ld	a,(iosb)
+	or	a
+	jr	nz,attr3
+
+	ld	hl,qio4
+	SC	.QIO		; close file
+	jr	c,attr3
+	ld	a,(iosb)
+	or	a
+	jr	nz,attr3
+	xor	a
+	ret			; success
+
+attr3:	call	SYSERR		; display error message
+	ld	hl,qio4
+	SC	.QIO		; close the file, ignore errors
+	xor	a
+	ret			; return success to process remaining files
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+IOACR	equ	IO.ACC OR (SF.ACR SHL 8)
+
+qio1:	QIOW$	IOACR,LUNDST,9,iosb,,<SRCFDB>
+qio2:	QIOW$	IO.RAT,LUNDST,9,iosb,,<finfo,FINFSZ>
+qio3:	QIOW$	IO.WAT,LUNDST,9,iosb,,<finfo,FINFSZ>
+qio4:	QIOW$	IO.DEA,LUNDST,9,iosb
+iosb:	ds	4
+
+finfo:	ds	FINFSZ
+
+	end
