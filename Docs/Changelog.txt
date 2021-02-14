@@ -6438,3 +6438,22 @@ BUGS:
   * file owner and protection bits can now be changed with the /OW:[g,u]
     and /PR:[sw,ow,gr,wo] switches respectively.
 
+
+13/02/21
+
+- SYSFCP:
+  * FOPEN now opens the oldest version of a file when the user specifies
+    version -1 (like PIP).
+  * FMAKE and FREN now return an error if file version -1 is specified,
+    or if the new file version reaches 65535 (-1).
+
+- MCE: don't reset the current directory after every command.
+
+
+14/02/21
+
+- TED:
+  * display file version as 16-bit value, not 8-bit.
+  * fix wrong cursor position after using backspace on first column of the
+    last line of text.
+
