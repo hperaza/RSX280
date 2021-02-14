@@ -214,7 +214,8 @@ frc1:	ldw	(iy+M.FREE),hl
 ; Allocate an index file entry on the specified physical device (UCB
 ; address in LUNUCB variable): find unset bit in index file bitmap, set
 ; the bit to mark the entry as allocated and return its 16-bit number
-; in HL. Returns CY set and error code in A if not more entries are free.
+; in HL (note: 0-based). Returns CY set and error code in A if no more
+; entries are free.
 
 ALLIXE:	push	iy
 	ld	iy,(LUNVCB)	; get address of volume control block
@@ -242,7 +243,7 @@ ALLIXE:	push	iy
 	ret
 
 ; Free index file entry on device (UCB address in LUNUCB variable).
-; HL = entry number. Returns CY set on error.
+; HL = entry number (note: 0-based). Returns CY set on error.
 
 FREIXE:	push	iy
 	ld	iy,(LUNVCB)	; get VCB address
@@ -380,7 +381,7 @@ bma7:	; free entry found, mark it as allocated
 	ld	de,(bmbits)	; ensure result is within limits
 	ld	a,(bmbits+2)
 	ld	c,a
-	call	CMP24R		; CY if BHL > CDE (bmbits > bitno)
+	call	CMP24R		; CY if CDE > BHL (bmbits > bitno)
 	ccf
 	ld	a,E.DSKF
 	push	af
