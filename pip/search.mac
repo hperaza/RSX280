@@ -628,7 +628,8 @@ TCREAT:	ld	e,(ix+F.DEV)	; get device name and unit into DE-C
 	SC	.ALUN		; assign LUN
 	ret	c		; on error, return
 
-	ld	hl,IO.CRE	; non-contiguous file
+	ld	l,IO.CRE	; non-contiguous file
+	ld	h,SF.TMP	; temporay file (deleted on close)
 	ld	(qio1+Q.FUNC),hl
 	ld	a,LUNTMP
 	ld	(qio1+Q.LUN),a
@@ -693,12 +694,14 @@ CLOSE:	ld	(qio1+Q.LUN),a
 	pop	af
 	cp	LUNTMP
 	ret	nz
+ if 0
 	ld	hl,tmpfdb
 	ld	(qio1+Q.P1),hl
 	ld	hl,IO.DEL
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; if temp file, delete it
+ endif
 	ret
 
 ; Add entry to temp storage file according to search mode

@@ -27,7 +27,7 @@
 	.Z80
 
 	TITLE	PIP - Peripheral Interchange Program
-	IDENT	'M0122'
+	IDENT	'M0123'
 
 	cseg
 
