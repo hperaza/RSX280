@@ -6457,3 +6457,20 @@ BUGS:
   * fix wrong cursor position after using backspace on first column of the
     last line of text.
 
+- SYSFCP:
+  * FMAKE: don't leave a dangling index file entry if the file could not
+    be successfully created.
+  * Implemented temporary files: created by using the SF.TMP subfunction
+    code, they are not entered into any directory, and are automatically
+    deleted on close. Since we are running out of F.ATTR bits, temporary
+    files are identified by having both FA.FILE and FA.DIR bits clear in
+    the FCB structure.
+  * Fixed a bug in WRINOD routine that caused the last allocated bit in the
+    inode bitmap not to be cleared when the inode was freed.
+
+- PIP now creates the PIP.TMP file as temporary, so it will not appear in
+  directory listings and will not be copied to the destination directory.
+
+- TED now creates the EDITOR.TMP virtual memory file as temporary.
+
+
