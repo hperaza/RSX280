@@ -76,8 +76,6 @@ KCALL	MACRO	addr
 ;   error occurred.
 
 ; TODO:
-; - implement mode (read, write, shared read, shared write, delete-on-close)
-; - check file access permissions according to mode
 ; - check if file already open by another task (for shared/non-shared
 ;   access); lookup by inode number
 
@@ -86,6 +84,21 @@ FOPEN:	ld	a,c
 	ld	(fspec),hl
 	push	hl
 	pop	ix
+	ld	a,(ix+F.ATTR)
+	and	FN.VER		; version explicit?
+	jr	z,fopn0		; no, track highest (vmode = 0)
+	ldw	hl,(ix+F.VER)	; version explicit
+	ld	a,h
+	or	l		; but is it zero?
+	jr	z,fopn0		; yes, track highest (vmode = 0)
+	inc	hl
+	ld	a,h
+	or	l		; is it -1?
+	ld	a,2
+	jr	z,fopn0		; yes, track lowest (vmode = 2)
+	dec	a		; else match exact version (vmode = 1)
+fopn0:	ld	(vmode),a	; set version search mode
+
 	call	GETDIR		; open directory, returns HL = dir FCB
 	ld	a,c		;  and C = close flag
 	ld	(clsflg),a
@@ -125,31 +138,35 @@ fopn1:	ld	hl,(dirno)
 	jr	z,fopn1		; loop if yes
 
 	ld	hl,(fspec)	; get filespec into HL
-	push	hl
-	pop	ix		; and IX
-	ld	a,(ix+F.ATTR)
-	and	FN.VER		; compare version numbers only if one specified
 	ld	de,dirent
+	ld	a,(vmode)	; get version search mode
+	and	1		; match version as required
 	call	FCBCMP		; name matches?
 	jr	nz,fopn1	; loop if not
 
 	; match found
 
-	ld	hl,(fvers)
 	ld	de,(dirent+DE.VER)
-	cpw	hl,de		; version number on dirent is higher?
+	ld	hl,(fvers)
+	ld	a,h
+	or	l		; first time?
+	jr	z,fopn5		; yes
+	ld	a,(vmode)	; get version search mode
+	and	2		; track lowest?
+	jr	z,fopn4		; no
+	ex	de,hl		; yes
+fopn4:	cpw	hl,de		; version number on dirent is higher/lower?
 	jr	nc,fopn1	; continue scanning if not
 
-	ld	(fvers),de	; else update max version number
+fopn5:	ld	(fvers),de	; else update max/min version number
 	ld	hl,dirent
 	ld	de,diren2	; and remember this directory entry
 	ld	bc,DESZ
 	ldir
 
-	ld	ix,(fspec)	; get filespec into HL
-	ld	a,(ix+F.ATTR)
-	and	FN.VER		; explicit version specified?
-	jr	z,fopn1		; continue scanning if not
+	ld	a,(vmode)	; get version search mode
+	dec	a		; match exact version?
+	jr	nz,fopn1	; continue scanning if not
 
 fopn2:	ld	hl,(fvers)
 	ld	a,h		; file found?
@@ -281,12 +298,19 @@ FMAKE:	ld	(fspec),hl	; save pointer to filespec
 mkf0:	call	VALFN		; ensure file name is valid
 	ld	a,E.BADF
 	ret	c
-	ld	a,(ix+F.VER)
-	or	(ix+F.VER+1)	; null version?
+	ldw	hl,(ix+F.VER)
+	ld	a,h
+	or	l		; null version?
 	jr	z,mkf1		; branch if yes
+	inc	hl
+	ld	a,h
+	or	l		; version -1 is not allowed
+	ld	a,E.BADOP
+	scf
+	ret	z
 	ld	a,(ix+F.ATTR)
-	and	FN.VER		; else check for explicit version specified
-mkf1:	ld	(vrsflg),a	; set flag accordingly
+	and	FN.VER		; else check for explicit version number
+mkf1:	ld	(vmode),a	; set mode accordingly
 
 	call	GETDIR		; open directory, returns HL = FCB, C = close flag
 	ret	c		; on error, return
@@ -340,11 +364,11 @@ mkf2:	ld	hl,(dirno)
 
 	ld	hl,(fspec)
 	ld	de,dirent
-	ld	a,(vrsflg)	; any or specific version number
+	ld	a,(vmode)	; any or specific version number
 	call	FCBCMP		; file name matches entry?
 	jr	nz,mkf2		; loop if not
 
-	ld	a,(vrsflg)	; match found
+	ld	a,(vmode)	; match found
 	or	a		; searching for explicit version?
 	ld	a,E.EXIST	; return error if yes, file exists
 	scf
@@ -372,12 +396,18 @@ mkf4:	; directory scan done
 	ld	iy,(LUNVCB)
 	ld	ix,(fspec)
 
-	ld	a,(vrsflg)
+	ld	a,(vmode)
 	or	a		; explicit output file version?
 	jr	nz,mkf5		; branch if yes
 
 	ld	hl,(fvers)
 	inc	hl		; else set new file version
+	ld	a,h
+	and	l
+	inc	a		; error if new version is 65535 (-1)
+	ld	a,E.VLIM	; version limit reached
+	scf
+	jp	z,mkf12
 	ldw	(ix+F.VER),hl	; update F.VER field in FDB
 
 	ld	a,(ix+F.ATTR)
@@ -1882,12 +1912,19 @@ FREN:	ld	(fspec),hl
 	call	VALFN		; valid name?
 	ld	a,E.BADF
 	ret	c		; return error if not
-	ld	a,(ix+F.VER)
-	or	(ix+F.VER+1)	; null version specified?
+	ldw	hl,(ix+F.VER)
+	ld	a,h
+	or	l		; null version specified?
 	jr	z,fren1		; branch if yes
+	inc	hl
+	ld	a,h
+	or	l		; version -1 is not allowed
+	ld	a,E.BADOP
+	scf
+	ret	z
 	ld	a,(ix+F.ATTR)
 	and	FN.VER		; else check if explicit version was specified
-fren1:	ld	(vrsflg),a	; set flag accordingly
+fren1:	ld	(vmode),a	; set mode accordingly
 
 	ld	ix,(fspec)	; check old filespec
 	ld	a,(ix+F.ATTR)	; explicit version number is required
@@ -1895,8 +1932,15 @@ fren1:	ld	(vrsflg),a	; set flag accordingly
 	ld	a,E.BADOP
 	scf
 	ret	z
-	ld	a,(ix+F.VER)	; version can't be 0 either
-	or	(ix+F.VER+1)
+	ldw	hl,(ix+F.VER)
+	ld	a,h
+	or	l		; new version can't be 0
+	ld	a,E.BADOP
+	scf
+	ret	z
+	inc	hl
+	ld	a,h
+	or	l		; and can't be -1 either
 	ld	a,E.BADOP
 	scf
 	ret	z
@@ -1943,11 +1987,11 @@ fren2:	ld	hl,(dirno)
 
 	ld	hl,(fspec2)	; get new filespec
 	ld	de,dirent
-	ld	a,(vrsflg)
+	ld	a,(vmode)
 	call	FCBCMP		; this entry matches the new name?
 	jr	nz,fren3	; jump if not
 
-	ld	a,(vrsflg)
+	ld	a,(vmode)
 	or	a		; new filespec has explicit version?
 	ld	a,E.EXIST
 	scf
@@ -1989,7 +2033,7 @@ fren4:	ld	a,(dfound)	; found old filespec?
 	add	hl,bc
 	ld	bc,9+3+2
 	ldir			; set new name, extension and version
-	ld	a,(vrsflg)
+	ld	a,(vmode)
 	or	a		; explicit new version?
 	jr	nz,fren5	; branch if yes, already set
 
@@ -2439,6 +2483,7 @@ mf1:	ld	a,(de)		; compare fields
 ;   HL = directory FCB address
 ;   C  = 1 if FCB must be closed (i.e. not the master dir FCB), else 0.
 ;   CY set on error and error code in A.
+; Preserves IX.
 
 GETDIR:	ld	de,(LUNUCB)	; get UCB address into DE
 	ld	hl,U.ST
@@ -2703,6 +2748,7 @@ WRDIR:	push	de
 ; Called with IX = FCB and E = access mode.
 ; Return with CY set and error code in A if access is not allowed.
 ; All requested bits must be set for access to be granted.
+; Preserves IX.
 
 CKPRMF:	push	ix
 	call	GETUIC		; get user ID into L, group ID into H
@@ -2745,6 +2791,7 @@ cpm1:	cpl
 ; Called with IX = inode address and E = access mode.
 ; Return with CY set and error code in A if access is not allowed.
 ; All requested bits must be set for access to be granted.
+; Preserves IX.
 
 CKPRMI:	push	ix
 	call	GETUIC		; get user ID into L, group ID into H
@@ -3303,12 +3350,12 @@ dfprot:	ds	2		; default file prot bits from volume
 mdfcb:	ds	2
 fcbadr:	ds	2		; current FCB address
 fmode:	ds	1		; file access mode bits
+vmode:	ds	1		; version search mode
 filbuf:	ds	2		; address of current file data buffer
 alcbuf:	ds	2		; address of current alloc block buffer
 blkptr:	ds	2		; pointer to block in alloc map
 clsflg:	ds	1
 fattr:	ds	1		; attributes of file being created
-vrsflg:	ds	1
 cblks:	ds	3		; initial # of blocks for contiguous files
 
 fspec:	ds	2		; pointer to user file spec
