@@ -72,7 +72,7 @@ WRINOD:	push	iy
 	pop	bc
 	jr	c,wri1
 
-	push	bc
+	push	bc		; push inode number
 	ex	de,hl
 	ld	hl,(ubuf)
 	ld	bc,IESZ
@@ -90,7 +90,8 @@ WRINOD:	push	iy
 	ld	a,(hl)		; free inode?
 	inc	hl
 	or	(hl)
-	pop	hl
+	pop	hl		; pop inode number into HL
+	dec	hl		; make it 0-based
 	call	z,FREIXE	; free index file entry on bitmap if yes
 
 wri2:	xor	a		; return success

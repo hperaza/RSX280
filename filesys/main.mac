@@ -23,7 +23,7 @@
 
 	.Z280
 
-	IDENT	"V5.0"
+	IDENT	"V5.0-1"
 
 	include	SYSFN.INC
 	include	SYSFCP.INC
@@ -212,6 +212,9 @@ fnmake:	ld	a,(QDB+Q.LUN)	; get LUN
 	jr	z,fnmk1		; branch if not
 	ld	b,FA.CTG	; else set FA.CTG file attribute
 fnmk1:	ld	a,c
+	and	SF.TMP		; create temporary file?
+	jr	nz,fnmk3	; branch if yes
+	ld	a,c
 	and	SF.DIR		; create directory?
 	jr	z,fnmk2		; branch if not
 	ld	a,b
@@ -223,10 +226,17 @@ fnmk1:	ld	a,c
 	call	MKDIR		; create directory
 	ret
 
+fnmk3:	ld	a,c
+	and	SF.DIR
+	jr	z,fnmk4
+	ld	a,E.BADOP	; temporary file can't be a directory
+	scf
+	ret
+
 fnmk2:	ld	a,b
 	or	FA.FILE		; set FA.FILE attribute
 	ld	b,a		; B = file attribs
-	ld	de,(QDB+Q.P2)	; CDE = blocks to alloc for contiguous file
+fnmk4:	ld	de,(QDB+Q.P2)	; CDE = blocks to alloc for contiguous file
 	ld	a,(QDB+Q.P2+2)
 	ld	c,a
 	call	FCREAT		; create and open regular file

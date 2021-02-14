@@ -54,7 +54,7 @@
 	extrn	GETBLK,RLSBLK,NEWBLK,ALLSGC,FREECL,ALLCTG,CLRMEM
 	extrn	GETFCB,FREFCB,LUNVCB,LUNUCB,GETUIC,UCDIR,NEWINO
 	extrn	RDINOD,WRINOD,FLBUFS,MDNAME,DIREXT,BK2CL,CL2BK
-	extrn	INC24,DEC24,ADD24,ADD24B,SUB24,CMP24,CMP24R
+	extrn	INC24,DEC24,ADD24,ADD24B,SUB24,CMP24,CMP24R,FREIXE
 
 KCALL	MACRO	addr
 	call	$SWSTK
@@ -176,7 +176,7 @@ fopn2:	ld	hl,(fvers)
 
 	; file found
 
-	ld	bc,(diren2+DE.INDX) ; get inode number into BC
+fopn6:	ld	bc,(diren2+DE.INDX) ; get inode number into BC
 	ld	hl,inode
 	call	RDINOD		; read inode
 	jr	c,fopn3		; return on index file error
@@ -259,18 +259,54 @@ acm1:	ld	a,d
 ; Input:
 ;   HL  = address of parsed filespec block
 ;   CDE = number of blocks to allocate for contiguous file.
-;   B   = type of file: 0 = non-contiguous, <> 0 = contiguous.
+;   B   = file attributes (either FA.FILE or FA.DIR, optionally FA.CTG)
+;         if neither FA.FILE or FA.DIR are set, the file will be created
+;         as temporary (will not be entered into any directory and will
+;         be deleted on close)
 ; Returns:
 ;   BC  = address of newly-allocated FCB.
-;   CY set on error (and HL = 0).
+;   CY set on error (and BC = 0).
 
 FCREAT:	push	hl
-	call	FMAKE		; enter the file into current directory
+	call	FMAKE		; create the file
 	pop	hl
-	ld	c,FA.RD OR FA.WR
-	call	nc,FOPEN	; if no errors, open the file
-	ret	nc		; return with FMAKE or FOPEN error flags
 	ld	bc,0
+	ret	c		; on error, return
+	ld	a,(fattr)	; created a temporary file?
+	and	FA.FILE OR FA.DIR
+	ld	c,FA.RD OR FA.WR
+	jp	nz,FOPEN	; no, open the file and return
+	ld	a,c
+	ld	(fmode),a	; else set variables
+	ld	(fspec),hl
+	ex	de,hl
+	ld	hl,F.DIR
+	add	hl,de
+	ld	b,9
+fcre1:	ld	(hl),' '	; clear directory name in fspec
+	inc	hl
+	djnz	fcre1
+	ld	hl,F.ATTR
+	add	hl,de
+	ld	a,(hl)
+	and	NOT FA.DIR
+	ld	(hl),a
+	xor	a
+	ld	(clsflg),a
+	ld	hl,F.NAME
+	add	hl,de
+	ld	de,diren2+DE.NAME
+	ld	bc,9+3+2
+	ldir			; fake diren2 for call to SETFCB in FOPEN
+	ld	hl,(ino)
+	ld	(diren2+DE.INDX),hl
+	push	hl
+	call	fopn6		; skip dir search, open the file
+	pop	hl
+	ret	nc		; return on success
+	push	af
+	call	fdl0		; else release the inode
+	pop	af
 	ret
 
 ;-----------------------------------------------------------------------
@@ -281,6 +317,9 @@ FCREAT:	push	hl
 ;   HL  = address of parsed filespec block.
 ;   CDE = number of blocks to allocate to contiguous file.
 ;   B   = file attributes (either FA.FILE or FA.DIR, optionally FA.CTG)
+;         if neither FA.FILE or FA.DIR are set, the file will be created
+;         as temporary (will not be entered into any directory and will
+;         be deleted on close)
 ; Returns:
 ;   CY set on error and error code in A.
 
@@ -312,17 +351,28 @@ mkf0:	call	VALFN		; ensure file name is valid
 	and	FN.VER		; else check for explicit version number
 mkf1:	ld	(vmode),a	; set mode accordingly
 
-	call	GETDIR		; open directory, returns HL = FCB, C = close flag
-	ret	c		; on error, return
+	call	NEWINO		; get new inode
+	ret	c		; return if index file full
+	ld	(ino),hl	; remember the inode number
+	ld	(seqno),bc	; and the old sequence number
 
-	ld	(fcbadr),hl
+	xor	a
+	ld	(clsflg),a
+	ld	a,(fattr)	; creating temporary file?
+	and	FA.FILE OR FA.DIR
+	jp	z,mkf4		; skip directory scan if yes
+
+	call	GETDIR		; open directory, returns HL = FCB, C = close flag
+	jp	c,mkf12		; on error, return
+
+	ld	(fcbadr),hl	; save directory FCB
 	ld	a,c
 	ld	(clsflg),a	; save close flag
 	ld	a,h
 	or	l		; valid directory?
 	ld	a,E.DNF		; 'directory not found' error
 	scf
-	ret	z		; return error if not
+	jp	z,mkf12		; return error if not
 
 	push	hl
 	ex	(sp),ix
@@ -330,11 +380,6 @@ mkf1:	ld	(vmode),a	; set mode accordingly
 	call	CKPRMF		; check directory access permissions
 	pop	ix
 	jp	c,mkf12		; return error if access not permitted
-
-	call	NEWINO		; get new inode
-	ret	c		; return if index file full
-	ld	(ino),hl	; remember the inode number
-	ld	(seqno),bc	; and the old sequence number
 
 	; scan directory to
 	; a) search for an empty entry and
@@ -396,6 +441,11 @@ mkf4:	; directory scan done
 	ld	iy,(LUNVCB)
 	ld	ix,(fspec)
 
+	ld	a,(fattr)	; creating temporary file?
+	and	FA.FILE OR FA.DIR
+	ld	hl,1
+	jr	z,mkf41		; branch if yes
+
 	ld	a,(vmode)
 	or	a		; explicit output file version?
 	jr	nz,mkf5		; branch if yes
@@ -408,7 +458,7 @@ mkf4:	; directory scan done
 	ld	a,E.VLIM	; version limit reached
 	scf
 	jp	z,mkf12
-	ldw	(ix+F.VER),hl	; update F.VER field in FDB
+mkf41:	ldw	(ix+F.VER),hl	; update F.VER field in FDB
 
 	ld	a,(ix+F.ATTR)
 	or	FN.VER		; and set the FN.VER flag
@@ -490,12 +540,13 @@ mkf7:	; common section
 	ld	de,(fcbadr)
 	ld	hl,F.USER
 	add	hl,de
-	ld	a,(hl)
-	ld	(inode+IE.USER),a  ; user ID
-	ld	hl,F.GROUP
-	add	hl,de
-	ld	a,(hl)
-	ld	(inode+IE.GRP),a   ; group ID
+	ldw	hl,(hl)		; get user and group ID
+	push	ix
+	ld	a,(fattr)	; creating temporary file?
+	and	FA.FILE OR FA.DIR
+	call	z,GETUIC	; use task's UIC if yes
+	pop	ix
+	ld	(inode+IE.USER),hl ; set user and group ID
 
 	pop	bc		   ; pop hi-blkno (1)
 	pop	hl		   ; pop lo-blkno (1)
@@ -523,6 +574,10 @@ mkf7:	; common section
 
 	ld	hl,(dfprot)	; default file protection bits
 	ld	(inode+IE.PROT),hl
+
+	ld	a,(fattr)	; creating temporary file?
+	and	FA.FILE OR FA.DIR
+	jr	z,mkf11		; if yes, we're done
 
 	ld	hl,(dirno)	; next entry number after dir EOF
 	ld	a,(dfound)	; a deleted entry was earlier found?
@@ -574,13 +629,17 @@ mkf9:	push	hl
 
 mkf10:	ld	a,E.DSKF	; return disk full error
 	scf
-	jr	mkf12
+mkf12:	push	af
+	ld	hl,(ino)
+	dec	hl		; make inode number 0-based
+	call	FREIXE		; on error, free inode
+	jr	mkf13
 
 mkf11:	ld	bc,(ino)	; inode number in BC
 	ld	hl,inode
 	call	WRINOD		; write inode
-mkf12:	push	af
-	call	clsdir
+	push	af
+mkf13:	call	clsdir
 	pop	af
 	ret			; return error/success
 
@@ -1328,6 +1387,19 @@ FCLOSE:	push	hl
 	pop	ix		; get FCB addr into IX
 
 	ld	a,(ix+F.ATTR)
+	ld	c,a
+	and	FA.FILE OR FA.DIR
+	jr	nz,fcls2	; branch if regular file
+
+	call	UPDINO
+	xor	a
+	ld	(clsflg),a
+	ldw	hl,(ix+F.INODE)
+	push	ix
+	call	fdl0		; delete the file
+	jr	fcls3		; skip updating the inode (freed by delete code)
+
+fcls2:	ld	a,c
 	and	FA.MODF		; 'file modified' flag set?
 	ld	a,E.OK
 	jr	z,fcls1		; return success if not (note CY clear)
@@ -1340,7 +1412,7 @@ FCLOSE:	push	hl
   ENDIF
 
 fcls1:	push	ix
-	pop	de
+fcls3:	pop	de
 	push	af
 	call	FREFCB		; free the file FCB
 	pop	af
@@ -1585,7 +1657,7 @@ fdl1:	ld	hl,(dirno)
 	; file found
 
 	ld	hl,(dirent+DE.INDX)
-	ld	(ino),hl
+fdl0:	ld	(ino),hl
 	ld	c,l		; inode number in BC
 	ld	b,h
 	ld	hl,inode
@@ -1868,7 +1940,11 @@ fdl8:	ld	a,b
 	call	BK2CL
 	call	FREECL		; free the last alloc block (if any)
 				; TODO: handle errors (bitmap R/O, etc)
-fdl9:	ld	de,dirent
+fdl9:	ld	a,(inode+IE.ATTR)
+	and	FA.FILE OR FA.DIR
+	jr	z,fdl91		; skip dir update if temporary file
+
+	ld	de,dirent
 	xor	a
 	ld	(de),a		; free the directory entry
 	inc	de
@@ -1879,7 +1955,7 @@ fdl9:	ld	de,dirent
 	call	WRDIR		; write the directory entry back
 	jr	c,fdl10
 
-	ld	bc,(ino)	; inode number in BC
+fdl91:	ld	bc,(ino)	; inode number in BC
 	ld	hl,inode
 	call	WRINOD		; write inode back
 
