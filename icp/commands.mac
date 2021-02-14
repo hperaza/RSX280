@@ -2397,8 +2397,7 @@ pause:	ld	hl,pmsg
 	ld	hl,0
 	SC	.STOP		; stop task
 	jp	c,SYSERR
-	xor	a		; here after UNStopping
-	ret
+	jp	dly1		; unstopped, continue via common code
 
 pmsg:	db	'Pausing. To continue type "UNS ',0,'<ESC>"',0
 
