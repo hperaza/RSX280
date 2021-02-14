@@ -999,6 +999,12 @@ s3:
 	call	FILOP		; open MCEINI file
 	ENDIF
 
+	IF	CLISUP OR FILE
+	ld	hl,LOGDIR
+	ld	c,SD.TI
+	SC	.SDIR		; set task's default dir to Login dir
+	ENDIF	;CLISUP OR FILE
+
 RESTAR:	; attach the terminal
 
 	ld	bc,IO.ATT
@@ -1059,9 +1065,6 @@ RESTAR:	; attach the terminal
 	; get information from our current CLI
 
 	call	GETCLI		; get CLI information
-	ld	hl,LOGDIR
-	ld	c,SD.TI
-	SC	.SDIR		; set task's default dir to Login dir
 	ENDIF	;CLISUP OR FILE
 
 	IF	STATUS
