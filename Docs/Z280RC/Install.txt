@@ -206,7 +206,7 @@ Z280RC board:
   >
 
 The current version uses an account file, and thus a password is required
-to login into other accounts. The image built above have the following
+to login into other accounts. The image built above has the following
 accounts:
 
   username  password
