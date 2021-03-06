@@ -30,12 +30,12 @@
 ;----------------------------------------------------------------------;
 ;                                                                      ;
 ; The terminal driver is perhaps the most complex driver of RSX280,    ;
-; just like it is in RSX-11M. In addition to handling input/output     ;
-; from a task, the terminal driver "listens" for user input when idle. ;
-; If the user starts typing at the terminal when no task is waiting    ;
-; for input ("unsolicited" input), the characters are placed in a      ;
-; buffer and then queued to the CLI assigned to the terminal (normally ;
-; MCR). This is, in fact, the mechanism for a CLI to receive a command ;
+; just as in RSX-11M. In addition to handling task input/output, the   ;
+; terminal driver "listens" for user input when idle. If the user      ;
+; starts typing at the terminal when no task is waiting for input      ;
+; ("unsolicited" input), the characters are placed in a buffer and     ;
+; then queued to the CLI assigned to the terminal (normally MCR).      ;
+; This is, in fact, the mechanism used by a CLI to receive a command   ;
 ; (a CLI never attaches to the terminal and never issues a terminal    ;
 ; read command). In addition, the user can use Ctrl-C to temporarily   ;
 ; interrupt an input/output operation in progress in order to send     ;
@@ -137,13 +137,15 @@ UX.PRM	equ	UX.CXF + 2	; optional prompt addr in user space (2 bytes)
 UX.UBF	equ	UX.PRM + 2	; address of unsolicited input buffer (2 bytes)
 UX.UCC	equ	UX.UBF + 2	; unsolicited character count (1 byte)
 UX.TMO	equ	UX.UCC + 1	; timeout counter (2 bytes)
-UX.IQ	equ	UX.TMO + 2	; address of input queue (2 bytes)
-UX.TQ	equ	UX.IQ + 2	; address of typeahead queue (2 bytes)
+UX.TQ	equ	UX.TMO + 2	; address of typeahead queue (2 bytes)
 UX.OQ	equ	UX.TQ + 2	; address of output queue (2 bytes)
 UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
 UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (1 byte)
 UX.TXC	equ	UX.TXB + 1	; count of bytes to transmit (2 bytes)
-UX.TXK	equ	UX.TXC + 2	; transmitter restart routine addr (2 bytes)
+UX.RXG	equ	UX.TXC + 2	; get receiver char routine addr (2 bytes)
+UX.RXE	equ	UX.RXG + 2	; receiver queue check routine addr (2 bytes)
+UX.RXC	equ	UX.RXE + 2	; purge receiver queue routine addr (2 bytes)
+UX.TXK	equ	UX.RXC + 2	; transmitter restart routine addr (2 bytes)
 UX.SSP	equ	UX.TXK + 2	; set serial speed routine (2 bytes)
 UX.AST	equ	UX.SSP + 2	; unsolicited char AST routine addr (2 bytes)
 
@@ -182,14 +184,16 @@ U2.CTR	equ	3		; set if processing ^R
 U2.PRM	equ	4		; set if displaying prompt
 U2.CTO	equ	5		; set if output is suppressed by ^O
 U2.DEL	equ	6		; set if deleting chars
+U2.TMO	equ	7		; set if timeout expired
 
 TTBFSZ	equ	132	;80	; terminal buffer size
 
 ; Terminal I/O queue offsets
 
-TQ.IP	equ	0
-TQ.OP	equ	TQ.IP+1
-TQ.BUF	equ	TQ.OP+1
+TQ.MSK	equ	0		; pointer wrap-around mask
+TQ.IP	equ	TQ.MSK+1	; input pointer
+TQ.OP	equ	TQ.IP+1		; output pointer
+TQ.BUF	equ	TQ.OP+1		; start of buffer
 
 ; Default terminal chacteristics
 
@@ -243,12 +247,14 @@ ucbt0:	dw	ucbt1		; link to next
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
 	dw	0		; UX.TMO
-	dw	tt0iq		; UX.IQ
 	dw	tt0tq		; UX.TQ
 	dw	tt0oq		; UX.OQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
+	dw	getc0		; UX.RXG
+	dw	chkrx0		; UX.RXE
+	dw	clrx0		; UX.RXC
 	dw	kick0		; UX.TXK
 	dw	tt0spd		; UX.SSP
 	dw	0		; UX.AST
@@ -275,12 +281,14 @@ ucbt1:	dw	ucbt2		; link to next
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
 	dw	0		; UX.TMO
-	dw	tt1iq		; UX.IQ
 	dw	tt1tq		; UX.TQ
 	dw	tt1oq		; UX.OQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
+	dw	getc1		; UX.RXG
+	dw	chkrx1		; UX.RXE
+	dw	clrx1		; UX.RXC
 	dw	kick1		; UX.TXK
 	dw	tt1spd		; UX.SSP
 	dw	0		; UX.AST
@@ -307,12 +315,14 @@ ucbt2:	dw	ucbt3		; link to next
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
 	dw	0		; UX.TMO
-	dw	tt2iq		; UX.IQ
 	dw	tt2tq		; UX.TQ
 	dw	tt2oq		; UX.OQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
+	dw	getc2		; UX.RXG
+	dw	chkrx2		; UX.RXE
+	dw	clrx2		; UX.RXC
 	dw	kick2		; UX.TXK
 	dw	tt2spd		; UX.SSP
 	dw	0		; UX.AST
@@ -339,12 +349,14 @@ ucbt3:	dw	ucbt4		; link to next
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
 	dw	0		; UX.TMO
-	dw	tt3iq		; UX.IQ
 	dw	tt3tq		; UX.TQ
 	dw	tt3oq		; UX.OQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
+	dw	getc3		; UX.RXG
+	dw	chkrx3		; UX.RXE
+	dw	clrx3		; UX.RXC
 	dw	kick3		; UX.TXK
 	dw	tt3spd		; UX.SSP
 	dw	0		; UX.AST
@@ -371,12 +383,14 @@ ucbt4:	dw	0		; link to next
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
 	dw	0		; UX.TMO
-	dw	tt4iq		; UX.IQ
 	dw	tt4tq		; UX.TQ
 	dw	tt4oq		; UX.OQ
 	ds	2		; UX.TXP
 	ds	1		; UX.TXB
 	dw	0		; UX.TXC
+	dw	getc4		; UX.RXG
+	dw	chkrx4		; UX.RXE
+	dw	clrx4		; UX.RXC
 	dw	kick4		; UX.TXK
 	dw	tt4spd		; UX.SSP
 	dw	0		; UX.AST
@@ -428,8 +442,6 @@ ini0:	res	US.BSY,(iy+U.ST)
 	ldw	(iy+UX.UBF),hl	; clear user buffer address
 	ldw	(iy+UX.PRM),hl	; clear IO.RPR prompt address
 	ldw	(iy+UX.TXC),hl	; clear TX count
-	ldw	ix,(iy+UX.IQ)
-	call	qinit		; init input queue
 	ldw	ix,(iy+UX.TQ)
 	call	qinit		; init typeahead queue
 	ldw	ix,(iy+UX.OQ)
@@ -515,16 +527,8 @@ tmo1:	ldw	hl,(iy+UX.TMO)
 	ld	a,h
 	or	l		; counter reached zero?
 	jr	nz,tmo3		; branch if not
-	ldw	hl,(iy+UX.IQ)
-	push	bc
-	push	hl
-	ex	(sp),ix
-	call	qinit
-	ld	c,15h		; ^U
-	call	qput		; store in input queue
+	set	U2.TMO,(iy+UX.MOD+1) ; set timeout flag
 	call	ifpq		; setup deferred char processing
-	pop	ix
-	pop	bc
 	jr	tmo2
 tmo3:	ld	c,1		; set flag to reload timer
 tmo2:	ldw	iy,(iy+U.LNK)	; next UCB
@@ -757,14 +761,21 @@ ttsmc5:	sub	8		; TC.SPD?
 ; queue for processing during the next input operation.
 
 iproc:	push	iproc		; push return address
-	ldw	ix,(iy+UX.IQ)	; IX = input queue
-	di
-	call	qget		; get char
-	ei
-	ldw	ix,(iy+UX.TQ)	; switch to typeahead queue
+	bit	U2.TMO,(iy+UX.MOD+1)
+	jr	z,proc0
+	res	U2.TMO,(iy+UX.MOD+1)
+	ldw	hl,(iy+UX.RXC)
+	call	(hl)		; purge input
+	ld	a,15h		; ^U
+	ldw	ix,(iy+UX.TQ)	; IX to typeahead queue
+	jr	proc7
+
+proc0:	ldw	hl,(iy+UX.RXG)
+	call	(hl)		; get RX char
+	ldw	ix,(iy+UX.TQ)	; IX to typeahead queue
 	jr	c,proc2		; jump if input queue empty
 
-	ld	c,a
+proc7:	ld	c,a
 
 	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
 	jr	nz,proc1	   ; branch if yes
@@ -824,11 +835,9 @@ proc6:	ldw	hl,(iy+UX.TXK)
 	jp	(hl)		; restart transmitter if necessary
 
 proc5:	res	UM.IFP,(iy+UX.MOD) ; clear the 'input fork process queued' bit
-	ldw	ix,(iy+UX.IQ)	; IX = input queue
-	di
-	call	qempty		; note order: check done after clearing UM.IFP
-	ei			;  bit in order to avoid race condition
-	ret	z
+	ldw	hl,(iy+UX.RXE)	; HL = receiver queue check routine address
+	call	(hl)		; note order: check done after clearing UM.IFP
+	ret	z		;  bit in order to avoid race condition
 	jp	iproc
 
 ctrlo:	bit	UM.INP,(iy+UX.MOD) ; ^O ignored in input mode
@@ -1631,7 +1640,9 @@ ifpq:	bit	UM.IFP,(iy+UX.MOD) ; fork process already queued?
 
 ; Init TT0:
 
-tt0ini:	ld	ix,tt0xq
+tt0ini:	ld	ix,tt0iq
+	call	qinit		; init software receiver queue
+	ld	ix,tt0xq
 	call	qinit		; init software transmitter queue
 
 	ld	de,TT0RX
@@ -1748,8 +1759,8 @@ refill:	ld	ix,tt0xq	; IX = transmitter queue
 r1:	di
 	call	qsize
 	ei
-	cp	31
-	ret	nc
+	cp	(ix+TQ.MSK)	; mask = queue size - 1
+	ret	nc		; return if queue is full
 	push	ix
 	call	nextch		; anything (else) to send?
 	pop	ix
@@ -1759,6 +1770,30 @@ r1:	di
 	call	qput		; else store char in queue
 	ei
 	jr	r1		; and loop to process next
+
+; TT0 get RX character
+
+getc0:	ld	ix,tt0iq	; IX = input queue
+	di
+	call	qget		; get char from TT0 input queue
+	ei
+	ret
+
+; Check RX input queue, returns Z if queue is empty
+
+chkrx0:	ld	ix,tt0iq
+	di
+	call	qempty
+	ei
+	ret
+
+; Purge RX queue
+
+clrx0:	ld	ix,tt0iq
+	di
+	call	qinit
+	ei
+	ret
 
 ;-----------------------------------------------------------------------
 
@@ -1993,9 +2028,9 @@ initbl:	db	_LCR,	00000000b	; ensure LCR is not 0BFh
 	db	_MCR,	10001011b	; enable prescaler, enable INT pin,
 					;  DTR and RTS active
 
-	db	_FCR,	00000001b	; enable FIFO, Rx threshold level = 1
+	db	_FCR,	00000001b	; enable FIFO, RX threshold level = 1
 
-	db	_IER,	00000001b	; enable Rx interrupts
+	db	_IER,	00000001b	; enable RX interrupts
 
 tblen	equ	($-initbl)/2
 
@@ -2145,6 +2180,104 @@ rf42:	ld	a,c
 	or	a		; anything sent?
 	ret
 
+; TT1..4 get RX character
+
+getc1:	iopage	SERP
+	in	a,(SER0+_LSR)
+	bit	0,a		; RX data available?
+	jr	z,gc1		; branch if not
+	in	a,(SER0+_RHR)	; fetch char
+	or	a		; return success
+	ret
+gc1:	in	a,(SER0+_IER)
+	set	0,a		; else (re)enable RX interrupts
+	out	(SER0+_IER),a
+	scf			; and return error
+	ret
+
+getc2:	iopage	SERP
+	in	a,(SER1+_LSR)
+	bit	0,a		; RX data available?
+	jr	z,gc2		; branch if not
+	in	a,(SER1+_RHR)	; fetch char
+	or	a		; return success
+	ret
+gc2:	in	a,(SER1+_IER)
+	set	0,a		; else (re)enable RX interrupts
+	out	(SER1+_IER),a
+	scf			; and return error
+	ret
+
+getc3:	iopage	SERP
+	in	a,(SER2+_LSR)
+	bit	0,a		; RX data available?
+	jr	z,gc3		; branch if not
+	in	a,(SER2+_RHR)	; fetch char
+	or	a		; return success
+	ret
+gc3:	in	a,(SER2+_IER)
+	set	0,a		; else (re)enable RX interrupts
+	out	(SER2+_IER),a
+	scf			; and return error
+	ret
+
+getc4:	iopage	SERP
+	in	a,(SER3+_LSR)
+	bit	0,a		; RX data available?
+	jr	z,gc4		; branch if not
+	in	a,(SER3+_RHR)	; fetch char
+	or	a		; return success
+	ret
+gc4:	in	a,(SER3+_IER)
+	set	0,a		; else (re)enable RX interrupts
+	out	(SER3+_IER),a
+	scf			; and return error
+	ret
+
+; TT1..4 check RX input queue, returns Z if queue is empty
+
+chkrx1:	iopage	SERP
+	in	a,(SER0+_LSR)
+	and	00000001b
+	ret
+
+chkrx2:	iopage	SERP
+	in	a,(SER1+_LSR)
+	and	00000001b
+	ret
+
+chkrx3:	iopage	SERP
+	in	a,(SER2+_LSR)
+	and	00000001b
+	ret
+
+chkrx4:	iopage	SERP
+	in	a,(SER3+_LSR)
+	and	00000001b
+	ret
+
+; TT1..4 purge RX queue
+
+clrx1:	iopage	SERP
+	ld	a,00000011b	; flush RHR, enable FIFO, RX threshold level = 1
+	out	(SER0+_FCR),a
+	jp	gc1		; (re)enable RX ints
+
+clrx2:	iopage	SERP
+	ld	a,00000011b	; flush RHR, enable FIFO, RX threshold level = 1
+	out	(SER1+_FCR),a
+	jp	gc2		; (re)enable RX ints
+
+clrx3:	iopage	SERP
+	ld	a,00000011b	; flush RHR, enable FIFO, RX threshold level = 1
+	out	(SER2+_FCR),a
+	jp	gc3		; (re)enable RX ints
+
+clrx4:	iopage	SERP
+	ld	a,00000011b	; flush RHR, enable FIFO, RX threshold level = 1
+	out	(SER3+_FCR),a
+	jp	gc4		; (re)enable RX ints
+
 ;-----------------------------------------------------------------------
 
 ; TT1..TT4 interrupt handling routines.
@@ -2178,79 +2311,63 @@ TTQINT:	push	ix
 
 tt1int:	in	a,(SER0+_LSR)
 	bit	0,a		; RX data available?
-	jr	nz,tt1rx	; branch if yes
-	bit	5,a		; TX FIFO full?
+	jr	z,tt1tx		; no, try transmitter
+	in	a,(SER0+_IER)
+	res	0,a		; disable further RX interrupts
+	out	(SER0+_IER),a
+	call	ifpq		; setup input fork process
+	in	a,(SER0+_LSR)
+tt1tx:	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
 	in	a,(SER0+_IER)
 	res	1,a		; disable further TX interrupts
 	out	(SER0+_IER),a
 	jp	ofpq		; and schedule fork process to refill FIFO
-tt1rx:	in	a,(SER0+_RHR)	; fetch char
-	ld	c,a
-	ld	ix,tt1iq
-	call	qput		; save it in input queue
-	in	a,(SER0+_LSR)	; check if more available
-	bit	0,a
-	jr	nz,tt1rx	; loop until rx buffer empty
-	call	ifpq		; setup input fork process and return
-	jr	tt1int
 
 tt2int:	in	a,(SER1+_LSR)
 	bit	0,a		; RX data available?
-	jr	nz,tt2rx	; branch if yes
-	bit	5,a		; TX FIFO full?
+	jr	z,tt2tx		; no, try transmitter
+	in	a,(SER1+_IER)
+	res	0,a		; disable further RX interrupts
+	out	(SER1+_IER),a
+	call	ifpq		; setup input fork process
+	in	a,(SER1+_LSR)
+tt2tx:	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
 	in	a,(SER1+_IER)
 	res	1,a		; disable further TX interrupts
 	out	(SER1+_IER),a
 	jp	ofpq		; and schedule fork process to refill FIFO
-tt2rx:	in	a,(SER1+_RHR)	; fetch char
-	ld	c,a
-	ld	ix,tt2iq
-	call	qput		; save it in input queue
-	in	a,(SER1+_LSR)	; check if more available
-	bit	0,a
-	jr	nz,tt2rx	; loop until rx buffer empty
-	call	ifpq		; setup input fork process and return
-	jr	tt2int
 
 tt3int:	in	a,(SER2+_LSR)
 	bit	0,a		; RX data available?
-	jr	nz,tt3rx	; branch if yes
-	bit	5,a		; TX FIFO empty?
-	ret	z		; return if not
+	jr	z,tt3tx		; no, try transmitter
+	in	a,(SER2+_IER)
+	res	0,a		; disable further RX interrupts
+	out	(SER2+_IER),a
+	call	ifpq		; setup input fork process
+	in	a,(SER2+_LSR)
+tt3tx:	bit	5,a		; TX FIFO full?
+	ret	z		; return if yes
 	in	a,(SER2+_IER)
 	res	1,a		; disable further TX interrupts
 	out	(SER2+_IER),a
 	jp	ofpq		; and schedule fork process to refill FIFO
-tt3rx:	in	a,(SER2+_RHR)	; fetch char
-	ld	c,a
-	ld	ix,tt3iq
-	call	qput		; save it in input queue
-	in	a,(SER2+_LSR)	; check if more available
-	bit	0,a
-	jr	nz,tt3rx	; loop until rx buffer empty
-	call	ifpq		; setup input fork process ;;;and return
-	jr	tt3int
 
 tt4int:	in	a,(SER3+_LSR)
 	bit	0,a		; RX data available?
-	jr	nz,tt4rx	; branch if yes
-	bit	5,a		; TX FIFO full?
+	jr	z,tt4tx		; no, try transmitter
+	in	a,(SER3+_IER)
+	res	0,a		; disable further RX interrupts
+	out	(SER3+_IER),a
+	call	ifpq		; setup input fork process
+	in	a,(SER3+_LSR)
+tt4tx:	bit	5,a		; TX FIFO full?
 	ret	z		; return if yes
 	in	a,(SER3+_IER)
 	res	1,a		; disable further TX interrupts
 	out	(SER3+_IER),a
 	jp	ofpq		; and schedule fork process to refill FIFO
-tt4rx:	in	a,(SER3+_RHR)	; fetch char
-	ld	c,a
-	ld	ix,tt4iq
-	call	qput		; save it in input queue
-	in	a,(SER3+_LSR)	; check if more available
-	bit	0,a
-	jr	nz,tt4rx	; loop until rx buffer empty
-	call	ifpq		; setup input fork process and return
-	jr	tt4int
 
 ;-----------------------------------------------------------------------
 ; Queue handling routines
@@ -2262,7 +2379,7 @@ tt4rx:	in	a,(SER3+_RHR)	; fetch char
 qput:	ld	a,(ix+TQ.IP)
 	ld	e,a
 	inc	a
-	and	1Fh
+	and	(ix+TQ.MSK)
 	cp	(ix+TQ.OP)
 	scf
 	ret	z		; buffer full
@@ -2298,7 +2415,7 @@ qget:	ld	a,(ix+TQ.OP)
 	ret	z		; buffer empty
 	ld	e,a
 	inc	a
-	and	1Fh
+	and	(ix+TQ.MSK)
 	ld	(ix+TQ.OP),a
 	ld	d,0
 	push	ix
@@ -2337,21 +2454,22 @@ qsize:	ld	a,(ix+TQ.OP)
 	sub	(ix+TQ.IP)
 	ret	nc		; size = opos - ipos
 	ret	nz
-	add	a,32
+	add	a,(ix+TQ.MSK)
+	inc	a		; queue size = mask + 1
 	ret
 
-; IX = queue, returns Z if queue empty
+; IX = queue, returns Z if queue is empty
 
 qempty:	ld	a,(ix+TQ.IP)
 	sub	(ix+TQ.OP)
 	or	a		; clear CY to avoid extraneous errors
 	ret
 
-; IX = queue, returns Z if queue full
+; IX = queue, returns Z if queue is full
 
 qfull:	ld	a,(ix+TQ.IP)
 	inc	a
-	and	1Fh
+	and	(ix+TQ.MSK)
 	sub	(ix+TQ.OP)
 	or	a		; clear CY to avoid extraneous errors
 	ret
@@ -2383,72 +2501,38 @@ nulprm:	db	0
 
 	dseg
 
-ttdcb:	ds	2
+ttdcb:	ds	2		; terminal DCB address
 
 ; Terminal I/O queues
 
-tt0iq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+TTQ	MACRO	size
+	IF	size AND (size-1)
+	ERROR	Queue size must be a power of 2
+	ENDIF
+	IF	size LT 2
+	ERROR	Queue size must be greater than 2
+	ENDIF
+	db	size-1		; mask
+	ds	1		; ipos
+	ds	1		; opos
+	ds	size		; buf
+	ENDM
 
-tt0tq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+tt0iq:	TTQ	32		; receiver queue
+tt0tq:	TTQ	32		; typeahead queue
+tt0oq:	TTQ	32		; output queue
+tt0xq:	TTQ	32		; transmitter queue
 
-tt0oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+tt1tq:	TTQ	128		; typeahead queue
+tt1oq:	TTQ	32		; output queue
 
-tt0xq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+tt2tq:	TTQ	128		; typeahead queue
+tt2oq:	TTQ	32		; output queue
 
-tt1iq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+tt3tq:	TTQ	128		; typeahead queue
+tt3oq:	TTQ	32		; output queue
 
-tt1tq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt1oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt2iq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt2tq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt2oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt3iq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt3tq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt3oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt4iq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt4tq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
-
-tt4oq:	ds	1	; ipos
-	ds	1	; opos
-	ds	32	; buf
+tt4tq:	TTQ	128		; typeahead queue
+tt4oq:	TTQ	32		; output queue
 
 	END

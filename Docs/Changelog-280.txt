@@ -257,3 +257,18 @@ Changelog
 - The ODT debugger is now usable. Added an example program to the 'test'
   directory showing how to use the debugger.
 
+
+06/03/21
+
+- TTDRV:
+  * the quadser ports (TT1..TT4) no longer use an intermediate input queue;
+    the input fork processing routine now accesses directly the UART hardware
+    FIFO, which results in a lower interrupt latency.
+  * the typeahead queue size was incremented to 128 (the UART FIFO size)
+  With the above changes Kermit is able to transfer files at the maximum
+  UART-supported speed (115200 baud) without dropping packets. The effective
+  transfer speed, however, does not seem to increase that much compared to
+  19200 baud, probably due to the Kermit packet processing overhead.
+
+- Kermit: restore terminal mode (disable binary mode) on exit.
+
