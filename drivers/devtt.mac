@@ -767,12 +767,12 @@ iproc:	push	iproc		; push return address
 	ldw	hl,(iy+UX.RXC)
 	call	(hl)		; purge input
 	ld	a,15h		; ^U
-	ldw	ix,(iy+UX.TQ)	; IX to typeahead queue
+	ldw	ix,(iy+UX.TQ)	; IX = typeahead queue
 	jr	proc7
 
 proc0:	ldw	hl,(iy+UX.RXG)
 	call	(hl)		; get RX char
-	ldw	ix,(iy+UX.TQ)	; IX to typeahead queue
+	ldw	ix,(iy+UX.TQ)	; IX = typeahead queue
 	jr	c,proc2		; jump if input queue empty
 
 proc7:	ld	c,a
