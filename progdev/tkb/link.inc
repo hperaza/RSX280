@@ -4,7 +4,7 @@
 ; %%%% Fix up LINK revision NOTE: Base 1.31
 
 LINKver	macro
-	db	'2.00'
+	db	'2.14'
 	endm
 
 FALSE	equ	0
@@ -90,11 +90,6 @@ NoMSB	equ	01111111b
 .ModEnd	equ	1110b
 .EndFil	equ	1111b
 
-.COMM	equ	1
-.noCOMM	equ	0
-.ENT	equ	1
-.noENT	equ	0
-
 .OC	equ	0		; COM output
 .OP	equ	1		; PRL output
 .OR	equ	2		; RSP output
@@ -128,9 +123,9 @@ NoMSB	equ	01111111b
 ; Symbol	The symbol name
 ; COsize	Size of COMMON block
 
-.SymOff	equ	3
+.SymVal	equ	3
 .SymCtr	equ	5
-.SymLab	equ	6
+.SymNam	equ	6
 .SymHdr	equ	6
 
 $$ENT	equ	7
@@ -144,7 +139,7 @@ X@@fix	equ	1 SHL X$$fix
 X@@mod	equ	00000011b
 
 .SymLen	equ	00011111b
-.ItmLen	equ	00111111b
+.ItmLen	equ	00011111b	;00111111b
 .ItmBit	equ	10011111b
 
 ; Temporary (Y) table structure

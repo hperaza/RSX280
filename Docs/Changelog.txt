@@ -6474,3 +6474,16 @@ BUGS:
 - TED now creates the EDITOR.TMP virtual memory file as temporary.
 
 
+14/03/21
+
+- TKB:
+  * the map file now includes the module load map; the internal symbol table
+    format was expanded to include the additional information.
+  * if no map file output is indicated in the command file, the segment load
+    information is not entered into the symbol table, keeping the symbol
+    table size to a minimum, which may be useful when linking a large project
+    involving a large number of symbols.
+  * display memory usage in decimal % (easier to understand than the
+    hexadecimal use factor)
+
+

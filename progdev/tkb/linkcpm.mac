@@ -20,10 +20,10 @@
 
 	public	X$ABS$FIB,X$PRG$FIB,X$DAT$FIB,X$COM$FIB
 	public	Y$ABS$FIB,Y$PRG$FIB,Y$DAT$FIB,Y$COM$FIB
-	public	OpenF,CreateF,CloseF,SeekF,DiskRd,DiskWr
+	public	OpenF,CreateF,CloseF,SeekF,DiskRd,DiskWr,StrFN
 	public	FCB,DeleteF,FExist,SetName,SetExt,AddExt,CopyFN
 	public	ChkExt,ModFCB,MainFCB,SavMain,SetLibDir,$REL,$IRL
-	public	$LIB,SymFCB,MapFCB,PrChar,Abort,ErrMsg,ErrFN
+	public	$LIB,SymFCB,MapFCB,PrChar,Abort,ErrMsg,ErrFN,CVTWD
 
 WBOOT	equ	0000h
 BDOS	equ	0005h
@@ -433,8 +433,8 @@ SetOVL:	ld	hl,OVflg
 	call	NL
 stov1:	call	GetChar
 	cp	'='		; Test assignment
-stov2:	jr	nz,stov4
-	call	NextChar
+	jr	nz,stov4
+stov2:	call	NextChar
 	call	GetFCB.opt	; Get source if so
 stov4:	ld	a,(Linking)	; test flag
 	or	a		; linking?
@@ -587,7 +587,7 @@ pcmd7:	call	NextChar
 pcmd8:	call	GetChar
 	cp	')'
 	jr	nz,pcmd9
-	call	NextChar
+;;	call	NextChar
 	call	RemOVL		; done with current overlay
 	call	SkpBlank
 	jr	pcmd8
@@ -1554,7 +1554,19 @@ $WRERR:	db	'Disk write error: ',0
 ; Print name of file
 ; ENTRY	Reg HL points to FCB
 
-PrFN:
+PrFN:	ld	de,StrBuf
+	push	de
+	call	StrFN
+	xor	a
+	ld	(de),a
+	pop	de
+	jp	String
+
+; Convert file name to string
+; ENTRY	Reg HL points to FCB
+;	Reg DE points to dest buffer
+
+StrFN:
 IF	@@DU
 	ld	a,(hl)		; Get user
 	push	af
@@ -1563,47 +1575,49 @@ IF	@@DU
 	ld	a,(hl)		; Get drive
 	dec	a		; Test current
 	ld	c,.getdsk
+	push	de
 	call	m,BDOS		; Get logged one if so
+	pop	de
 	inc	a
 	add	a,'A'-1
-	call	CharOut		; .. output
+	ld	(de),a		; .. output
+	inc	de
 	pop	af		; Get back user
 	cp	10		; Test range
 	jr	c,UsrLow
 	sub	10
 	push	af
 	ld	a,'1'
-	call	CharOut		; .. output tens
+	ld	(de),a		; .. output tens
+	inc	de
 	pop	af
 UsrLow:
 	add	a,'0'		; Build user
-	call	CharOut
+	ld	(de),a
+	inc	de
 	ld	a,':'
-	call	CharOut
+	ld	(de),a
+	inc	de
 	pop	hl
 ENDIF	;@@DU
-	ld	e,@nam+@ext
+	ld	b,@nam+@ext
 PrFN.loop:
 	inc	hl
 	ld	a,(hl)
-	and	NoMSB		; Print character
+	and	NoMSB		; output character
 	cp	' '		; .. if non blank
-	call	nz,CharOut
-	dec	e
+	jr	z,PrFN1
+	ld	(de),a
+	inc	de
+PrFN1:	dec	b
 	ret	z
-	ld	a,e
+	ld	a,b
 	cp	@ext		; Test extension
+	jr	nz,PrFN.loop
 	ld	a,'.'
-	call	z,CharOut	; .. indicate
+	ld	(de),a		; .. indicate
+	inc	de
 	jr	PrFN.loop
-
-CharOut:
-	push	hl
-	push	de
-	call	PrChar
-	pop	de
-	pop	hl
-	ret
 
 ; Set file name
 ; ENTRY	Reg HL holds FCB
@@ -1884,6 +1898,55 @@ NL:	ld	de,$CR.LF
 $CR.LF:
 	db	CR,LF,0
 
+CVTWD:	ld	(filler),a
+	push	de
+	push	bc
+	push	hl
+	ex	(sp),ix		; get ptr to dest string buffer in IX
+	ex	de,hl		; value now in HL
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	(ix),a
+	ex	(sp),ix		; restore IX, save ptr
+	pop	hl
+	inc	hl
+	inc	b
+	res	7,b
+	ld	a,b		; return length in A
+	pop	bc
+	pop	de
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	bit	7,b
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	set	7,b
+sb3:	ld	(ix),c
+	inc	ix
+	inc	b
+	ret
+
 ;-----------------------------------------------------------------------
 
 	dseg
@@ -1892,6 +1955,7 @@ StrBuf:	ds	80		; string buffer for message output and
 				;  file name parsing
 
 libdrv:	ds	1		; default drive for library files
+filler:	ds	1
 
 CmdMode:ds	1
 CmdPtr:	ds	2

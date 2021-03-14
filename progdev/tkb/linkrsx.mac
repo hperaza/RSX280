@@ -26,13 +26,12 @@
 	public	GetTop,IOBuf,IrlBuf,CmdPtr,CmdError
 	public	ProcessCommand,$OPNER,StrBuf,StrCpy
 
-	public	OpenF,CreateF,SeekF,CloseF,DiskRd,DiskWr
+	public	OpenF,CreateF,SeekF,CloseF,DiskRd,DiskWr,StrFN
 	public	FCB,DeleteF,FExist,SetName,SetExt,AddExt,CopyFN
 	public	ChkExt,ModFCB,MainFCB,SavMain,SetLibDir,$REL,$IRL
 	public	$LIB,SymFCB,MapFCB,PrChar,Abort,ErrMsg,ErrFN
 
-	extrn	GCML,RCML,PUTCH,TTFLSH,PERROR,HLDEC,ADEC
-	extrn	UCASE,PFN,PDN
+	extrn	GCML,RCML,PUTCH,TTFLSH,PERROR,CVTWD,UCASE,PFN,PDN
 
 LUNCML	equ	1
 
@@ -222,8 +221,8 @@ SetOVL:	ld	hl,OVflg
 	call	NL
 stov1:	call	GetChar
 	cp	'='		; Test assignment
-stov2:	jr	nz,stov4
-	call	NextChar
+	jr	nz,stov4
+stov2:	call	NextChar
 	call	GetFCB.opt	; Get source if so
 stov4:	ld	a,(Linking)	; test flag
 	or	a		; linking?
@@ -361,7 +360,7 @@ pcmd7:	call	NextChar
 pcmd8:	call	GetChar
 	cp	')'
 	jr	nz,pcmd9
-	call	NextChar
+;;	call	NextChar
 	call	RemOVL		; done with current overlay
 	call	SkpBlank
 	jr	pcmd8		; loop
@@ -1283,85 +1282,109 @@ $WRERR:	db	'Disk write error: ',0
 ; Print name of file
 ; ENTRY	Reg HL points to FCB
 
-PrFN:	inc	hl		; skip LUN
+PrFN:	ld	de,StrBuf
+	push	de
+	ld	a,1
+	call	StrFN
+	xor	a
+	ld	(de),a
+	pop	de
+	jp	String
+
+; Convert file name to string
+; ENTRY	Reg HL points to FCB
+; 	Reg DE points to dest buffer
+;	Accu = 1 to include device and dir information (if present)
+
+StrFN:	push	ix
+	inc	hl		; skip LUN
 	inc	hl		; skip recno
 	inc	hl
 	push	hl
-	inc	hl		; skip link
-	inc	hl
-	ld	c,(hl)		; F.ATTR
-	pop	de
-	ld	a,c
+	pop	ix		; IX = FNB
+	ld	c,l
+	ld	b,h
+	or	a
+	jr	z,strfn0
+	ld	a,(ix+F.ATTR)
 	and	FN.DEV
 	call	nz,PrDev
-	ld	hl,F.DIR
-	add	hl,de
-	ld	a,c
+	ld	a,(ix+F.ATTR)
 	and	FN.DIR
 	call	nz,PrDir
-	ld	hl,F.NAME
-	add	hl,de
-	ld	a,c
+strfn0:	ld	hl,F.NAME
+	add	hl,bc
+	ld	a,(ix+F.ATTR)
 	and	FN.NAME
+	push	bc
 	ld	b,9
 	call	nz,PrName
+	pop	bc
 	ld	a,'.'
-	call	CharOut
+	ld	(de),a
+	inc	de
 	ld	hl,F.EXT
-	add	hl,de
-	ld	a,c
+	add	hl,bc
+	ld	a,(ix+F.ATTR)
 	and	FN.NAME
 	ld	b,3
 	call	nz,PrName
-	ld	a,c
+	ld	a,(ix+F.ATTR)
 	and	FN.VER
-	ret	z
+	jr	z,strfn1
 	ld	a,';'
-	call	CharOut
-	ld	hl,F.VER
-	add	hl,de
-	ld	a,(hl)
-	inc	hl
-	ld	h,(hl)
-	ld	l,a
-	xor	a		; no filler
-	jp	HLDEC
+	ld	(de),a
+	inc	de
+	ld	l,(ix+F.VER)
+	ld	h,(ix+F.VER+1)
+	ex	de,hl
+	xor	a
+	call	CVTWD
+	ex	de,hl
+strfn1:	pop	ix
+	ret
 
 PrDev:	ld	hl,F.DEV
-	add	hl,de
+	add	hl,bc
 	ld	a,(hl)
-	call	CharOut
+	ld	(de),a
 	inc	hl
+	inc	de
 	ld	a,(hl)
-	call	CharOut
+	ld	(de),a
 	inc	hl
-	ld	a,(hl)
-	call	ADEC
-	ld	a,':'
-	jp	CharOut
+	inc	de
+	ld	l,(hl)
+	ld	h,0
+	ex	de,hl
+	xor	a
+	call	CVTWD
+	ld	(hl),':'
+	inc	hl
+	ex	de,hl
+	ret
 	
 PrDir:	ld	a,'['
-	call	CharOut
+	ld	(de),a
+	inc	de
+	ld	hl,F.DIR
+	add	hl,bc
+	push	bc
 	ld	b,9
 	call	PrName
+	pop	bc
 	ld	a,']'
-	jp	CharOut
+	ld	(de),a
+	inc	de
+	ret
 
 PrName:	ld	a,(hl)
 	cp	' '
 	ret	z
-	call	CharOut
+	ld	(de),a
 	inc	hl
+	inc	de
 	djnz	PrName
-	ret
-
-; Print character
-; ENTRY	Accu holds character
-
-CharOut:
-	push	bc
-	call	PrChar		; .. print
-	pop	bc
 	ret
 
 ; Set file name
@@ -1564,9 +1587,9 @@ fopn1:	ld	(qio1+Q.FUNC),hl
 	ret	c
 	ld	a,(iosb)
 	or	a
-	ret	z		; CY clear on success
 	scf
-	ret
+	ret	nz
+	jp	GetFI		; on success, get file info and return
 
 ; Seek file to specified position
 ; ENTRY	Reg HL contains absolute record number (0..16383)
@@ -1587,7 +1610,7 @@ SeekF:	ex	de,hl
 ;	Reg C = 0 open for read, else open for read/write
 
 OpenF:	call	fopn		; open the file
-	jp	nc,GetFI	; on success get full filename info and return
+	ret	nc		; success, return
 	ld	de,$OPNER
 	jp	ErrFN		; else abort
 
@@ -1639,6 +1662,7 @@ GetFI:	push	hl
 	ld	hl,FINFO
 	ld	bc,FNSZ
 	ldir
+	xor	a
 	ret
 
 $OVL:	db	'OVL'
