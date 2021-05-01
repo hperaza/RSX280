@@ -32,7 +32,7 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 $(PROG): $(OBJS) syslib.lib
-	$(ZXCC) $(TKB) -"$@,rmd=main/ofmt=tsk,date,uptime,atd,mem,tskhdr,disk,pool,help,command,misc,vbuf,syslib/lb/task=...RMD/pri=225/priv"
+	$(ZXCC) $(TKB) -"$@,rmd,rmd=main/ofmt=tsk,date,uptime,atd,mem,tskhdr,disk,pool,help,command,misc,vbuf,syslib/lb/task=...RMD/pri=225/priv"
 
 copy: $(PROG)
 	@echo "cd system" > cprmd.cmd
