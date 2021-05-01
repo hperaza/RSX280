@@ -56,34 +56,34 @@
 ; Create main partition.
 ;
 ; Input:
-;   B  = partition base
-;   C  = partition size
-;   DE = partition name.
+;   BC = partition base
+;   DE = partition size
+;   HL = pointer to partition name
 ; Returns:
 ;   IX = new PCB
 ;   CY set on error and error code in A
 ;
-; Note: does not check for duplicate names.
+; Note: does not check for overlaps or duplicate names.
 
-NEWPAR:	push	de
+NEWPAR:	push	hl
+	push	de
 	push	bc
 	ld	bc,PCBSZ
 	call	$ALLOC		; allocate PCB
-	pop	bc
-	pop	de
-	ret	c
 	push	hl
 	pop	ix
-	ld	(ix+P.BASE),b	; set partition base
-	ld	(ix+P.SIZE),c	; set partition size
-	ldw	(ix+P.MAIN),hl
-	push	bc
-	ld	bc,P.NAME
-	add	hl,bc
+	pop	bc
+	pop	de
+	pop	hl
+	ret	c
+	ldw	(ix+P.BASE),bc	; set partition base
+	ld	(ix+P.SIZE),de	; set partition size
+	ldw	(ix+P.MAIN),ix
+	ex	de,hl
+	lda	hl,(ix+P.NAME)
 	ex	de,hl
 	ld	bc,6
 	ldir			; set partition name
-	pop	bc
 	xor	a
 	ld	hl,0
 	ldw	(ix+P.SUB),hl	; subpartition list is initially empty
@@ -96,12 +96,10 @@ np1:	ldw	de,(hl)
 	or	e		; end of list?
 	jr	z,np2		; branch if yes, link at end
 	push	hl
-	ld	hl,P.BASE
-	add	hl,de
-	ld	a,b		; get base of new PCB
-	cp	(hl)		; compare with base of this PCB
+	ldw	hl,(hl+P.BASE)	; get base of this PCB
+	cpw	hl,bc		; compare with base of new PCB
 	pop	hl
-	jr	c,np2		; branch if this base > new base, insert here
+	jr	nc,np2		; branch if this base >= new base, insert here
 	ex	de,hl
 	jr	np1		; else loop
 np2:	ldw	(ix+P.LNK),de	; set next link on new PCB
@@ -114,7 +112,7 @@ np2:	ldw	(ix+P.LNK),de	; set next link on new PCB
 ;
 ; Input:
 ;   IY = pointer to main PCB
-;   E  = partition size.
+;   DE = partition size.
 ; Returns:
 ;   IX = pointer to new sub PCB
 ;   CY set on error and error code in A
@@ -142,7 +140,7 @@ ma1:	ld	(hl),' '	; clear name field
 	ld	(ix+P.STAT),a
 	ldw	(ix+P.TCB),hl
 	set	PA.SUB,(ix+P.ATTR)
-	ld	(ix+P.SIZE),e	; set size
+	ldw	(ix+P.SIZE),de	; set size
 	ret			; return success
 
 ;-----------------------------------------------------------------------
@@ -158,11 +156,13 @@ MALLOC:	ldw	hl,(ix+P.MAIN)	; get pointer to main partition
 	push	hl
 	pop	iy		;  into IY
 	push	ix
-	call	FNDGAP		; find gap, sets PRVLNK
+	ld	d,0		; DE = size
+	call	FNDGAP		; find gap, sets PRVLNK and PBASE
 	pop	ix
 	ret	c
 	set	PS.BSY,(ix+P.STAT)
-	ld	(ix+P.BASE),d	; set subpartition base
+	ld	de,(PBASE)
+	ldw	(ix+P.BASE),de	; set subpartition base
 	; continue below
 
 ; Link PCB.
@@ -186,12 +186,12 @@ LNKPCB:	ldw	(ix+P.LNK),hl	; keep subpartition list sorted by address
 ;
 ; Input:
 ;   IY = addr of main PCB
-;   E  = size.
+;   DE = size.
 ; Returns:
 ;   HL = IX = next PCB
 ;   PRVLNK = addr of 'next' link to update,
-;   D = base of gap.
-; Preserves E (size) and IY (main PCB).
+;   PBASE  = base of gap.
+; Preserves DE (size) and IY (main PCB).
 
 FNDGAP:	bit	PA.SYS,(iy+P.ATTR)
 	ld	a,E.NOMEM	; TODO: E.UPAR
@@ -200,14 +200,11 @@ FNDGAP:	bit	PA.SYS,(iy+P.ATTR)
 
 	; system-controlled partition
 
-	push	iy
-	pop	hl
-	ld	bc,P.SUB
-	add	hl,bc
+	lda	hl,(iy+P.SUB)
 	ld	(PRVLNK),hl	; save address of field to update
 
-	ld	a,(iy+P.BASE)
-	ld	d,a		; remember base
+	ldw	hl,(iy+P.BASE)
+	ld	(PBASE),hl	; remember base
 
 	ldw	hl,(iy+P.SUB)
 
@@ -221,17 +218,19 @@ FNDGAP:	bit	PA.SYS,(iy+P.ATTR)
 
 fg1:	; loop over subpartitions
 
-	ld	a,(ix+P.BASE)	; note: 2 bytes for Z280
-	sub	d		; get size of preceding gap
-	cp	e		; gap big enough?
+	push	hl
+	ldw	hl,(ix+P.BASE)	; get subpartition base
+	subw	hl,(PBASE)	; compute size of preceding gap
+	cpw	hl,de		; gap big enough?
+	pop	hl
 	ret	nc		; return if yes
 
 	add	hl,bc
 	ld	(PRVLNK),hl	; save address of field to update
 
-	ld	a,(ix+P.BASE)
-	add	a,(ix+P.SIZE)
-	ld	d,a		; new base is after this segment
+	ldw	hl,(ix+P.BASE)
+	addw	hl,(ix+P.SIZE)
+	ld	(PBASE),hl	; new base is after this segment
 
 	ldw	hl,(ix+P.LNK)	; get pointer to next subpartition in list
 	push	hl
@@ -242,15 +241,19 @@ fg1:	; loop over subpartitions
 
 	; end of subpartition list
 
-	ld	a,(iy+P.BASE)
-	add	a,(iy+P.SIZE)
-	sub	d		; get size of last gap
+	ldw	hl,(iy+P.BASE)
+	addw	hl,(iy+P.SIZE)
+	ld	bc,(PBASE)
+	or	a
+	sbc	hl,bc		; get size of last gap
 	jr	fg4
 
 fg3:	; no subpartitions yet
 
-	ld	a,(iy+P.SIZE)	; gap size is main partition size
-fg4:	cp	e		; big enough?
+	ldw	hl,(iy+P.SIZE)	; gap size is main partition size
+fg4:	cpw	hl,de		; big enough?
+	push	ix
+	pop	hl
 	ret	nc		; return if yes
 	ld	a,E.NOMEM
 	ret			; else return error (note CY set)
@@ -265,7 +268,7 @@ fg4:	cp	e		; big enough?
 MFREE:	ldw	hl,(ix+P.MAIN)	; get pointer to main partition
 	ld	a,h
 	or	l		; safety check (should not happen)
-	scf			; TODO: call the system crash rotuine
+	scf			; TODO: call the system crash routine
 	ret	z
 	push	hl
 	pop	iy
@@ -319,7 +322,8 @@ mf1:	add	hl,bc
 ; Returns:
 ;   IX = modified PCB
 
-MEXTND:	ldw	iy,(ix+P.MAIN)
+MEXTND:	ld	d,0		; DE = size
+	ldw	iy,(ix+P.MAIN)
 	bit	PA.SYS,(iy+P.ATTR)
 	scf
 	ld	a,E.NOMEM
@@ -331,20 +335,17 @@ MEXTND:	ldw	iy,(ix+P.MAIN)
 
 	; at end of subpartition list
 
-	ld	d,(ix+P.BASE)
-	ld	a,(iy+P.SIZE)
-	sub	d		; get size of last gap
+	ldw	hl,(iy+P.SIZE)
+	subw	hl,(ix+P.BASE)	; get size of last gap
 	jr	mx2
 
 mx1:	; in middle of subpartition list
 
-	ld	bc,P.BASE
-	add	hl,bc
-	ld	a,(hl)
-	sub	(ix+P.BASE)	; compute max space avail to this subpartition
-mx2:	cp	e		; large enough?
+	ldw	hl,(hl+P.BASE)
+	subw	hl,(ix+P.BASE)	; compute max space avail to this subpartition
+mx2:	cpw	hl,de		; large enough?
 	jr	c,mx3		; branch if not
-	ld	(ix+P.SIZE),e	; else simply adjust size
+	ld	(ix+P.SIZE),de	; else simply adjust size
 	xor	a		;  and return
 	ret
 
@@ -357,12 +358,13 @@ mx3:	; no more space in this subpartition, try allocating a new one
 	ld	hl,(PRVLNK)
 	push	hl		; save PRVLNK
 	push	ix
-	call	FNDGAP		; find new gap
+	call	FNDGAP		; find new gap, sets PBASE
 	pop	ix
 	jr	c,mx4		; branch if none found
 
-	ld	(ix+P.BASE),d	; set new base
-	ld	(ix+P.SIZE),e	;  and size
+	ld	(ix+P.SIZE),de	; set new size
+	ld	de,(PBASE)
+	ld	(ix+P.BASE),de	; and new base
 	pop	bc		; discard old PRVLNK
 	call	LNKPCB		; link into new place
 	ret
@@ -384,8 +386,7 @@ mx4:	pop	hl
 ; Returns:
 ;   HL = number of pages in HL
 
-MAVAIL:	ld	l,(iy+P.SIZE)	; get main partition size
-	ld	h,0
+MAVAIL:	ldw	hl,(iy+P.SIZE)	; get main partition size
 	bit	PA.SYS,(iy+P.ATTR)
 	ret	z		; return if not system-controlled
 
@@ -398,8 +399,7 @@ mav1:	ld	a,d
 
 	push	de
 	pop	ix		; IX = sub PCB
-	ld	e,(ix+P.SIZE)
-	ld	d,0
+	ldw	de,(ix+P.SIZE)
 	or	a
 	sbc	hl,de		; subtract from main partition size
 
@@ -651,17 +651,15 @@ acs2:	ldw	hl,(iy+P.LNK)
 	jr	acs1		; else loop to check next PCB in list
 
 acs3:	ld	bc,CPCBSZ
-	push	hl
-	push	de
+	push	hl		; push next PCB address
+	push	de		; push size
 	call	$ALLOC		; allocate new sub PCB
-	pop	de
-	pop	bc
+	pop	de		; pop sizs
+	pop	bc		; pop next PCB address into BC
 	ret	c		; not enough pool
 	push	hl
 	pop	ix		; IX = new sub PCB
-	push	iy
-	pop	hl
-	ldw	(ix+P.MAIN),hl	; set pointer to main PCB
+	ldw	(ix+P.MAIN),iy	; set pointer to main PCB
 	ldw	hl,(iy+P.UCB)
 	ldw	(ix+P.UCB),hl	; set UCB pointer
 	ldw	hl,(iy+P.LBN)	; set starting LBN of checkpoint file
@@ -672,7 +670,7 @@ acs3:	ld	bc,CPCBSZ
 	ld	hl,0
 	ldw	(ix+P.LNK),hl
 	ldw	(ix+P.SUB),hl
-	ld	l,c
+	ld	l,c		; get next PCB address back into HL
 	ld	h,b
 	ld	bc,(RELBLK)
 	ldw	(ix+P.REL),bc	; set subpartition relative block number
@@ -721,11 +719,9 @@ cg1:	; loop over subpartitions
 	add	hl,bc
 	ld	(PRVLNK),hl	; save address of field to update
 
-	push	hl
 	ldw	hl,(ix+P.REL)
 	addw	hl,(ix+P.SIZE)
 	ld	(RELBLK),hl	; new relative block is after this segment
-	pop	hl
 
 	ldw	hl,(ix+P.LNK)	; get pointer to next subpartition in list
 	push	hl
@@ -763,7 +759,7 @@ cg4:	cpw	hl,de		; big enough?
 FREECS:	ldw	hl,(ix+P.MAIN)	; get pointer to main partition
 	ld	a,h
 	or	l		; safety check (should not happen)
-	scf			; TODO: call the system crash rotuine
+	scf			; TODO: call the system crash routine
 	ret	z
 	push	hl
 	pop	iy
@@ -807,10 +803,7 @@ $CHKPT:	bit	T2.CKP,(ix+T.ST+1)
 	ret
 
 ckp1:	ldw	hl,(ix+T.PCB)
-	ld	de,P.SIZE
-	add	hl,de
-	ld	l,(hl)		; get task size in pages
-	ld	h,0
+	ldw	hl,(hl+P.SIZE)	; get task size in pages
 	add	hl,hl		; obtain size in disk blocks
 	add	hl,hl
 	add	hl,hl
@@ -842,49 +835,50 @@ ckp2:	jp	QLDR		; queue task to loader
 ; Input:
 ;   IX = TCB addr of contender task
 
-MKSPC:	ldw	bc,(ix+T.PCB)
+MKSPC:	ldw	bc,(ix+T.PCB)	; get PCB address of contender task
 	ld	hl,P.SIZE
 	add	hl,bc
-	ld	a,(hl)
-	ld	(SIZE),a	; save requested size
+	ldw	hl,(hl)
+	ld	(SIZE),hl	; save requested size
 	ld	hl,P.MAIN
 	add	hl,bc
 	ldw	bc,(hl)		; get pointer to main partition
-	ld	(FIRST),bc
+	ld	(FIRST),bc	; save as start of span
 	push	bc
-	pop	iy
-	ld	d,(iy+P.BASE)	; get base of first span to consider
+	pop	iy		; IY = address of main partition
+	ldw	de,(iy+P.BASE)	; get base of first span to consider
 	ldw	hl,(iy+P.SUB)	; get address of first subPCB
 mk1:	ld	a,h
 	or	l
 	scf
 	ret	z		; end of list, return (nothing found)
 
-	push	hl		; get PCB address
+	push	hl		; get subPCB address
 	pop	iy		;  into IY
 	ldw	bc,(iy+P.TCB)	; get TCB address of owner task
 	call	CKPTST		; can it be checkpointed?
 	jp	c,mk2		; skip it if not
 
-	ld	e,0
+	ld	hl,0
+	ld	(LEN),hl	; reset length
 	ldw	bc,(iy+P.LNK)	; get address of next PCB
 	ld	a,b
-	or	c
-	jr	nz,mk4
+	or	c		; last in the list?
+	jr	nz,mk4		; no
 	ldw	bc,(iy+P.MAIN)	; that was the last, see what's left
 	ld	hl,P.SIZE
 	add	hl,bc
-	ld	a,e
-	add	(hl)
-	ld	e,a
+	ldw	hl,(hl)		; get size of main partition
+	addw	hl,(LEN)
+	ld	(LEN),hl
 mk4:	ld	hl,P.BASE
 	add	hl,bc
-	ld	a,e
-	add	(hl)
-	sub	d
-	ld	e,a
-	ld	hl,SIZE
-	cp	(hl)		; enough space?  CY if SIZE > E
+	ldw	hl,(hl)		; get base of subpartition
+	addw	hl,(LEN)
+	or	a
+	sbc	hl,de
+	ld	(LEN),hl
+	cpw	hl,(SIZE)	; enough space?  CY if SIZE > LEN
 	jr	c,mk3		; branch if not
 
 	ld	hl,(FIRST)
@@ -912,9 +906,9 @@ mk7:	push	hl
 	push	hl
 	jr	mk6		; else loop to checkpoint next
 
-mk2:	ld	a,(iy+P.BASE)
-	add	(iy+P.SIZE)
-	ld	d,a		; base address of next span to consider
+mk2:	ldw	hl,(iy+P.BASE)
+	addw	hl,(iy+P.SIZE)
+	ex	de,hl		; base address of next span to consider
 	ld	(FIRST),iy	; first PCB of next span
 mk3:	ldw	hl,(iy+P.LNK)
 	jp	mk1		; loop
@@ -995,9 +989,13 @@ SHFTDB:	db	'SHF...'
 	dw	0,0
 
 	IF	F$CHKP
+PBASE:			; shared with RELBLK
 RELBLK:	ds	2	; relative block number within checkpoint file
 FIRST:	ds	2
-SIZE:	ds	1
+SIZE:	ds	2
+LEN:	ds	2
+	ELSE
+PBASE:	ds	2
 	ENDIF
 
 	end
