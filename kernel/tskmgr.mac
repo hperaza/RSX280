@@ -63,8 +63,6 @@
 	public	TCSRQ		; cancel scheduled task request
 	public	TCONT		; continue task execution after event
 	public	TNEXT		; assign next task to partition
-	public	TALLOC		; allocate task memory
-	public	TFREE		; free task memory
 	public	FRECMD		; free command line block
 	public	EXTTSK		; extend task size
 	public	CHKPRV		; check task privileges
@@ -84,10 +82,10 @@
 	extrn	$RNDH,$RNDL,$SWPC,$SWPCT,$SWPRI
 
 	extrn	SYSENT,SYSSTK,SYSXIT,TICCNT,INTON,$SBANK,$UBANK,$MCOPY
-	extrn	$UPUTB,DOCLKQ,CLRFLG,DISCON,MALLOC,MFREE,$ALLOC,$FREE
+	extrn	$ASNTP,DOCLKQ,CLRFLG,DISCON,MALLOC,MFREE,$ALLOC,$FREE
 	extrn	CLRMEM,CLRCVL,CLNAST,IOKILL,QTKTN,QPAR,MCRTCB,LDRTCB
 	extrn	$FNDEV,TFLAG,DOFORK,TRPFLG,MEXTND,CLNCLQ,SRQST,NEWSUB
-	extrn	$FNPAR,CHKPAR,$ASNTP
+	extrn	CHKPAR
 
 ;-----------------------------------------------------------------------
 
@@ -181,8 +179,8 @@ dsp3:	IF	F$CHKP
 dsp4:	ld	($CTCB),hl	; set as current TCB
 	ldw	hl,(hl+T.PCB)
 	ld	($CPCB),hl	; set current PCB
-	ld	a,(hl+P.BASE)
-	ld	($UBANK),a
+	ld	hl,(hl+P.BASE)
+	ld	($UBANK),hl
 	ret
 
 ; Decrement interval counters
@@ -457,7 +455,8 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 	ret	z		; return success if not (was a fix request)
 
 	ldw	hl,(ix+T.PCB)
-	ld	a,(hl+P.BASE)	; get bank
+	ld	hl,(hl+P.BASE)	; get base page
+	push	hl
 	ldw	bc,(ix+T.EPT)	; get entry point into BC
 	ldw	de,(ix+T.END)	; DE = initial top of stack
 ;;	inc	de
@@ -471,8 +470,7 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 	ld	bc,507Fh	; user mode, bpt-on-halt, enable all ints
 	ldw	(hl),bc		; set MSR on stack frame
 
-	ld	e,a
-	ld	d,0
+	pop	de
     if 0
 	ld	b,1		; map fisrt page of task in user space
 	call	USRMAP##
@@ -531,9 +529,9 @@ tgo3:	pop	hl
 
 ; Resume task execution after a checkpoint read.
 
-$LDCKR:	ldw	hl,(ix+T.CPCB)
+$LDCKR:	ldw	hl,(ix+T.CPCB)	; get address of checkpoint PCB
 	xor	a
-	ld	(ix+T.CPCB),a
+	ld	(ix+T.CPCB),a	; clear checkpoint PCB pointer in TCB
 	ld	(ix+T.CPCB+1),a
 	push	hl
 	ex	(sp),ix
@@ -548,8 +546,8 @@ $LDCKR:	ldw	hl,(ix+T.CPCB)
 	res	T2.CKP,a
 	ld	(ix+T.ST+1),a
 
-	bit	T2.ABO,a
-	jp	nz,TKILL2
+	bit	T2.ABO,a	; task being aborted?
+	jp	nz,TKILL2	; yes, terminate it
 
 	or	a		; task became runnable?
 	jp	z,tgo2		; resume task if yes
@@ -758,10 +756,9 @@ UNFIX:	bit	TA.FIX,(ix+T.ATTR)
 	res	TA.FIX,(ix+T.ATTR)
 
 	ldw	hl,(ix+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,($SBANK)
-	sub	(hl)		; task in kernel bank/partition?
+	ldw	hl,(hl+P.BASE)
+	cpw	hl,($SBANK)	; task in kernel bank/partition (INIT)?
+	ld	a,E.OK
 	ret	z		; return success (A=0) if yes
 
 	call	trqe0		; else release task mem and context block
@@ -1002,10 +999,8 @@ tk3:	bit	TA.FIX,(ix+T.ATTR); task fixed in memory?
 
 	call	FRECTX		; delete the context block
 	ldw	hl,(ix+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,($SBANK)
-	cp	(hl)		; task in kernel bank/partition?
+	ld	hl,(hl+P.BASE)
+	cpw	hl,($SBANK)	; task in kernel bank/partition (INIT)?
 	call	nz,TFREE	; release task memory if not (IX = TCB address)
 	res	T2.OUT,(ix+T.ST+1)
 	res	T2.CKP,(ix+T.ST+1)
@@ -1541,9 +1536,7 @@ UNLTCB:	call	FTCB
 ;   IX = TCB
 ;   E  = requested task size in pages
 ; Returns:
-;   D  = task bank number
-;   E  = number of allocated pages
-;   CY set on error
+;   CY set on error and error code in A
 
 TALLOC:	ld	a,e		; get requested number of pages
 	cp	16+1		; 16 pages = 64K max
@@ -1565,6 +1558,7 @@ TALLOC:	ld	a,e		; get requested number of pages
 ta1:	; system-controlled partition
 
 	push	ix		; save TCB address
+	ld	d,0		; DE = size
 	call	NEWSUB		; create new sub PCB
 	pop	bc
 	ret	c		; return if out of pool memory
@@ -1572,8 +1566,6 @@ ta1:	; system-controlled partition
 	pop	iy		; IY = sub PCB
 	push	bc
 	pop	ix		; IX = TCB
-	ld	e,(iy+P.SIZE)
-	ld	d,(iy+P.BASE)
 	ldw	(ix+T.PCB),iy	; set pointer to subpartition PCB in TCB
 	ldw	(iy+P.TCB),ix	; set pointer to TCB in subpartition PCB
 	xor	a		; return success
@@ -1697,11 +1689,13 @@ ext3:	call	EA2PG		; compute new size in pages
 	di
 	ld	a,d
 	exx
-	ld	d,a		; D' = dst bank
+	ld	e,a		; DE' = dst bank
+	ld	d,0
 	exx
 	ld	a,b
 	exx
-	ld	e,a		; E' = src bank
+	ld	l,a		; HL' = src bank
+	ld	h,0
 	exx
 	ld	hl,0
 	ld	de,0
