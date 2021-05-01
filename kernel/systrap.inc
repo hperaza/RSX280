@@ -251,8 +251,7 @@ go1:	call	DSPTCH		; prepare next task to dispatch
 	ld	(SYSLVL),a	; leaving system, entering user state
 
 	ld	ix,($CPCB)
-	ld	e,(ix+P.BASE)	; get task bank base
-	ld	d,0
+	ldw	de,(ix+P.BASE)	; get task bank base
 	ld	b,(ix+P.SIZE)	; get number of pages
 	ld	ix,($CTCB)
 	bit	TS.SUP,(ix+T.ST); check if task is in supervisor mode
