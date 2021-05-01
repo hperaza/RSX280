@@ -2275,8 +2275,10 @@ tstp8:	ld	a,b		; valid partition?
 	or	c
 	jr	z,tstp9		; branch if not
 	add	hl,bc
-	ld	l,(hl)		; else get value
-	ld	h,0
+	ld	a,(hl)		; else get value
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
 	xor	a
 	call	DECSTR		; output as decimal
 tstp9:	ld	a,','
