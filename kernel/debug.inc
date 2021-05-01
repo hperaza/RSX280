@@ -278,9 +278,9 @@ dump:	push	hl
 	out	(PDR),a
 	pop	hl
 	ld	a,h
-	or	l
-	jr	nz,dmp0
-	ld	hl,(mmu_pdr+32)
+	or	l		; bank specified?
+	jr	nz,dmp0		; yes
+	ld	hl,(mmu_pdr+32)	; else default to system bank
 	jr	dmp3
 dmp0:	add	hl,hl
 	add	hl,hl
@@ -382,6 +382,7 @@ scont:	call	next
 
 ; E addr[,bank]
 ; Examine and modify memory starting at addr
+; TODO: bank
 
 exam:	call	out_addr
 	ld	a,(hl)
@@ -780,8 +781,11 @@ pt1:	ld	a,(hl)
 	ld	a,(ix+T.ST+1)
 	call	outbyte
 	ldw	hl,(ix+T.PCB)
-	ld	a,(hl+P.BASE)
-	call	outbyte		; display bank
+	ldw	hl,(hl+P.BASE)
+	ld	a,h
+	call	nhex		; display 12-bit bank
+	ld	a,l
+	call	outbyte
 	ldw	hl,(ix+T.CTX)
 	ldw	hl,(hl+TX.REGS+24)
 	call	hlhex		; display PC
