@@ -114,6 +114,6 @@ err54:	db	'Session not found',0
 err55:	db	'Session not active',0
 errunk:	db	'Unknown error',0
 
-MAXERR	equ	54
+MAXERR	equ	55
 
 	end
