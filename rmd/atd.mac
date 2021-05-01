@@ -132,12 +132,11 @@ shwtsk:	bit	TS.ACT,(ix+T.ST); task active?
 	ldw	hl,(ix+T.PCB)
 	ld	bc,P.SIZE
 	add	hl,bc
-	ld	l,(hl)		; get subpartition size in 4K pages
-	ld	h,0
+	ldw	hl,(hl)		; get subpartition size in 4K pages
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	add	hl,hl		; *16
+	add	hl,hl		; *16 (note: no CY from 12-bit value)
 	ld	h,l
 	ld	l,0		; *256 -> *4096 = size in bytes
 	call	VHLHEX		; display task length

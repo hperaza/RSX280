@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.00'
+	ident	'01.01'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -159,7 +159,10 @@ MISS	equ	HIT+4
 	ld	hl,P.BASE
 	add	hl,de
 	ld	a,(hl)
-	ld	(bank),a	; get task bank
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(bank),hl	; get task bank
 
 	ld	hl,hitmis
 	call	PUTSTR
@@ -194,8 +197,7 @@ quit:	ld	l,c		; exit code
 	ld	h,0
 	jp	EXIT
 
-get32:	ld	a,(bank)
-	ld	e,a
+get32:	ld	de,(bank)
 	KCALL	$UGETW
 	push	bc
 	KCALL	$UGETW
@@ -225,7 +227,7 @@ hitmis:	db	CR,LF,0,' hit(s), ',0,' miss(es).',CR,LF,0
 
 	dseg
 
-bank:	ds	1
+bank:	ds	2
 bufno:	ds	1
 
 	ds	128

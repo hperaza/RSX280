@@ -279,14 +279,15 @@ ruler:	VGTOXY	0,13
 	ld	c,'*'
 	call	line		; draw bottom axis (64 stars)
 
-	ld	hl,(mtop)	; get number of 4K pages to display into HL
-	ld	de,(mbot)
+	ld	hl,(mtop)	; get number of 256-byte pages to display
+	ld	de,(mbot)	;  into HL
 	or	a
 	sbc	hl,de
 	ld	(tkincr),hl	; use full value as tick increment value to
 				;  prevent cumulative rounding errors
-	ld	de,0		; tick increment accum
-	ld	b,8
+	ld	de,0		; CDE = tick increment accum
+	ld	c,e
+	ld	b,8		; 8 ticks per line
 ds1:	ld	l,13		; draw ticks, upper line
 	call	tick
 	djnz	ds1
@@ -296,41 +297,72 @@ ds2:	ld	l,16		; draw ticks, lower line
 	call	tick
 	djnz	ds2
 
-	; show partition names - right know we simply show known segments
+	; show partition type letters
 
+	xor	a
 	ld	hl,0
-	ld	c,'E'		; kernel
+	ld	c,'E'		; kernel (Executive)
 	call	par
 
+	xor	a
 	ld	hl,($POOL)
-	ld	c,'P'		; start of POOL
+	ld	c,'P'		; start of Pool
 	call	par
 
+	xor	a
 	ld	hl,SYSCOM
-	ld	c,'C'		; system common
+	ld	c,'C'		; system Common
 	call	par
 
-	ld	hl,0100h
-	call	p2xy
-	ld	c,'D'		; system common
-	call	par0
-	ret
+	ld	ix,$PLIST
+ds3:	ldw	hl,(ix)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	pop	ix
+	bit	PA.SYS,(ix+P.ATTR)
+	ld	c,'D'
+	jr	nz,ds4
+	ld	c,'T'
+ds4:	ldw	hl,(ix+P.BASE)
+	xor	a
+	add	hl,hl		; convert 4K page to 256-byte page
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	a,h
+	ld	h,l
+	ld	l,0
+	call	par		; display partition letter
+	jr	ds3
 
-	; draw partition letter
+par:	; draw partition letter
 
-par:	push	bc
-	call	adr2xy
+	push	bc
+	ld	l,h		; convert address to 256-byte page
+	ld	h,a
+	call	p2xy		; convert page address to coordinates
 	pop	bc
-par0:	jr	nc,par1
+ if 0
+	jr	nc,par1
 	ret	p
-par1:	call	VXY
+par1:
+ else
+	ret	c
+ endif
+	call	VXY
 	call	VPUTC
 	ret
 
-	; draw tick
+tick:	; draw tick
 
-tick:	ld	a,8
-	sub	b
+	ld	a,8
+	sub	b		; tick #
 	rlca
 	rlca
 	rlca			; x = i*8
@@ -339,6 +371,7 @@ tick:	ld	a,8
 	call	VXY		; position cursor
 	ld	l,e
 	ld	h,d
+	ld	a,c
 	add	hl,hl		; tick accum / 16 = *16 / 256
 	rla
 	add	hl,hl
@@ -348,7 +381,6 @@ tick:	ld	a,8
 	add	hl,hl
 	rla
 	ld	l,h
-	and	0Fh
 	ld	h,a
 	push	bc
 	ld	bc,(mbot)
@@ -361,6 +393,8 @@ tick:	ld	a,8
 	ld	hl,(tkincr)
 	add	hl,de
 	ex	de,hl
+	ret	nc
+	inc	c
 	ret
 
 ; Draw a string (line) of 64 chars, char in reg C
@@ -370,10 +404,8 @@ stln1:	call	VPUTC
 	djnz	stln1
 	ret
 
-; Convert partition memory address into coordinates
+; Page address into coordinates
 
-adr2xy:	ld	l,h		; convert address to 256-byte page
-	ld	h,0
 p2xy:
   IF 1
 	xor a
@@ -969,12 +1001,10 @@ upd2:	ldw	hl,(ix+T.PCB)
 	jr	z,upd3
 
 	inc	(numout)
-	ld	a,(iy+P.SIZE)	; num of 4K pages
-	add	a,a
-	add	a,a		; *4
-	ld	e,a
-	ld	d,0
-	ld	hl,(szout)
+	ldw	hl,(iy+P.SIZE)	; num of 4K pages
+	add	hl,hl
+	add	hl,hl		; *4
+	ld	de,(szout)
 	add	hl,de
 	ld	(szout),hl
 
@@ -983,16 +1013,13 @@ upd2:	ldw	hl,(ix+T.PCB)
 	jr	upd5		; skip display
 
 upd3:	inc	(numin)
-upd31:	ld	a,(iy+P.SIZE)	; num of 4K pages
-	add	a,a
-	add	a,a		; *4
-	ld	e,a
-	ld	d,0
-	ld	hl,(szin)
+upd31:	ldw	hl,(iy+P.SIZE)	; num of 4K pages
+	add	hl,hl
+	add	hl,hl		; *4
+	ld	de,(szin)
 	add	hl,de
 	ld	(szin),hl
-	ld	l,(iy+P.BASE)
-	ld	h,0
+	ldw	hl,(iy+P.BASE)	; get 12-bit base page
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
@@ -1003,9 +1030,8 @@ upd31:	ld	a,(iy+P.SIZE)	; num of 4K pages
 	add	hl,de		; + hi(start) = base page
 	ld	(tmpent+1),hl	; base
 
-	ld	l,(iy+P.SIZE)
-	ld	h,0
-	add	hl,hl		; convert 4K page to 256-byte page
+	ldw	hl,(iy+P.SIZE)
+	add	hl,hl		; convert 4K-size to 256-byte size
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl		; *16

@@ -19,7 +19,7 @@
 ;                                                                      ;
 ;**********************************************************************;
 
-	.Z80
+	.Z280
 
 	ident	'01.00'
 
@@ -75,8 +75,8 @@ scan:	ld	a,h
 	inc	a
 	ld	(wflag),a	; set waiting tasks flag
 
-	ld	a,(iy+P.BASE)
-	ld	(base),a	; bottom of hole
+	ld	hl,(iy+P.BASE)
+	ld	(base),hl	; bottom of hole
 
 	ld	l,(iy+P.SUB)	; get address of first subpartition
 	ld	h,(iy+P.SUB+1)
@@ -86,8 +86,8 @@ loop:	ld	a,h
 
 	push	hl
 	pop	ix
-	ld	a,(base)
-	cp	(ix+P.BASE)	; already at the bottom of hole?
+	ld	hl,(base)
+	cpw	(ix+P.BASE)	; already at the bottom of hole?
 	jr	z,next		; skip it if yes
 
 	ld	e,(ix+P.TCB)	; get TCB address of owner task
@@ -109,10 +109,9 @@ loop:	ld	a,h
 	jr	nz,next		; skip this subpartition if yes
 
 	exx
-	ld	a,(base)
-	ld	d,a		; D' = dst bank
-	ld	e,(ix+P.BASE)	; E' = src bank
-	ld	(ix+P.BASE),a	; set new base
+	ld	de,(base)	; DE' = dst bank
+	ldw	hl,(ix+P.BASE)	; HL' = src bank
+	ldw	(ix+P.BASE),de	; set new base
 	exx
 	ld	hl,T.END
 	add	hl,de
@@ -125,9 +124,9 @@ loop:	ld	a,h
 	ld	a,1
 	ld	(mflag),a	; remember a task was moved
 
-next:	ld	a,(ix+P.BASE)
-	add	(ix+P.SIZE)
-	ld	(base),a	; set new bottom of hole
+next:	ld	hl,(ix+P.BASE)
+	addw	(ix+P.SIZE)
+	ld	(base),hl	; set new bottom of hole
 	ld	l,(ix+P.LNK)	; get next subpartition in list
 	ld	h,(ix+P.LNK+1)
 	jr	loop		; and loop to process it
@@ -226,7 +225,7 @@ exit:	ld	hl,EX.SUC
 
 	dseg
 
-base:	ds	1
+base:	ds	2
 wflag:	ds	1
 mflag:	ds	1
 
