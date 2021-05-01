@@ -126,10 +126,8 @@ TLOAD:	IF	F$CHKP
 	ld	(QIOBLK+Q.BLK+2),de
 
 	ldw	hl,(ix+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)		; get task bank number
-	ld	(TBASE),a
+	ldw	hl,(hl+P.BASE)	; get task base page
+	ld	(TBASE),hl
 
 	ld	hl,0		; starting address
 	ld	b,(iy+P.SIZE)	; number of blocks to read/write in B
@@ -150,10 +148,8 @@ ckprd:	; checkpoint read
 	ld	hl,IOBUF	; src
 	ld	bc,512		; len
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank
-	ld	a,(TBASE)
-	ld	d,a		; dst bank
+	ld	hl,($UBANK)	; src bank
+	ld	de,(TBASE)	; dst bank
 	exx
 	KCALL	$MCOPY		; copy block to task area
 
@@ -173,10 +169,8 @@ ckpwr:	; checkpoint write
 	ld	de,IOBUF	; dst
 	ld	bc,512		; len
 	exx
-	ld	a,($UBANK)
-	ld	d,a		; dst bank
-	ld	a,(TBASE)
-	ld	e,a		; src bank
+	ld	de,($UBANK)	; dst bank
+	ld	hl,(TBASE)	; src bank
 	exx
 	KCALL	$MCOPY		; get block from task area
 
@@ -222,10 +216,8 @@ iload:	; initial task load
 	jp	c,lderr		; abort task if header is invalid
 
 	ldw	hl,(ix+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)
-	ld	(TBASE),a
+	ldw	hl,(hl+P.BASE)
+	ld	(TBASE),hl
 
 	ld	de,100h		; program load address
 	ld	b,(ix+T.NBLK)	; number of blocks to read in B
@@ -234,10 +226,8 @@ iload:	; initial task load
 	push	bc		; save block counter
 	ld	bc,256		; length
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank
-	ld	a,(TBASE)
-	ld	d,a		; dst bank
+	ld	hl,($UBANK)	; src bank
+	ld	de,(TBASE)	; dst bank
 	exx
 	KCALL	$MCOPY		; copy 1st 256 bytes 
 	pop	bc
@@ -253,10 +243,8 @@ load:	push	bc
 	ld	hl,IOBUF	; src
 	ld	bc,512		; len
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank
-	ld	a,(TBASE)
-	ld	d,a		; dst bank
+	ld	hl,($UBANK)	; src bank
+	ld	de,(TBASE)	; dst bank
 	exx
 	KCALL	$MCOPY		; copy block to task area
 
@@ -403,7 +391,7 @@ NXTBL:	ld	hl,QIOBLK+Q.BLK
 
 TSKHDR:	ds	256		; buffer for task header
 IOBUF:	ds	512		; buffer for file I/O
-TBASE:	ds	1		; task base page
+TBASE:	ds	2		; task base page
 
 QIOBLK:	QIOW$	IO.RLB,LUN,EFN,QIOSB,,<IOBUF,512,0,0,0>
 QIOSB:	ds	4
