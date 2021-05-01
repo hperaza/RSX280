@@ -39,8 +39,7 @@
 
 	public	QTKTN		; queue message to TKTN
 
-	extrn	TRQST2,$FNTSK,$ALLOC,$FREE,SEND,EMTST,$SBANK,$MCOPY
-	extrn	$UCBDN
+	extrn	TRQST2,$FNTSK,$ALLOC,$FREE,SEND,EMTST,$UCBDN
 
 	cseg
 
