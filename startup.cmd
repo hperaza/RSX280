@@ -1,5 +1,5 @@
 .enable substitution
-.asks tim Please enter Time and Date (HR:MN DD-MMM-YYYY)
+.asks [:::1M] tim Please enter Time and Date (HR:MN DD-MMM-YYYY)
 tim 'tim'
 .ifins ...acs acs sy:/blks=512
 set /colog=on
