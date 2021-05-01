@@ -23,7 +23,7 @@
 
 	cseg
 
-	ident	'02.22'
+	ident	'02.24'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -47,8 +47,8 @@ ESC	equ	1Bh
 EFN	equ	1
 
 	extrn	PFN,PDN,PERROR,CRLF,UCASE,BCD2BIN,BIN2BCD,CPHLDE
-	extrn	ADEC,ADEC2,HLDEC,LDEC,AHEX,NHEX,HLHEX,GCCL,CMLBUF
-	extrn	ATTACH,DETACH,PUTCH,PUTSTR,TTFLSH,TTLUN
+	extrn	ADEC,ADEC2,HLDEC,LDEC,AHEX,HLHEX,GCCL,CMLBUF,PUTCH
+	extrn	ATTACH,DETACH,PUTSTR,TTFLSH,TTLUN
 	extrn	QIOBLK,QIOSB
 
 KCALL	MACRO	addr
@@ -665,7 +665,7 @@ dmpt1:	call	dmptcb		; else show task details
 
 ; Dump TCB like this:
 ;
-; LDR... 06.05  8D1C  SYSPAR 82A3 0419D-046B3  Pri = 250  DPri = 250
+; LDR... 06.05  8D1C  SYSPAR 82A3 01419D-0146B3  Pri = 250  DPri = 250
 ;    Status: WTD PRV FIX
 ;    TI = CO0:  IOC = 0   BIO = 0   Eflg: 00020000
 ;    AF = 0044  BC = 0000  DE = 8D1C  HL = 8D1C  IX = B418  IY = 8D1C
@@ -704,36 +704,31 @@ dmptcb:	call	CRLF
 	ld	c,' '
 	call	PUTCH
 
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)		; get task base bank
-	rlca
-	rlca
-	rlca
-	rlca
-	ld	c,a
+	ldw	hl,(hl+P.BASE)	; get task base page
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	push	de
 	ldw	hl,(ix+T.STRT)
-	and	0F0h
-	add	a,h
+	ld	a,h
+	add	a,e
 	ld	h,a
 	ld	a,0
-	adc	a,c
-	and	0Fh
-	push	bc
-	call	NHEX		; display
+	adc	a,d
+	call	AHEX		; display
 	call	HLHEX		;  start address
 	ld	c,'-'
 	call	PUTCH
-	pop	bc
+	pop	de
 	ldw	hl,(ix+T.END)
-	ld	a,c
-	and	0F0h
-	add	a,h
+	ld	a,h
+	add	a,e
 	ld	h,a
 	ld	a,0
-	adc	a,c
-	and	0Fh
-	call	NHEX		; display
+	adc	a,d
+	call	AHEX		; display
 	call	HLHEX		;  end address
 	call	sep2
 
@@ -2978,29 +2973,27 @@ dmppar:	push	ix
 	call	HLHEX		; display PCB address
 	ld	c,' '
 	call	PUTCH
-	ld	a,(ix+P.BASE)
-	rrca
-	rrca
-	rrca
-	rrca
-	ld	c,a
-	call	NHEX		; display partition base address
-	ld	a,c
-	and	0F0h
+	ldw	hl,(ix+P.BASE)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,h
+	call	AHEX		; display partition base address
+	ld	a,l
 	call	AHEX
 	ld	a,0
 	call	AHEX
 	ld	c,' '
 	call	PUTCH
-	ld	a,(ix+P.SIZE)
-	rrca
-	rrca
-	rrca
-	rrca
-	ld	c,a
-	call	NHEX		; display partition size
-	ld	a,c
-	and	0F0h
+	ldw	hl,(ix+P.SIZE)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,h
+	call	AHEX		; display partition size
+	ld	a,l
 	call	AHEX
 	ld	a,0
 	call	AHEX
