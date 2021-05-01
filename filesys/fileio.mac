@@ -56,6 +56,8 @@
 	extrn	RDINOD,WRINOD,FLBUFS,MDNAME,DIREXT,BK2CL,CL2BK
 	extrn	INC24,DEC24,ADD24,ADD24B,SUB24,CMP24,CMP24R,FREIXE
 
+	extrn	SYSBNK,USRBNK
+
 KCALL	MACRO	addr
 	call	$SWSTK
 	dw	addr
@@ -705,16 +707,12 @@ mkdd:	ld	hl,(fspec)
 ;   DE  = buffer address in user space
 ;   DE' = number of bytes to read
 ;   BC' = offset within block
-;   A   = bank number of user task
+;   USRBNK = bank number of user task
 ; Returns:
 ;   BC = actual number of bytes read
 ;   CY set on error and error code in A.
 
-FREAD:	ld	(usrbnk),a
-	ld	a,($SBANK)	; buffers are in system bank
-	ld	(sysbnk),a
-
-	exx
+FREAD:	exx
 	ld	(offset),bc	; store temp variables
 	ld	(len),de
 	ld	a,d
@@ -788,10 +786,8 @@ frd2:	ld	hl,(vbn)	; get VBN into BHL
 	push	bc		; save len for return
 
 	exx
-	ld	a,(sysbnk)
-	ld	e,a		; E' = src bank
-	ld	a,(usrbnk)
-	ld	d,a		; D' = dst bank
+	ld	hl,(SYSBNK)	; HL' = src bank
+	ld	de,(USRBNK)	; DE' = dst bank
 	exx
 	KCALL	$MCOPY		; copy data to user space
 
@@ -816,18 +812,14 @@ frd3:	ld	bc,0
 ;   DE  = buffer address in user space
 ;   DE' = number of bytes to write
 ;   BC' = offset within block
-;   A   = bank number of user task
+;   USRBNK = bank number of user task
 ; Returns:
 ;   BC = actual number of bytes read
 ;   CY set on error and error code in A.
 
 ; Notes: (offset + nbytes) must be <= 512
 
-FWRITE:	ld	(usrbnk),a
-	ld	a,($SBANK)	; buffers are in system bank
-	ld	(sysbnk),a
-
-	exx
+FWRITE:	exx
 	ld	(offset),bc	; store temp variables
 	ld	(len),de
 	ld	a,d
@@ -1099,10 +1091,8 @@ fwr10:	ld	(filbuf),hl
 	ld	bc,(len)
 	push	bc		; save len for return
 	exx
-	ld	a,(usrbnk)
-	ld	e,a		; E' = src bank
-	ld	a,(sysbnk)
-	ld	d,a		; D' = dst bank
+	ld	hl,(USRBNK)	; HL' = src bank
+	ld	de,(SYSBNK)	; DE' = dst bank
 	exx
 	KCALL	$MCOPY		; copy data from user space
 
@@ -2213,7 +2203,7 @@ vfn4:	cp	' '		; allowed chars are spaces, @, $, +, -
 ;   HL = FCB address
 ;   DE = buffer address in user space
 ;   BC = number of bytes to read, must be >= FINFSZ
-;   A  = bank number of user task
+;   USRBNK = bank number of user task
 ; Returns:
 ;   BC = actual number of bytes transferred, always = FINFSZ
 ;   CY set on error and error code in A.
@@ -2221,9 +2211,7 @@ vfn4:	cp	' '		; allowed chars are spaces, @, $, +, -
 ; TODO:
 ; - check access permissions (dir read or file read?)
 
-FRATTR:	ld	(usrbnk),a
-
-	push	hl
+FRATTR:	push	hl
 	pop	ix		; get FCB address into IX for RDINOD below
 
 	ld	l,c
@@ -2243,10 +2231,8 @@ FRATTR:	ld	(usrbnk),a
 
 	ld	bc,F.CALBN	; copy up to, but not including, F.CALBN
 	exx
-	ld	a,($SBANK)	; FCBs are in system bank
-	ld	e,a		; set src bank
-	ld	a,(usrbnk)
-	ld	d,a		; set dst bank
+	ld	hl,($SBANK)	; set src bank (FCBs are in system bank)
+	ld	de,(USRBNK)	; set dst bank
 	exx
 	KCALL	$MCOPY		; copy first part to user space
 
@@ -2261,11 +2247,8 @@ FRATTR:	ld	(usrbnk),a
 	ld	bc,FINFSZ-F.TCRE
 	exx
 	ld	hl,($CPCB)	; inode buffer is in local memory
-	ld	de,P.BASE
-	add	hl,de
-	ld	e,(hl)		; set src bank
-	ld	a,(usrbnk)
-	ld	d,a		; set dst bank
+	ldw	hl,(hl+P.BASE)	; set src bank
+	ld	de,(USRBNK)	; set dst bank
 	exx
 	KCALL	$MCOPY		; copy second part to user space
 
@@ -2286,7 +2269,7 @@ fra0:	ld	bc,0
 ;   HL = FCB address
 ;   DE = buffer address in user space
 ;   BC = must equal FINFSZ
-;   A  = bank number of user task
+;   USRBNK = bank number of user task
 ; Returns:
 ;   BC = FINFSZ
 ;   CY set on error and error code in A.
@@ -2294,9 +2277,7 @@ fra0:	ld	bc,0
 ; TODO:
 ; - check permissions (dir write or file write?)
 
-FWATTR:	ld	(usrbnk),a
-
-	push	hl
+FWATTR:	push	hl
 	pop	ix		; get FCB address into IX
 
 	ld	hl,FINFSZ
@@ -2381,8 +2362,7 @@ skip6:	ld	bc,FINFSZ
 
 getw:	add	hl,de
 	push	de
-	ld	a,(usrbnk)
-	ld	e,a		; bank in E
+	ld	de,(USRBNK)	; bank in DE
 	KCALL	$UGETW		; get word from user space
 	pop	de
 	ret
@@ -2394,11 +2374,9 @@ getd:	add	hl,de
 	ld	bc,7
 	exx
 	ld	hl,($CPCB)	; inode buffer is in local memory
-	ld	de,P.BASE
-	add	hl,de
-	ld	d,(hl)		; dst bank
-	ld	a,(usrbnk)
-	ld	e,a		; src bank
+	ldw	hl,(hl+P.BASE)
+	ex	de,hl		; dst bank
+	ld	hl,(USRBNK)	; src bank
 	exx
 	KCALL	$MCOPY		; read timestamp from user space
 	pop	de
@@ -2776,9 +2754,8 @@ RDDIR:	push	de
 	push	hl
 	exx
 	ld	hl,($CPCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)		; A = bank
+	ldw	hl,(hl+P.BASE)
+	ld	(USRBNK),hl	; set USRBNK
 	pop	bc		; BC' = offset
 	ld	de,DESZ		; DE' = len
 	exx
@@ -2806,9 +2783,8 @@ WRDIR:	push	de
 	push	hl
 	exx
 	ld	hl,($CPCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)		; A = bank
+	ldw	hl,(hl+P.BASE)
+	ld	(USRBNK),hl	; set USRBNK
 	pop	bc		; BC' = offset
 	ld	de,DESZ		; DE' = len
 	exx
@@ -3418,9 +3394,6 @@ FREALC:	push	hl
 ;-----------------------------------------------------------------------
 
 	dseg
-
-usrbnk:	ds	1
-sysbnk:	ds	1
 
 dfprot:	ds	2		; default file prot bits from volume
 mdfcb:	ds	2

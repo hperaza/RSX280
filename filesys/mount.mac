@@ -532,7 +532,7 @@ fmnt1:	ld	a,h
 	cp	d
 	jr	nz,fmnt2
 	pop	hl		; found
-	or	a
+	xor	a
 	ret
 fmnt2:	pop	hl
 	ldw	hl,(hl)

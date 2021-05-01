@@ -23,7 +23,7 @@
 
 	.Z280
 
-	IDENT	"V5.0-1"
+	IDENT	"V5.0-2"
 
 	include	SYSFN.INC
 	include	SYSFCP.INC
@@ -42,6 +42,8 @@
 	public	LUNUCB		; UCB to be used for I/O
 	public	LUNVCB		; VCB of mounted device
 	public	CLRMEM
+
+	public	SYSBNK,USRBNK
 
 	extrn	MOUNT,DISMNT,FCREAT,FOPEN,FCLOSE,FREAD,FWRITE,FSETL
 	extrn	FRATTR,FWATTR,FEXTND,FTRUNC,FUNLK,FDEL,FREN,MKDIR
@@ -64,6 +66,9 @@ START::	ld	sp,stack
 
 	call	INIBUF		; init buffers
 	jp	c,fatal
+
+	ld	hl,($SBANK)
+	ld	(SYSBNK),hl	; buffers are in system memory
 
 	ld	de,DRAST
 	ld	c,AST.RD
@@ -109,14 +114,10 @@ process:
 	jp	(hl)
 
 fnerr:	ld	a,E.BADOP	; error code = invalid operation
-fnsto:	push	af
-	ld	ix,(USRTSK)
-	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
-	call	GETBNK
-	ld	e,a
-	pop	af
-	ld	c,a
+fnsto:	ld	c,a		; get result code into BC
 	ld	b,0
+	call	GETBNK		; get bank into DE
+	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
 	KCALL	$UPUTW		; store result code
 fnend:	ld	a,(QDB+Q.EFN)
 	ld	e,a		; get flag number into E
@@ -352,13 +353,12 @@ fnrvb:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c		; return error if FCB not valid
 	call	VALVCB		; get address of VCB
 	ret	c
+	call	GETBNK		; set USRBNK
 	ld	de,(QDB+Q.BUF)	; DE = buffer address
 	ld	bc,(QDB+Q.LEN)	; BC = len
 	call	VALBUF		; validate buffer
 	ld	a,E.INV
 	ret	c		; return error if invalid
-	call	GETBNK		; assuming the task is non-movable while
-				;  it has outstanding I/O
 	push	hl
 	pop	ix		; IX = FCB
 	push	bc
@@ -366,11 +366,9 @@ fnrvb:	ld	a,(QDB+Q.LUN)	; get LUN
 	pop	de		; DE' = len
 	ld	bc,(QDB+Q.OFS)	; BC' = offset within block
 	exx
-	ld	c,a
 	ld	hl,(QDB+Q.BLK)	; BHL = block number
 	ld	a,(QDB+Q.BLK+2)
 	ld	b,a
-	ld	a,c
 	call	FREAD		; read data from file
 	jr	fnrwe		; end via common code
 
@@ -381,13 +379,12 @@ fnwvb:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c		; return error if FCB not valid
 	call	VALVCB		; get address of VCB
 	ret	c
+	call	GETBNK		; set USRBNK
 	ld	de,(QDB+Q.BUF)	; DE = buffer address
 	ld	bc,(QDB+Q.LEN)	; BC = len
 	call	VALBUF		; validate buffer
 	ld	a,E.INV
 	ret	c		; return error if invalid
-	call	GETBNK		; assuming the task is non-movable while
-				;  it has outstanding I/O
 	push	hl
 	pop	ix		; IX = FCB
 	push	bc
@@ -395,21 +392,15 @@ fnwvb:	ld	a,(QDB+Q.LUN)	; get LUN
 	pop	de		; DE' = len
 	ld	bc,(QDB+Q.OFS)	; BC' = offset within block
 	exx
-	ld	c,a
 	ld	hl,(QDB+Q.BLK)	; BHL = block number
 	ld	a,(QDB+Q.BLK+2)
 	ld	b,a
-	ld	a,c
 	call	FWRITE		; write data to file
 fnrwe:	push	bc
-	push	af
-	ld	ix,(USRTSK)
-	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
-	call	GETBNK
-	ld	e,a
-	pop	af
-	ld	c,a
+	ld	c,a		; get result code into BC
 	ld	b,0
+	call	GETBNK		; get bank into DE
+	ld	hl,(QDB+Q.IOSB)	; get addr in user space to store result code
 	KCALL	$UPUTW		; store result code
 	pop	bc
 	KCALL	$UPUTW		; store number of bytes actually read/written
@@ -453,13 +444,12 @@ fnrat:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c		; return error if FCB not valid
 	call	VALVCB		; get address of VCB
 	ret	c
+	call	GETBNK		; set USRBNK
 	ld	de,(QDB+Q.BUF)	; DE = buffer address
 	ld	bc,(QDB+Q.LEN)	; BC = len
 	call	VALBUF		; validate buffer
 	ld	a,E.INV
 	ret	c		; return error if invalid
-	call	GETBNK		; assuming the task is non-movable while
-				;  it has outstanding I/O
 	call	FRATTR		; read file attribs
 	jp	fnrwe		; end via common code
 
@@ -470,13 +460,12 @@ fnwat:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c		; return error if FCB not valid
 	call	VALVCB		; get address of VCB
 	ret	c
+	call	GETBNK		; set USRBNK
 	ld	de,(QDB+Q.BUF)	; DE = buffer address
 	ld	bc,(QDB+Q.LEN)	; BC = len
 	call	VALBUF		; validate buffer
 	ld	a,E.INV
 	ret	c		; return error if invalid
-	call	GETBNK		; assuming the task is non-movable while
-				;  it has outstanding I/O
 	call	FWATTR		; write file attribs
 	jp	fnrwe		; end via common code
 
@@ -695,28 +684,25 @@ UFDB:	push	de
 	ex	de,hl
 	pop	de
 	ret	c
-	call	GETBNK
 	exx
+	call	GETBNK		; get src bank into DE'
 	ld	hl,($CPCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	d,(hl)		; dst bank in D'
-	ld	e,a		; src bank in E'
+	ldw	hl,(hl+P.BASE)	; get dst bank into HL'
+	ex	de,hl		; src bank in HL', dst bank in DE'
 	exx
 	KCALL	$MCOPY		; length still in BC
 	xor	a
 	ret
 
-; Get task base bank.
+; Get task base bank. Sets variable USRBNK and returns the bank number
+; in DE. Preserves A, BC, HL, IY.
 
 GETBNK:	ld	ix,(USRTSK)
 	push	hl
-	push	de
 	ldw	hl,(ix+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)
-	pop	de
+	ldw	hl,(hl+P.BASE)
+	ld	(USRBNK),hl
+	ex	de,hl
 	pop	hl
 	ret
 
@@ -733,6 +719,9 @@ CLRMEM:	ld	a,b
 ;-----------------------------------------------------------------------
 
 	dseg
+
+SYSBNK:	ds	2
+USRBNK:	ds	2
 
 RCVBUF	equ	$
 RCVLEN:	ds	2		; !  do    !
