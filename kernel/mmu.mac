@@ -40,7 +40,7 @@
 	public	MSIZE		; compute total amount of system memory
 	public	CLRMEM		; clear local block of memory
 
-	extrn	$MEMSZ,$SBANK,$UBANK
+	extrn	$MEMSZ,$SBANK
 
 	cseg
 
@@ -219,7 +219,9 @@ MSIZE:
 	ld	h,8
 	mlt	hl		; HL = size * 1kB
   else
-	ld	hl,1024
+;	ld	hl,256
+;	ld	hl,1024
+	ld	hl,2048
   endif
 	ld	($MEMSZ),hl
 	ret
