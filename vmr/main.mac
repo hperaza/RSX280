@@ -36,7 +36,7 @@
 
 	.Z80
 
-	ident	'V1.8'
+	ident	'V1.9'
 
 	include	SYSFN.INC
 	include	FCB.INC
@@ -1694,29 +1694,29 @@ dmppar:	push	ix
 dmp1:	call	HLHEX		; display PCB address
 	ld	c,' '
 	call	PUTCH
-	ld	a,(ix+P.BASE)
-	rrca
-	rrca
-	rrca
-	rrca
-	ld	c,a
-	call	NHEX		; display partition base address
-	ld	a,c
-	and	0F0h
+	ld	l,(ix+P.BASE)
+	ld	h,(ix+P.BASE+1)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,h
+	call	AHEX		; display partition base address
+	ld	a,l
 	call	AHEX
 	ld	a,0
 	call	AHEX
 	ld	c,' '
 	call	PUTCH
-	ld	a,(ix+P.SIZE)
-	rrca
-	rrca
-	rrca
-	rrca
-	ld	c,a
-	call	NHEX		; display partition size
-	ld	a,c
-	and	0F0h
+	ld	l,(ix+P.SIZE)
+	ld	h,(ix+P.SIZE+1)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,h
+	call	AHEX		; display partition size
+	ld	a,l
 	call	AHEX
 	ld	a,0
 	call	AHEX
@@ -2577,11 +2577,9 @@ stp4:	call	getns
 	call	FNDPAR		; make sure partition does not exist
 	ld	hl,pemsg
 	jp	nc,ERRMSG
-	ld	a,(pbase)
-	ld	b,a
-	ld	a,(psize)
-	ld	c,a
-	ld	de,pname
+	ld	bc,(pbase)
+	ld	de,(psize)
+	ld	hl,pname
 	ld	a,(wcmask)
 	call	NEWPAR		; create partition
 	; TODO: if partition exists, modify it?
@@ -2803,7 +2801,7 @@ slen	equ	$-s1
 name:	dw	0
 	ENDM
 
-	public	$POOL,$POLSZ,$PLIST,$TLIST,SYSENT,$DBTRP
+	public	$POOL,$POLSZ,$PLIST,$TLIST
 
 ; Required kernel symbols
 
@@ -2829,8 +2827,6 @@ SYMTBL:	ksym	SYSDAT		; start of data area, signature
 	ksym	$MFLGS		; MCR flags
 	ksym	$MVTBL		; mounted volume table
 	ksym	IDDTBL		; initial device driver table
-	ksym	SYSENT		; system call trap handler
-	ksym	$DBTRP		; system debugger trap handler
 	db	0
 
 STRBUF:	ds	80

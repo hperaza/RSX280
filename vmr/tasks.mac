@@ -40,9 +40,9 @@
 
 	public	FNDTSK,LNKTCB,TSKSIZ,TALLOC,TFREE,TLOAD,CHKHDR
 
-	extrn	NEWSUB,$TLIST,SYSENT,$DBTRP,ADDHLA,CPHLDE,MFREE,IBUF
-	extrn	SGETB,SPUTB,SGETM,SPUTM,LDHLHL,LDDEIY,STHLDE,STIYHL
-	extrn	LDBCHL,PCBBUF,PCBADR,SUBBUF,SUBADR,TCBADR,UCB2DN
+	extrn	NEWSUB,$TLIST,ADDHLA,CPHLDE,MFREE,IBUF,LDBCHL
+	extrn	SGETB,SPUTB,SGETM,SPUTM,LDHLHL,LDDEIY,STHLDE
+	extrn	STIYHL,PCBBUF,PCBADR,SUBBUF,SUBADR,TCBADR,UCB2DN
 
 ;-----------------------------------------------------------------------
 
@@ -230,6 +230,7 @@ TALLOC:	ld	a,e		; get requested nuber of pages
 	; system-controlled partition
 
 	push	ix		; push TCB
+	ld	d,0		; DE = size
 	call	NEWSUB		; allocate memory, returns IX = sub PCB
 	push	ix
 	pop	iy		; IY = sub PCB in local memory
@@ -254,18 +255,12 @@ ta0:	ld	bc,PCBSZ
 	ld	e,d		; dest bank in E
 	ld	d,8
 	ld	hl,0		; vector address
-ta1:	ld	bc,(SYSENT)	; default trap handler
-	call	TSETV		; setup page-zero RST vectors
-	ld	bc,8-2
+ta1:	ld	a,76h		; halt instruction code
+	call	SPUTB		; store at page-zero RST vector address
+	ld	bc,8
 	add	hl,bc
 	dec	d
 	jr	nz,ta1
-	ld	hl,SYSRST	; vector address
-	ld	bc,(SYSENT)	; setup syscall RST
-	call	TSETV
-	ld	hl,DBGRST	; vector address
-	ld	bc,($DBTRP)	; setup debug RST
-	call	TSETV
 	pop	de		; restore bank# and number of allocated pages
 	xor	a		; return success
 	ret
@@ -293,18 +288,6 @@ ta2:	; task partition
 	ld	hl,PCBBUF
 	ld	de,(PCBADR)
 	jr	ta0		; continue via common code
-
-; set jump vector in bank E at address HL to target address in BC
-
-TSETV:	ld	a,0C3h		; jp instruction code
-	call	SPUTB
-	inc	hl
-	ld	a,c		; target address
-	call	SPUTB
-	inc	hl
-	ld	a,b
-	call	SPUTB
-	ret
 
 ; Free task memory. Called with IX = address of TCB in local memory.
 
