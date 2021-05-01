@@ -152,10 +152,8 @@ EXIF:	push	hl
 
 SRUN:	ld	de,TMPTDB	; DE = destination
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; set source bank
-	ld	a,($SBANK)
-	ld	d,a		; set dest bank
+	ld	hl,($UBANK)	; set source bank
+	ld	de,($SBANK)	; set dest bank
 	exx
 	ld	bc,TDBSZ+4+4	; read task descriptor + dtime + rsi
 	call	$MCOPY		;  from user space
@@ -181,10 +179,8 @@ CSRQ:	call	UFNTSK		; get task name, find TCB
 
 GETTDB:	ld	de,TMPTDB	; DE = destination
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; set source bank
-	ld	a,($SBANK)
-	ld	d,a		; set dest bank
+	ld	hl,($UBANK)	; set source bank
+	ld	de,($SBANK)	; set dest bank
 	exx
 	ld	bc,TDBSZ
 	call	$MCOPY		; read task descriptor from user space
@@ -379,10 +375,8 @@ GETCMD:	ld	hl,0
 	inc	hl
 	ex	de,hl		; HL = src, DE = dst, BC = len
 uget:	exx
-	ld	a,($UBANK)
-	ld	e,a		; E' = src bank
-	ld	a,($SBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($UBANK)	; HL' = src bank
+	ld	de,($SBANK)	; DE' = dst bank
 	exx
 	call	$MCOPY		; copy command line block
 	xor	a
@@ -570,8 +564,7 @@ gcm1:	ld	c,a		; get string length into BC (note B=0)
 nulcmd:	ex	de,hl		; src in DE
 	pop	hl		; dst in HL
 	push	de		; save src buf address
-	ld	a,($UBANK)
-	ld	e,a
+	ld	de,($UBANK)
 	ld	a,c
 	call	$UPUTB		; save length (reg C) to user space, HL = dst
 	pop	de		; DE = src
@@ -580,10 +573,8 @@ nulcmd:	ex	de,hl		; src in DE
 	inc	hl		; advance dst ptr over copied length byte
 	ex	de,hl		; HL = src, DE = dst, BC = len
 	exx
-	ld	a,($SBANK)
-	ld	e,a		; E' = src bank
-	ld	a,($UBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($SBANK)	; HL' = src bank
+	ld	de,($UBANK)	; DE' = dst bank
 	exx
 	call	$MCOPY		; store string in user space
 	pop	hl		; restore command line block address
@@ -606,10 +597,8 @@ GDT:	push	hl
 	pop	de
 	ld	bc,8
 	exx
-	ld	a,($SBANK)
-	ld	e,a		; src bank
-	ld	a,($UBANK)
-	ld	d,a		; dst bank
+	ld	hl,($SBANK)	; src bank
+	ld	de,($UBANK)	; dst bank
 	exx
 	call	$MCOPY
 	xor	a
@@ -626,10 +615,8 @@ SDT:	ld	de,DTBUF
 	push	de
 	ld	bc,8
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank
-	ld	a,($SBANK)
-	ld	d,a		; dst bank
+	ld	hl,($UBANK)	; src bank
+	ld	de,($SBANK)	; dst bank
 	exx
 	call	$MCOPY
 	pop	hl
@@ -686,10 +673,8 @@ tinf2:	push	de
 	ld	hl,GTBUF
 	ld	bc,GTKSZ	; BC = size
 tinf3:	exx
-	ld	a,($SBANK)
-	ld	e,a		; E' = src bank
-	ld	a,($UBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($SBANK)	; HL' = src bank
+	ld	de,($UBANK)	; DE' = dst bank
 	exx
 	call	$MCOPY
 	xor	a
@@ -790,8 +775,7 @@ sver:	ld	bc,(SYSVER)
 	ld	a,(SYSTYP)	; system type
 	ld	c,a
 	ld	b,0
-storew:	ld	a,($UBANK)
-	ld	e,a
+storew:	ld	de,($UBANK)
 	call	$UPUTW
 	xor	a
 	ret
@@ -872,10 +856,8 @@ gtscb:	ld	bc,U.LCB
 	ret	z		; error if not set
 	ld	bc,LCBSZ	; BC = size
 ucpy:	exx
-	ld	a,($SBANK)
-	ld	e,a		; E' = src bank
-	ld	a,($UBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($SBANK)	; HL' = src bank
+	ld	de,($UBANK)	; DE' = dst bank
 	exx
 	call	$MCOPY
 	xor	a
@@ -927,10 +909,8 @@ UFNTSK:	push	de
 UGTNAM:	ld	de,DTBUF	; dst in DE, src in HL
 	ld	bc,6		; len in BC
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank in E'
-	ld	a,($SBANK)
-	ld	d,a		; dst bank in D'
+	ld	hl,($UBANK)	; src bank in HL'
+	ld	de,($SBANK)	; dst bank in DE'
 	exx
 	call	$MCOPY		; get task name from user space
 	ret
@@ -983,10 +963,8 @@ usnd0:	ex	(sp),hl		; push allocated packet address, pop TCB
 	or	c
 	jr	z,usnd1
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; set src bank
-	ld	a,($SBANK)
-	ld	d,a		; set dst bank
+	ld	hl,($UBANK)	; set src bank
+	ld	de,($SBANK)	; set dst bank
 	exx
 	push	hl		; push TCB
 	ex	de,hl		; src in HL
@@ -1055,10 +1033,8 @@ urcv1:	push	bc
 	add	hl,de		; src in HL
 	pop	de		; dst in DE
 	exx
-	ld	a,($UBANK)
-	ld	d,a		; dst bank in D'
-	ld	a,($SBANK)
-	ld	e,a		; src bank in E'
+	ld	hl,($SBANK)	; src bank in HL'
+	ld	de,($UBANK)	; dst bank in DE'
 	exx
 	push	bc
 	call	$MCOPY		; note this handles properly zero-byte counts
@@ -1124,8 +1100,7 @@ GETLUN:	dec	c		; 1..16 -> 0..15
 	add	hl,bc
 	ldw	bc,(hl)
 	ex	de,hl		; dst in HL
-	ld	a,($UBANK)
-	ld	e,a
+	ld	de,($UBANK)
 	call	$UPUTW		; store device name
 	ld	a,(ix+U.UNIT)
 	call	$UPUTB		; store unit number
@@ -1180,10 +1155,8 @@ gcd3:	ex	de,hl		; DE = dst
 	add	hl,bc		; HL = src
 gcd4:	ld	bc,9
 	exx
-	ld	a,($SBANK)
-	ld	e,a		; src bank
-	ld	a,($UBANK)
-	ld	d,a		; dst bank
+	ld	hl,($SBANK)	; src bank
+	ld	de,($UBANK)	; dst bank
 	exx
 	call	$MCOPY		; copy name to user space
 	xor	a
@@ -1225,10 +1198,8 @@ scd1:	ex	de,hl
 scd2:	ex	de,hl		; src in HL, dst in DE
 	ld	bc,9
 	exx
-	ld	a,($UBANK)
-	ld	e,a		; src bank
-	ld	a,($SBANK)
-	ld	d,a		; dst bank
+	ld	hl,($UBANK)	; src bank
+	ld	de,($SBANK)	; dst bank
 	exx
 	call	$MCOPY		; copy name from user space
 	xor	a

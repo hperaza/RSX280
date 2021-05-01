@@ -78,22 +78,17 @@ $LOGIN:	ld	ix,($CTCB)
 	add	hl,de
 	ex	de,hl		; DE = dst
 	di
-	ld	hl,($CPCB)
-	ld	bc,P.BASE
-	add	hl,bc
-	ld	a,(hl)
 	push	iy
 	pop	hl		; HL = src
-	push	af
 	exx
-	ld	e,a		; E' = src bank
-	ld	a,($SBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($CPCB)
+	ld	hl,(hl+P.BASE)	; HL' = src bank
+	push	hl
+	ld	de,($SBANK)	; DE' = dst bank
 	exx
 	ld	bc,9
 	call	$MCOPY		; copy user name
-	pop	af
-	ld	e,a		; E = src bank
+	pop	de		; DE = src bank
 	call	$UGETW		; get user and group ID
 	ei
 	ld	(ix+L.USR),c

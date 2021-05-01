@@ -163,8 +163,7 @@ SW2:
 	push	de
 	push	bc
 	ld	ix,($CPCB)
-	ld	e,(ix+P.BASE)	; get task bank base
-	ld	d,0
+	ldw	de,(ix+P.BASE)	; get task base page
 	ld	b,(ix+P.SIZE)	; get number of pages
 	ld	ix,($CTCB)
 	bit	TS.SUP,(ix+T.ST); check if task is in supervisor mode
