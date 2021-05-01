@@ -6487,3 +6487,44 @@ BUGS:
     hexadecimal use factor)
 
 
+19/03/21
+
+- Kermit: started implementing Server mode.
+
+
+20/03/21
+
+- Kermit:
+  * the server 'finish' command now exits Server mode.
+  * the basic server 'send' and 'receive' operations are now working, but
+    things like error reporting still need to be implemented and/or tested.
+
+
+15/04/21
+
+- Kernel: removed the old interrupt debug code.
+
+- Changing the $MCOPY API to match the new RSX280 one (12-bit page numbers,
+  but the Z180 only supports 8-bit pages)
+
+
+25/04/21
+
+- vol180: vmr.c merged with the RSX280 version, so we have again one utility
+  that can handle both RSX180 and RSX280 system images.
+
+
+01/05/21
+
+- On startup, resize the last system-controlled partition in list to use
+  all the remaining available RAM space, instead of blindly resizing the
+  GEN partition.
+
+- When creating or resizing a partition, ensure that the high byte of P.BASE
+  and P.SIZE are set to zero (even when they are not used by the kernel),
+  for compatibility with RSX180/280 user tasks.
+
+- ICP: the .TESTPARTITION command now returns the base and size of the
+  partition as a 16-bit value.
+
+

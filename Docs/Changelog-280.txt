@@ -272,3 +272,28 @@ Changelog
 
 - Kermit: restore terminal mode (disable binary mode) on exit.
 
+
+15/04/21
+
+- Supporting 12-bit page numbers:
+  * bank numbers are now passed to $MCOPY, $UGETB, $UGETW, $UPUTB and $UPUTW
+    routines in register pairs.
+  * memory partition allocation routines now treat P.BASE and P.SIZE as 16-bit
+    values (12 bits used by the Z280).
+  * modified the drivers and relevant privileged tasks.
+  * MCR now displays 24-bit addresses in ATL, TAL and PAR commands.
+  * VMR now displays 24-bit addresses in PAR command.
+
+
+25/04/21
+
+- Supporting 12-bit page numbers:
+  * VMR now uses 12-bit page numbers when creating partitions and loading
+    tasks.
+
+
+01/05/21
+
+- ICP, RMD: use full 12-bit page numbers.
+
+
