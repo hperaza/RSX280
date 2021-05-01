@@ -185,14 +185,13 @@ INCTKC:	ld	hl,TICCNT
 ;-----------------------------------------------------------------------
 
 ; Copy block of data from one bank to another
-; HL = src address, E' = src bank
-; DE = dst address, D' = dst bank
+; HL = src address, HL' = src bank
+; DE = dst address, DE' = dst bank
 ; BC = count
 ;
 ; Notes:
 ; - if using DMA, be sure to use a channel that is not in use used by
 ;   any device driver!
-; - supports only 8-bit RSX180-style bank numbers
 
 $MCOPY:	ld	a,b		; check count
 	or	c		; anything to move?
@@ -221,10 +220,9 @@ $MCOPY:	ld	a,b		; check count
 	ld	h,a
 	outw	(c),hl		; set low half of src address
 	exx
-	ld	a,e		; get src bank address
+	push	hl		; get src bank address
 	exx
-	ld	l,a
-	ld	h,0
+	pop	hl
 	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
@@ -247,10 +245,9 @@ $MCOPY:	ld	a,b		; check count
 	ld	h,a
 	outw	(c),hl		; set low half of dst address
 	exx
-	ld	a,d		; get dst bank address
+	push	de		; get dst bank address
 	exx
-	ld	l,a
-	ld	h,0
+	pop	hl
 	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
@@ -280,12 +277,11 @@ $MCOPY:	ld	a,b		; check count
 	ex	de,hl
 	ret
 
-; Get byte from bank E, address HL into A.
+; Get byte from bank DE, address HL into A.
 
 $UGETB:	push	hl
 	push	de
 	push	bc
-	ld	d,0
 	ld	b,16
 	call	USRMAP
 	pop	bc
@@ -294,13 +290,12 @@ $UGETB:	push	hl
 	ldup	a,(hl)
 	ret
 
-; Write byte in A to bank E, address HL.
+; Write byte in A to bank DE, address HL.
 
 $UPUTB:	push	af
 	push	hl
 	push	de
 	push	bc
-	ld	d,0
 	ld	b,16
 	call	USRMAP
 	pop	bc
@@ -310,11 +305,10 @@ $UPUTB:	push	af
 	ldup	(hl),a
 	ret
 
-; Read word from bank E, address HL into BC. Returns with HL += 2
+; Read word from bank DE, address HL into BC. Returns with HL += 2
 
 $UGETW:	push	hl
 	push	de
-	ld	d,0
 	ld	b,16
 	call	USRMAP
 	pop	de
@@ -327,12 +321,11 @@ $UGETW:	push	hl
 	inc	hl
 	ret
 
-; Write word in BC to bank E, address HL. Returns with HL += 2
+; Write word in BC to bank DE, address HL. Returns with HL += 2
 
 $UPUTW:	push	hl
 	push	de
 	push	bc
-	ld	d,0
 	ld	b,16
 	call	USRMAP
 	pop	bc
