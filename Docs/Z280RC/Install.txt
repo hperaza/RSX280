@@ -189,19 +189,21 @@ Z280RC board:
   5 - UZI280
   Select: 4 Press Return to confirm: 
 
-  Z280RC 1024K RSX280 V6.15
-  
+  Z280RC 2048K RSX280 V6.24
+
   >RED DU4:=LB:
   >RED DU4:=SY:
   >MOU DU4:
   >@SY0:[SYSTEM]STARTUP.CMD
-  >tim
-  15:22:09 10-Apr-2020
+  >* Please enter Time and Date (HR:MN DD-MMM-YYYY) [S]: 
+  >tim 
+  20:17:06 01-May-2021
+  >acs sy:/blks=512
   >set /colog=on
   >set /colog/nocoterm
   >pip [syslog]*.*/pu:50
   >upt
-  Up 0 days, 0 hours, 0 minutes and 10.56 seconds.
+  Up 0 days, 0 hours, 0 minutes and 3.11 seconds.
   >@ <EOF>
   >
 
@@ -228,10 +230,10 @@ To shutdown RSX280, use the SHUTUP program:
   Enter minutes to wait before shutdown: 0
   OK to shutdown? [Y/N]: y
 
-  SHUTUP -- System shutdown initiated -- 12-Apr-2020 00:42:38
+  SHUTUP -- System shutdown initiated -- 01-May-2021 23:18:01
   SHUTUP -- All further logins are disabled
 
-  12-Apr-2020 00:42:40 System is now shutting down
+  01-May-2021 23:18:03 System is now shutting down
 
   >SET /COLOG=OFF
   >ACS DU4:/BLKS=0
