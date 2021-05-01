@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.05'
+	ident	'01.06'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -321,13 +321,14 @@ iowlb:
 	ldw	hl,(ix+Q.BUF)	; HL = src
 	ld	de,tmpbuf	; DE = dst
 
-	call	getbnk
 	exx
 	ld	hl,($CPCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	d,(hl)		; D' = dst bank
-	ld	e,a		; E' = src babk
+	ldw	hl,(hl+P.BASE)	; dst bank
+	ex	de,hl		; DE' = dst bank
+	ld	hl,(iopkt)	; assuming packet address in iopkt is valid
+	ldw	hl,(hl+I.TCB)
+	ldw	hl,(hl+T.PCB)
+	ld	hl,(hl+P.BASE)	; HL' = src bank
 	exx
 	KCALL	$MCOPY		; copy data from user space
 
@@ -782,16 +783,6 @@ fcmd4:	inc	hl		; else skip to end of keyword
 	ret
 
 ;-----------------------------------------------------------------------
-
-; Get bank of user task. Assumes packet address in 'iopkt' is valid.
-
-getbnk:	push	hl
-	ld	hl,(iopkt)
-	ldw	hl,(hl+I.TCB)	; I love the Z280!
-	ldw	hl,(hl+T.PCB)
-	ld	a,(hl+P.BASE)
-	pop	hl
-	ret
 
 ; Trim message length
 
