@@ -228,7 +228,7 @@ SENDST:	push	bc		; save status
 	ldw	de,(iy+T.PCB)	; else retrieve PCB address
 	ld	hl,P.BASE
 	add	hl,de
-	ld	e,(hl)		; get task bank number into reg E
+	ldw	de,(hl)		; get task base page into DE
 	pop	hl
 	call	$UPUTW		; and store status
 	pop	de

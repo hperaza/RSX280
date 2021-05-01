@@ -80,14 +80,10 @@ QIO:	push	hl
 	ldw	(ix+I.TCB),bc	; set TCB address of caller
 
 	push	hl
-	ld	hl,($CPCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	a,(hl)		; get task bank
 	exx
-	ld	e,a		; E' = src bank
-	ld	a,($SBANK)
-	ld	d,a		; D' = dst bank
+	ld	hl,($CPCB)
+	ld	hl,(hl+P.BASE)	; HL' = src bank = task bank
+	ld	de,($SBANK)	; DE' = dst bank = system bank
 	exx
 	push	ix
 	pop	hl
@@ -543,9 +539,8 @@ QSTORE:	ldw	hl,(ix+I.TCB)
 	ret	z
 	push	de
 	ldw	hl,(hl+T.PCB)
-	ld	de,P.BASE
-	add	hl,de
-	ld	e,(hl)		; E = task bank
+	ldw	hl,(hl+P.BASE)
+	ex	de,hl		; DE = task bank
 	ldw	hl,(ix+I.QDB+Q.IOSB) ; HL = addr in user space to store result
 	call	$UPUTW		; store first word (completion code)
 	pop	bc

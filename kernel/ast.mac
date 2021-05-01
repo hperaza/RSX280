@@ -46,8 +46,8 @@
 	public	DOAST		; execute AST
 	public	CLNAST		; AST cleanup on task exit
 
-	extrn	$CTCB,$ALLOC,$FREE,$UBANK,$SBANK,$MCOPY,$UPUTW
-	extrn	$FNTCB,$LKTCB,$RLIST,$WLIST,CKWMSK,TCONT,TNEXT
+	extrn	$CTCB,$ALLOC,$FREE,$UBANK,$UPUTW,$FNTCB,$LKTCB
+	extrn	$RLIST,$WLIST,CKWMSK,TCONT,TNEXT
 	extrn	USRMAP
 
 ;-----------------------------------------------------------------------
@@ -412,8 +412,7 @@ DOAST:	ld	ix,($CTCB)
 	ldw	(ix+T.ASTL),bc	; else unlink it from queue
 	ldw	hl,(iy+A.DAT)	; get ECB address
 	ldw	bc,(iy+A.DAT+2)	; get status
-	ld	a,($UBANK)
-	ld	e,a		; dst bank
+	ld	de,($UBANK)	; dst bank
 	di
 	call	$UPUTW		; store status
 	ei
@@ -450,8 +449,7 @@ ast1:	call	SETAST		; switch task to AST mode if necessary
 	inc	hl		; skip type
 	inc	bc		; include routine address (PC)
 	inc	bc
-	ld	a,($UBANK)
-	ld	e,a
+	ld	de,($UBANK)
 	call	STARG		; push PC and arguments
 	pop	de		; pop size of data area into DE
 	ld	hl,ACBSZ	; add header size
@@ -481,8 +479,7 @@ ASTEXT:	ld	ix,($CTCB)
 
 	pop	bc		; discard SVRSLT return address!
 
-	ld	a,($UBANK)
-	ld	e,a
+	ld	de,($UBANK)
 	ld	bc,2
 	call	RMARG		; remove AST PC
 	bit	TA.AST,(ix+T.ATTR) ; AST processing still enabled?
@@ -547,13 +544,12 @@ astx3:	push	ix
 ;
 ; Input:
 ;   IX = task TCB address
-;   E  = task bank
+;   DE = task bank
 ;   HL = pointer to arguments
 ;   BC = argument size in bytes (includes new PC)
 
 STARG:	ld	(ARGS),hl
 	push	bc
-	ld	d,0
 	ld	b,16
 	call	USRMAP		; map task to user space
 	ldw	iy,(ix+T.CTX)
@@ -615,11 +611,10 @@ st1:	ld	a,(de)
 ;
 ; Input:
 ;   IX = task TCB address
-;   E  = task bank
+;   DE = task bank
 ;   BC = bytes to remove (includes old PC)
 
 RMARG:	push	bc
-	ld	d,0
 	ld	b,16
 	call	USRMAP		; map user task using user PDRs
 	pop	bc
