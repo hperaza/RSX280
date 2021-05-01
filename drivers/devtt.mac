@@ -130,8 +130,8 @@ _CKA	equ	13h		; clock alteration register
 UX.MOD	equ	UCBSZ + 0	; mode bits (2 bytes)
 UX.SBF	equ	UX.MOD + 2	; subfunction code (1 byte)
 UX.BFP	equ	UX.SBF + 1	; address of buffer in user space (2 bytes)
-UX.BNK	equ	UX.BFP + 2	; user bank (1 byte)
-UX.CNT	equ	UX.BNK + 1	; byte count (2 bytes)
+UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
+UX.CNT	equ	UX.BNK + 2	; byte count (2 bytes)
 UX.CXF	equ	UX.CNT + 2	; count of bytes transferred (2 bytes)
 UX.PRM	equ	UX.CXF + 2	; optional prompt addr in user space (2 bytes)
 UX.UBF	equ	UX.PRM + 2	; address of unsolicited input buffer (2 bytes)
@@ -140,8 +140,8 @@ UX.TMO	equ	UX.UCC + 1	; timeout counter (2 bytes)
 UX.TQ	equ	UX.TMO + 2	; address of typeahead queue (2 bytes)
 UX.OQ	equ	UX.TQ + 2	; address of output queue (2 bytes)
 UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
-UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (1 byte)
-UX.TXC	equ	UX.TXB + 1	; count of bytes to transmit (2 bytes)
+UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (2 bytes)
+UX.TXC	equ	UX.TXB + 2	; count of bytes to transmit (2 bytes)
 UX.RXG	equ	UX.TXC + 2	; get receiver char routine addr (2 bytes)
 UX.RXE	equ	UX.RXG + 2	; receiver queue check routine addr (2 bytes)
 UX.RXC	equ	UX.RXE + 2	; purge receiver queue routine addr (2 bytes)
@@ -240,7 +240,7 @@ ucbt0:	dw	ucbt1		; link to next
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
-	ds	1		; UX.BNK user bank
+	ds	2		; UX.BNK user bank
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
@@ -250,7 +250,7 @@ ucbt0:	dw	ucbt1		; link to next
 	dw	tt0tq		; UX.TQ
 	dw	tt0oq		; UX.OQ
 	ds	2		; UX.TXP
-	ds	1		; UX.TXB
+	ds	2		; UX.TXB
 	dw	0		; UX.TXC
 	dw	getc0		; UX.RXG
 	dw	chkrx0		; UX.RXE
@@ -274,7 +274,7 @@ ucbt1:	dw	ucbt2		; link to next
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
-	ds	1		; UX.BNK user bank
+	ds	2		; UX.BNK user bank
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
@@ -284,7 +284,7 @@ ucbt1:	dw	ucbt2		; link to next
 	dw	tt1tq		; UX.TQ
 	dw	tt1oq		; UX.OQ
 	ds	2		; UX.TXP
-	ds	1		; UX.TXB
+	ds	2		; UX.TXB
 	dw	0		; UX.TXC
 	dw	getc1		; UX.RXG
 	dw	chkrx1		; UX.RXE
@@ -308,7 +308,7 @@ ucbt2:	dw	ucbt3		; link to next
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
-	ds	1		; UX.BNK user bank
+	ds	2		; UX.BNK user bank
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
@@ -318,7 +318,7 @@ ucbt2:	dw	ucbt3		; link to next
 	dw	tt2tq		; UX.TQ
 	dw	tt2oq		; UX.OQ
 	ds	2		; UX.TXP
-	ds	1		; UX.TXB
+	ds	2		; UX.TXB
 	dw	0		; UX.TXC
 	dw	getc2		; UX.RXG
 	dw	chkrx2		; UX.RXE
@@ -342,7 +342,7 @@ ucbt3:	dw	ucbt4		; link to next
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
-	ds	1		; UX.BNK user bank
+	ds	2		; UX.BNK user bank
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
@@ -352,7 +352,7 @@ ucbt3:	dw	ucbt4		; link to next
 	dw	tt3tq		; UX.TQ
 	dw	tt3oq		; UX.OQ
 	ds	2		; UX.TXP
-	ds	1		; UX.TXB
+	ds	2		; UX.TXB
 	dw	0		; UX.TXC
 	dw	getc3		; UX.RXG
 	dw	chkrx3		; UX.RXE
@@ -376,7 +376,7 @@ ucbt4:	dw	0		; link to next
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
-	ds	1		; UX.BNK user bank
+	ds	2		; UX.BNK user bank
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
@@ -386,7 +386,7 @@ ucbt4:	dw	0		; link to next
 	dw	tt4tq		; UX.TQ
 	dw	tt4oq		; UX.OQ
 	ds	2		; UX.TXP
-	ds	1		; UX.TXB
+	ds	2		; UX.TXB
 	dw	0		; UX.TXC
 	dw	getc4		; UX.RXG
 	dw	chkrx4		; UX.RXE
@@ -480,8 +480,8 @@ ioreq1:
 	ldw	de,(hl)		;  in BC for SF.SMC
 	ld	hl,P.BASE
 	add	hl,de		; index into subpartition base
-	ld	a,(hl)
-	ld	(iy+UX.BNK),a	; save it
+	ldw	hl,(hl)		; get task base page (bank)
+	ldw	(iy+UX.BNK),hl	; save it
 	ld	de,I.QDB
 	add	ix,de		; point to QDB
 	ldw	hl,(ix+Q.BUF)	; get buffer address
@@ -651,7 +651,7 @@ ttdet:	res	TC.BIN,(iy+U.CW+1)   ; clear binary mode
 ; Handle 'get multiple characteristics' function
 
 ttgmc:	ldw	hl,(iy+UX.BFP)	; HL = address of buffer in user space
-	ld	e,(iy+UX.BNK)	; E  = bank
+	ldw	de,(iy+UX.BNK)	; DE = user bank
 	ldw	bc,(iy+UX.CNT)	; BC = length in bytes
 	srl	b
 	rr	c		; length now in words
@@ -662,17 +662,16 @@ ttgmc1:	ld	a,b
 	inc	hl
 	cp	8		; ensure bit value is in range
 	jp	nc,ierr
-	ld	d,a
+	push	bc
+	ld	b,a
 	ld	a,(iy+U.CW+1)	; get terminal characteristics byte
 	rlca
-	inc	d
+	inc	b
 ttgmc2:	rrca			; move bit to LSB
-	dec	d
-	jr	nz,ttgmc2
+	djnz	ttgmc2
 	and	01h
 	call	$UPUTB		; store result
 	inc	hl
-	push	bc
 	ldw	bc,(iy+UX.CXF)
 	inc	bc
 	inc	bc
@@ -703,7 +702,7 @@ ttsmc:	ld	hl,T.ATTR
 	cp	d
 	jp	nz,iend1
 ttsmc0:	ldw	hl,(iy+UX.BFP)	; HL = address of buffer in user space
-	ld	e,(iy+UX.BNK)	; E  = bank
+	ldw	de,(iy+UX.BNK)	; DE = user bank
 	ldw	bc,(iy+UX.CNT)	; BC = length in bytes
 	srl	b
 	rr	c		; length now in words
@@ -714,17 +713,17 @@ ttsmc1:	ld	a,b
 	inc	hl
 	cp	8		; ensure bit value is in range
 	jr	nc,ttsmc5
-	ld	d,a
+	push	bc
+	ld	b,a
 	ld	a,80h
-	inc	d
+	inc	b
 ttsmc2:	rlca			; obtain bit mask
-	dec	d
-	jr	nz,ttsmc2
-	ld	d,a
+	djnz	ttsmc2
+	ld	c,a
 	call	$UGETB		; get bit state
 	inc	hl
 	or	a		; set or clear?
-	ld	a,d
+	ld	a,c
 	jr	z,ttsmc3	; branch if clear
 	or	(iy+U.CW+1)
 	ld	(iy+U.CW+1),a	; set terminal characteristics bit
@@ -732,8 +731,7 @@ ttsmc2:	rlca			; obtain bit mask
 ttsmc3:	cpl
 	and	(iy+U.CW+1)
 	ld	(iy+U.CW+1),a	; clear terminal characteristics bit
-ttsmc4:	push	bc
-	ldw	bc,(iy+UX.CXF)
+ttsmc4:	ldw	bc,(iy+UX.CXF)
 	inc	bc
 	inc	bc
 	ldw	(iy+UX.CXF),bc
@@ -743,13 +741,12 @@ ttsmc4:	push	bc
 
 ttsmc5:	sub	8		; TC.SPD?
 	jp	nz,ierr
+	push	bc
 	call	$UGETB		; get speed code
 	inc	hl
 	push	hl
-	push	bc
 	ld	hl,(iy+UX.SSP)
 	call	(hl)
-	pop	bc
 	pop	hl
 	jp	c,ierr
 	jp	ttsmc4
@@ -1146,8 +1143,8 @@ prepcr:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 	or	a
 	sbc	hl,bc
 	ldw	(iy+UX.TXP),hl
-	ld	a,(iy+UX.BNK)
-	ld	(iy+UX.TXB),a
+	ldw	hl,(iy+UX.BNK)
+	ldw	(iy+UX.TXB),hl
 	ldw	(iy+UX.TXC),bc
 	ei
 	scf			; kick transmitter
@@ -1161,8 +1158,9 @@ ctr2:	ldw	hl,(iy+UX.UBF)	; valid buffer?
 	di
 	ldw	(iy+UX.TXP),hl
 	ldw	hl,(iy+U.DCB)
-	ld	a,(hl+D.BANK)	; $SBANK
-	ld	(iy+UX.TXB),a
+	ldw	hl,(hl+D.BANK)	; $SBANK
+	ld	h,0		; !!! 8-bit D.BANK
+	ldw	(iy+UX.TXB),hl
 	ld	l,(iy+UX.UCC)
 	ld	h,0
 	ldw	(iy+UX.TXC),hl	; set count
@@ -1221,7 +1219,7 @@ bkspc:	bit	UM.UNS,(iy+UX.MOD)
 	dec	hl
 	ldw	(iy+UX.BFP),hl
 	incw	(iy+UX.CNT)
-	ld	e,(iy+UX.BNK)
+	ldw	de,(iy+UX.BNK)
 	call	$UGETB
 	jr	bs2
 
@@ -1345,7 +1343,7 @@ store:	ld	b,0
 	jr	z,st1
 
 	ldw	hl,(iy+UX.BFP)	; get user buffer address into HL
-	ld	e,(iy+UX.BNK)	; and bank into E
+	ldw	de,(iy+UX.BNK)	; and bank into DE
 	ld	a,c
 	call	$UPUTB		; store char in user space
 	inc	hl
@@ -1424,21 +1422,20 @@ prompt:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 	bit	U2.CTC,(iy+UX.MOD+1) ; processing ^C?
 	jr	nz,prm1		; jump if yes
 	dec	b		; else get default prompt
-prm1:	push	bc
-	call	cliprm		; get prompt from CLICB
-	pop	bc
+prm1:	call	cliprm		; get prompt from CLICB
 	ex	de,hl
 	ldw	hl,(iy+U.DCB)
-	ld	a,(hl+D.BANK)	; $SBANK
+	ldw	hl,(hl+D.BANK)	; $SBANK
+	ld	h,0		; !!! 8-bit D.BANK
 	ex	de,hl
 	jr	prm2
-pruser:	ldw	hl,(iy+UX.PRM)	; user specified a prompt?
+pruser:	ldw	hl,(iy+UX.PRM)	; did user specify a prompt?
 	ld	a,h
 	or	l
 	ret	z		; return with CY clear if not
-	ld	a,(iy+UX.BNK)	; task bank
+	ldw	de,(iy+UX.BNK)	; task bank
 prm2:	ldw	(iy+UX.TXP),hl	; else set address of string to display
-	ld	(iy+UX.TXB),a	; set bank
+	ldw	(iy+UX.TXB),de	; set bank
 	set	U2.PRM,(iy+UX.MOD+1) ; set 'display prompt' bit
 	scf			; and return with CY set
 	ret
@@ -1578,7 +1575,7 @@ nxch1:	res	U2.CTR,(iy+UX.MOD+1) ; clear ^R bit
 	ldw	(iy+UX.CNT),hl	; save value back
 	incw	(iy+UX.CXF)	; increment count of bytes processed
 	ldw	hl,(iy+UX.BFP)	; get user buffer address into HL
-	ld	e,(iy+UX.BNK)	; and bank into E
+	ldw	de,(iy+UX.BNK)	; and bank into DE
 	call	$UGETB		; get char from user space
 	inc	hl
 	ldw	(iy+UX.BFP),hl	; save next address
@@ -1590,7 +1587,7 @@ nxch1:	res	U2.CTR,(iy+UX.MOD+1) ; clear ^R bit
   ENDIF
 
 nxuch:	ldw	hl,(iy+UX.TXP)
-	ld	e,(iy+UX.TXB)
+	ldw	de,(iy+UX.TXB)
 	call	$UGETB		; get byte from task space
 	inc	hl
 	ldw	(iy+UX.TXP),hl

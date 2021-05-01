@@ -77,8 +77,8 @@ HDTMO	equ	1 * TCKSEC	; GIDE command timeout
 ; Device-dependent UCB parameters
 
 UX.BFP	equ	UCBSZ + 0	; address of buffer in user space (2 bytes)
-UX.BNK	equ	UX.BFP + 2	; user bank (1 byte)
-UX.CNT	equ	UX.BNK + 1	; byte count (2 bytes)
+UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
+UX.CNT	equ	UX.BNK + 2	; byte count (2 bytes)
 UX.PBAS	equ	UX.CNT + 2	; partition base (2 bytes)
 UX.PSIZ	equ	UX.PBAS + 2	; partition size (2 bytes)
 
@@ -90,29 +90,43 @@ DSBLWR	equ	0	; disable write function (used during debug)
 ; Macro: wait for ready (Non-Busy) signal active with timeout
 
 WaitRdy	macro	onerr
-	local	wait
+	local	wait,w1
+	ld	de,0
 	ld	hl,dcnt
 	ld	(hl),HDTMO
 wait:	ld	a,(hl)
 	or	a
 	jr	z,onerr
+	inc	de
 	in	a,(IdeCmd)
 	rla
 	jr	c,wait
+	ld	hl,($$R$$)
+	cpw	hl,de
+	jr	nc,w1
+	ld	($$R$$),de
+w1:
 	endm
 
 ; Macro: wait for DRQ signal with timeout
 
 WaitDrq	macro	onerr
-	local	wait
+	local	wait,w1
+	ld	de,0
 	ld	hl,dcnt
 	ld	(hl),HDTMO
 wait:	ld	a,(hl)
 	or	a
 	jr	z,onerr
+	inc	de
 	in	a,(IdeCmd)
 	bit	3,a
 	jr	z,wait
+	ld	hl,($$D$$)
+	cpw	hl,de
+	jr	nc,w1
+	ld	($$D$$),de
+w1:
 	endm
 
 ;-----------------------------------------------------------------------
@@ -142,7 +156,7 @@ UCBDU0:	dw	UCBDU1		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -159,7 +173,7 @@ UCBDU1:	dw	UCBDU2		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -176,7 +190,7 @@ UCBDU2:	dw	UCBDU3		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -193,7 +207,7 @@ UCBDU3:	dw	UCBDU4		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -210,7 +224,7 @@ UCBDU4:	dw	UCBDU5		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -227,7 +241,7 @@ UCBDU5:	dw	UCBDU6		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -244,7 +258,7 @@ UCBDU6:	dw	UCBDU7		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -261,7 +275,7 @@ UCBDU7:	dw	0		; link to next UCB
 	dw	0		; TCB address of ACP task
 	dw	0		; LCB address of owner
 	dw	0		; UX.BFP
-	db	0		; UX.BNK
+	dw	0		; UX.BNK
 	dw	0		; UX.CNT
 	dw	0		; UX.PBAS
 	dw	0		; UX.PSIZ
@@ -316,8 +330,8 @@ IOREQ:	call	GETPKT		; dequeue I/O packet, return address in IX
 	ldw	de,(hl)		; get PCB address into DE
 	ld	hl,P.BASE
 	add	hl,de		; index into subpartition base
-	ld	a,(hl)
-	ld	(iy+UX.BNK),a	; save it into UX.BNK
+	ldw	de,(hl)
+	ldw	(iy+UX.BNK),de	; save it into UX.BNK
 	ld	de,I.QDB
 	add	ix,de		; point to QDB area of I/O packet
 	ldw	de,(ix+Q.BUF)	; get buffer address
@@ -335,8 +349,8 @@ IOREQ:	call	GETPKT		; dequeue I/O packet, return address in IX
 	dec	a
 	cp	d		; UX.BFP in kernel space?
 	jr	nc,iorq0	; branch if not
-	ld	a,($SBANK)
-	ld	(iy+UX.BNK),a	; else adjust bank
+	ld	hl,($SBANK)
+	ldw	(iy+UX.BNK),hl	; else adjust bank
 iorq0:
   ENDIF
 	ldw	hl,(ix+Q.LEN)	; get byte count
@@ -411,7 +425,7 @@ HDSEC:	ld	de,4
 	push	bc		; push hi-word
 	push	hl		; push lo-word
 	ldw	hl,(iy+UX.BFP)
-	ld	e,(iy+UX.BNK)
+	ldw	de,(iy+UX.BNK)
 	pop	bc
 	call	$UPUTW		; store lo-word
 	pop	bc
@@ -446,9 +460,8 @@ HDRLB:	call	CHKBLK		; ensure blkno is within partition limits
 HDRD:	call	DSKRD		; read one physical block from hard disk
 HDRD1:	jp	c,iend		; finish operation if there were errors
 	exx
-	ld	a,($SBANK)
-	ld	e,a		; set src bank for $MCOPY
-	ld	d,(iy+UX.BNK)	; set dst bank
+	ld	hl,($SBANK)	; set src bank for $MCOPY
+	ldw	de,(iy+UX.BNK)	; set dst bank
 	exx
 	ld	hl,hdbuf
 	ldw	de,(iy+UX.BFP)
@@ -472,9 +485,8 @@ HDWLB:	call	CHKBLK		; ensure blkno is within partition limits
 	jp	c,iend		;  and that user buffer is large enough
 	call	L2PBN		; compute physical block number
 HDWR:	exx
-	ld	e,(iy+UX.BNK)	; src bank
-	ld	a,($SBANK)
-	ld	d,a		; dst bank
+	ldw	hl,(iy+UX.BNK)	; src bank
+	ld	de,($SBANK)	; dst bank
 	exx
 	ldw	hl,(iy+UX.BFP)
 	ld	de,hdbuf
@@ -839,6 +851,9 @@ pt:	; "Fake" partition table reflecting the disk layout of the
 ;-----------------------------------------------------------------------
 
 	DSEG
+
+$$R$$::	dw	0
+$$D$$::	dw	0
 
 DUDCB:	ds	2		; address of our DCB
 

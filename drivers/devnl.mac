@@ -89,8 +89,8 @@ ioreq:	call	GETPKT		; dequeue I/O packet, return address in IX
 	set	US.BSY,(iy+U.ST)
 	ldw	hl,(ix+I.TCB)	; get TCB address of requesting task
 	ldw	hl,(hl+T.PCB)	; get PCB address
-	ld	a,(hl+P.BASE)	; get subpartition base
-	ld	(bank),a	; save it
+	ldw	hl,(hl+P.BASE)	; get subpartition base
+	ld	(bank),hl	; save it
 	ld	de,I.QDB
 	add	ix,de		; point to QDB
 	ldw	hl,(ix+Q.BUF)	; get buffer address
@@ -152,7 +152,7 @@ iend1:	ld	de,(cr)		; transfer count in DE
 	dseg
 
 bufp:	ds	2	; buffer address in user space
-bank:	ds	1	; user bank
+bank:	ds	2	; user bank
 cnt:	ds	2	; byte count (remaining)
 cr:	ds	2	; bytes processed
 
