@@ -38,11 +38,11 @@
 	include	ERRORS.INC
 	include	VMR.INC
 
-	public	FNDTSK,LNKTCB,TSKSIZ,TALLOC,TFREE,TLOAD,CHKHDR
+	public	FNDTSK,LNKTCB,TSKSIZ,TALLOC,TFREE,TLOAD,CHKHDR,TSKPAR
 
-	extrn	NEWSUB,$TLIST,ADDHLA,CPHLDE,MFREE,IBUF,LDBCHL
-	extrn	SGETB,SPUTB,SGETM,SPUTM,LDHLHL,LDDEIY,STHLDE
-	extrn	STIYHL,PCBBUF,PCBADR,SUBBUF,SUBADR,TCBADR,UCB2DN
+	extrn	NEWSUB,$TLIST,ADDHLA,CPHLDE,MFREE,IBUF,LDBCHL,SGETB
+	extrn	SPUTB,SGETM,SPUTM,LDHLHL,LDDEIY,STHLDE,STIYHL,PCBBUF
+	extrn	PCBADR,SUBBUF,SUBADR,TCBADR,UCB2DN
 
 ;-----------------------------------------------------------------------
 
@@ -83,6 +83,34 @@ ft3:	pop	bc
 	ld	a,T.TCBL
 	call	ADDHLA
 	jr	ft1
+
+; Search STL for tasks installed into the specified partition.
+; Note that if no such tasks are found, the partition's subpartition
+; and waiting lists will be empty, so we do not have to check for that.
+;
+; Input:
+;   DE = addr of partition in system space
+
+TSKPAR:	ld	hl,($TLIST)
+tp1:	call	LDHLHL
+	ld	a,h
+	or	l
+	ret	z		; no tasks found
+	push	hl
+	ld	bc,T.PCB
+	add	hl,bc
+	call	LDHLHL		; get pointer to partition
+	ld	bc,P.MAIN
+	add	hl,bc
+	call	LDHLHL		; get main PCB address
+	call	CPHLDE		; is this the one we're searching for?
+	pop	hl
+	ld	a,E.PBSY
+	scf
+	ret	z		; yes
+	ld	bc,T.TCBL
+	add	hl,bc
+	jr	tp1		; loop to process next
 
 ; Link TCB to the end of the chain of tasks with the same priority.
 

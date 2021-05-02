@@ -2651,9 +2651,6 @@ delpar:	ld	de,(lnptr)
 	ld	a,(bc)
 	cp	' '
 	jp	z,CMDERR	; can't be empty
-	; TODO: refuse to delete partition if:
-	; - P.SUB and P.WAIT are not empty
-	; - tasks are installed on the partition
 	call	REMPAR
 	jp	c,SYSERR
 	ret

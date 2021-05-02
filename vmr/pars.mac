@@ -35,9 +35,9 @@
 
 	public	FNDPAR,NEWPAR,NEWSUB,REMPAR,MFREE
 
-	extrn	$PLIST,KALLOC,KFREE,PCBBUF,SUBBUF,SUBADR,PCBADR,CPHLDE
-	extrn	SGETB,SGETW,SGETM,SPUTM,LDHLHL,LDDEHL,LDBCHL,STHLDE
-	extrn	STHLBC
+	extrn	$PLIST,KALLOC,KFREE,PCBBUF,SUBBUF,SUBADR,PCBADR
+	extrn	TSKPAR,CPHLDE,SGETB,SGETW,SGETM,SPUTM,LDHLHL,LDDEHL
+	extrn	LDBCHL,STHLDE,STHLBC
 
 ;-----------------------------------------------------------------------
 
@@ -273,6 +273,35 @@ pgetw:	push	de
 
 REMPAR:	call	FNDPAR		; find partition by name
 	ret	c
+  IF 0
+	push	hl
+	ld	bc,P.SUB
+	add	hl,bc
+	call	LDBCHL		; get pointer to subpartition list
+	pop	hl
+	ld	a,b
+	or	c
+	ld	a,E.PBSY
+	scf
+	ret	nz		; can't remove, partition busy
+	push	hl
+	ld	bc,P.SUB
+	add	hl,bc
+	call	LDBCHL		; any tasks waiting (unlikely)?
+	pop	hl
+	ld	a,b
+	or	c
+	ld	a,E.PBSY
+	scf
+	ret	nz		; can't remove, partition busy
+  ELSE
+	push	de
+	ex	de,hl
+	call	TSKPAR		; any tasks installed on this partition?
+	ex	de,hl
+	pop	de
+	ret	c		; yes, can't remove
+  ENDIF
 	call	LDBCHL		; get next pointer into BC
 	ex	de,hl
 	call	STHLBC		; unlink PCB
