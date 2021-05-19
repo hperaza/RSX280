@@ -6528,3 +6528,19 @@ BUGS:
   partition as a 16-bit value.
 
 
+02/05/21
+
+- VMR: do not remove a partition if tasks are installed on it.
+
+
+18/05/21
+
+- If the address of an AST routine is specified in the QIO block, queue the
+  AST to the issuing task whe the I/O operation completes, pushing the IOSB
+  address as argument.
+
+- Changed the $IOEND routine interface, requiring the address of the I/O
+  packet to be passed in register IX. That means that ACP's should no longer
+  free the original I/O packet. BC and DE contains the result codes like
+  IODONE requires.
+
