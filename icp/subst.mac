@@ -38,7 +38,8 @@
 
 ; Format options are preceded by a % and can be one or more of the
 ; following:
-;  C  - compress all blanks
+;  B  - remove all blanks
+;  C  - compress multiple blanks into a single space
 ;  D  - display numeric value as decimal
 ;  O  - display numeric value as octal
 ;  H  - display numeric value as hexadecimal
@@ -333,18 +334,25 @@ lp1:	ld	a,(width)
 
 ; Compute effective string length, preserves B.
 
-slen:	ld	c,0
+slen:	ld	bc,0		; clear blank flag (B) and char count (C)
 sl0:	ld	a,(hl)		; get char from string
 	or	a		; end of string?
 	ret	z		; return if yes
-	ld	a,(fmtopt)	; check format option
-	cp	'C'		; compress all spaces?
-	jr	nz,sl1		; jump if not
-	ld	a,(hl)
 	call	ISBLNK		; blank?
-	jr	z,sl2		; skip if not
-sl1:	inc	c		; else count it
-sl2:	inc	hl
+	jr	nz,sl1		; no, count it
+	ld	a,(fmtopt)	; check format option
+	cp	'B'		; remove all blanks?
+	jr	z,sl3		; yes
+	cp	'C'		; compress multiple spaces?
+	jr	nz,sl2		; no
+	inc	b
+	dec	b		; was previous char a blank?
+	jr	nz,sl3		; yes, skip it
+	inc	b		; else set flag
+	jr	sl2		; and count the blank
+sl1:	ld	b,0		; reset blank char
+sl2:	inc	c		; count char
+sl3:	inc	hl
 	jr	sl0		; loop
 
 ; Copy string according to format options, truncate as necessary.
@@ -352,24 +360,37 @@ sl2:	inc	hl
 cpstr:	ld	a,(strw)
 	or	a
 	ret	z		; return if string was truncated to null
-	ld	c,a
+	ld	c,0		; clear blank flag
 cps0:	ld	a,(hl)		; get char to output
 	or	a		; end of string?
 	ret	z		; return if yes
-	ld	a,(fmtopt)	; check format option
-	cp	'C'		; compress all spaces?
-	ld	a,(hl)
-	inc	hl
-	jr	nz,cps1		; jump if not
 	call	ISBLNK		; blank?
-	jr	z,cps0		; skip if not
-cps1:	ld	(de),a		; else copy to dest
+	jr	nz,cps2		; no, copy it
+	ld	a,(fmtopt)	; check format option
+	cp	'B'		; compress all spaces?
+	jr	z,cps1		; yes
+	cp	'C'		; compress multiple spaces?
+	ld	a,(hl)		; restore char
+	jr	nz,cps3		; no
+	inc	c
+	dec	c		; was the previous char a blank?
+	jr	nz,cps1		; yes, skip it
+	inc	c		; else set flag
+	ld	a,' '
+	jr	cps3		; and store a space
+cps1:	inc	hl
+	jr	cps0
+cps2:	ld	c,0
+cps3:	ld	(de),a		; else copy to dest
 	inc	de
-	or	a		; clear CY
-	dec	c
+	inc	hl
+	ld	a,(strw)
+	dec	a
+	ld	(strw),a
+	or	a		; ensure CY is clear
 	ret	z
 	djnz	cps0		; loop
-	scf
+	scf			; buffer full, return with CY set
 	ret
 
 ;-----------------------------------------------------------------------

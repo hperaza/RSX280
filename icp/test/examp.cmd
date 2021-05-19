@@ -41,7 +41,7 @@
 	;
 	; The date is 'DAT',
 	; The time is 'TIM', and
-	; Today is '$DAY%C'DAY.
+	; Today is '$DAY%B'DAY.
 	;
 	; See you tomorrow.
 	;

@@ -237,6 +237,7 @@
 	;     Right-justified:                >'str%R30'<
 	;     Truncated:                      >'str%L10'<
 	;     Condensed:                      >'str%C'<
+	;     Compressed:                     >'str%B'<
 ;
 ; 8c) Numeric as char output
 ;

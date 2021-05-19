@@ -6544,3 +6544,7 @@ BUGS:
   free the original I/O packet. BC and DE contains the result codes like
   IODONE requires.
 
+- ICP: the %C string substition option now compresses multiple blanks into
+  a single space, for compatibility with RSX-11M. The option to remove all
+  embedded spaces (not present in RSX-11M) is now %B.
+
