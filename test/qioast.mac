@@ -1,0 +1,123 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	FCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	extrn	CVTWH
+
+;-----------------------------------------------------------------------
+
+; QIO AST test. Assign SY: to LUN 1 and TI: to LUN 5 at build time.
+
+	cseg
+
+TEST::	ld	sp,stack
+
+	ld	hl,qio1
+	SC	.QIO		; output message
+	ld	hl,qioatt
+	SC	.QIO		; attach terminal
+
+	ld	hl,qio2
+	SC	.QIO		; output string
+
+	ld	hl,qio3
+	SC	.QIO		; output message
+	ld	hl,qioacc
+	SC	.QIO		; open file
+	ld	a,(fiosb)
+	or	a
+	jr	nz,t1
+
+	ld	hl,qio4
+	SC	.QIO		; output message
+	ld	hl,qiorvb
+	SC	.QIO		; read from file
+
+	ld	hl,qio5
+	SC	.QIO		; output message
+	ld	hl,qiodea
+	SC	.QIO		; close file
+
+t1:	ld	hl,EX.SUC
+	SC	.EXIT
+
+ast:	ex	(sp),hl		; fetch argument
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	push	hl
+	ld	hl,res1
+	call	CVTWH
+	pop	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,res2
+	call	CVTWH
+	ld	hl,qio6
+	SC	.QIO
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+	dseg
+
+qio1:	QIOW$	IO.WVB,5,1,iosb,,<str1,len1,0,0,>
+str1:	db	LF,'Attaching terminal...',CR
+len1	equ	$-str1
+
+qioatt:	QIOW$	IO.ATT,5,1,iosb,ast
+
+qio2:	QIOW$	IO.WVB,5,1,iosb,ast,<str2,len2,0,0,>
+str2:	db	LF,'Outputting text...',CR
+len2	equ	$-str2
+
+fmode	equ	SF.ACR OR SF.SHR
+qioacc:	QIOW$	<<IO.ACC OR (fmode SHL 8)>>,1,1,fiosb,ast,<fdb,0>
+fdb:	dw	0
+	db	FN.NAME OR FN.EXT
+	db	'SY',0
+	db	'         '
+	db	'QIOAST   ','TSK'
+	dw	0
+	db	0,0
+	dw	0
+
+qio3:	QIOW$	IO.WVB,5,1,iosb,,<str3,len3,0,0,>
+str3:	db	LF,'Opening file...',CR
+len3	equ	$-str3
+
+qiorvb:	QIOW$	IO.RVB,1,1,iosb,ast,<buf,512,0,0,>
+buf:	ds	512
+
+qio4:	QIOW$	IO.WVB,5,1,iosb,,<str4,len4,0,0,>
+str4:	db	LF,'Reading from file...',CR
+len4	equ	$-str4
+
+qiodea:	QIOW$	IO.DEA,1,1,iosb,ast,<fdb,0>
+
+qio5:	QIOW$	IO.WVB,5,1,iosb,,<str5,len5,0,0,>
+str5:	db	LF,'Closing file...',CR
+len5	equ	$-str5
+
+qio6:	QIOW$	IO.WVB,5,1,iosb,,<str6,len6,0,0,>
+str6:	db	LF,'IOSB = '
+res1:	db	'XXXX '
+res2:	db	'XXXX',CR
+len6	equ	$-str6
+
+iosb:	ds	4
+fiosb:	ds	4
+
+	ds	128		; stack space
+stack	equ	$
+
+	end	TEST
