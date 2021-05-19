@@ -28,7 +28,7 @@
 	public	SUBST
 
 	extrn	GETVAR,DECSTR,HEXSTR,OCTSTR,HLNEG,ATOU,MODE
-	extrn	INPBUF,LNBUF,UCASE,ISALPN,ISDIG,ISBLNK
+	extrn	INPBUF,LNBUF,UCASE,ISALPN,ISDIG,ISBLNK,SKIPBL
 
 	cseg
 
@@ -334,64 +334,112 @@ lp1:	ld	a,(width)
 
 ; Compute effective string length, preserves B.
 
-slen:	ld	bc,0		; clear blank flag (B) and char count (C)
-sl0:	ld	a,(hl)		; get char from string
-	or	a		; end of string?
-	ret	z		; return if yes
-	call	ISBLNK		; blank?
-	jr	nz,sl1		; no, count it
+slen:	ld	c,0		; clear char count
 	ld	a,(fmtopt)	; check format option
 	cp	'B'		; remove all blanks?
-	jr	z,sl3		; yes
+	jr	z,sl2		; yes
 	cp	'C'		; compress multiple spaces?
-	jr	nz,sl2		; no
-	inc	b
-	dec	b		; was previous char a blank?
-	jr	nz,sl3		; yes, skip it
-	inc	b		; else set flag
-	jr	sl2		; and count the blank
-sl1:	ld	b,0		; reset blank char
-sl2:	inc	c		; count char
-sl3:	inc	hl
-	jr	sl0		; loop
+	jr	z,sl3		; yes
+
+sl1:	; count all chars
+
+	ld	a,(hl)		; get char
+	or	a		; end of string?
+	ret	z		; yes
+	inc	hl
+	inc	c		; else count char
+	jr	sl1		; and loop
+
+sl2:	; remove all blanks
+
+	ld	a,(hl)		; get char
+	or	a		; end of string?
+	ret	z		; yes
+	inc	hl
+	call	ISBLNK		; blank?
+	jr	z,sl2		; yes, skip
+	inc	c		; else count char
+	jr	sl2		; and loop
+
+sl3:	; remove leading and trailing spaces, compress multiple blanks
+
+	call	SKIPBL		; skip leading blanks
+	or	a		; end of string?
+	ret	z		; yes
+sl4:	inc	hl
+sl5:	inc	c		; count char
+	ld	a,(hl)		; get next char
+	call	ISBLNK		; blank?
+	jr	nz,sl4		; no, loop
+	call	SKIPBL		; skip trailing blanks
+	or	a		; end of string?
+	jr	nz,sl5		; loop if not
+	ret
 
 ; Copy string according to format options, truncate as necessary.
 
 cpstr:	ld	a,(strw)
 	or	a
 	ret	z		; return if string was truncated to null
-	ld	c,0		; clear blank flag
-cps0:	ld	a,(hl)		; get char to output
-	or	a		; end of string?
-	ret	z		; return if yes
-	call	ISBLNK		; blank?
-	jr	nz,cps2		; no, copy it
+	ld	c,a
 	ld	a,(fmtopt)	; check format option
-	cp	'B'		; compress all spaces?
-	jr	z,cps1		; yes
+	cp	'B'		; remove all blanks?
+	jr	z,cps2		; yes
 	cp	'C'		; compress multiple spaces?
-	ld	a,(hl)		; restore char
-	jr	nz,cps3		; no
-	inc	c
-	dec	c		; was the previous char a blank?
-	jr	nz,cps1		; yes, skip it
-	inc	c		; else set flag
-	ld	a,' '
-	jr	cps3		; and store a space
-cps1:	inc	hl
-	jr	cps0
-cps2:	ld	c,0
-cps3:	ld	(de),a		; else copy to dest
-	inc	de
+	jr	z,cps3		; yes
+
+cps1:	; copy string
+
+	ld	a,(hl)		; get char
+	or	a		; end of string?
+	ret	z		; yes
+	ld	(de),a		; copy char
 	inc	hl
-	ld	a,(strw)
-	dec	a
-	ld	(strw),a
-	or	a		; ensure CY is clear
-	ret	z
-	djnz	cps0		; loop
-	scf			; buffer full, return with CY set
+	inc	de
+	dec	c
+	ret	z		; note CY is clear
+	djnz	cps1
+	scf			; buffer full
 	ret
+
+cps2:	; remove all blanks
+
+	ld	a,(hl)		; get char
+	or	a		; end of string?
+	ret	z		; yes
+	inc	hl
+	call	ISBLNK		; blank?
+	jr	z,cps2		; yes, skip
+	ld	(de),a		; copy char
+	inc	de
+	dec	c
+	ret	z		; note CY is clear
+	djnz	cps2
+	scf			; buffer full
+	ret
+
+cps3:	; remove leading and trailing spaces, compress multiple blanks
+
+	call	SKIPBL		; skip leading spaces
+	or	a		; end of string?
+	ret	z		; yes
+cps4:	inc	hl
+cps5:	ld	(de),a		; store char
+	inc	de
+	or	a		; clear CY just in case
+	dec	c
+	ret	z
+	djnz	cps6
+	scf			; buffer full
+	ret
+cps6:	ld	a,(hl)		; get next char
+	call	ISBLNK		; blank?
+	jr	nz,cps4		; no, loop
+	call	SKIPBL		; skip trailing spaces
+	or	a		; end of string?
+	ret	z		; yes
+	ld	a,' '		; store single space
+	jr	cps5		; and loop
 
 ;-----------------------------------------------------------------------
 
