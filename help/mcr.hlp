@@ -382,7 +382,8 @@ Syntax:
 Create user directory. The command accepts the following options:
 
   /ALLOC=n      Pre-allocate the specified number of blocks (currently ignored)
-  /PROT=[...]   Set the access protection bits (currently ignored)
+  /PROT=[...]   Set the access protection bits, either as hexadecimal value
+                or [rwed,rwed,rwed,rwed] string.
   /OWNER=[g,u]  Set the directory ownership
 
 \UNF*IX

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   MCR external command UFD for RSX180.                               ;
-;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;   MCR external command UFD for RSX180 and RSX280.                    ;
+;   Copyright (C) 2016-2021, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.00'
+	ident	'01.01'
 
 	cseg
 
@@ -29,6 +29,7 @@
 	include	TCB.INC
 	include	FCB.INC
 	include	QIO.INC
+	include	LCB.INC
 	include	ERRORS.INC
 
 CR	equ	0Dh
@@ -38,7 +39,7 @@ ESC	equ	1Bh
 
 	extrn	PFN,PERROR,CRLF,UCASE,PUTCH,PUTSTR,TTFLSH,GCCL
 
-; UFD ddn:<volume-label>[dirname]{/ALLOC=n}{/OWN=[u,g]}{/PRO=[...]}
+; UFD ddn:{volume-label}[dirname]{/ALLOC=n}{/OWNER=[g,u]}{/PROT=[...]}
 
 ; TODO: check user privileges:
 ; - Non-privileged users can only create directories on private (allocated)
@@ -195,23 +196,28 @@ getfs:	ld	a,(de)
 gf1:	xor	a
 	ret
 
-; Read a decimal number from input line into HL
-; Returns CY if the number contains invalid chars or on overflow.
+; Read a decimal number from input line into HL. Return number of
+; processed chars in C. Returns CY if the number contains invalid chars,
+; or on overflow.
 
 GETDEC:	ld	de,(lnptr)
 	call	getns
 	ld	hl,0
-newdig:	call	getfs
-	jr	z,endnum	; note no CY
+	ld	c,0
+gd1:	call	getfs
+	jr	z,gd2		; note no CY
 	sub	'0'
-	jr	c,endnum	; note CY
+	jr	c,gd2		; note CY
 	cp	10
 	ccf
-	jr	c,endnum	; note CY
+	jr	c,gd2		; note CY
+	inc	c
+	push	bc
 	call	adddig		; note CY on overflow
+	pop	bc
 	inc	de
-	jr	nc,newdig
-endnum:	ld	(lnptr),de
+	jr	nc,gd1
+gd2:	ld	(lnptr),de
 	ret
 
 adddig:	ld	c,l
@@ -221,6 +227,49 @@ adddig:	ld	c,l
 	add	hl,hl
 	ret	c
 	add	hl,bc
+	ret	c
+	add	hl,hl
+	ret	c
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ret
+
+; Read a hexadecimal number from input line into HL. Return number of
+; processed chars in C. Returns CY if the number contains invalid chars,
+; or on overflow.
+
+GETHEX:	ld	de,(lnptr)
+	call	getns
+	ld	hl,0
+	ld	c,0
+gh1:	call	getfs
+	jr	z,gh3		; note no CY
+	call	UCASE
+	sub	'0'
+	jr	c,gh3		; note CY
+	cp	10
+	jr	c,gh2
+	cp	11h
+	jr	c,gh3		; note CY
+	cp	17h
+	ccf
+	jr	c,gh3		; note CY
+	sub	7
+gh2:	inc	c
+	push	bc
+	call	addhex		; note CY on overflow
+	pop	bc
+	inc	de
+	jr	nc,gh1
+gh3:	ld	(lnptr),de
+	ret
+
+addhex:	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
 	ret	c
 	add	hl,hl
 	ret	c
@@ -277,9 +326,10 @@ UFD:	ld	hl,0
 	ld	(nalloc),hl	; no pre-allocated entries
 	ld	hl,0FFF8h
 	ld	(prbits),hl	; set default protection bits
-	xor	a
-	ld	(usrid),a	; clear user ID [TODO: use current user ID]
-	ld	(grpid),a
+	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN		; get default user and group ID
+	jp	c,SYSERR
 	ld	hl,(lnptr)
 	ld	ix,fdb
 	call	PFN		; parse filename
@@ -346,10 +396,65 @@ alloc:	call	GETDEC
 
 ; process PROT switch
 
-prot:	; ...
-	scf
+prot:	ex	de,hl
+	call	getns
+	cp	'['		; check for [RWED,...] format
+	jr	z,prot1
+	ld	(lnptr),de
+	call	GETHEX		; else get hexadecimal value
 	jp	c,CMDERR
+	ld	a,c
+	or	a		; can't be empty string
+	jp	z,CMDERR
+	ld	(prbits),hl	; set directory protection bits
 	jp	ckopt
+
+prot1:	ld	hl,0
+	ld	b,4		; number of groups
+prot2:	inc	de
+	call	getns
+	cp	']'
+	jr	z,prot4
+	cp	','		; group separator?
+	jr	z,prot3		; yes
+	call	gtrwed		; else get prot bit
+	jp	c,CMDERR
+	ld	a,l
+	and	c		; already set?
+	jp	nz,CMDERR	; error if yes
+	ld	a,l
+	or	c
+	ld	l,a		; else set bit
+	jr	prot2		; and loop to process next
+
+prot3:	add	hl,hl		; shift mask
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	djnz	prot2
+prot5:	jp	CMDERR
+
+prot4:	djnz	prot5		; all groups must have been specified
+	ld	(prbits),hl	; store result
+	inc	de
+	ld	(lnptr),de
+	jp	ckopt
+
+gtrwed:	call	UCASE
+	ld	c,08h
+	cp	'R'
+	ret	z
+	srl	c
+	cp	'W'
+	ret	z
+	srl	c
+	cp	'E'
+	ret	z
+	srl	c
+	cp	'D'
+	ret	z
+	scf
+	ret
 
 ; process OWNER switch
 
@@ -359,22 +464,30 @@ owner:	ex	de,hl
 	jp	nz,CMDERR
 	inc	de
 	ld	(lnptr),de
-	call	GETDEC
+	call	GETDEC		; get group ID
+	ld	a,c
+	or	a		; can't be empty string
+	jp	z,CMDERR
 	ld	a,h
-	or	a
+	or	a		; can't be greater than 255
 	jp	nz,CMDERR
-	ld	a,l
+	or	l
+	jp	z,CMDERR	; can't be zero either
 	ld	(grpid),a
 	ld	a,(de)
 	cp	','
 	jp	nz,CMDERR
-	inc	de
+	inc	de		; skip comma separator
 	ld	(lnptr),de
-	call	GETDEC
+	call	GETDEC		; get user ID
+	ld	a,c
+	or	a		; can't be empty string
+	jp	z,CMDERR
 	ld	a,h
-	or	a
+	or	a		; can't be greater than 255
 	jp	nz,CMDERR
-	ld	a,l
+	or	l
+	jp	z,CMDERR	; can't be zero either
 	ld	(usrid),a
 	ld	a,(de)
 	cp	']'
@@ -420,7 +533,7 @@ MKD:	ld	de,(fdb+F.DEV)
 	ld	a,(usrid)
 	ld	(finfo+F.USER),a
 
-	; ... set protection bits
+	; set protection bits
 
 	ld	hl,(prbits)
 	ld	(finfo+F.PROT),hl
@@ -472,8 +585,9 @@ finfo:	ds	FINFSZ
 
 nalloc:	ds	2
 prbits:	ds	2
-usrid:	ds	1
-grpid:	ds	1
+lcbbuf:	ds	LCBSZ
+usrid	equ	lcbbuf+L.USR
+grpid	equ	lcbbuf+L.GRP
 
 	ds	256		; stack space
 stack	equ	$
