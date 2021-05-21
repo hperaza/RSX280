@@ -317,6 +317,7 @@ where option can be any of the following:
   /NOPRIV=ttn:    Make terminal non-privileged
   /SPEED=ttn:nnn  Set or display serial terminal baud rate
   /DIR=[dir]      Set or display current directory
+  /UIC=[gid,uid]  Set or display the protection UIC
   /PUB=ddn:       Establish the specified device as public device
   /HOST=hostname  Displays or sets the host name
   /RNDC=nn        Displays or sets the length of the round-robin interval

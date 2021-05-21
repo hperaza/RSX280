@@ -6554,3 +6554,7 @@ BUGS:
 - UFD: implemented the /PROT switch. Like with PIP and INI, the argument
   can be either a hexadecimal value or a [rwed,rwed,rwed,rwed] string.
 
+- MCR: added SET /UIC command. Non-privileged users can only use it to
+  display their protection UIC, privileged users can use it to change their
+  protection UIC.
+

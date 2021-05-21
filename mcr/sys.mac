@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like command line interpreter for RSX280 - external commands.  ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2021, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -23,7 +23,7 @@
 
 	cseg
 
-	ident	'02.24'
+	ident	'02.25'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -3053,7 +3053,7 @@ doset:	ld	de,(lnptr)
 	or	a
 	jp	z,CMDERR	; switch name can't be empty
 	dec	a
-	cp	20		; ensure value is in range
+	cp	21		; ensure value is in range
 	jp	nc,CMDERR
 	rlca
 	ld	c,a
@@ -3087,11 +3087,12 @@ msrndh:	db	'RNDH',0
 msrndl:	db	'RNDL',0
 msswpc:	db	'SWPC',0
 msswpr:	db	'SWPR',0
+	db	'UIC',0
 	db	0
 
 setfn:	dw	stbro,stecho,stlowr,stcrt,stansi,stlogn,stslav
 	dw	stpriv,stpub,stspd,stdir,sthost,sthost,stpool
-	dw	stlog,strndc,strndh,strndl,stswpc,stswpr
+	dw	stlog,strndc,strndh,strndl,stswpc,stswpr,stuic
 
 stecho:	; SET /ECHO
 
@@ -3758,6 +3759,82 @@ ade1:	ld	(hl),'.'
 
 dirext:	db	'DIR'
 tskext:	db	'TSK'
+
+stuic:	; SET /UIC
+
+	ld	a,(negsw)
+	or	a
+	jp	nz,CMDERR
+	ld	de,(lnptr)
+	call	getns
+	ld	(lnptr),de	; end of command?
+	jr	z,shwuic	; display current UIC if yes
+	call	chkeq		; else require '='
+	jp	nz,CMDERR
+	ld	c,'['
+	call	stuic1		; test delimiter and get group ID
+	jp	c,CMDERR
+	ld	(temp),a
+	ld	c,','
+	call	stuic1		; test delimiter and get user ID
+	jp	c,CMDERR
+	ld	(temp+1),a
+	ld	de,(lnptr)
+	call	getns
+	cp	']'
+	jp	nz,CMDERR
+	call	CHKPRV		; user must be privileged to change UIC
+	jp	c,SYSERR
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	ld	ix,($CTCB)
+	ldw	ix,(ix+T.TI)
+	ldw	ix,(hl+U.LCB)
+	ld	hl,(temp)
+	ldw	(ix+L.USR),hl	; set effective UIC
+	ld	c,0
+	SC	.SUPER
+	ret
+
+stuic1:	ld	de,(lnptr)
+	call	getns		; get next char
+	cp	c		; delimiter?
+	scf
+	ret	nz		; return CY set if not
+	inc	de
+	ld	(lnptr),de
+	call	GETDEC		; get value
+	ld	a,h
+	or	a		; ensure 8-bit
+	scf
+	ret	nz		; else return with CY set
+	or	l
+	ret	nz
+	scf			; can't be zero, either
+	ret
+
+shwuic:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	jp	c,SYSERR
+	ld	hl,uicmsg
+	call	PUTSTR
+	ld	c,'['
+	call	PUTCH
+	ld	a,(lcbbuf+L.GRP)
+	call	ADEC
+	ld	c,','
+	call	PUTCH
+	ld	a,(lcbbuf+L.USR)
+	call	ADEC
+	ld	c,']'
+	call	PUTCH
+	ld	c,CR
+	call	PUTCH
+	ret
+
+uicmsg:	db	CR,LF,'UIC=',0
 
 ; Print directory name (HL = file info), do not show the extension.
 
