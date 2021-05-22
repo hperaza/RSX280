@@ -3579,7 +3579,8 @@ msno:	db	'NO',0
 
 stlogn:	; SET /LOGON
 
-	; check that nothing follows command?
+	; TODO: ensure that nothing follows command?
+
 	call	CHKPRV
 	jp	c,SYSERR
 	ld	c,1
@@ -3644,7 +3645,28 @@ shtisp:	ld	hl,'TI'
 	ld	(tmpdv2),hl
 	xor	a
 	ld	(tmpdv2+2),a
-shspd:	ld	c,LF
+shspd:	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	ld	de,(tmpdv2)
+	ld	a,(tmpdv2+2)
+	ld	c,a
+	ld	ix,($CTCB)	; needed for TI:
+	KCALL	$FNDEV		; get UCB address
+	jp	c,ster1
+	push	hl
+	pop	ix		; IX = UCB address
+	bit	DV.TTY,(ix+U.CW); unit is a terminal?
+	jp	z,ster2		; error if not
+
+UX.BDR	equ	UCBSZ + 0	; must match value in devtt.mac
+
+	ld	a,(ix+UX.BDR)	; fetch baudrate code
+	ld	(temp),a
+	ld	c,0
+	SC	.SUPER
+
+	ld	c,LF
 	call	PUTCH
 	ld	hl,msspd
 	call	PUTSTR
@@ -3659,10 +3681,23 @@ shspd:	ld	c,LF
 	call	ADEC
 	ld	c,':'
 	call	PUTCH
-	;...get speed from UX.SPD or U.CW2?
+	ld	hl,bdrmsg	; point to message table
+	ld	a,(temp)
+	or	a
+	jr	z,shsp2		; S.0 is "Unknown"
+	cp	S.115K2+1
+	jr	nc,shsp2	; and so is S.UNK and anything above S.115K2
+	ld	bc,0
+	ld	e,a		; get baudrate code into E
+	xor	a		; null delimites strings in table
+shsp1:	cpir			; skip string, point to start of next
+	dec	e		; decrement counter
+	jr	nz,shsp1	; and loop
+shsp2:	call	PUTSTR		; output baudrate
 	ld	c,CR
 	jp	PUTCH
 
+bdrmsg:	db	'Unknown',0
 bdrtbl:	db	'50',0
 	db	'75',0
 	db	'110',0
