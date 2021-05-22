@@ -55,6 +55,7 @@
 	include	PCB.INC
 	include	DCB.INC
 	include	AST.INC
+	include BDRATES.INC
 	include	CLICB.INC
 	include	SYSCONF.INC
 
@@ -127,7 +128,8 @@ _CKA	equ	13h		; clock alteration register
 
 ; Device-dependent UCB parameters
 
-UX.MOD	equ	UCBSZ + 0	; mode bits (2 bytes)
+UX.BDR	equ	UCBSZ + 0	; default/current baud rate (1 byte)
+UX.MOD	equ	UX.BDR + 1	; mode bits (2 bytes)
 UX.SBF	equ	UX.MOD + 2	; subfunction code (1 byte)
 UX.BFP	equ	UX.SBF + 1	; address of buffer in user space (2 bytes)
 UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
@@ -146,7 +148,7 @@ UX.RXG	equ	UX.TXC + 2	; get receiver char routine addr (2 bytes)
 UX.RXE	equ	UX.RXG + 2	; receiver queue check routine addr (2 bytes)
 UX.RXC	equ	UX.RXE + 2	; purge receiver queue routine addr (2 bytes)
 UX.TXK	equ	UX.RXC + 2	; transmitter restart routine addr (2 bytes)
-UX.SSP	equ	UX.TXK + 2	; set serial speed routine (2 bytes)
+UX.SSP	equ	UX.TXK + 2	; set serial speed routine address (2 bytes)
 UX.AST	equ	UX.SSP + 2	; unsolicited char AST routine addr (2 bytes)
 
 ; Device-dependent SCB fields
@@ -237,6 +239,7 @@ ucbt0:	dw	ucbt1		; link to next
 	dw	0		; TCB of attached task
 	dw	0		; no ACP
 	dw	0		; not logged in
+	db	S.UNK		; UX.BDR
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
@@ -271,6 +274,7 @@ ucbt1:	dw	ucbt2		; link to next
 	dw	0		; TCB of attached task
 	dw	0		; no ACP
 	dw	0		; not logged in
+	db	S.19K2		; UX.BDR
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
@@ -305,6 +309,7 @@ ucbt2:	dw	ucbt3		; link to next
 	dw	0		; TCB of attached task
 	dw	0		; no ACP
 	dw	0		; not logged in
+	db	S.19K2		; UX.BDR
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
@@ -339,6 +344,7 @@ ucbt3:	dw	ucbt4		; link to next
 	dw	0		; TCB of attached task
 	dw	0		; no ACP
 	dw	0		; not logged in
+	db	S.19K2		; UX.BDR
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
@@ -373,6 +379,7 @@ ucbt4:	dw	0		; link to next
 	dw	0		; TCB of attached task
 	dw	0		; no ACP
 	dw	0		; not logged in
+	db	S.19K2		; UX.BDR
 	ds	2		; UX.MOD
 	ds	1		; UX.SBF
 	ds	2		; UX.BFP buffer address in user space
@@ -450,9 +457,17 @@ ini0:	res	US.BSY,(iy+U.ST)
 	ld	a,iyh
 	or	iyl
 	jr	nz,ini0
-	pop	iy
 	call	tt0ini		; hardware-specific init for primary port
 	call	ttQini		; hardware-specific init for quad-serial port
+	ld	iy,ucbt0
+ini1:	ld	a,(iy+UX.BDR)	; get default baud rate
+	ld	hl,(iy+UX.SSP)
+	call	(hl)		; set serial speed
+	ldw	iy,(iy+U.LNK)	; get next UCB into IY
+	ld	a,iyh
+	or	iyl
+	jr	nz,ini1
+	pop	iy
 	pop	ix
 	ret
 
@@ -661,7 +676,7 @@ ttgmc1:	ld	a,b
 	call	$UGETB		; get byte from user space
 	inc	hl
 	cp	8		; ensure bit value is in range
-	jp	nc,ierr
+	jr	nc,ttgmc4
 	push	bc
 	ld	b,a
 	ld	a,(iy+U.CW+1)	; get terminal characteristics byte
@@ -670,7 +685,7 @@ ttgmc1:	ld	a,b
 ttgmc2:	rrca			; move bit to LSB
 	djnz	ttgmc2
 	and	01h
-	call	$UPUTB		; store result
+ttgmc3:	call	$UPUTB		; store result
 	inc	hl
 	ldw	bc,(iy+UX.CXF)
 	inc	bc
@@ -679,6 +694,12 @@ ttgmc2:	rrca			; move bit to LSB
 	pop	bc
 	dec	bc
 	jr	ttgmc1
+
+ttgmc4:	sub	8		; TC.SPD?
+	jp	nz,ierr
+	push	bc
+	ld	a,(iy+UX.BDR)	; get speed code
+	jr	ttgmc3
 
 ;-----------------------------------------------------------------------
 
@@ -743,13 +764,20 @@ ttsmc5:	sub	8		; TC.SPD?
 	jp	nz,ierr
 	push	bc
 	call	$UGETB		; get speed code
+	push	af
 	inc	hl
 	push	hl
 	ld	hl,(iy+UX.SSP)
 	call	(hl)
 	pop	hl
-	jp	c,ierr
-	jp	ttsmc4
+	jr	c,ttsmc6
+	pop	af
+	ld	(iy+UX.BDR),a	; store new speed in UCB
+	jr	ttsmc4
+
+ttsmc6:	pop	af
+	pop	bc
+	jp	ierr
 
 ;-----------------------------------------------------------------------
 
@@ -1876,10 +1904,8 @@ iniq2:	ld	a,(hl)		; get register address
 	inc	hl
 	djnz	iniq2		; loop until all registers set
 
-include BDRATES.INC
-
-	ld	a,S.19K2
-	call	ttQspd		; set baud rate
+;;	ld	a,S.19K2
+;;	call	ttQspd		; set baud rate
 ;;	ld	c,e
 ;;	in	a,(c)		; flush any spurious char
 	ld	a,e
