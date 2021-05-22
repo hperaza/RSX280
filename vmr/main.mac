@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
-;   This file is part of VMR, an utility to configure the RSX180       ;
-;   system image. Copyright (C) 1985-2020, Hector Peraza.              ;
+;   This file is part of VMR, an utility to configure the RSX280       ;
+;   system image. Copyright (C) 1985-2021, Hector Peraza.              ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -36,7 +36,7 @@
 
 	.Z80
 
-	ident	'V1.10'
+	ident	'V1.11'
 
 	include	SYSFN.INC
 	include	FCB.INC
@@ -47,6 +47,7 @@
 	include	DCB.INC
 	include	LCB.INC
 	include	THDR.INC
+	include	BDRATES.INC
 	include	ERRORS.INC
 	include	VMR.INC
 
@@ -1814,7 +1815,7 @@ msansi:	db	'ANSI',0
 msslav:	db	'SLAVE',0
 mspriv:	db	'PRIV',0
 mspub:	db	'PUB',0
-	db	'SPEED',0
+msspd:	db	'SPEED',0
 	db	'DIR',0
 	db	'HOST',0
 	db	'NODE',0
@@ -2316,11 +2317,104 @@ stl1:	call	SGETB
 
 stiosp:	; SET /SPEED
 
-	ld	a,(negsw)
+UX.BDR	equ	UCBSZ + 0	; must match value in devtt.mac
+
+	ld	a,(negsw)	; can't be negated
 	or	a
 	jp	nz,CMDERR
-	;...
-	jp	CMDERR
+	call	chkeq		; '=' is required
+	jp	nz,CMDERR
+	ld	hl,(lnptr)
+	call	PDN		; parse device name
+	ld	(lnptr),hl
+	jp	c,CMDERR
+	ld	(tmpdv2),de
+	ld	a,c
+	ld	(tmpdv2+2),a
+	ld	ix,0
+	call	FNDDEV		; get UCB address
+	jp	c,SYSERR
+	ld	(temp),hl	; remember UCB address
+	ld	bc,U.CW
+	add	hl,bc
+	ld	e,0		; system bank
+	call	SGETB
+	bit	DV.TTY,a	; unit is a terminal?
+	ld	hl,errnt
+	jp	z,ERRMSG	; error if not
+	call	getcmd
+	ld	hl,bdrtbl	; address of baud rate table
+	call	fndcmd		; search speed in table
+	or	a		; no speed specified?
+	jr	z,shspd		; then display speed for the specified terminal
+	cp	S.115K2+1
+	jp	nc,CMDERR	; ensure value is in range
+	ld	hl,(temp)	; get UCB address
+	ld	bc,UX.BDR
+	add	hl,bc
+	ld	e,0		; system bank
+	jp	SPUTB		; set speed
+
+shspd:	ld	c,LF
+	call	PUTCH
+	ld	hl,msspd
+	call	PUTSTR
+	ld	c,'='
+	call	PUTCH
+	ld	hl,(tmpdv2)
+	ld	c,l
+	call	PUTCH		; show physical device name
+	ld	c,h
+	call	PUTCH
+	ld	a,(tmpdv2+2)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	hl,(temp)	; get UCB address
+	ld	bc,UX.BDR
+	add	hl,bc
+	ld	e,0		; system bank
+	call	SGETB		; fetch baudrate code
+	ld	hl,bdrmsg	; point to message table
+	or	a
+	jr	z,shsp2		; S.0 is "Unknown"
+	cp	S.115K2+1
+	jr	nc,shsp2	; and so is S.UNK and anything above S.115K2
+	ld	bc,0
+	ld	e,a		; get baudrate code into E
+	xor	a		; null delimites strings in table
+shsp1:	cpir			; skip string, point to start of next
+	dec	e		; decrement counter
+	jr	nz,shsp1	; and loop
+shsp2:	call	PUTSTR		; output baudrate
+	ld	c,CR
+	jp	PUTCH
+
+bdrmsg:	db	'Unknown',0
+bdrtbl:	db	'50',0
+	db	'75',0
+	db	'110',0
+	db	'134',0
+	db	'150',0
+	db	'200',0
+	db	'300',0
+	db	'600',0
+	db	'1200',0
+	db	'1800',0
+	db	'2000',0
+	db	'2400',0
+	db	'3600',0
+	db	'4800',0
+	db	'7200',0
+	db	'9600',0
+	db	'14400',0
+	db	'19200',0
+	db	'28800',0
+	db	'38400',0
+	db	'57600',0
+	db	'76800',0
+	db	'115200',0
+	db	0
 
 stdir:	; SET /DIR
 
