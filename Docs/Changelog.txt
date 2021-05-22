@@ -6558,3 +6558,13 @@ BUGS:
   display their protection UIC, privileged users can use it to change their
   protection UIC.
 
+
+22/05/21
+
+- DEVTT: implemented TC.SPD subfunction of SF.SMC for both the main and
+  the auxiliary ports of the P112.
+
+- MCR, VMR: implemented the 'SET /SPEED' command (code simply imported from
+  the RSX280 version).
+
+

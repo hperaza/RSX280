@@ -48,8 +48,10 @@ void assign(char *pdev, char *ldev, byte type, char *ttdev);
 void deassign(char *ldev, byte type, char *ttdev);
 void list_devices(char *name);
 address find_device(char *name);
-void set_term(char *name, int bitno, int pol);
+void set_term_opt(char *name, int bitno, int pol);
 void list_term_opt(char *msg, int bitno, int pol);
+void set_term_speed(char *name, int speed);
+void list_term_speed(char *name);
 void list_devices_opt(char *msg, int bitno, int pol);
 
 address find_task(char *name);

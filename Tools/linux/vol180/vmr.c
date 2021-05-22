@@ -80,6 +80,33 @@ int  system_type, system_size;
 #define WC_BASE  0x01
 #define WC_SIZE  0x02
 
+char *speed_str[] = {
+  "Unknown",	// S.0
+  "50",
+  "75",
+  "110",
+  "134",
+  "150",
+  "200",
+  "300",
+  "600",
+  "1200",
+  "1800",
+  "2000",
+  "2400",
+  "3600",
+  "4800",
+  "7200",
+  "9600",
+  "14400",
+  "19200",
+  "28800",
+  "38400",
+  "57600",
+  "76800",
+  "115200"
+};
+
 /*--------------------------------------------------------------------*/
 
 /* Symbol table routines */
@@ -436,7 +463,7 @@ void assign(char *pdev, char *ldev, byte type, char *ttdev) {
 void deassign(char *ldev, byte type, char *ttdev) {
 }
 
-void set_term(char *name, int bitno, int pol) {
+void set_term_opt(char *name, int bitno, int pol) {
   address phydev, ucb;
   byte dname[2], unit, tc;
   
@@ -466,10 +493,121 @@ void set_term(char *name, int bitno, int pol) {
           }
           tc = sys_getb(0, ucb + U_CW + 1);
           if (pol) {
-            sys_putw(0, ucb + U_CW + 1, tc | (1 << bitno));
+            sys_putb(0, ucb + U_CW + 1, tc | (1 << bitno));
           } else {
-            sys_putw(0, ucb + U_CW + 1, tc & ~(1 << bitno));
+            sys_putb(0, ucb + U_CW + 1, tc & ~(1 << bitno));
           }
+          return;
+        }
+        ucb = sys_getw(0, ucb + U_LNK);
+      }
+    }
+    phydev = sys_getw(0, phydev + D_LNK);
+  }
+  printf("No such device %s\n", name);
+}
+
+void list_term_opt(char *msg, int bitno, int pol) {
+  address phydev, ucb;
+  byte dname[2], unit, cw, cw1;
+  int match;
+
+  phydev = sys_getw(0, get_sym("$PHYDV"));
+
+  while (phydev) {
+    dname[0] = sys_getb(0, phydev + D_NAME);
+    dname[1] = sys_getb(0, phydev + D_NAME + 1);
+    ucb = sys_getw(0, phydev + D_UCBL);
+    while (ucb) {
+      unit = sys_getb(0, ucb + U_UNIT);
+      cw  = sys_getb(0, ucb + U_CW);
+      cw1 = sys_getb(0, ucb + U_CW + 1);
+      if (cw & (1 << DV_TTY)) {
+        if (pol) {
+          match = ((cw1 & (1 << bitno)) != 0);
+        } else {
+          match = ((cw1 & (1 << bitno)) == 0);
+        }
+        if (match) {
+          printf("%s=%c%c%d:\n", msg, dname[0], dname[1], unit);
+        }
+      }
+      ucb = sys_getw(0, ucb + U_LNK);
+    }
+    phydev = sys_getw(0, phydev + D_LNK);
+  }
+}
+
+void set_term_speed(char *name, int speed) {
+  address phydev, ucb;
+  byte dname[2], unit;
+  
+  if (strlen(name) < 3) {
+    printf("Invalid device name %s\n", name);
+    return;
+  }
+  
+  if (name[2] == ':') {
+    unit = 0;
+  } else {
+    unit = atoi(&name[2]);
+  }
+
+  phydev = sys_getw(0, get_sym("$PHYDV"));
+
+  while (phydev) {
+    dname[0] = sys_getb(0, phydev + D_NAME);
+    dname[1] = sys_getb(0, phydev + D_NAME + 1);
+    if ((dname[0] == name[0]) && (dname[1] == name[1])) {
+      ucb = sys_getw(0, phydev + D_UCBL);
+      while (ucb) {
+        if (unit == sys_getb(0, ucb + U_UNIT)) {
+          if ((sys_getb(0, ucb + U_CW) & (1 << DV_TTY)) == 0) {
+            printf("Not a terminal device\n");
+            return;
+          }
+          sys_putb(0, ucb + UX_BDR, speed);
+          return;
+        }
+        ucb = sys_getw(0, ucb + U_LNK);
+      }
+    }
+    phydev = sys_getw(0, phydev + D_LNK);
+  }
+  printf("No such device %s\n", name);
+}
+
+void list_term_speed(char *name) {
+  address phydev, ucb;
+  byte dname[2], unit, speed;
+
+  if (strlen(name) < 3) {
+    printf("Invalid device name %s\n", name);
+    return;
+  }
+  
+  if (name[2] == ':') {
+    unit = 0;
+  } else {
+    unit = atoi(&name[2]);
+  }
+
+  phydev = sys_getw(0, get_sym("$PHYDV"));
+
+  while (phydev) {
+    dname[0] = sys_getb(0, phydev + D_NAME);
+    dname[1] = sys_getb(0, phydev + D_NAME + 1);
+    if ((dname[0] == name[0]) && (dname[1] == name[1])) {
+      ucb = sys_getw(0, phydev + D_UCBL);
+      while (ucb) {
+        if (unit == sys_getb(0, ucb + U_UNIT)) {
+          if ((sys_getb(0, ucb + U_CW) & (1 << DV_TTY)) == 0) {
+            printf("Not a terminal device\n");
+            return;
+          }
+          speed = sys_getb(0, ucb + UX_BDR);
+          if ((speed > S_115K2) || (speed < 0)) speed = 0;
+          printf("SPEED=%c%c%d:%s\n", dname[0], dname[1], unit, speed_str[speed]);
           return;
         }
         ucb = sys_getw(0, ucb + U_LNK);
@@ -506,37 +644,6 @@ void list_devices(char *name) {
           printf("Loaded");
         }
         printf("\n");
-      }
-      ucb = sys_getw(0, ucb + U_LNK);
-    }
-    phydev = sys_getw(0, phydev + D_LNK);
-  }
-}
-
-void list_term_opt(char *msg, int bitno, int pol) {
-  address phydev, ucb;
-  byte dname[2], unit, cw, cw1;
-  int match;
-
-  phydev = sys_getw(0, get_sym("$PHYDV"));
-
-  while (phydev) {
-    dname[0] = sys_getb(0, phydev + D_NAME);
-    dname[1] = sys_getb(0, phydev + D_NAME + 1);
-    ucb = sys_getw(0, phydev + D_UCBL);
-    while (ucb) {
-      unit = sys_getb(0, ucb + U_UNIT);
-      cw  = sys_getb(0, ucb + U_CW);
-      cw1 = sys_getb(0, ucb + U_CW + 1);
-      if (cw & (1 << DV_TTY)) {
-        if (pol) {
-          match = ((cw1 & (1 << bitno)) != 0);
-        } else {
-          match = ((cw1 & (1 << bitno)) == 0);
-        }
-        if (match) {
-          printf("%s=%c%c%d:\n", msg, dname[0], dname[1], unit);
-        }
       }
       ucb = sys_getw(0, ucb + U_LNK);
     }
@@ -1506,61 +1613,61 @@ int vmr_command(char *cmd, char *args) {
         remove_partition(name);
       } else if (strncmp(argv[0], "ECHO", 4) == 0) {
         if (argv[0][4] == '=') {
-          set_term(&argv[0][5], TC_NEC, 0);
+          set_term_opt(&argv[0][5], TC_NEC, 0);
         } else {
           list_term_opt("ECHO", TC_NEC, 0);
         }
       } else if (strncmp(argv[0], "NOECHO", 6) == 0) {
         if (argv[0][6] == '=') {
-          set_term(&argv[0][7], TC_NEC, 1);
+          set_term_opt(&argv[0][7], TC_NEC, 1);
         } else {
           list_term_opt("NOECHO", TC_NEC, 1);
         }
       } else if (strncmp(argv[0], "LOWER", 5) == 0) {
         if (argv[0][5] == '=') {
-          set_term(&argv[0][6], TC_SMR, 1);
+          set_term_opt(&argv[0][6], TC_SMR, 1);
         } else {
           list_term_opt("LOWER", TC_SMR, 1);
         }
       } else if (strncmp(argv[0], "NOLOWER", 7) == 0) {
         if (argv[0][7] == '=') {
-          set_term(&argv[0][8], TC_SMR, 0);
+          set_term_opt(&argv[0][8], TC_SMR, 0);
         } else {
           list_term_opt("NOLOWER", TC_SMR, 0);
         }
       } else if (strncmp(argv[0], "CRT", 3) == 0) {
         if (argv[0][3] == '=') {
-          set_term(&argv[0][4], TC_SCP, 1);
+          set_term_opt(&argv[0][4], TC_SCP, 1);
         } else {
           list_term_opt("CRT", TC_SCP, 1);
         }
       } else if (strncmp(argv[0], "NOCRT", 5) == 0) {
         if (argv[0][5] == '=') {
-          set_term(&argv[0][6], TC_SCP, 0);
+          set_term_opt(&argv[0][6], TC_SCP, 0);
         } else {
           list_term_opt("NOCRT", TC_SCP, 0);
         }
       } else if (strncmp(argv[0], "SLAVE", 5) == 0) {
         if (argv[0][5] == '=') {
-          set_term(&argv[0][6], TC_SLV, 1);
+          set_term_opt(&argv[0][6], TC_SLV, 1);
         } else {
           list_term_opt("SLAVE", TC_SLV, 1);
         }
       } else if (strncmp(argv[0], "NOSLAVE", 7) == 0) {
         if (argv[0][7] == '=') {
-          set_term(&argv[0][8], TC_SLV, 0);
+          set_term_opt(&argv[0][8], TC_SLV, 0);
         } else {
           list_term_opt("NOSLAVE", TC_SLV, 0);
         }
       } else if (strncmp(argv[0], "BRO", 3) == 0) {
         if (argv[0][3] == '=') {
-          set_term(&argv[0][4], TC_NBR, 0);
+          set_term_opt(&argv[0][4], TC_NBR, 0);
         } else {
           list_term_opt("BRO", TC_NBR, 0);
         }
       } else if (strncmp(argv[0], "NOBRO", 5) == 0) {
         if (argv[0][5] == '=') {
-          set_term(&argv[0][6], TC_NBR, 1);
+          set_term_opt(&argv[0][6], TC_NBR, 1);
         } else {
           list_term_opt("NOBRO", TC_NBR, 1);
         }
@@ -1573,6 +1680,35 @@ int vmr_command(char *cmd, char *args) {
         if (argv[0][5] == '=') {
         } else {
           list_devices_opt("NOPUB", US_PUB, 0);
+        }
+      } else if (strncmp(argv[0], "SPEED", 5) == 0) {
+        if (argv[0][5] == '=') {
+          p = strchr(argv[0] + 6, ':');
+          if (!p) {
+            printf("Syntax error\n");
+            return 1;
+          }
+          ++p;
+          i = p - (argv[0] + 6);
+          if (i > 9) i = 9;
+          strncpy(name, argv[0] + 6, i);
+          name[i] = '\0';
+          if (*p) {
+            int br = atoi(p);
+            for (i = 0; i <= S_115K2; ++i) {
+              if (br == atoi(speed_str[i])) {
+                set_term_speed(name, i);
+                return 0;
+              }
+            }
+            printf("Invalid argument\n");
+            return 1;
+          } else {
+            list_term_speed(name);
+          }
+        } else {
+          printf("Syntax error\n");
+          return 1;
         }
       } else if (strncmp(argv[0], "LOGON", 4) == 0) {
         byte b;

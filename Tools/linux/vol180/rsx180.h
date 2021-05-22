@@ -201,13 +201,17 @@
 #define U_ACP	(U_ATT + 2)	// TCB of ACP task (0=no ACP) (2 bytes)
 #define U_LCB	(U_ACP + 2)	// LCB of owner (2 bytes)
 
+/* UCB min size */
+
+#define UCBSZ	(U_LCB + 2)
+
 /* Unit control bit numbers */
 
 #define UC_ATT	0		// send attach/detach notifications
 
-/* UCB min size */
+/* UCB terminal extension fields */
 
-#define UCBSZ	(U_LCB + 2)
+#define UX_BDR	(UCBSZ + 0)	// initial baud rate
 
 /* UCB status bit numbers */
 
@@ -237,6 +241,15 @@
 #define TC_SLV	4		// slave mode
 #define TC_SMR	5		// uppercase conversion on input disabled
 #define TC_NBR	6		// not receiving broadcast messages
+#define	TC_ANS	7		// ANSI terminal
+
+/* Additional terminal characteristics codes, not present un U_CW */
+
+#define TC_SPD	8		// serial speed, if supported
+#define TC_PAR	9		// parity, if supported (0=none, 1=odd, 3=even)
+#define TC_BPC	10		// bits per character, if supported
+#define TC_STP	11		// stop bits, if supported
+#define TC_FLC	12		// flow control type, if supported
 
 /* Status Control Block, one per controller (statically allocated) */
 
@@ -269,5 +282,34 @@
 
 #define SYSRST	0x20
 #define DBGRST	0x30
+
+/* Terminal baud rate codes */
+
+#define S_0	0		// means baud rates not supported
+#define S_50	1
+#define S_75	2
+#define S_110	3
+#define S_134	4		// IBM Selectric typewriter
+#define S_150	5
+#define S_200	6
+#define S_300	7
+#define S_600	8
+#define S_1200	9
+#define S_1800	10
+#define S_2000	11
+#define S_2400	12
+#define S_3600	13
+#define S_4800	14
+#define S_7200	15
+#define S_9600	16
+#define S_14K4	17
+#define S_19K2	18
+#define S_28K8	19
+#define S_38K4	20
+#define S_57K6	21
+#define S_76K8	22
+#define S_115K2	23
+#define S_UNK	-1		// Unknown
+
 
 #endif  // __RSX180_H
