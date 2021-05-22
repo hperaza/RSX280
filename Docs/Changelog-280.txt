@@ -297,3 +297,11 @@ Changelog
 - ICP, RMD: use full 12-bit page numbers.
 
 
+22/05/21
+
+- MCR: the SET /SPEED=ttn: command now displays the current terminal speed.
+
+- VMR: implemented the SET /SPEED command, so the default speed could be
+  set for each terminal.
+
+
