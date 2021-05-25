@@ -283,9 +283,44 @@
 	.IF <STRLEN> NE 0 ; "'S1'" contains "'S2'" at position '<STRLEN>'
 	.IF <STRLEN> EQ 0 ; "'S2'" was not found in "'S1'"
 ;
-; 10) File I/O test
+; 10) .BEGIN - .END blocks
 ;
-; 10a) .OPEN and .DATA
+; 10a) Testing local labels
+;
+	.ENABLE GLOBAL
+	.SETN $LEVEL 0
+	.GOTO lab1
+
+	.BEGIN
+.lab1:	; THIS LINE SHOULD NEVER APPEAR
+	.INC $LEVEL
+	.END
+
+.lab1:	; This line should appear only once
+	.INC $LEVEL
+
+	.BEGIN
+	.GOTO lab1
+	; THIS LINE SHOULD NEVER APPEAR
+	.INC $LEVEL
+.lab1:
+	.END
+	
+	.IF $LEVEL = 1  ; Test passed
+	.IF $LEVEL <> 1	; Something went wrong
+;
+; 10b) Testing local variables
+;
+	.BEGIN
+	.SETN LV1 100
+	.END
+	
+	.IFNDF LV1 ; Test passed
+	.IFDF LV1  ; Something went wrong
+;
+; 11) File I/O test
+;
+; 11a) .OPEN and .DATA
 ;
 	.OPEN #1 TEST
 	.SETS S1 "Hello, world!"
@@ -293,7 +328,7 @@
 	.DATA #1 'S1'
 	.CLOSE #1
 ;
-; 10b) .OPENA and .ENABLE DATA
+; 11b) .OPENA and .ENABLE DATA
 ;
 	.OPENA #1 TEST
 	.SETS S1 "Test from AT."
@@ -303,7 +338,7 @@
 .DISABLE DATA
 	.CLOSE #1
 ;
-; 10c) .OPENR and .READ
+; 11c) .OPENR and .READ
 ;
 	.OPENR #1 TEST
 	.READ #1 S2
@@ -312,7 +347,7 @@
 	; "'S2'" read from file '<FILSPC>'
 	.CLOSE #1
 ;
-; 11) .TESTFILE
+; 12) .TESTFILE
 ;
 	.TESTFILE 'MYFILE'
 	; This file is '<FILSPC>', <FILERR>='<FILERR>%S'
@@ -323,7 +358,7 @@
 	.TESTFILE 'NAME'
 	; <FILSPC>='<FILSPC>', <FILERR>='<FILERR>%S'
 ;
-; 12) .TESTDEVICE
+; 13) .TESTDEVICE
 ;
 	.TESTDEVICE SY:
 	.PARSE <EXSTRI> "," NAME UST UCW FLAGS
@@ -335,7 +370,7 @@
 	;   Characteristics word = 'ICW%HZR4'h
 	;   Flags                = 'FLAGS'
 ;
-; 13) .TESTPARTITION
+; 14) .TESTPARTITION
 ;
 	.TESTPARTITION *
 	.PARSE <EXSTRI> "," NAME BASE SIZE TYPE
@@ -346,20 +381,18 @@
 	;   Partition Size         = 'ISIZE'K
 	;   Partition Type         = 'TYPE'
 ;
-; 14) .DELAY
+; 15) .DELAY
 ;
 	; Sleeping for 5 seconds
 	.DELAY 5S
 ;
-; 15) .PAUSE
+; 16) .PAUSE
 ;
 	.PAUSE
 ;
 ; Still unimplemented:
 ;
 ;   .ONERR label
-;
-;   .BEGIN - .END blocks
 ;
 ;   several special variables are also missing:
 ;   <ERSEEN> <ERRCTL> <ERRNUM> <ERRSEV> <MEMSIZ> <LOGDEV> <FILATR>

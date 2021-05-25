@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -49,7 +49,7 @@ cnd$ge	equ	6
 	cseg
 
 	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
-	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI
+	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI,ERRLBL
 
 	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU,ALLOC
 	extrn	SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM,INPBUF
@@ -58,7 +58,8 @@ cnd$ge	equ	6
 	extrn	ISALPN,PRCMD,VNAME,ADDHLA,STRLEN,DECSTR,PRMSG
 	extrn	EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT,FDB,LNBUF,SUBST
 	extrn	ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL,DELLCL,DELGBL
-	extrn	DELVAR,CHNIND,COMMAN,SETDIR
+	extrn	DELVAR,CHNIND,COMMAN,SETDIR,BLKLVL,PSHBLK,POPBLK
+	extrn	FNDBLK,INDLVL,STRCMP,BASEBL
 
 	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF,SLEEP
 	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
@@ -109,7 +110,7 @@ chklbl:	ex	de,hl
 CMDNMT:	CMD	'ASK',		ask
 	CMD	'ASKN',		askn
 	CMD	'ASKS',		asks
-	CMD	'BEGIN',	begin
+cmbgn:	CMD	'BEGIN',	begin
 	CMD	'CHAIN',	chain
 cmcls:	CMD	'CLOSE',	close
 cmdat:	CMD	'DATA',		data
@@ -120,7 +121,7 @@ cmdat:	CMD	'DATA',		data
 	CMD	'DELAY',	delay
 cmdis:	CMD	'DISABLE',	disabl
 	CMD	'ENABLE',	enabl
-	CMD	'END',		bend
+cmend:	CMD	'END',		bend
 	CMD	'ERASE',	erase
 	CMD	'EXIT',		exit
 	CMD	'GOSUB',	gosub
@@ -700,9 +701,12 @@ gtn2:	ld	(hl),' '
 ; Get label name into varnam buffer
 
 getlbl:	ld	hl,varnam
-	ld	b,8
+getlb2:	ld	b,8
 	call	GETNB		; skip spaces
-	call	GETNAM
+	call	GETNAM		; get label name
+	ld	(hl),':'	; add colon
+	inc	hl
+	ld	(hl),0		; and a trailing null
 	ld	(LNPTR),de
 	ret
 
@@ -789,16 +793,18 @@ ERAOPT:	CMD	'GLOBAL',	eragbl
 	db	0
 
 eragbl:	call	DELGBL		; delete all global variables
-	xor	a
-	ret
+	xor	a		;  or all variables if GLOBAL
+	ret			;   mode is disabled
 
-eralcl:	call	DELLCL		; erase all local variables
+eralcl:	ld	a,(BLKLVL)	; get current block nesting level
+	ld	e,a
+	call	DELLCL		; erase local variables
 	xor	a
 	ret
 
 erasym:	call	getvn2		; get variable name
 	ld	de,varnam
-	call	DELVAR
+	call	DELVAR		; erase single variable
 	jp	c,ERRUDF
 	xor	a
 	ret
@@ -1045,30 +1051,68 @@ incsl:	ld	hl,(strp)
 
 ; .GOTO label
 
-; TODO:
-; - .GOTO targets can be only within the current .BEGIN-.END block!
-
 goto:	call	getlbl		; get label name into 'varnam'
-gto0:	ld	hl,0		; blk #
+gto0:	call	BASEBL		; get block base level fro current file
+	ld	hl,BLKLVL	; check block nesting level
+	cp	(hl)		; at main level?
+	jr	z,gto1		; yes, simply rewind file
+	ld	e,(hl)
+	call	FNDBLK		; else find block marker
+;;	jp	c,...		; should not happen
+	inc	hl		; skip block nesting level
+	ld	e,(hl)		; fetch blk #
+	inc	hl
+	ld	d,(hl)
+	push	de
+	inc	hl
+	ld	e,(hl)		; fetch char offset
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; fetch line #
+	inc	hl
+	ld	b,(hl)
+	pop	hl
+	jr	gto2
+
+gto1:	ld	hl,0		; blk #
 	ld	de,0		; char offset
 	ld	bc,1		; line #
-	call	SETPOS		; reset indirect file
+gto2:	call	SETPOS		; reset indirect file position
 	jp	c,SYSERR
-gto1:	call	RDCMD		; read line from file
-	jr	c,gto2
+	ld	b,0		; clear block nesting indicator
+gto3:	push	bc
+	call	RDCMD		; read line from file
+	pop	bc
+	jr	c,gto6		; error if end of file reached
 	ld	de,INPBUF
 	call	GETNB
 	cp	'.'
-	jr	nz,gto1
+	jr	nz,gto3
 	inc	de
+	inc	b
+	dec	b		; at right level?
+	jr	nz,gto4		; no
+	push	de
 	ld	hl,varnam
-	call	cmplbl		; compare label name
-	jr	nz,gto1
-	ld	a,(de)
-	cp	':'
-	jr	nz,gto1
-	jp	PROCLN		; found label, resume normal processing
-gto2:	ld	hl,elabel
+	call	cmplbl		; compare label name (includes colon)
+	pop	de
+	jp	z,PROCLN	; found label, resume normal processing
+gto4:	push	de
+	ld	hl,cmbgn
+	call	cmplbl		; .BEGIN statement?
+	pop	de
+	jr	nz,gto5		; no
+	inc	b		; else increment nesting level
+	jr	gto3
+gto5:	ld	hl,cmend
+	call	cmplbl		; .END statement?
+	jr	nz,gto3		; no
+	dec	b		; else decrement nesting level
+	jp	m,be1		; error if negative
+	jr	gto3
+
+gto6:	ld	hl,elabel
 	jp	ERROR
 
 elabel:	db	'Label not found',0
@@ -1088,12 +1132,8 @@ cmplbl:	ld	a,(hl)
 ; .GOSUB label
 ; .GOSUB label args
 
-; label can be anywhere in the file.
+; label can be anywhere in the file (unlike .GOTO).
 ; args are stored in the COMMAN local string variable.
-
-; TODO:
-; - .BEGIN-.END block context must be saved on entry, and restored
-;   on .RETURN
 
 gosub:	call	getlbl		; get label name into 'varnam'
 	call	GETNB		; skip blanks
@@ -1126,14 +1166,12 @@ gsb2:	ld	(hl),0		; end string with a null
 gsb3:	ld	(GSBLVL),a
 	dec	a
 	add	a,a		; *2
-	ld	c,a
 	add	a,a		; *4
-	add	a,c		; *6
+	add	a,a		; *8
 	ld	ix,GSBTBL
 	ld	c,a
 	ld	b,0
 	add	ix,bc
-	push	de
 	call	GETPOS		; get current file position
 	ld	(ix+0),l	; save state
 	ld	(ix+1),h
@@ -1141,28 +1179,61 @@ gsb3:	ld	(GSBLVL),a
 	ld	(ix+3),d
 	ld	(ix+4),c
 	ld	(ix+5),b
-	pop	de
+	ld	a,(BLKLVL)
+	ld	(ix+6),a
+	ld	a,(INDLVL)
+	ld	(ix+7),a
+  if 0
 	jp	gto0		; goto label
+  else
+	ld	hl,0		; blk #
+	ld	de,0		; char offset
+	ld	bc,1		; line #
+	call	SETPOS		; reset indirect file position
+	jp	c,SYSERR
+gsb4:	call	RDCMD		; read line from file
+	jp	c,gto6		; error if end of file reached
+	ld	de,INPBUF
+	call	GETNB
+	cp	'.'
+	jr	nz,gsb4
+	inc	de
+	ld	hl,varnam
+	call	cmplbl		; compare label name (includes colon)
+	jr	nz,gsb4
+	jp	PROCLN		; found label, resume normal processing
+  endif
 
 egsb:	db	'.GOSUB nesting too deep',0
 
 ; .RETURN
 
 return:	ld	a,(GSBLVL)
-	or	a
-	ld	hl,ertn
-	jp	z,ERROR
+	or	a		; check return stack
+	jr	z,ret1		; error if empty
 	dec	a
 	ld	(GSBLVL),a
 	add	a,a		; *2
-	ld	c,a
 	add	a,a		; *4
-	add	a,c		; *6
+	add	a,a		; *8
 	ld	ix,GSBTBL
 	ld	c,a
 	ld	b,0
 	add	ix,bc
-	ld	l,(ix+0)
+	ld	a,(INDLVL)
+	cp	(ix+7)		; same file nesting level?
+	jr	nz,ret1		; error if not
+	ld	a,(BLKLVL)
+	cp	(ix+6)		; same block level?
+	jr	z,ret2		; yes
+	ld	a,(ix+6)
+	ld	(BLKLVL),a
+	inc	a
+	ld	e,a
+	push	ix
+	call	POPBLK		; else purge extra frames
+	pop	ix
+ret2:	ld	l,(ix+0)
 	ld	h,(ix+1)
 	ld	e,(ix+2)
 	ld	d,(ix+3)
@@ -1172,12 +1243,31 @@ return:	ld	a,(GSBLVL)
 	jp	c,SYSERR
 	ret
 
+ret1:	ld	hl,ertn
+	jp	z,ERROR
+
 ertn:	db	'.RETURN without .GOSUB',0
 
 ; .ONERR label
 
-onerr:
+onerr:	ld	hl,ERRLBL
+	push	hl
+	call	getlb2		; get label
+	pop	hl
+	ld	a,(hl)
+	or	a		; can't be empty
+	jp	z,CMDERR
 	ret
+
+goerr:	ld	hl,ERRLBL
+	push	hl
+	ld	de,varnam
+	ld	bc,9
+	ldir			; load error label
+	pop	hl
+	xor	a
+	ld	(hl),a		; disarm .ONERR
+	jp	gto0		; goto label
 
 ;-----------------------------------------------------------------------
 
@@ -1361,36 +1451,27 @@ cmpstr:	ld	a,c
 	jr	z,strgt
 	jr	strge
 strge:	ex	de,hl
-strle:	call	strcmp
+strle:	call	STRCMP
 	ld	de,0
 	ret	c
 	dec	de
 	ret
 strlt:	ex	de,hl
-strgt:	call	strcmp
+strgt:	call	STRCMP
 	ld	de,-1
 	ret	c
 	inc	de
 	ret
-streq:	call	strcmp
+streq:	call	STRCMP
 	ld	de,-1
 	ret	z
 	inc	de
 	ret
-strne:	call	strcmp
+strne:	call	STRCMP
 	ld	de,-1
 	ret	nz
 	inc	de
 	ret
-
-strcmp:	ld	a,(de)
-	cp	(hl)		; CY if (HL) > (DE)
-	ret	nz
-	or	a
-	ret	z		; return Z if strings are equal
-	inc	hl
-	inc	de
-	jr	strcmp
 
 ; .IFT varname statement
 
@@ -2088,7 +2169,6 @@ tstset:	ld	(FILERR),a
 ; .CHAIN filespec args...
 
 ; TODO:
-; - erase local vars (but don't close data files)
 ; - clear .ONERR arguments
 ; - process args? [RSX-11M apparently doesn't]
 
@@ -2292,9 +2372,36 @@ nopar:	db	'NSP',0
 
 ;-----------------------------------------------------------------------
 
-begin:
-bend:
+; .BEGIN
+
+begin:	call	GETNB
+	or	a		; nothing can follow
+	jr	z,bgn1
+	cp	'!'		; except a !comment
+	jp	nz,CMDERR
+bgn1:	ld	a,(BLKLVL)
+	inc	a		; increment block nesting level
+	ld	hl,blke1
+	jp	z,ERROR		; error if value wraps around
+	ld	(BLKLVL),a
+	call	PSHBLK		; push block marker
 	ret
+
+blke1:	db	'Too many nested blocks',0
+
+; .END
+
+bend:	ld	a,(BLKLVL)	; get block nesting level
+	ld	e,a
+	dec	a		; decrement it
+	jp	m,be1		; error if becomes negative
+	ld	(BLKLVL),a
+	call	POPBLK		; pop block
+	ret	nc
+be1:	ld	hl,blke2
+	jp	ERROR		; error if becomes negative
+
+blke2:	db	'.END without .BEGIN',0
 
 ; .EXIT
 ; .EXIT value
@@ -2465,6 +2572,7 @@ askopb:	ds	1		; .ASKx option bits:
 				;        bit 0 = range specified
 				;        bit 1 = default value specified
 				;        bit 2 = timeout specified
+ERRLBL:	ds	8+2		; .ONERR label name + trailing colon and null
 
 STYPE:	ds	1		; <SYMTYP> value
 SNUM:	ds	1		; <NUMBER> value

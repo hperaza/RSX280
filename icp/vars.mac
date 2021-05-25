@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -33,15 +33,17 @@ LF	equ	0Ah
 
 	public	SHVARS,SHMEM,SHIOCH
 
-	extrn	PUTCH,PUTSTR,CRLF,HLDEC,HLHEX,HLNEG
+	extrn	PUTCH,PUTSTR,CRLF,ADEC,HLDEC,HLHEX,HLNEG
 	ENDIF
 
 	public	CLRVAR,FNDVAR,GETVAR,DELVAR,SETNV,SETSV,SETLV
 	public	ALLOC,FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
-	public	DELLCL,DELGBL
+	public	DELLCL,DELGBL,PSHBLK,POPBLK,FNDBLK,PSHFIL,POPFIL
+	public	FNDFIL
 
 	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG,MODE
-	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR
+	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR,BLKLVL,INDLVL
+	extrn	STRLEN,STRCMP,GETPOS,BASEBL
 
 ;-----------------------------------------------------------------------
 
@@ -78,6 +80,7 @@ v1:	ld	a,(hl)
 	inc	a		; end of variables?
 	ret	z		; return if yes
 	dec	a
+	jp	m,vmark		; branch if block or file marker
 	push	af		; save variable type
 	inc	hl
 	call	PUTSTR		; display variable name
@@ -90,10 +93,11 @@ v1:	ld	a,(hl)
 	ld	d,(hl)		; get value into DE
 	inc	hl
 	pop	af		; restore variable type
-	bit	7,a		; numeric?
-	jr	nz,vnum
-	bit	6,a		; logical (boolean)?
-	jr	nz,vlog
+	and	V.TMSK
+	cp	V.NUM		; numeric?
+	jr	z,vnum
+	cp	V.LOG		; logical (boolean)?
+	jr	z,vlog
 	ld	c,'"'
 	call	PUTCH
 	ex	de,hl
@@ -103,11 +107,13 @@ v1:	ld	a,(hl)
 	call	PUTCH
 	call	CRLF
 	jr	v1
+
 vnum:	ex	de,hl
 	call	hlsdec		; display value as signed decimal
 	ex	de,hl
 	call	CRLF
 	jr	v1
+
 vlog:	ld	a,d
 	or	e
 	ld	c,'T'
@@ -117,14 +123,51 @@ vl1:	call	PUTCH
 	call	CRLF
 	jr	v1
 
+vmark:	and	V.TMSK
+	cp	V.BLK
+	jr	z,vblk
+	call	print
+	db	'FILE level ',0
+	inc	hl		; skip length field
+	ld	a,(hl)
+	inc	hl
+	call	ADEC
+	call	CRLF
+	jp	v1
+
+vblk:	call	print
+	db	'BLOCK level ',0
+	inc	hl		; skip length field
+	ld	a,(hl)
+	inc	hl
+	call	ADEC
+	inc	hl		; skip blkno
+	inc	hl
+	inc	hl		; skip offset
+	inc	hl
+	call	print
+	db	' at line ',0
+	ld	e,(hl)		; get lineno
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	de,hl
+	xor	a
+	call	HLDEC
+	ex	de,hl
+	inc	hl		; skip indlvl
+	call	CRLF
+	jp	v1
+
 vtype:	call	print
 	db	' [',0
-	bit	7,a		; numeric?
+	and	V.TMSK
+	cp	V.NUM		; numeric?
 	ld	c,'N'
-	jr	nz,vt1
-	bit	6,a		; logical (boolean)?
+	jr	z,vt1
+	cp	V.LOG		; logical (boolean)?
 	ld	c,'L'
-	jr	nz,vt1
+	jr	z,vt1
 	ld	c,'S'		; else is string
 vt1:	call	PUTCH
 	call	print
@@ -212,68 +255,14 @@ FREMEM:	ld	hl,(strbeg)
 
 ;-----------------------------------------------------------------------
 
-	IF	0
-
-; Check for letter, returns CY clear on success
-
-isletr:	cp	'A'
-	ret	c
-	cp	'Z'+1
-	ccf
-	ret	nc
-	cp	'a'
-	ret	c
-	cp	'z'+1
-	ccf
-	ret
-
-; Check for valid variable name character, returns CY set on bad character.
-
-isvok:	call	isletr
-	ret	nc
-	call	ISDIG
-	ret	nc
-	cp	'?'
-	ret	z
-	cp	'_'
-	ret	z
-	cp	'@'
-	ret	z
-	scf
-	ret
-
-	ENDIF
-
-; Compare strings (HL) and (DE).
-
-strcmp:	ld	a,(de)
-	cp	(hl)
-	ret	nz
-	or	a
-	ret	z
-	inc	hl
-	inc	de
-	jr	strcmp
-
-; Return length of (HL) string in C.
-
-strlen:	ld	c,0
-strl1:	ld	a,(hl)
-	or	a
-	ret	z
-	inc	hl
-	inc	c
-	jr	strl1
-
 ; Check for available memory, BC = requested space.
 ; If no space is available, garbage collection will be attempted.
 ; Returns CY if not enough memory.
-; avail2 and avail4 are convenience entry points, they add 2 and 4 to BC
-; respectively before check.
+; avail4 is a convenience entry points, which adds 4 to BC before check.
 
 avail4:	inc	bc
 	inc	bc
-avail2:	inc	bc
+	inc	bc
 	inc	bc
 avail?:	push	hl
 	push	de
@@ -313,30 +302,40 @@ av1:	pop	bc
 ; A = type bits.
 ; If not found, return CY and HL pointing to end of var area.
 
-FNDVAR:	ld	hl,(stvar)	; point to start of variables
+FNDVAR:	ld	a,(de)
+	ld	c,a
+	call	isgbl		; global variable?
+	jr	z,fv0		; yes, search the whole table
+	push	de
+	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	FNDFIL		; else search only the current file frame
+	ld	l,c
+	ld	h,b
+	pop	de
+	jr	fv1
+fv0:	ld	hl,(stvar)	; point to start of variables
 fv1:	ld	a,(hl)		; get length and type
 	inc	a		; end of variables?
 	scf
 	ret	z		; return CY if yes -> variable not found
 	dec	a
-	push	hl
+	jp	m,fv2		; skip if block marker
+	push	hl		; remember start of variable
 	inc	hl		; skip length byte
 	push	de
-	call	strcmp		; compare names
+	call	STRCMP		; compare names
 	pop	de
 	jr	z,fv3		; jump if equal -> variable found
-	pop	hl
-fv2:	ld	a,(hl)
-	and	3Fh
-	inc	hl		; skip over length,
-	inc	hl		;  null terminator
-	inc	hl		;   and value
-	inc	hl
+	pop	hl		; pop saved start of variable
+	ld	a,(hl)		; get length field
+fv2:	and	V.LMSK		; leave length bits
 	call	ADDHLA		; point to next variable
 	jr	fv1
 fv3:	pop	bc		; pop saved start of variable
 	ld	a,(bc)		; get length + type
-	and	0C0h		; leave type bits
+	and	V.TMSK		; leave type bits
 	inc	hl		; skip null terminator, point to value
 	ret			; and return with CY clear
 
@@ -376,8 +375,7 @@ SETSV:	call	FNDVAR
 
 sv0:	ex	de,hl		; create new string variable
 	push	hl
-	call	strlen		; obtain length of name
-	ld	b,0
+	call	STRLEN		; obtain length of name
 	push	bc
 	call	avail4		; enough memory? (+4 extra)
 	pop	bc
@@ -385,6 +383,8 @@ sv0:	ex	de,hl		; create new string variable
 	jr	c,sv2		; jump if not
 	ld	de,(endvar)	; get pointer to end of variable area
 	ld	a,c		; get length
+	add	a,4		; include overhead
+	or	V.STR		; add type bits
 	ld	(de),a		; store it
 	inc	de
 	inc	bc		; include null byte
@@ -425,7 +425,7 @@ sv2:	ld	hl,(DSPTR)
 	ld	(hl),0		; free the dyn allocated string
 	dec	hl
 	ld	(hl),0
-	jp	nomem		; and return with error
+	jp	ERRMEM		; and return with error
 
 ; Set/add logical (boolean) variable.
 ; DE = var name, HL = value (0 = false, else true)
@@ -447,21 +447,20 @@ stnv1:	push	hl		; push value
 	pop	hl
 	jp	ERRSET		; error - type mismatch
 
-nv0:	ld	b,c		; get type into B
-	ex	de,hl		; get variable name into HL
+nv0:	ex	de,hl		; get variable name into HL
+	ld	e,c		; get type into E
 	push	hl
-	call	strlen		; obtain length of name
+	call	STRLEN		; obtain length of name
 	push	bc
-	ld	b,0
 	call	avail4		; check avail mem (+len +null +value)
 	pop	bc
 	pop	hl
-	jp	c,nomem0	; pop hl and return error
-	ld	de,(endvar)	; point to end of variable area
+	jp	c,nomem		; pop value and return error
 	ld	a,c		; get name length into A
-	or	b		; add type bits
+	add	a,4		; include overhead
+	or	e		; add type bits
+	ld	de,(endvar)	; point to end of variable area
 	ld	(de),a		; store it
-	ld	b,0		; BC = length of name
 	inc	de
 	inc	bc		; include null byte
 	ldir			; store name
@@ -478,8 +477,8 @@ nv1:	pop	de		; pop value
 	ld	(hl),d		; store value
 	ret
 
-nomem0:	pop	bc
-nomem:	jp	ERRMEM
+nomem:	pop	bc		; discard value
+	jp	ERRMEM
 
 ERRSET:	ld	hl,redef
 	jp	ERROR
@@ -490,7 +489,7 @@ redef:	db	'Redefining symbol to different type',0
 ; HL = string addr. Returns HL = new string addr (text field)
 
 ALLOC:	push	hl
-	call	strlen		; obtain string length
+	call	STRLEN		; obtain string length
 	push	bc
 	ld	hl,(strbeg)	; get start of dynamic area into HL
 alc1:	ld	a,(hl)		; first, look for deleted entries
@@ -503,7 +502,6 @@ alc1:	ld	a,(hl)		; first, look for deleted entries
 	or	(hl)		; free block?
 	jr	z,alc3		; jump if yes
 alc2:	inc	hl
-	ld	b,0
 	inc	bc		; skip over null as well
 	add	hl,bc		; point to next entry
 	jr	alc1		; and loop
@@ -524,7 +522,6 @@ alc5:	ld	de,DSPTR
 	pop	de		; pop string address into DE
 	push	hl		; remember text start address
 	ex	de,hl		; src in HL, dst in DE
-	ld	b,0
 	inc	bc		; include null byte
 	ldir			; copy the string
 	pop	hl		; pop start address
@@ -532,7 +529,6 @@ alc5:	ld	de,DSPTR
 	ret			;   and return
 
 alcnew:	pop	bc		; pop length
-	ld	b,0
 	ld	e,c		; store string length temporarily in E
 	call	avail4		; check for available memory (returns BC += 4)
 	pop	hl
@@ -800,27 +796,189 @@ mv3:	ld	a,(hl)
 	inc	a		; end of table?
 	ret	z		; return if yes, we're done
 	dec	a
-	inc	hl		; skip length field
-	push	af		; save variable type
-	and	3Fh		; mask length bits
-	call	ADDHLA		; skip name
-	inc	hl		; skip trailing null
+	ld	c,a		; save variable type
+	and	V.LMSK		; mask length bits
+	call	ADDHLA		; point to next entry
+	ld	a,c		; restore variable type
+	and	V.TMSK		; check type
+	cp	V.STR		; string variable?
+	jr	nz,mv3		; no, no fixup required
+	dec	hl		; else backup to value field
+	dec	hl
 	ld	c,l		; BC = address of value field
 	ld	b,h
 	ld	e,(hl)		; get value into DE
 	inc	hl
 	ld	d,(hl)
 	inc	hl
-	pop	af		; restore variable type
-	and	0C0h		; check type
-	jr	nz,mv3		; skip if not string variable
 	ex	de,hl
 	dec	hl
-	ld	(hl),b		; else update pointer in dynamic area
+	ld	(hl),b		; update pointer in dynamic area
 	dec	hl
 	ld	(hl),c
 	ex	de,hl
 	jr	mv3
+
+;-----------------------------------------------------------------------
+
+; Find block marker, level in E.
+; If found, return HL = pointer to value field.
+; If not found, return CY and HL pointing to end of var area.
+
+FNDBLK:	push	de
+	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	FNDFIL		; search only the current file frame
+	ld	l,c
+	ld	h,b
+	pop	de
+fbk1:	ld	a,(hl)		; get length and type
+	inc	a		; end of variables?
+	scf
+	ret	z		; return CY if yes -> variable not found
+	dec	a
+	jp	p,fbk3		; skip if not a block marker
+	and	V.TMSK
+	cp	V.BLK		; block marker?
+	jr	nz,fbk2		; no, try next
+	inc	hl		; skip length byte
+	ld	a,(hl)
+	cp	e		; is this the one?
+	ret	z		; yes, return with CY clear
+	dec	hl		; point back to start of variable
+fbk2:	ld	a,(hl)		; get length field
+fbk3:	and	V.LMSK		; leave length bits
+	call	ADDHLA		; point to next variable
+	jr	fbk1
+
+; Enter a block marker into the symbol table.
+
+PSHBLK:	ld	bc,9		; length of block marker, including len field
+	call	avail?		; check for available memory
+	jp	c,ERRMEM	; return error
+	ld	hl,(endvar)	; point to end of variable area
+	ld	a,c		; get length
+	or	V.BLK		; add type bits
+	ld	(hl),a		; store it
+	inc	hl
+	ld	a,(BLKLVL)
+	ld	(hl),a		; store block nesting level
+	inc	hl
+	push	hl
+	call	GETPOS		; get file position
+	ex	de,hl
+	ex	(sp),hl
+	ld	(hl),e		; store block number
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	pop	de
+	ld	(hl),e		; store offset
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),c		; store line number
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	a,(INDLVL)
+	ld	(hl),a		; store file nesting level
+	inc	hl
+	ld	(hl),0FFh	; set new end of variables
+	ld	(endvar),hl
+	ret
+
+; Pop block from symbol table. The block marker, local variables and
+; any higher blocks are removed. Called with block level in E.
+
+POPBLK:	call	FNDBLK
+	ret	c		; block not found
+	dec	hl
+	ld	ix,cmpla
+	call	del3		; delete block marker and local vars
+	xor	a
+	ret 
+
+cmpla:	dec	a
+	jp	m,cmp1		; delete block markers
+	ld	a,(MODE+1)
+	and	1 SHL B1.GBL	; GLOBAL mode enabled?
+	ret	z		; no, all variables are local
+	ld	a,c
+	sub	'$'		; else return Z if local variable
+	sub	1
+	sbc	a,a
+	ret
+cmp1:	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Find file frame marker equal or greater than level in E.
+; If exact match found, return HL = start of next variable.
+; If no frame was found >= E, return CY, HL pointing to end of var area
+; and BC pointing to the last frame found.
+
+FNDFIL:	ld	hl,(stvar)	; point to start of variables
+	ld	c,l
+	ld	b,h
+ffm1:	ld	a,(hl)		; get length and type
+	inc	a		; end of variables?
+	scf
+	ret	z		; return CY if yes -> variable not found
+	dec	a
+	jp	p,ffm3		; skip if not a block or file marker
+	and	V.TMSK
+	cp	V.FIL		; file marker?
+	jr	nz,ffm2		; no, try next
+	inc	hl		; skip length byte
+	ld	a,(hl)
+	inc	hl		; point to start of next variable
+	cp	e		; is this the one?
+	jr	z,ffm4		; yes, exact match
+	ret	nc		; yes, but above
+	dec	hl		; point back to start of variable
+	dec	hl
+	ld	c,l
+	ld	b,h
+ffm2:	ld	a,(hl)		; get length field
+ffm3:	and	V.LMSK		; leave length bits
+	call	ADDHLA		; point to next variable
+	jr	ffm1
+ffm4:	ld	c,l
+	ld	b,h
+	ret
+
+; Enter a file frame marker into the symbol table.
+
+PSHFIL:	ld	bc,2		; length of block marker, including len field
+	call	avail?		; check for available memory
+	jp	c,ERRMEM	; return error
+	ld	hl,(endvar)	; point to end of variable area
+	ld	a,c		; get length
+	or	V.FIL		; add type bits
+	ld	(hl),a		; store it
+	inc	hl
+	ld	a,(INDLVL)
+	dec	a
+	ld	(hl),a		; store file nesting level
+	inc	hl
+	ld	(hl),0FFh	; set new end of variables
+	ld	(endvar),hl
+	ret
+
+; Pop file frame from symbol table. The frame marker, local variables and
+; any higher blocks are removed. Called with file nesting level in E.
+
+POPFIL:	call	FNDFIL
+	ret	c		; not found
+	dec	hl
+	dec	hl
+	ld	ix,cmpla
+	call	del3		; delete block marker and local vars
+	xor	a
+	ret 
 
 ;-----------------------------------------------------------------------
 
@@ -859,12 +1017,27 @@ dv1:	ex	de,hl		; DE = src
 
 ; Delete all local variables.
 
-DELLCL:	ld	ix,cmplcl
-	jr	del0
+DELLCL:	call	BASEBL		; get base block level for current file
+	cp	e		; at base level?
+	jr	nz,dlc1		; no, erase selected block
+	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	FNDFIL		; else get base of file frame
+	ld	l,c
+	ld	h,b
+	jr	dlc2		; and erase all locals
+dlc1:	call	FNDBLK
+	ret	c
+	dec	hl
+dlc2:	ld	ix,cmplcl
+	jr	del3
+
+; Delete all global variables.
 
 DELGBL:	ld	ix,cmpgbl
-del0:	ld	hl,(stvar)	; HL = src
-	ld	e,l		; DE = dst
+	ld	hl,(stvar)	; HL = src
+del3:	ld	e,l		; DE = dst
 	ld	d,h
 del1:	ld	a,(hl)
 	inc	a		; end of vars
@@ -876,37 +1049,33 @@ del1:	ld	a,(hl)
 	jr	nz,keep		; no, keep it
 
 	ld	a,(hl)
-	push	af
-	and	3Fh
-	inc	hl		; skip length field
-	call	ADDHLA
-	inc	hl		; skip trailing null
-	ld	c,(hl)
+	ld	c,a
+	and	V.LMSK
+	call	ADDHLA		; point to start of next entry
+	ld	a,c
+	and	V.TMSK		; get variable type
+	cp	V.STR		; string variable?
+	jr	nz,del1		; no, loop to process next
+	dec	hl		; else point to value field
+	dec	hl
+	ld	c,(hl)		; get value into BC
 	inc	hl
 	ld	b,(hl)
 	inc	hl		; HL = start of next var
-	pop	af
-	and	0C0h		; get variable type
-	cp	V.STR		; string variable?
-	jr	nz,del1		; no, loop to process next
 	ld	a,b
 	or	c		; null string pointer?
 	jr	z,del1		; yes, loop to process next var
 	xor	a
 	dec	bc
-	ld	(bc),a		; free the string
+	ld	(bc),a		; else free the string
 	dec	bc
 	ld	(bc),a
 	jr	del1		; and loop to process next var
 
 keep:	ld	a,(hl)
-	and	3Fh		; get length
+	and	V.LMSK		; get length
 	ld	c,a
 	ld	b,0
-	inc	bc		; include length field,
-	inc	bc		;  value and
-	inc	bc		;   null terminator
-	inc	bc
 	ldir			; copy to new location
 	jr	del1		; continue
 
@@ -917,7 +1086,9 @@ del2:	ex	de,hl
 
 jpix:	jp	(ix)
 
-cmpgbl:	ld	a,(MODE+1)
+cmpgbl:	dec	a
+	ret	m		; keep block markers
+isgbl:	ld	a,(MODE+1)
 	cpl
 	and	1 SHL B1.GBL	; GLOBAL mode enabled?
 	ret	nz		; no, all variables are local
@@ -925,7 +1096,9 @@ cmpgbl:	ld	a,(MODE+1)
 	sub	'$'		; else return Z if global variable
 	ret
 
-cmplcl:	ld	a,(MODE+1)
+cmplcl:	dec	a
+	ret	m		; keep block markers
+	ld	a,(MODE+1)
 	and	1 SHL B1.GBL	; GLOBAL mode enabled?
 	ret	z		; no, all variables are local
 	ld	a,c
@@ -954,12 +1127,36 @@ strbeg:	ds	2	; pointer to start of dynamic string storage
 ;     ^                                                         ^
 ;   stvar                                                    endvar
 ;
-; The name field can be up to 12 characters. The length field has bit 7 set
-; to 1 if the variable is numeric, bit 6 set to 1 if logical, otherwise the
-; variable is string. The value is either a pointer to a string for text
-; variables (which points to a string in the dynamic storage region), or the
-; numeric value for numeric variables. Logical variables are just the same
-; as numeric ones, only the value is interpreted differently.
+; The 'len' field contains the full entry length in the lower 5 bits,
+; the upper 3 bits indicate the entry type (string, numeric or logical
+; variable, block or file marker).
+;
+; The 'name' field can be up to 12 characters and ends with a null.
+;
+; The 'value' field is either a pointer to a string for text variables
+; (which points to a string in the dynamic storage region), or the
+; numeric value for numeric variables. Logical variables are just the
+; same as numeric ones, only the value is interpreted differently.
+;
+; Block markers have the following format:
+;
+;   +---+---+------+------+------+---+
+;   |len|blv| blkno|offset|lineno|ilv|
+;   +---+---+------+------+------+---+
+;
+; where 'len' is the full entry length (9 bytes), 'blv' the block
+; nesting level, 'blkno', 'offset' and 'lineno' contain the file
+; position corresponing to the start of the block (line after .BEGIN
+; statement) and 'ilv' is the indirect file nesting level.
+;
+; File markers have the following format:
+;
+;   +---+---+
+;   |len|ilv|
+;   +---+---+
+;
+; where 'len' is the full entry length (2 bytes) and 'ilv' is the
+; indirect file nesting level.
 ;
 ; From the top of memory down grows the dynamic string storage area.
 ; Space is allocated in a first-fit fashion. Garbage collection happens
@@ -972,12 +1169,12 @@ strbeg:	ds	2	; pointer to start of dynamic string storage
 ;     ^                                                          ^
 ;   strbeg                                                     memtop
 ;
-; The length field here represents the size of the allocated space,
-; excluding the null terminator, and which is not necessarily the same
-; as the length of the string, since the space may have been freed and
-; reallocated to a smaller string (here the null terminator becomes useful).
-; The addr field points back to the value field of the associated variable,
-; and is set to zero when the space is freed.
+; The 'len' field here represents the size of the allocated space excluding
+; the null terminator, and which is not necessarily the same as the length
+; of the string, since the space may have been freed and reallocated to a
+; smaller string (here the null terminator becomes useful). The 'addr' field
+; points back to the value field of the associated variable, and is set to
+; zero when the space is freed.
 
 filchn:	ds	2*MAXFIL	; pointers to channel buffers
 

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -38,7 +38,7 @@ ESC	equ	1Bh
 	public	SKIPBL,SKPNAM,STRCPY,STRLEN,GETNAM,GETNB,GETFS
 	public	ATOI,ATOU,ISDIG,ISALPN,ISBLNK,ISEOL,STRPEL,HLNEG
 	public	FNDCMD,DECSTR,HEXSTR,OCTSTR,AHEX2,ADDHLA,FNBSTR
-	public	CPNAM
+	public	STRCMP,CPNAM
 
 	extrn	UCASE
 
@@ -181,6 +181,17 @@ strl1:	ld	a,(hl)
 	inc	bc
 	jr	strl1
 
+; Compare strings (HL) and (DE).
+
+STRCMP:	ld	a,(de)
+	cp	(hl)		; CY if (HL) > (DE)
+	ret	nz
+	or	a
+	ret	z		; return Z if strings are equal
+	inc	hl
+	inc	de
+	jr	STRCMP
+
 ; Get a name (up to B bytes in length) into HL buffer.
 
 GETNAM:	call	GETFS
@@ -236,6 +247,8 @@ GETFS:	ld	a,(de)
 	cp	':'
 	ret	z
 	cp	';'
+	ret	z
+	cp	'!'
 	ret	z
 	cp	'/'
 	ret	z

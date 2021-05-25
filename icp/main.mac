@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2020, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.51'
+	ident	'2.56'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -48,12 +48,13 @@ ESC	equ	1Bh
 	public	GETPOS,SETPOS,RDCMD,STPFLG,INPBUF,SYSERR,PROCLN
 	public	EOFMSG,INDSTP,INDEOF,GSBTBL,GSBLVL,GTBUF,PRCMD
 	public	ERROR,CMDERR,EXSTAT,XQTMOD,PRMCR,FDB,EXTEND,ADDEXT
-	public	CHNIND,COMMAN,SETDIR
+	public	CHNIND,COMMAN,SETDIR,INDLVL,INDPDL,BLKLVL,BASEBL
 
 	extrn	INTCMD,SKIPBL,SKPNAM,STRLEN,CLRVAR,SUBST,GCCL,PFN
 	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
 	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
-	extrn	DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE
+	extrn	ERRLBL,DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE,PSHFIL
+	extrn	POPFIL,POPBLK,ERRMEM
 
 ;-----------------------------------------------------------------------
 
@@ -69,25 +70,25 @@ START::	ld	sp,stack	; setup stack
 	ld	de,LNBUF
 	call	STRCPY		; copy to LNBUF for possible error message
 	call	OPNCMD		; set COMMAN variable and open CMD file
-	jr	c,exsev1	; on error exit
+	jr	c,exsev		; on error, exit
 
 loop:	call	RDCMD		; read line from CMD file or device
 	jr	c,quit		; quit on E.EOF
 	call	PROCLN		; process the command line
 	jr	nc,loop		; loop unless error happened
 	ld	a,(STPFLG)
-	or	a
-	jr	nz,quit
-fatal:	ld	a,(indlvl)
-	or	a
-	jr	z,exsev
-	call	CLSIND		; close all indirect files
-	jr	fatal
-exsev:	call	EOFMSG
-exsev1:	ld	hl,EX.SEV	; else exit with error code
+	or	a		; .STOP encountered?
+	jr	nz,quit		; if yes, exit normally
+fatal:	ld	a,(INDLVL)
+	or	a		; all command files closed?
+	jr	z,exsev		; exit loop if yes
+	call	CLSIND		; else close current level
+	jr	fatal		; and loop
+
+exsev:	ld	hl,EX.SEV	; else exit with error code
 	SC	.EXIT
 
-quit:	ld	a,(indlvl)
+quit:	ld	a,(INDLVL)
 	or	a		; at nesting level 0?
 	jr	z,exit		; exit if yes
 	call	CLSIND		; else close current level
@@ -97,7 +98,7 @@ quit:	ld	a,(indlvl)
 	jr	loop		; loop to continue one level higher
 
 exit:	call	EOFMSG
-	ld	hl,(EXSTAT)	; exit normally with last status code
+	ld	hl,(EXSTAT)	; exit normally with latest status code
 	SC	.EXIT
 
 ;-----------------------------------------------------------------------
@@ -110,10 +111,12 @@ INIT:	ld	hl,0
 	call	INIBUF		; clear file buffers
 	call	CLRVAR		; clear variables
 	xor	a
-	ld	(indlvl),a	; clear indirect nesting level
+	ld	(INDLVL),a	; clear indirect nesting level
+	ld	(BLKLVL),a	; clear block nesting level
 	ld	(STPFLG),a
 	ld	(GSBLVL),a	; clear .GOSUB level
 	ld	(XQTMOD),a
+	ld	(ERRLBL),a	; clear .ONERR label
 	ld	hl,GTBUF+GT.VID
 	ld	de,EXSTRI	; set <EXSTRI> variable to task version ID
 	ld	bc,6
@@ -194,7 +197,7 @@ PRMCR:	ld	hl,(LNPTR)	; else send command to MCR
 
 INDEOF:	ld	sp,(spsav)
 	call	CLSIND
-	ld	a,(indlvl)
+	ld	a,(INDLVL)
 	or	a
 	ret	nz
 INDSTP:	ld	a,1
@@ -378,7 +381,7 @@ ERRMSG:	push	hl
 	scf
 	ret
 
-PRLN:	ld	a,(indlvl)
+PRLN:	ld	a,(INDLVL)
 	or	a
 	ret	z
 	add	a,a		; *2
@@ -388,7 +391,7 @@ PRLN:	ld	a,(indlvl)
 	add	a,c		; *12 (push-down list struct size)
 	ld	c,a
 	ld	b,0
-	ld	hl,indpdl
+	ld	hl,INDPDL
 	add	hl,bc
 	inc	hl		; point to device characteristics
 	bit	DV.DIR,(hl)
@@ -455,28 +458,32 @@ GPRMPT:	ld	hl,mcrdpr
 
 ; Push current context and open next indirect command file.
 
-OPNCMD:	ld	a,(indlvl)	; check nesting level
+OPNCMD:	ld	a,(INDLVL)	; check nesting level
 	cp	MAXIND		; at maximum?
-	jr	c,ind1		; branch if not
 	ld	hl,ielvl
-	call	ERRMSG		; else display error - already open
-	scf
-	ret
-
-ind1:	or	a
+	jp	nc,ERRMSG	; error if yes - too many nested files
+	or	a
 	call	nz,CPUSH	; push current context
 	ld	hl,(LNPTR)
 	call	SKIPBL		; skip blanks
 	ld	(LNPTR),hl
-	push	hl
-	call	SETCMN		; set COMMAN variable
-	pop	hl
-	ret	c
+	push	hl		; save pointer to command line
 	call	OPEN		; open the file
+	pop	de
 	ret	c
-	ld	hl,indlvl
+	push	de
+	ld	hl,INDLVL
 	inc	(hl)		; increase nesting level
-	ret
+	ld	a,(MODE+2)
+	bit	B2.LOC,a	; shared locals?
+	jr	nz,ind1		; branch if yes
+	ld	a,(hl)
+	dec	a
+	call	nz,PSHFIL	; else mark position in symbol table
+ind1:	pop	hl		; restore pointer to command line
+	jp	SETCMN		; set COMMAN variable and return
+
+; Parse file name, decode switches and open the file
 
 OPEN:	ld	ix,FDB
 	call	PFN		; get file name
@@ -491,7 +498,7 @@ OPEN:	ld	ix,FDB
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a		; device name in DE-C
-	ld	a,(indlvl)
+	ld	a,(INDLVL)
 	add	a,LUNIND
 	ld	(qio1+Q.LUN),a
 	ld	(qio2+Q.LUN),a
@@ -500,7 +507,7 @@ OPEN:	ld	ix,FDB
 	jr	c,opn1
 
 	ld	hl,luninf
-	ld	a,(indlvl)
+	ld	a,(INDLVL)
 	add	a,LUNIND
 	ld	c,a
 	SC	.GTLUN		; get LUN info
@@ -521,7 +528,7 @@ OPEN:	ld	ix,FDB
 	jr	c,opn1
 	ld	a,(res)		; get result code (lo-byte)
 	or	a
-	jr	z,opn2
+	jr	z,opn2		; branch on success
 opn1:	ld	hl,iefnf
 	call	ERRMSG		; on error, display message and return
 	scf
@@ -612,25 +619,24 @@ neg1:	inc	hl
 	ld	(res),a
 	ret
 
-SWTBL:	CMD	'DE',	<(0 SHL 8) OR B0.DEL>
+SWTBL:	CMD	'CLI',	<(1 SHL 8) OR B1.MCR>
+	CMD	'DE',	<(0 SHL 8) OR B0.DEL>
+	CMD	'LO',	<(2 SHL 8) OR B2.LOC>
 	CMD	'MC',	<(1 SHL 8) OR B1.MCR>
 	CMD	'TR',	<(1 SHL 8) OR B1.TRC>
 	db	0
 
-; Set variable COMMAN to command line
+; Set variable COMMAN to command line. Called with HL = address of
+; command line string.
 
 SETCMN:	call	ALLOC		; allocate space for command line string
-;	jr	c,...		; should not happen
+	jp	c,ERRMEM
 	ld	de,COMMAN
 	call	SETSV		; set COMMAN string variable
-;	jr	c,...
-	ld	hl,(LNPTR)
-	push	hl
+	ret	c		; on error, return (message already displayed)
 	ld	hl,ARGS
 	ld	(LNPTR),hl
-	call	PARSE
-	pop	hl
-	ld	(LNPTR),hl
+	call	PARSE		; split arguments
 	or	a
 	ret
 
@@ -640,7 +646,7 @@ ARGS:	db	'COMMAN " " P0 P1 P2 P3 P4 P5 P6 P7 P8 P9',0
 ; Read a single line from indirect file (or from console, depending on
 ; program invocation).
 
-RDCMD:	ld	a,(indlvl)	; indirect file open?
+RDCMD:	ld	a,(INDLVL)	; indirect file open?
 	or	a
 	ld	a,E.EOF
 	scf
@@ -656,7 +662,7 @@ RDCMD:	ld	a,(indlvl)	; indirect file open?
 	ld	bc,prompt
 	ld	hl,INPBUF	; else read line from console
 	ld	de,131		; D = 0 (read with echo), E = length
-	ld	a,(indlvl)
+	ld	a,(INDLVL)
 	dec	a
 	add	a,LUNIND
 	call	GETLNL		; note that A returns with E.EOF if ^Z
@@ -756,14 +762,19 @@ IREAD:	ld	hl,(indblk)
 
 ; Close current indirect file, if open, and pop previous one.
 
-CLSIND:	call	DELLCL		; delete local symbols
-	ld	a,(indlvl)
+CLSIND:	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	POPFIL		; purge old variables
+	ld	a,(INDLVL)
 	or	a
 	ret	z
 	call	CLOSE		; close the file
-	ld	hl,indlvl
+	ld	hl,INDLVL
 	dec	(hl)
-	call	nz,CPOP		; pop previous context
+	ret	z
+	call	CPOP		; pop previous context
+	xor	a	
 	ret
 
 CLOSE:	ld	a,(luninf+4)
@@ -777,15 +788,29 @@ CLOSE:	ld	a,(luninf+4)
 
 ; Close current indirect file, if open, and chain to next.
 
-CHNIND:	call	DELLCL		; delete local symbols
+CHNIND:	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	POPFIL		; purge old variables
+	call	BASEBL
+	inc	a
+	ld	e,a
+	call	POPBLK		; purge blocks to base level
 	call	CLOSE		; close current file
-	ld	hl,indlvl
-	dec	(hl)
 	ld	hl,(LNPTR)
-	call	OPEN		; open next
-	ld	hl,indlvl
-	inc	(hl)
-	ret
+	call	SKIPBL
+	push	hl		; save pointer to command line
+	call	OPEN		; open the file
+	pop	de
+	ret	c
+	push	de
+	ld	a,(MODE+2)
+	bit	B2.LOC,a	; shared locals?
+	ld	a,(BLKLVL)
+	ld	e,a
+	call	z,DELLCL	; delete local variables if not
+chn1:	pop	hl		; restore pointer to command line
+	jp	SETCMN		; set COMMAN variable and return
 
 ielvl:	db	'Too many nested command files',0
 ielnsz:	db	'Line too long',0
@@ -793,7 +818,7 @@ iefnf:	db	'File not found',0
 
 ; Set indirect file position, HL = block #, DE = offset, BC = line #.
 
-SETPOS:	ld	a,(indlvl)
+SETPOS:	ld	a,(INDLVL)
 	or	a
 	ret	z
 	ld	a,(luninf+4)
@@ -827,10 +852,11 @@ GETPOS:	ld	hl,(indblk)
 
 ; Push current command file context
 
-CPUSH:	ld	a,(indlvl)
+CPUSH:	ld	a,(INDLVL)
 	or	a
 	ret	z
 	dec	a
+	ld	e,a
 	add	a,a		; *2
 	add	a,a		; *4
 	ld	c,a
@@ -838,10 +864,9 @@ CPUSH:	ld	a,(indlvl)
 	add	a,c		; *12 (push-down struct size)
 	ld	c,a
 	ld	b,0
-	ld	hl,indpdl
+	ld	hl,INDPDL
 	add	hl,bc
-	ld	a,(indlvl)
-	dec	a
+	ld	a,e
 	add	a,LUNIND
 	ld	(hl),a		; store LUN
 	inc	hl
@@ -867,12 +892,13 @@ CPUSH:	ld	a,(indlvl)
 	ld	hl,MODE
 	ld	bc,3
 	ldir			; store MODE bits
-				; one byte reserved for local variable frame#
+	ld	a,(BLKLVL)
+	ld	(de),a		; store current block nesting level
 	ret
 
 ; Pop current command file context
 
-CPOP:	ld	a,(indlvl)
+CPOP:	ld	a,(INDLVL)
 	or	a
 	ret	z
 	dec	a
@@ -883,7 +909,7 @@ CPOP:	ld	a,(indlvl)
 	add	a,c		; *12 (push-down struct size)
 	ld	c,a
 	ld	b,0
-	ld	hl,indpdl
+	ld	hl,INDPDL
 	add	hl,bc
 	ld	a,(hl)		; get LUN
 	ld	(qio1+Q.LUN),a	; restore QIO blocks
@@ -913,7 +939,34 @@ CPOP:	ld	a,(indlvl)
 	ldir			; restore MODE bits
 	pop	af
 	bit	DV.DIR,a
+	push	hl
 	call	nz,STPOS	; restore file position
+	pop	hl
+	ld	a,(hl)
+	ld	(BLKLVL),a	; restore block level
+	inc	a
+	ld	e,a
+	call	POPBLK		; purge extra frames
+	ret
+
+; Return the base block level for the current file
+
+BASEBL:	ld	a,(INDLVL)
+	or	a
+	ret	z		; return zero if no file is open (unlikely)
+	dec	a
+	ret	z		; or at root file
+	dec	a
+	add	a,a		; *2
+	add	a,a		; *4
+	ld	c,a
+	add	a,a		; *8
+	add	a,c		; *12 (push-down struct size)
+	ld	c,a
+	ld	b,0
+	ld	hl,INDPDL+11
+	add	hl,bc
+	ld	a,(hl)
 	ret
 
 ;-----------------------------------------------------------------------
@@ -996,13 +1049,15 @@ FDB:	ds	FINFSZ		; FDB for cmd file, .OPEN command, etc
 
 luninf:	ds	6		; .GTLUN buffer
 dirnam:	ds	9		; name of current directory
-indlvl:	ds	1		; current indirect file nesting level
+
+INDLVL:	ds	1		; current indirect file nesting level
 indbuf:	ds	512		; buffer for indirect file I/O
 indpos:	ds	2		; offset to current char in indbuf
 indcnt:	ds	2		; number of bytes left in indbuf
 indblk:	ds	2		; current indirect file block number
+BLKLVL:	ds	1		; current block nesting level
 
-indpdl:	ds	MAXIND*12	; indirect nesting push-down list
+INDPDL:	ds	MAXIND*12	; indirect nesting push-down list
 
 qio1:	QIOW$	IO.ACC,LUNIND,9,res,,<FDB,0>
 qio2:	QIOW$	IO.RVB,LUNIND,9,res,,<indbuf,512,0,0,0>
@@ -1014,7 +1069,9 @@ lnnum:	ds	2
 
 STPFLG:	ds	1
 
-GSBTBL:	ds	MAXGSB*6	; .GOSUB return ptrs (blkno, offset, lineno)
+GSBTBL:	ds	MAXGSB*8	; .GOSUB context (blkno, offset, lineno
+				;  as return pointers, as well as current
+				;   block and file nesting level)
 GSBLVL:	ds	1		; current .GOSUB nesting level
 
 XQTMOD:	ds	1

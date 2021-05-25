@@ -14,9 +14,13 @@ LUNFIL	equ	6	; base LUN for user file I/O
 
 ; Variable types
 
-V.STR	equ	00h	; no bits set = string
-V.NUM	equ	80h	;   bit 7 set = numeric
-V.LOG	equ	40h	;   bit 6 set = logical (boolean)
+V.STR	equ	00h	; string
+V.LOG	equ	20h	; logical
+V.NUM	equ	40h	; numeric
+V.BLK	equ	80h	; block marker (note sign bit set)
+V.FIL	equ	0C0h	; file frame marker (sign bit also set)
+V.LMSK	equ	1Fh	; mask for length field
+V.TMSK	equ	0E0h	; mask for variable type bits
 
 ; Enable/disable option bit numbers
 
@@ -39,6 +43,7 @@ B1.TMO	equ	6	; timeout
 B1.TRC	equ	7	; trace
 
 B2.TRU	equ	0	; truncate
+B2.LOC	equ	1	; shared locals
 
 ; File buffer structure fields
 

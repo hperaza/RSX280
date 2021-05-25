@@ -6568,3 +6568,45 @@ BUGS:
   the RSX280 version).
 
 
+23/05/21
+
+- Implementing .BEGIN-.END blocks for the Indirect Command Processor:
+  * instead of marking all variables with their block nesting level, we
+    simply enter a 'block marker' into the symbol table.
+  * when a block is exited (via .END or .RETURN), the block marker and all
+    the local variables following it are removed.
+  * the block marker also contains the file position corresponding to the
+    start of the block, as well as the current indirect file nesting level.
+  * labels defined in a block are local to the block, and thus .GOTO/.GOSUB
+    statements start looking for the target label from the saved start of
+    the block.
+  * .GOTO (but not .GOSUB!) label lookup now keeps track of block nesting
+    level and ignores labels inside any nested blocks.
+  * .GOSUB always scans the command file from the beginning ignoring blocks,
+    since the routine can be either inside or outside a block. The current
+    block level is saved nevertheless, to purge any extra block frames on
+    .RETURN.
+  * the curent indirect nesting level is now also saved into the .GOSUB
+    return stack so we can detect .RETURN statements without .GOSUB inside
+    an inner file.
+  * .ERASE LOCAL inside a block now erases only the local variables defined
+    in that block.
+
+- Added a couple of simple .BEGIN-.END test cases to ICPTEST.CMD.
+
+
+24/05/21
+
+- ICP:
+  * new command line switches: /CLI (same as /MC) and /LO (share local
+    symbols with a nested command file) as per RSX-11M docs.
+  * when entering a nested command file, mark the current position on the
+    symbol table so that parent's local symbols could be masked out (unless
+    the /LO switch was specified).
+  * purge blocks to the original level when an inner file exits.
+  * .ERASE LOCAL in a nested file now only erases local variables defined
+    by that file (unless the /LO switch was specified).
+  * likewise, when .CHAINing to a file, erase old local variables unless
+    /LO was specified.
+
+
