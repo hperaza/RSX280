@@ -49,7 +49,8 @@ cnd$ge	equ	6
 	cseg
 
 	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
-	public	PARSE,ERRUDF,FILERR,SVTMO,EXSTRI,ERRLBL
+	public	PARSE,ERRUDF,ERRCTL,FILERR,SVTMO,EXSTRI,ERRLBL
+	public	ERRNUM,ERSEEN
 
 	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU,ALLOC
 	extrn	SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM,INPBUF
@@ -88,8 +89,10 @@ INTCMD:	inc	hl		; skip dot
 	call	FNDCMD		; find command in table
 	jp	c,chklbl	; if not found, check for '.label:'
 	ld	(LNPTR),de
-	ld	l,c
-	ld	h,b
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
 	jp	(hl)		; execute command
 
 chklbl:	ex	de,hl
@@ -107,7 +110,8 @@ chklbl:	ex	de,hl
 
 ; .commands
 
-CMDNMT:	CMD	'ASK',		ask
+CMDNMT:	db	2		; arg length in bytes
+	CMD	'ASK',		ask
 	CMD	'ASKN',		askn
 	CMD	'ASKS',		asks
 cmbgn:	CMD	'BEGIN',	begin
@@ -193,9 +197,10 @@ ask1:	ld	de,askbuf	; ckeck response
 	cp	'T'		; or 'T'
 	jr	z,ask2
 	inc	hl		; else result is false
-ask2:	ld	de,varnam
+ask2:	ld	de,svflag
+	ld	a,(de)		; get 'special variable' flag
+	inc	de		; point to varnam
 	call	SETLV		; set variable accordingly
-	xor	a
 	ret
 
 ; .ASKN varname
@@ -204,9 +209,10 @@ ask2:	ld	de,varnam
 
 askn:	ld	a,V.NUM
 	call	askvar		; get variable, display prompt, get response
-	ld	de,varnam
-	call	SETNV
-	xor	a
+askn1:	ld	de,svflag
+	ld	a,(de)		; get 'special variable' flag
+	inc	de		; point to varname
+	call	SETNV		; store result
 	ret
 
 ; .ASKS varname
@@ -238,9 +244,10 @@ asks2:	ld	hl,askbuf
 asks3:	call	STRLEN
 	ld	a,c
 	ld	(SLEN),a	; set string length for <STRLEN> special var.
-	ld	de,varnam
+asks5:	ld	de,svflag
+	ld	a,(de)		; get 'special variable' flag
+	inc	de		; point to varnam
 	call	SETSV		; assign string to variable
-	xor	a		; clear CY
 	ret
 
 asks4:	ld	a,(askopb)
@@ -256,7 +263,7 @@ asks4:	ld	a,(askopb)
 
 askvar:	ld	(vartyp),a	; remember variable type
 	call	askopt		; get options
-	call	getvn2		; get variable name into 'varnam'
+	call	getvn		; get variable name into 'varnam'
 	call	GETNB		; skip spaces
 	push	de
 	ld	de,askprm
@@ -654,6 +661,8 @@ getvn1:	call	GETNB		; skip spaces
 	ld	(LNPTR),hl
 	ex	de,hl
 	ret	c
+	ld	a,c
+	ld	(svflag),a	; remember 'special variable' flag
 	ld	a,(varnam)
 	or	a
 	ret	nz
@@ -661,6 +670,7 @@ getvn1:	call	GETNB		; skip spaces
 	ret
 
 getvn2:	call	getvn
+	ret	c
 	ld	a,c
 	or	a
 	ret	z
@@ -784,10 +794,14 @@ erase:	ex	de,hl
 	call	FNDCMD		; get option
 	jp	c,CMDERR	; error if not found
 	ld	(LNPTR),de
-	push	bc
-	ret
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)
 
-ERAOPT:	CMD	'GLOBAL',	eragbl
+ERAOPT:	db	2		; arg length
+	CMD	'GLOBAL',	eragbl
 	CMD	'LOCAL',	eralcl
 	CMD	'SYMBOL',	erasym
 	db	0
@@ -813,50 +827,35 @@ erasym:	call	getvn2		; get variable name
 
 ; .SETT varname
 
-sett:	call	getvn2		; get variable name into 'varnam'
+sett:	call	getvn		; get variable name into 'varnam'
 	ld	hl,0FFFFh	; <TRUE> value
-	ld	de,varnam
-	call	SETLV		; assign to logical variable
-	xor	a
-	ret
+	jp	ask2		; assign value to logical variable
 
 ; .SETF varname
 
-setf:	call	getvn2		; get variable name into 'varnam'
+setf:	call	getvn		; get variable name into 'varnam'
 	ld	hl,0		; <FALSE> value
-	ld	de,varnam
-	call	SETLV		; assign to logical variable
-	xor	a
-	ret
+	jp	ask2		; assign value to logical variable
 
 ; .SETN varname expr
 
-setn:	call	getvn2		; get variable name into 'varnam'
+setn:	call	getvn		; get variable name into 'varnam'
 	call	EVAL		; evaluate following expression
 	ex	de,hl
-	ld	de,varnam
-	call	SETNV		; assign result to numeric variable
-	xor	a
-	ret
+	jp	askn1		; assign result to numeric variable
 
 ; .SETL varname expr
 
-setl:	call	getvn2		; get variable name into 'varnam'
+setl:	call	getvn		; get variable name into 'varnam'
 	call	EVAL		; evaluate following expression
 	ex	de,hl
-	ld	de,varnam
-	call	SETLV		; assign result to logical variable
-	xor	a
-	ret
+	jp	ask2		; assign result to logical variable
 
 ; .SETS varname expr
 
-sets:	call	getvn2		; get variable name into 'varnam'
+sets:	call	getvn		; get variable name into 'varnam'
 	call	SEVAL		; evaluate string expression
-	ld	de,varnam
-	call	SETSV		; assign result to string variable
-	xor	a
-	ret
+	jp	asks5		; assign result to string variable
 
 ;-----------------------------------------------------------------------
 
@@ -901,6 +900,9 @@ FNDOPT:	call	SKIPBL
 	ld	de,EDOPTS
 	call	FNDCMD		; bit number in C, byte offset in B
 	ret	c
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
 	ld	a,b
 	or	a
 	jr	nz,ed3
@@ -923,7 +925,8 @@ ed4:	rlca
 	or	a
 	ret
 
-EDOPTS:	CMD	'ATTACH',	<(0 SHL 8) OR B0.ATT>
+EDOPTS:	db	2		; arg length
+	CMD	'ATTACH',	<(0 SHL 8) OR B0.ATT>
 	CMD	'CONTROL-Z',	<(0 SHL 8) OR B0.CTZ>
 	CMD	'DATA',		<(0 SHL 8) OR B0.DAT>
 	CMD	'DECIMAL',	<(0 SHL 8) OR B0.DEC>
@@ -1001,9 +1004,7 @@ pse1:	ld	de,(LNPTR)
 	call	nz,split	; else get next substring
 	call	ALLOC		; store it in dynamic area
 	jp	c,ERRMEM
-	ld	de,varnam
-	call	SETSV		; and assign it to variable name
-	jp	c,ERRTYP
+	call	asks5		; and assign it to string variable
 	jr	pse1		; continue until all vars set
 
 psend:	ld	hl,(str2)	; free control and parse strings
@@ -1052,7 +1053,7 @@ incsl:	ld	hl,(strp)
 ; .GOTO label
 
 goto:	call	getlbl		; get label name into 'varnam'
-gto0:	call	BASEBL		; get block base level fro current file
+gto0:	call	BASEBL		; get block base level from current file
 	ld	hl,BLKLVL	; check block nesting level
 	cp	(hl)		; at main level?
 	jr	z,gto1		; yes, simply rewind file
@@ -1153,6 +1154,7 @@ gsb2:	ld	(hl),0		; end string with a null
 	call	ALLOC		; allocate dynamic string
 	jp	c,ERRMEM
 	ld	de,COMMAN
+	xor	a		; clear 'special variable' flag
 	call	SETSV		; set COMMAN variable
 	ret	c
 
@@ -1183,9 +1185,7 @@ gsb3:	ld	(GSBLVL),a
 	ld	(ix+6),a
 	ld	a,(INDLVL)
 	ld	(ix+7),a
-  if 0
-	jp	gto0		; goto label
-  else
+
 	ld	hl,0		; blk #
 	ld	de,0		; char offset
 	ld	bc,1		; line #
@@ -1202,7 +1202,6 @@ gsb4:	call	RDCMD		; read line from file
 	call	cmplbl		; compare label name (includes colon)
 	jr	nz,gsb4
 	jp	PROCLN		; found label, resume normal processing
-  endif
 
 egsb:	db	'.GOSUB nesting too deep',0
 
@@ -1834,7 +1833,7 @@ read:	call	GETNB		; skip spaces
 	call	getfil		; get file number
 	jp	c,errifn
 	ld	(fileno),a
-	call	getvn2		; get variable name into 'varnam'
+	call	getvn		; get variable name into 'varnam'
 	ld	a,(fileno)
 	call	GETBUF		; get file buffer
 	ld	a,h
@@ -1849,10 +1848,7 @@ read:	call	GETNB		; skip spaces
 ;;	jp	c,SYSERR
 	ld	hl,askbuf
 	call	ALLOC		; allocate string
-	ld	de,varnam
-	call	SETSV		; assign string to variable
-	xor	a		; clear CY
-	ret
+	jp	asks5		; assign string to variable
 
 FGETLN:	ld	hl,askbuf
 	ld	b,130
@@ -2017,7 +2013,7 @@ FPUTC:	push	de
 	push	bc
 	call	fwblk		; write block
 	pop	bc
-	;;;jr	c,...		; !!!TODO: error
+;;	jr	c,...		; !!!TODO: error
 	ld	de,0
 fptc1:	push	ix
 	pop	hl
@@ -2049,7 +2045,7 @@ cls0:	call	GETBUF
 	or	a
 	jr	z,cls1		; skip flush buffer if file open for read
 	call	fwblk		; else write buffer
-	;;;jr	c,...		; !!!TODO: error
+;;	jr	c,...		; !!!TODO: error
 cls1:	ld	a,(ix+FB.LUN)
 	ld	(qio1+Q.LUN),a
 	ld	hl,IO.DEA
@@ -2170,7 +2166,6 @@ tstset:	ld	(FILERR),a
 
 ; TODO:
 ; - clear .ONERR arguments
-; - process args? [RSX-11M apparently doesn't]
 
 chain:	call	CHNIND		; chain to specified file
 	ret
@@ -2408,10 +2403,45 @@ blke2:	db	'.END without .BEGIN',0
 
 exit:	call	GETNB		; argument specified?
 	or	a
-	jp	z,INDEOF	; no
+	jr	z,ex0		; no
 	call	EVAL		; else evaluate expression
 	ld	(EXSTAT),de	; store exit status
-	jp	INDEOF		; end this level
+ex0:	call	BASEBL		; get block base level from current file
+	ld	hl,BLKLVL	; check block nesting level
+	cp	(hl)		; at main level?
+	jp	z,INDEOF	; if yes, exit this file
+	ld	b,0		; clear block nesting level counter
+ex1:	push	bc
+	call	RDCMD		; read line from file
+	pop	bc
+	ld	hl,blke3
+	jp	c,ERROR		; error if end of file reached
+	ld	de,INPBUF
+	call	GETNB
+	cp	'.'
+	jr	nz,ex1
+	inc	de
+	push	de
+	ld	hl,cmbgn
+	call	cmplbl		; .BEGIN statement?
+	pop	de
+	jr	nz,ex2		; no
+	inc	b		; else increment nesting level
+	jr	ex1		; and loop
+ex2:	ld	hl,cmend
+	call	cmplbl		; .END statement?
+	jr	nz,ex1		; no
+	dec	b		; else decrement nesting level
+	jp	p,ex1		; and loop while positive
+  if 0
+	jp	PROCLN		; negative means end of block found,
+				;  resume normal processing
+  else
+	ret			; negative means end of block found,
+				;  resume normal processing
+  endif
+
+blke3:	db	'.EXIT without .END',0
 
 ;-----------------------------------------------------------------------
 
@@ -2427,41 +2457,37 @@ stop:	call	GETNB		; argument specified?
 
 ; .INC varname
 
-incx:	call	getvn2		; get variable name into 'varnam'
+incx:	call	getvn		; get variable name into 'varnam'
 	ld	de,varnam
 	ld	a,c
 	call	GETVAR
 	jp	c,ERRUDF	; error if not found
 	ld	a,c
-	cp	V.NUM
+	cp	V.NUM		; ensure variable is numeric
 	scf
-	jp	nz,ERRTYP	; type mismatch
-	inc	hl
+	jp	nz,ERRTYP	; else error - type mismatch
+	inc	hl		; increment value
 	ld	a,h
 	or	l		; check for overflow
 	call	z,ERROVF
-	ld	de,varnam
-	call	SETNV
-	ret
+	jp	askn1		; store result
 
 ; .DEC varname
 
-decx:	call	getvn2		; get variable name into 'varnam'
+decx:	call	getvn		; get variable name into 'varnam'
 	ld	de,varnam
 	ld	a,c
 	call	GETVAR
 	jp	c,ERRUDF	; error if not found
 	ld	a,c
-	cp	V.NUM
+	cp	V.NUM		; ensure variable is numeric
 	scf
-	jp	nz,ERRTYP	; type mismatch
+	jp	nz,ERRTYP	; else error - type mismatch
 	ld	a,h
 	or	l		; check for underflow
 	call	z,ERRUFL
-	dec	hl
-	ld	de,varnam
-	call	SETNV
-	ret
+	dec	hl		; decrement value
+	jp	askn1		; store result
 
 ; .DELAY nnu (u = Ticks, Seconds, Minutes, Hours)
 
@@ -2549,7 +2575,8 @@ qio3:	QIOW$	IO.RPR,0,9,iosb,,<askbuf,130,askprm,,>
 qio4:	QIOW$	IO.KIL,0,9,iosb
 iosb:	ds	4
 
-varnam:	ds	13		; length = 12 + trailing zero
+svflag:	ds	1		; special variable flag       !    do not    !
+varnam:	ds	13		; length = 12 + trailing zero ! change order !
 
 askprm:	ds	132		; .ASKx prompt buffer
 askbuf:	ds	132		; .ASKx response buffer
@@ -2582,7 +2609,10 @@ SVEOF:	ds	1		; <EOF> value
 SVESC:	ds	1		; <ESCAPE> value
 SVDFLT:	ds	1		; <DEFAUL> value
 SVTMO:	ds	1		; <TIMOUT> value
+ERRCTL:	ds	1		; <ERRCTL> value
 FILERR:	ds	1		; <FILERR> value
+ERRNUM:	ds	1		; <ERRNUM> value
+ERSEEN:	ds	1		; user-set <ERSEEN>
 EXSTRI:	ds	132		; <EXSTRI> value
 
 	end

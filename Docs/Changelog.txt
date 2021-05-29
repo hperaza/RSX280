@@ -3299,7 +3299,7 @@ BUGS:
 
 18/03/18
 
-- MD5 and BASIC-11 now use IO.RVB/RWB for file I/O.
+- MD5 and BASIC-11 now use IO.RVB/WVB for file I/O.
 
 - Working on new FCSLIB file I/O library.
 
@@ -6607,6 +6607,17 @@ BUGS:
   * .ERASE LOCAL in a nested file now only erases local variables defined
     by that file (unless the /LO switch was specified).
   * likewise, when .CHAINing to a file, erase old local variables unless
-    /LO was specified.
+    /LO was specified in the command line.
+
+
+26/05/21
+
+- ICP:
+  * .EXIT inside a block exits block, else exits current file.
+  * some special variables can now be (re)set by the user: <ERRCTL>,
+    <ERRNUM>, <ERSEEN>, <ERRSEV>, <FILERR>, <EXSTRI> and <EOF>. The <ERR*>
+    ones are rather useless as this moment, since they are meant to support
+    the .ONERR statement, which is not yet implemented
+
 
 

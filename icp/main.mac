@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.56'
+	ident	'2.57'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -54,7 +54,7 @@ ESC	equ	1Bh
 	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
 	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
 	extrn	ERRLBL,DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE,PSHFIL
-	extrn	POPFIL,POPBLK,ERRMEM
+	extrn	POPFIL,POPBLK,ERRMEM,ERRCTL,FILERR,ERRNUM,ERSEEN
 
 ;-----------------------------------------------------------------------
 
@@ -117,6 +117,11 @@ INIT:	ld	hl,0
 	ld	(GSBLVL),a	; clear .GOSUB level
 	ld	(XQTMOD),a
 	ld	(ERRLBL),a	; clear .ONERR label
+	ld	(ERRNUM),a	; clear <ERRNUM>
+	ld	(ERRNUM),a	; clear <FILERR>
+	ld	(ERSEEN),a	; clear user <ERSEEN>
+	inc	a
+	ld	(ERRCTL),a	; <ERRCTL> defaults to 1
 	ld	hl,GTBUF+GT.VID
 	ld	de,EXSTRI	; set <EXSTRI> variable to task version ID
 	ld	bc,6
@@ -578,6 +583,9 @@ PROCSW:	ld	hl,(LNPTR)
 	ld	de,SWTBL
 	call	FNDCMD		; find switch in table
 	ret	c		; error if not found
+	ld	c,(hl)		; fetch argument
+	inc	hl
+	ld	b,(hl)
 	ld	(LNPTR),de	; remember where we stopped
 	ld	a,80h		; initial bit mask
 	inc	c
@@ -619,7 +627,8 @@ neg1:	inc	hl
 	ld	(res),a
 	ret
 
-SWTBL:	CMD	'CLI',	<(1 SHL 8) OR B1.MCR>
+SWTBL:	db	2		; arg length
+	CMD	'CLI',	<(1 SHL 8) OR B1.MCR>
 	CMD	'DE',	<(0 SHL 8) OR B0.DEL>
 	CMD	'LO',	<(2 SHL 8) OR B2.LOC>
 	CMD	'MC',	<(1 SHL 8) OR B1.MCR>
@@ -632,6 +641,7 @@ SWTBL:	CMD	'CLI',	<(1 SHL 8) OR B1.MCR>
 SETCMN:	call	ALLOC		; allocate space for command line string
 	jp	c,ERRMEM
 	ld	de,COMMAN
+	xor	a		; clear 'special variable' flag
 	call	SETSV		; set COMMAN string variable
 	ret	c		; on error, return (message already displayed)
 	ld	hl,ARGS

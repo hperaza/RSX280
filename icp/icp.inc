@@ -59,8 +59,11 @@ FBFSZ	equ	FB.BUF + 512	; structure size
 
 ; Macro for building command tables
 
-CMD	MACRO	name,addr
+CMD	MACRO	name,addr1,addr2
 	db	name,0
-	dw	addr
+	dw	addr1
+	IFNB	<addr2>
+	dw	addr2
+	ENDIF
 	ENDM
 

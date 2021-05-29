@@ -496,12 +496,15 @@ ao1:	ld	(de),a
 ;   HL = pointer to start of command name
 ;   DE = address of command table
 ; Returns:
-;   HL = pointer to start of command name
+;   HL = pointer to arguments in table
 ;   DE = pointer to char after command
-;   BC = address from table
 ;   CY set if command not found
 
-FNDCMD:	ld	a,(de)		; end of table?
+FNDCMD:	ld	a,(de)
+	ld	c,a		; get arg length into BC
+	ld	b,0
+	inc	de
+fnd0:	ld	a,(de)		; end of table?
 	or	a
 	scf
 	ret	z		; return error if yes
@@ -527,14 +530,12 @@ fskip:	ld	a,(de)
 	inc	de
 	or	a
 	jr	nz,fskip
-	inc	de
-	inc	de
-	jr	FNDCMD
-fnd4:	inc	hl
-	ld	c,(hl)
-	inc	hl
-	ld	b,(hl)
-	pop	hl
+	ex	de,hl
+	add	hl,bc		; skip argumens
+	ex	de,hl
+	jr	fnd0
+fnd4:	inc	hl		; point to start of arguments
+	pop	bc		; discard old command pointer
 	ret
 
 ;-----------------------------------------------------------------------

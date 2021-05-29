@@ -30,80 +30,105 @@
 	include	LCB.INC
 	include	ERRORS.INC
 
-	public	SPECV,FNDEV
+	public	SPECV,SPECW,FNDEV
 
 	extrn	UCASE,BCD2BIN,FNDCMD,LNPTR,FREMEM,ADDHLA,AHEX2
 	extrn	STYPE,SLEN,SNUM,SALNM,SVEOF,SVESC,SYSERR,EXSTAT
 	extrn	SVDFLT,SVTMO,DECSTR,FDB,FNBSTR,FILERR,EXSTRI
-	extrn	STRCPY
+	extrn	ERRCTL,ERRNUM,ERSEEN,STRCPY,ERROR,ERRSET,DSPTR
 
 	cseg
 
 ;-----------------------------------------------------------------------
 
+; Get value of special variable
+
 SPECV:	ex	de,hl
 	ld	de,PVTBL
 	call	FNDCMD
 	ret	c		; error if not found
+	ld	a,(hl)		; fetch first argument (get)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; go to processing routine (note: CY clear)
+
+; Set value of special variable (for the few R/W ones)
+
+SPECW:	push	hl		; push value
+	ex	de,hl
+	ld	de,PVTBL
 	push	bc
-	ret			; go to processing routine (note: CY clear)
+	call	FNDCMD
+	pop	bc
+	pop	de		; value now in DE
+	ret	c
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; fetch second argument (set)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jp	(hl)		; go to processing routine (note: CY clear)
 
 ; Special <variables>
 
-PVTBL:	; logical
+PVTBL:	db	4		; arg length
 
-	CMD	'ALPHAN',	valnum
-	CMD	'ALTMOD',	vesc
-	CMD	'DEFAUL',	vdeflt
-	CMD	'EOF',		veof
-	CMD	'ERSEEN',	veseen
-	CMD	'ESCAPE',	vesc
-	CMD	'FALSE',	vfalse
-;;	CMD	'LOCAL',	vlocal
-	CMD	'NUMBER',	vnumb
-	CMD	'PRIVIL',	vpriv
-	CMD	'TIMOUT',	vtmout
-	CMD	'TRUE',		vtrue
+	; logical
+
+	CMD	'ALPHAN',	valnum,	werr
+	CMD	'ALTMOD',	vesc,	werr
+	CMD	'DEFAUL',	vdeflt,	werr
+	CMD	'EOF',		veof,	weof
+	CMD	'ERSEEN',	veseen,	weseen
+	CMD	'ESCAPE',	vesc,	werr
+	CMD	'FALSE',	vfalse,	werr
+;;	CMD	'LOCAL',	vlocal,	werr
+	CMD	'NUMBER',	vnumb,	werr
+	CMD	'PRIVIL',	vpriv,	werr
+	CMD	'TIMOUT',	vtmout,	werr
+	CMD	'TRUE',		vtrue,	werr
 
 	; numeric
 
-	CMD	'ERRCTL',	verctl
-	CMD	'ERRNUM',	verrno
-	CMD	'ERROR',	verror
-	CMD	'ERRSEV',	versev
-	CMD	'EXSTAT',	vexst
-	CMD	'FILERR',	vferr
-	CMD	'FORATT',	vfattr
-	CMD	'MEMSIZ',	vmemsz
-	CMD	'SEVERE',	vsev
-	CMD	'SPACE',	vspace
-	CMD	'STRLEN',	vstrl
-	CMD	'SUCCES',	vsucc
-	CMD	'SYMTYP',	vstype
-	CMD	'SYSTEM',	vsys
-	CMD	'SYUNIT',	vsyun
-	CMD	'WARNIN',	vwarn
+	CMD	'ERRCTL',	verctl,	werctl
+	CMD	'ERRNUM',	verrno,	werrno
+	CMD	'ERROR',	verror,	werr
+	CMD	'ERRSEV',	versev,	wersev
+	CMD	'EXSTAT',	vexst,	werr
+	CMD	'FILERR',	vferr,	wferr
+	CMD	'FORATT',	vfattr,	wfattr
+	CMD	'MEMSIZ',	vmemsz,	werr
+	CMD	'SEVERE',	vsev,	werr
+	CMD	'SPACE',	vspace,	werr
+	CMD	'STRLEN',	vstrl,	werr
+	CMD	'SUCCES',	vsucc,	werr
+	CMD	'SYMTYP',	vstype,	werr
+	CMD	'SYSTEM',	vsys,	werr
+	CMD	'SYUNIT',	vsyun,	werr
+	CMD	'WARNIN',	vwarn,	werr
 
 	; string
 
-	CMD	'CLI',		vcli
-	CMD	'DATE',		vdat
-	CMD	'DIR',		vcdir
-	CMD	'EXSTRI',	vexstr
-	CMD	'FILATR',	vfattr
-	CMD	'FILSPC',	vfspec
-	CMD	'LIBDIR',	vlibd
-	CMD	'LOGDEV',	vldev
-	CMD	'LOGDIR',	vldir
-	CMD	'LOGUIC',	vluic
-	CMD	'NETNOD',	vhost
-	CMD	'SYSDEV',	vsydev
-	CMD	'SYDISK',	vsydsk
-	CMD	'SYSID',	vsysv
-	CMD	'SYSVER',	vsysv
-	CMD	'TIME',		vtim
-	CMD	'USER',		vldir
-	CMD	'UIC',		vcuic
+	CMD	'CLI',		vcli,	werr
+	CMD	'DATE',		vdat,	werr
+	CMD	'DIR',		vcdir,	werr
+	CMD	'EXSTRI',	vexstr,	wexstr
+	CMD	'FILATR',	vfattr,	werr
+	CMD	'FILSPC',	vfspec,	werr
+	CMD	'LIBDIR',	vlibd,	werr
+	CMD	'LOGDEV',	vldev,	werr
+	CMD	'LOGDIR',	vldir,	werr
+	CMD	'LOGUIC',	vluic,	werr
+	CMD	'NETNOD',	vhost,	werr
+	CMD	'SYSDEV',	vsydev,	werr
+	CMD	'SYDISK',	vsydsk,	werr
+	CMD	'SYSID',	vsysv,	werr
+	CMD	'SYSVER',	vsysv,	werr
+	CMD	'TIME',		vtim,	werr
+	CMD	'USER',		vldir,	werr
+	CMD	'UIC',		vcuic,	werr
 
 	db	0
 
@@ -200,22 +225,74 @@ vdeflt:	ld	a,(SVDFLT)
 veof:	ld	a,(SVEOF)
 	jp	vtf
 
-; <ERSEEN>
+weof:	ld	a,c
+	cp	V.LOG
+	jp	nz,ERRSET
+	ld	a,e
+	ld	(SVEOF),a
+	xor	a
+	ret
 
-veseen:
-	scf
+; <ERSEEN> - returns TRUE if any of the following conditions is met:
+; * <FILERR> < 0
+; * <EXSTAT> worse than <WARNIN>
+; * <EOF> is true
+; * <ERRNUM> != 0
+; * <ERSEEN> was set explicitly to <TRUE>
+
+veseen:	ld	a,(FILERR)
+	or	a
+	jp	m,vtrue		; true if <FILERR> < 0
+	ld	a,(EXSTAT)
+	cp	EX.ERR
+	jr	nc,vtrue	; true if <EXSTAT> worse than <WARNIN>
+	ld	a,(SVEOF)
+	or	a
+	jr	nz,vtrue	; true if <EOF> is set
+	ld	a,(ERRNUM)
+	or	a
+	jr	nz,vtrue
+	ld	a,(ERSEEN)	; else return user-set <ERSEEN>
+	jr	vtf
+
+weseen:	ld	a,c
+	cp	V.LOG
+	jp	nz,ERRSET
+	ld	a,e
+	ld	(ERSEEN),a	; set user-set <ERSEEN>
+	or	d
+	ret	nz
+	ld	(SVEOF),a	; if false, reset <EOF>,
+	ld	(FILERR),a	;  <FILERR>,
+	ld	(EXSTAT),de	;   <EXSTAT>,
+	ld	(ERRNUM),a	;    and <ERRNUM>
+	xor	a
 	ret
 
 ; <ERRCTL>
 
-verctl:
-	scf
+verctl:	ld	a,(ERRCTL)
+	jp	vna
+
+werctl:	ld	a,c
+	cp	V.NUM
+	jp	nz,ERRSET
+	ld	a,e
+	ld	(ERRCTL),a
+	xor	a
 	ret
 
 ; <ERRNUM>
 
-verrno:
-	scf
+verrno:	ld	a,(ERRNUM)
+	jp	vna
+
+werrno:	ld	a,c
+	cp	V.NUM
+	jp	nz,ERRSET
+	ld	a,e
+	ld	(ERRNUM),a
+	xor	a
 	ret
 
 ; <EXSTAT>
@@ -230,15 +307,29 @@ versev:
 	scf
 	ret
 
+wersev:	ld	a,c
+	cp	V.NUM
+	jp	nz,ERRSET
+	scf
+	ret
+
 ; <FILERR>
 
 vferr:	ld	a,(FILERR)
 	ld	l,a
-	ld	h,0
+	ld	h,0		; TODO: sign extend
 	ld	c,V.NUM
 	or	a
 	ret	p
 	dec	h
+	ret
+
+wferr:	ld	a,c
+	cp	V.NUM
+	jp	nz,ERRSET
+	ld	a,e
+	ld	(FILERR),a
+	xor	a
 	ret
 
 ; <ESCAPE>
@@ -251,6 +342,15 @@ vesc:	ld	a,(SVESC)
 vexstr:	ld	hl,EXSTRI
 	ld	c,V.STR
 	or	a
+	ret
+
+wexstr:	ld	a,c
+	cp	V.STR
+	jp	nz,ERRSET
+	ld	hl,(DSPTR)
+	ld	de,EXSTRI
+	call	STRCPY
+	xor	a
 	ret
 
 ; <MEMSIZ>
@@ -387,9 +487,13 @@ vluic:	ld	hl,lcbbuf
 	or	a
 	ret
 
-; <FILATR>
+; <FILATR> <FORATT>
 
 vfattr:
+	scf
+	ret
+
+wfattr:
 	scf
 	ret
 
@@ -561,6 +665,11 @@ vdt1:	ld	hl,8
 	ret	z
 	scf
 	ret
+
+werr:	ld	hl,roerr	; redefining a read-only symbol
+	jp	ERROR
+
+roerr:	db	'Redefining a read-only symbol',0
 
 ;-----------------------------------------------------------------------
 

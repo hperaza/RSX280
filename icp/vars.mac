@@ -39,11 +39,11 @@ LF	equ	0Ah
 	public	CLRVAR,FNDVAR,GETVAR,DELVAR,SETNV,SETSV,SETLV
 	public	ALLOC,FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
 	public	DELLCL,DELGBL,PSHBLK,POPBLK,FNDBLK,PSHFIL,POPFIL
-	public	FNDFIL
+	public	FNDFIL,ERRSET
 
 	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG,MODE
 	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR,BLKLVL,INDLVL
-	extrn	STRLEN,STRCMP,GETPOS,BASEBL
+	extrn	STRLEN,STRCMP,GETPOS,BASEBL,SPECW
 
 ;-----------------------------------------------------------------------
 
@@ -367,7 +367,10 @@ GETVAR:	or	a		; check 'special variable' flag
 ; allocated, its value will be updated during garbage collection.
 ; Returns CY on error (no more space).
 
-SETSV:	call	FNDVAR
+SETSV:	or	a		; check 'special variable' flag
+	ld	c,V.STR
+	jp	nz,SPECW	; jump to SPECW if set
+	call	FNDVAR
 	jr	c,sv0		; jump if not found
 	cp	V.STR		; else check type
 	jr	z,sv1		; jump if a string
@@ -437,7 +440,9 @@ SETLV:	ld	c,V.LOG		; var type = boolean
 ; DE = var name, HL = value
 
 SETNV:	ld	c,V.NUM		; var type = numeric
-stnv1:	push	hl		; push value
+stnv1:	or	a		; check 'special variable' flag
+	jp	nz,SPECW	; jump to SPECW if set
+	push	hl		; push value
 	push	bc
 	call	FNDVAR
 	pop	bc
