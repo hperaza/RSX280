@@ -50,7 +50,7 @@
 ; Measure the system-clock speed and return the reload timer constant.
 
 ; The Z280 on the Z280RC uses a clock frequency of 14.7456 MHz, the
-; internat timers are clocked at 1/4 of the CPU clock frequency, thus
+; internal timers are clocked at 1/4 of the CPU clock frequency, thus
 ; 3.6864 MHz.
 
 ; TODO: compute reload value from TCKSEC - may require chaining

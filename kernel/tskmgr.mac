@@ -228,7 +228,7 @@ decsw1:	ld	a,d
 	ld	hl,T.SPRI
 	add	hl,de
 	ld	a,c
-	cp	(hl)		; swap priority at minumum?
+	cp	(hl)		; swap priority at minimum?
 	jp	m,decsw2
 	jp	po,decsw3
 decsw2:	dec	(hl)		; decrement it if not
