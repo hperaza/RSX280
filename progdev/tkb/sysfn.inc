@@ -39,10 +39,11 @@
 .SUPER	equ	36	; enter/exit supervisor mode
 .GTSK	equ	37	; get task info
 .GTPAR	equ	38	; get partition info
-.GIN	equ	39	; get general info
-.SVTBL	equ	40	; specify SST vector table
+.GCII	equ	39	; get command interpreter info
+.GIN	equ	40	; get general info
+.SVTBL	equ	41	; specify SST vector table
 
-MAXFN	equ	40
+MAXFN	equ	41
 
 SYSRST	equ	20h	; system call RST is RST 4
 DBGRST	equ	30h	; debug breakpoint RST is RST 6
