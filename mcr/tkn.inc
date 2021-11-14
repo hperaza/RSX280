@@ -15,7 +15,7 @@ TKNSZ	equ	TN.REGS + 24
 TK.NONE	equ	0	; normal task exit: TKTN not requested, no msg output
 TK.CLI	equ	1	; task aborted via directive or CLI
 TK.IIT	equ	2	; illegal instruction trap
-TK.RST	equ	3	; unexpected RST execution
+TK.RST	equ	3	; unvectored RST execution
 TK.LDR	equ	4	; load failure, device I/O error
 TK.ITH	equ	5	; invalid task header
 TK.AST	equ	6	; bad stack on AST exit
