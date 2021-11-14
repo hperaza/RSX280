@@ -24,7 +24,7 @@ lbr.com: $(OBJS)
 	$(ZXCC) $(TKB) -"$@,lbrcpm=lbr,cpmio/of=c"
 
 lbr.tsk: $(OBJS) syslib.lib fcslib.lib
-	$(ZXCC) $(TKB) -"$@=lbr/of=t,rsxio,fcslib/lb,syslib/lb/task=...LBR/ext=4000"
+	$(ZXCC) $(TKB) -"$@,,lbr.map=lbr/of=t,rsxio,fcslib/lb,syslib/lb/task=...LBR/ext=4000"
 
 clean:
 	rm -f *.com *.rel *.prn *.sym *.map core *.tsk *~ *.\$$\$$\$$
