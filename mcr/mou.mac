@@ -338,7 +338,7 @@ m6:				; TODO: check for possible race condition
 	jr	z,m4		; continue if yes
 	cp	E.TACT		; task active?
 	jr	z,m4		; continue if yes
-	scf			; else if fatal
+	scf			; else is fatal
 
 m4:	push	bc
 	push	af
@@ -409,7 +409,7 @@ optlst:	db	'ACP',0		; right now only one option supported
 ; Find task in STD. Assumes supervisor mode is on.
 
 fndtsk:	ld	hl,$TLIST
-ftsk1:	ldw	hl,(hl)		; find ask in STD
+ftsk1:	ldw	hl,(hl)		; find task in STD
 	ld	a,h
 	or	l
 	ret	z		; return HL=0 if not found
