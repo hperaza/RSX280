@@ -587,7 +587,7 @@ LUNFCB:	dec	a		; 1..16 -> 0..15
 	ret	c		; return error if not
 	ld	ix,(USRTSK)
 	ldw	hl,(ix+T.CTX)	; get address of context block
-	lda	hl,(hl+TX.LUT)	; point to start on LUN table
+	lda	hl,(hl+TX.LUT)	; point to start of LUN table
 	ld	d,0
 	add	hl,de
 	add	hl,de
