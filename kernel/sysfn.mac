@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2021, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -41,6 +41,7 @@
 	include	QIO.INC
 	include	AST.INC
 	include	TKN.INC
+	include	CLICB.INC
 	include	ERRORS.INC
 
 	public	SYSFN		; system call entry point
@@ -52,7 +53,7 @@
 	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
 	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
-	extrn	SYSTYP
+	extrn	$CLIST,SYSTYP
 
 	cseg
 
@@ -121,6 +122,7 @@ fntab:	dw	EXIT		; exit task
 	dw	TSUP		; enter supervisor mode
 	dw	GTTSK		; get task info
 	dw	GTPAR		; get partition info
+	dw	GCII		; get command interpreter info
 	dw	GIN		; get general info
 	dw	SVTBL		; define SST vector table
 
@@ -151,12 +153,8 @@ EXIF:	push	hl
 ;   CY flag set on error
 
 SRUN:	ld	de,TMPTDB	; DE = destination
-	exx
-	ld	hl,($UBANK)	; set source bank
-	ld	de,($SBANK)	; set dest bank
-	exx
 	ld	bc,TDBSZ+4+4	; read task descriptor + dtime + rsi
-	call	$MCOPY		;  from user space
+	call	uget		;  from user space
 	ld	hl,TMPTDB
 	jp	TSRUN		; schedule task
 
@@ -178,12 +176,8 @@ CSRQ:	call	UFNTSK		; get task name, find TCB
 ; Read TDB from user space into TMPTDB.
 
 GETTDB:	ld	de,TMPTDB	; DE = destination
-	exx
-	ld	hl,($UBANK)	; set source bank
-	ld	de,($SBANK)	; set dest bank
-	exx
 	ld	bc,TDBSZ
-	call	$MCOPY		; read task descriptor from user space
+	call	uget		; read task descriptor from user space
 	ld	hl,TMPTDB
 	ret
 
@@ -374,11 +368,7 @@ GETCMD:	ld	hl,0
 	ld	(hl),c		; store command length
 	inc	hl
 	ex	de,hl		; HL = src, DE = dst, BC = len
-uget:	exx
-	ld	hl,($UBANK)	; HL' = src bank
-	ld	de,($SBANK)	; DE' = dst bank
-	exx
-	call	$MCOPY		; copy command line block
+	call	uget		; copy command line block
 	xor	a
 	ret
 
@@ -596,13 +586,7 @@ GDT:	push	hl
 	pop	hl
 	pop	de
 	ld	bc,8
-	exx
-	ld	hl,($SBANK)	; src bank
-	ld	de,($UBANK)	; dst bank
-	exx
-	call	$MCOPY
-	xor	a
-	ret
+	jp	ucpy		; store result and return success
 
 ; Set date and time
 
@@ -614,11 +598,7 @@ GDT:	push	hl
 SDT:	ld	de,DTBUF
 	push	de
 	ld	bc,8
-	exx
-	ld	hl,($UBANK)	; src bank
-	ld	de,($SBANK)	; dst bank
-	exx
-	call	$MCOPY
+	call	uget
 	pop	hl
 	call	SETDT
 	ret
@@ -672,13 +652,7 @@ tinf2:	push	de
 	pop	de
 	ld	hl,GTBUF
 	ld	bc,GTKSZ	; BC = size
-tinf3:	exx
-	ld	hl,($SBANK)	; HL' = src bank
-	ld	de,($UBANK)	; DE' = dst bank
-	exx
-	call	$MCOPY
-	xor	a
-	ret
+	jp	ucpy		; store result and return success
 
 tdev:	ldw	bc,(hl)
 	inc	hl
@@ -736,7 +710,119 @@ pt1:	push	de
 	pop	de
 	ret	c		; return error if not found
 pt2:	ld	bc,PCBSZ	; BC = size
-	jp	tinf3		; return via common code
+	jp	ucpy		; store result and return success
+
+;-----------------------------------------------------------------------
+
+; Get command interpreter info.
+
+; Input:
+;   HL = addr of param buffer (see GCII$ macro in CLICB.INC)
+; Notes:
+; - task must be privileged to get information about a CLI for any
+;   terminal other that its own terminal, or about a CLI to which its
+;   terminal is not set.
+; - if both a terminal and a CLI name are specified, information will
+;   be returned for the CLI matching the specified name.
+
+; TODO:
+; - validate user buffer
+
+GCII:	ld	de,GCIBUF
+	ld	bc,12
+	call	uget		; read param block from user space
+	ld	a,(GCIBUF+3)
+	or	a
+	jr	nz,gci1		; branch on lookup by name
+
+	; lookup by terminal name
+
+	ld	de,(GCIBUF+9)
+	ld	a,(GCIBUF+11)
+	ld	c,a
+	call	chkti		; right terminal? (returns HL = UCB addr)
+	ret	c		; no
+
+	; TODO:
+	; - if U.LCB is set (logged-in), return L.CLI
+	; - else return MCR (first on $CLIST)
+	; right now we simply return the first $CLIST entry
+
+	ld	de,($CLIST)
+	ld	a,d
+	or	e
+	jr	z,gci6		; error if zero
+gci8:	ld	hl,CL.DPL
+	add	hl,de
+	ld	a,(hl)
+	inc	hl		; CL.CPL
+	add	a,(hl)
+	jr	c,gci7
+	add	a,CLIBSZ	; compute required space
+	jr	nc,gci9
+gci7:	ld	a,255
+gci9:	ld	c,a
+	ld	a,(GCIBUF+2)	; get user buffer size
+	cp	c		; compare with required size
+	jr	nc,gci2		; branch if big enough
+	ld	c,a		; else truncate transfer length
+gci2:	ld	b,0		; len in BC
+	ex	de,hl		; src in HL
+	ld	de,(GCIBUF)	; dst in DE
+	jp	ucpy		; store result and return success
+
+gci1:	; lookup by CLI name
+
+	; TODO:
+	; - if user is privileged, search $CLIST
+	; - if not privileged, compare name to his terminal's CLI
+	; right now we simply return the first $CLIST entry
+
+	ld	de,($CLIST)
+	ld	a,d
+	or	e
+	jr	z,gci6		; error if zero
+	ld	hl,CL.NAM
+	add	hl,de
+	push	de
+	ld	de,GCIBUF+3
+	ld	b,6
+gci4:	ld	a,(de)
+;;	call	UCASE
+	cp	(hl)
+	jr	nz,gci5
+	inc	hl
+	inc	de
+	djnz	gci4
+	pop	de
+	jr	gci8
+
+gci5:	pop	de
+gci6:	ld	a,E.CLNF	; CLI not found
+	scf
+	ret
+
+chkti:	ld	ix,($CTCB)
+	call	$FNDEV		; get UCB address of device in DE-C
+	ret	c		; error if not found
+	ld	a,(ix+T.TI)
+	cp	l		; same as TI:?
+	jr	nz,chk1		; no
+	ld	a,(ix+T.TI+1)
+	cp	h
+	ret	z		; yes (and we know is a terminal)
+chk1:	bit	TA.PRV,(ix+T.ATTR) ; privileged task?
+	ld	a,E.PRIV
+	scf
+	ret	z		; no
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)	; is device a terminal?
+	ld	a,E.BADOP
+	scf
+	ret	z		; no
+	xor	a
+	ret			; yes
 
 ;-----------------------------------------------------------------------
 
@@ -908,12 +994,11 @@ UFNTSK:	push	de
 
 UGTNAM:	ld	de,DTBUF	; dst in DE, src in HL
 	ld	bc,6		; len in BC
-	exx
+uget:	exx
 	ld	hl,($UBANK)	; src bank in HL'
 	ld	de,($SBANK)	; dst bank in DE'
 	exx
-	call	$MCOPY		; get task name from user space
-	ret
+	jp	$MCOPY		; get task name from user space
 
 ;-----------------------------------------------------------------------
 
@@ -1154,13 +1239,7 @@ gcd3:	ex	de,hl		; DE = dst
 	ret	z		; error if LCB not set
 	add	hl,bc		; HL = src
 gcd4:	ld	bc,9
-	exx
-	ld	hl,($SBANK)	; src bank
-	ld	de,($UBANK)	; dst bank
-	exx
-	call	$MCOPY		; copy name to user space
-	xor	a
-	ret
+	jp	ucpy		; copy name to user space and return success
 
 ;-----------------------------------------------------------------------
 
@@ -1197,11 +1276,7 @@ scd1:	ex	de,hl
 	add	hl,bc
 scd2:	ex	de,hl		; src in HL, dst in DE
 	ld	bc,9
-	exx
-	ld	hl,($UBANK)	; src bank
-	ld	de,($SBANK)	; dst bank
-	exx
-	call	$MCOPY		; copy name from user space
+	call	uget		; get name from user space
 	xor	a
 	ret
 
@@ -1263,11 +1338,15 @@ $UNFTK:	call	UFNTSK		; get name from user space and find task
 CMDPTR:	ds	2
 DTBUF:	ds	8
 GTBUF	equ	$
+GCIBUF	equ	$
 TMPTDB:	ds	TDBSZ
 DTIME:	ds	4
 RSI:	ds	4
 	if	$-GTBUF LT GTKSZ
 	ds	GTBUF+GTKSZ-$
+	endif
+	if	$-GCIBUF LT GTKSZ
+	ds	GCIBUF+GTKSZ-$
 	endif
 
 	end
