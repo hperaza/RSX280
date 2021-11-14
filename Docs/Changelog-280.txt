@@ -160,7 +160,7 @@ Changelog
 - MCR, VMR: use at least 5 digits to display task size in TAS command, else
   a size of 64K will be displayed as zero.
 
-- MCR: the BRK (break into the system debugger) is now working.
+- MCR: the BRK command (break into the system debugger) is now working.
 
 
 14/05/20
@@ -203,7 +203,7 @@ Changelog
 - DEVTT: the code that sets the baud rate for the quad-serial port is now
   in a separate routine, so it could be called by a SF.SMC QIO function.
   Also, the prescaler now divides the clock frequency by 2 and not by 4 so
-  the ubiquitous 76800 baud rate could be supported.
+  the rare 76800 baud rate could be supported.
 
 
 15/01/21

@@ -6620,4 +6620,59 @@ BUGS:
     the .ONERR statement, which is not yet implemented
 
 
+30/05/21
+
+- ICP:
+  * implemented the <ERRSEV> special variable.
+  * errors are now identified by a unique number and a class level.
+  * when an error happens, <ERRNUM> is now set to the error number and
+    <ERRSEV> to its class.
+  * the .ONERR statement now saves the argument label for future error
+    processing.
+  * if an .ONERR directive has been encountered before an error happens,
+    and if a bit is set in <ERRCTL> for the corresponding error class,
+    the further error traps are disabled and the execution continues from
+    the .ONERR label.
+  * .GOTO/.GOSUB/.EXIT must skip also '.ENABLE DATA' blocks when searching
+    for a label.
+  * bug fix: error line number was not being output after error message.
+  * added a simple .ONERR test case to the ICPTEST.CMD file.
+
+- DEVTT: restore _LCR register of the P112 secondary serial port after
+  setting the serial speed.
+
+
+31/05/21
+
+- ICP:
+  * when looking for '.DISABLE DATA' (see yesterday's changes), ensure
+    the statement begins in column one.
+  * .CLOSE on column one also ends an '.ENABLE DATA' block.
+
+
+15/08/21
+
+- vol180: applied Michal Tomek's patches to make it compile and work with
+  MinGW on Windows.
+
+
+24/04/21
+
+- TKTN: "Unvectored RST execution" sounds better?
+
+
+17/06/21
+
+- Adding new system service to get CLI information (for future multiple-CLI
+  support).
+
+
+14/11/21
+
+- LBR bug fix: clear F.LNK in file name list to prevent any garbage from
+  being mistaken as the end of list.
+
+- TKB bug fix: the output file size was not computed correctly for images
+  containing absolute segments.
+
 
