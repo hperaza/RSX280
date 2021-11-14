@@ -4230,7 +4230,7 @@ GETCLI:	xor	a
 
 	IF	CLISUP
 	ld	hl,CLIBUF
-	SC	.GCLI		; cet CLI information
+	SC	.GCII		; get CLI information
 	jr	c,gc1		; error is CY set
 	ld	a,1
 	ld	(CLIFLG),a	; set CGLI OK flag
