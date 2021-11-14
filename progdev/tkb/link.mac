@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.14'
+	ident	'2.15'
 
 	extrn	GetTop,IOBuf,IrlBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -3266,7 +3266,7 @@ lnke3:	ld	b,0
 	add	hl,de		; compute total length
 	ex	de,hl
 	pop	hl		; restore CurBase table address
-	ld	(hl),e		; store total length
+	ld	(hl),e		; store new base address
 	inc	hl
 	ld	(hl),d
 	ld	hl,CurLoc
@@ -3921,19 +3921,30 @@ WriteOutput:
 	ex	de,hl
 	ld	hl,FCB
 	call	AddExt		; set extension if FCB has none
+	ld	c,0
 	ld	hl,(CurBase+ICSEG)
 	ld	de,(CurBase+IDSEG)
 	add	hl,de
 	ld	de,(CurBase+ICOMN)
-	add	hl,de
-	ld	a,(O.opt)
+	add	hl,de		; compute total file size
+  if 1
+	ld	de,(ABS.end)
+	ld	a,l
+	sub	e
+	ld	a,h
+	sbc	a,d
+	jr	nc,WO.1
+	ex	de,hl
+  endif
+WO.1:	ld	a,(O.opt)
 	cp	.OC		; COM file?
 	jr	z,WO.com	; branch if not
 	ld	de,256
 	add	hl,de		; else add header size
-WO.com:	ex	de,hl		; DE = requested file size in bytes
+	rl	c		; carry to C
+WO.com:	ex	de,hl		; CDE = requested file size in bytes
 	ld	hl,FCB
-	call	CreateF		; create file
+	call	CreateF		; create output file
 	call	SavMain		; save main FCB if not yet saved
 	ld	hl,0
 	ld	(OutPtr),hl	; clear pointer

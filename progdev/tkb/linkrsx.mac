@@ -1194,7 +1194,7 @@ rderr1:	pop	hl		; HL = FCB address
 	ld	de,$RDERR	; error if file empty
 	jp	ErrFN		; abort
 
-; set QIO pointers to recno in DE
+; set QIO pointers to recno in DE, length in BC
 
 setrec:	ld	a,e
 	and	3
@@ -1271,7 +1271,7 @@ wrnext:	ld	c,l
 	ld	b,h
 	call	nxtrec
 	jr	wrloop
-	
+
 wrerr:	pop	hl		; HL = FCB address
 	ld	de,$WRERR
 	jp	ErrFN		; .. abort on error
@@ -1492,14 +1492,17 @@ CopyFN:	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
 
 ; Create file
 ; ENTRY	Reg HL points to FCB
-;	Reg DE contains requested contiguous file size in bytes
-;	       or 0 for non-contiguous
+;	Reg CDE contains requested contiguous file size in bytes
+;	        or 0 for non-contiguous
 
 CreateF:
 	push	hl
 	ld	hl,511
 	add	hl,de
-	sra	h
+	ld	a,c
+	adc	c,0
+	rra
+	rr	h
 	ld	e,h
 	ld	d,0		; DE = blocks to allocate
 	pop	hl
