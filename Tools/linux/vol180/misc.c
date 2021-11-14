@@ -29,9 +29,11 @@
 
 /*-----------------------------------------------------------------------*/
 
+#ifndef __MINGW32__
 void strupr(char *s) {
   while (*s) *s = toupper(*s), ++s;
 }
+#endif
 
 char *timestamp_str(unsigned char *e) {
   static char str[40];

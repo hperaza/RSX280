@@ -31,7 +31,9 @@
 #define GET_INT24(p, i) (p[i] | (p[(i)+1] << 8) | (p[(i)+2] << 16))
 #define SET_INT24(p, i, v) p[i] = (v) & 0xFF; p[(i)+1] = ((v) >> 8) & 0xFF; p[(i)+2] = ((v) >> 16) & 0xFF;
 
+#ifndef __MINGW32__
 void strupr(char *s);
+#endif
 char *timestamp_str(unsigned char *entry);
 long timestamp_to_secs(unsigned char *entry);
 char *perm_str(unsigned short perm);

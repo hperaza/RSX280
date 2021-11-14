@@ -50,7 +50,7 @@ int mount_disk(char *imgname) {
 
   dismount_disk();
 
-  imgf = fopen(imgname, "r+");
+  imgf = fopen(imgname, "r+b");
   if (!imgf) {
     fprintf(stderr, "Could not open disk image \"%s\": %s\n",
                     imgname, strerror(errno));

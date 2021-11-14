@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
   }
 
   name = argv[1];
-  mode = "r+";
+  mode = "r+b";
   p = NULL;
   if (strcmp(argv[1], "-n") == 0) {
     if (argc < 3) {
@@ -82,7 +82,7 @@ int main(int argc, char *argv[]) {
     }
     read_only = 1;
     name = argv[2];
-    mode = "r";
+    mode = "rb";
     if (argc > 3) p = argv[3];
   } else {
     if (argc > 2) p = argv[2];

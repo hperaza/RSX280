@@ -25,6 +25,9 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#ifdef __MINGW32__
+#include <sys/utime.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -488,7 +491,7 @@ int cmd_import(char *srcfile, char *dstfile, int contiguous, int alloc) {
   unsigned char buf[256];
   struct stat sbuf;
         
-  f = fopen(srcfile, "r");
+  f = fopen(srcfile, "rb");
   if (!f) {
     printf("File not found\n");
     return 0;
@@ -541,9 +544,8 @@ int cmd_export(char *srcfile, char *dstfile) {
   FILE *f;
   int len;
   unsigned char buf[256], inode[32];
-  struct timeval times[2];
 
-  f = fopen(dstfile, "w");
+  f = fopen(dstfile, "wb");
   if (!f) {
     printf("Could not create file\n");
     return 0;
@@ -565,11 +567,19 @@ int cmd_export(char *srcfile, char *dstfile) {
 
   if (read_inode(fcb->header->inode, inode)) {
     if (GET_INT16(inode, 0) != 0) {
+#ifdef __MINGW32_
+      struct utimbuf utim;
+      utim.actime  = timestamp_to_secs(&inode[16]);
+      utim.modtime = timestamp_to_secs(&inode[16]);
+      utime(dstfile, &utim);
+#else
+      struct timeval times[2];
       times[0].tv_sec = timestamp_to_secs(&inode[16]);
       times[0].tv_usec = 0;
       times[1].tv_sec = timestamp_to_secs(&inode[16]);
       times[1].tv_usec = 0;
       utimes(dstfile, times);
+#endif
     }
   }
   free_fcb(fcb);

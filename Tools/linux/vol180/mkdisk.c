@@ -84,7 +84,7 @@ int create_disk(char *fname, unsigned long nblocks, unsigned nfiles) {
   nclusters = nblocks / clsize;
   nblocks = nclusters * clsize;  /* rounded to the lower cluster boundary */
 
-  f = fopen(fname, "w");
+  f = fopen(fname, "wb");
   if (!f) {
     fprintf(stderr, "could not create disk image \"%s\": %s\n",
                     fname, strerror(errno));
