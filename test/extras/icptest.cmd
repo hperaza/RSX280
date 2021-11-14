@@ -318,6 +318,19 @@
 	.IFNDF LV1 ; Test passed
 	.IFDF LV1  ; Something went wrong
 ;
+; 10c) Testing .EXIT within block
+;
+	.SETN $LEVEL 0
+	.BEGIN
+	; This line should appear
+	.EXIT 5
+	; THIS LINE SHOULD NEVER APPEAR
+	.INC $LEVEL
+	.END
+
+	.IF $LEVEL = 0	; Test passed, <EXSTAT> = '<EXSTAT>' (5 expected)
+	.IF $LEVEL <> 0	; Something went wrong
+;
 ; 11) File I/O test
 ;
 ; 11a) .OPEN and .DATA
@@ -390,21 +403,32 @@
 ;
 	.PAUSE
 ;
-; Still unimplemented:
+; 17) .ONERR
 ;
-;   .ONERR label
-;
-;   several special variables are also missing:
-;   <ERSEEN> <ERRCTL> <ERRNUM> <ERRSEV> <MEMSIZ> <LOGDEV> <FILATR>
+	.ONERR errtrp
+	; Forcing a "Label not found" error
+	.GOTO badlabel
+	; THIS LINE SHOULD NOT APPEAR
+	.BEGIN
+	; THIS LINE SHOULD NOT APPEAR EITHER
+	.END
+	.GOTO cont2
+.errtrp:
+	; Error trap entered:
+	;   Error number   is '<ERRNUM>' (11 expected)
+	;   Error severity is '<ERRSEV>' (1 expected)
+.cont2:	; Continuing after trap...
 ;
 ; This file doesn''t test:
 ;
 ;   .CHAIN filename
 ;   .ERASE [LOCAL|GLOBAL|SYMBOL name]
-;   .EXIT [value]
 ;   .STOP [value]
 ;   .WAIT taskname
 ;   .XQT taskname args ...
 ;   nested command files
+;
+; Several special variables are also missing:
+;   <MEMSIZ> <LOGDEV> <FILATR>
 ;
 .;.DEBUG
