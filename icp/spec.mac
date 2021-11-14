@@ -36,6 +36,7 @@
 	extrn	STYPE,SLEN,SNUM,SALNM,SVEOF,SVESC,SYSERR,EXSTAT
 	extrn	SVDFLT,SVTMO,DECSTR,FDB,FNBSTR,FILERR,EXSTRI
 	extrn	ERRCTL,ERRNUM,ERSEEN,STRCPY,ERROR,ERRSET,DSPTR
+	extrn	ERRSEV
 
 	cseg
 
@@ -303,14 +304,15 @@ vexst:	ld	hl,(EXSTAT)
 
 ; <ERRSEV>
 
-versev:
-	scf
-	ret
+versev:	ld	a,(ERRSEV)
+	jp	vna
 
 wersev:	ld	a,c
 	cp	V.NUM
 	jp	nz,ERRSET
-	scf
+	ld	a,e
+	ld	(ERRSEV),a
+	xor	a
 	ret
 
 ; <FILERR>
@@ -550,6 +552,7 @@ vsysv:	ld	hl,tmpbuf
 vhost:	ld	hl,tmpbuf
 	ld	c,I.HOST
 	SC	.GIN
+	ld	hl,0
 	jp	c,SYSERR
 	ld	hl,tmpbuf
 	ld	b,8
@@ -669,7 +672,7 @@ vdt1:	ld	hl,8
 werr:	ld	hl,roerr	; redefining a read-only symbol
 	jp	ERROR
 
-roerr:	db	'Redefining a read-only symbol',0
+roerr:	db	E_ROS,2,'Redefining a read-only symbol',0
 
 ;-----------------------------------------------------------------------
 

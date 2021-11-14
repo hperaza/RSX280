@@ -50,7 +50,7 @@ cnd$ge	equ	6
 
 	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
 	public	PARSE,ERRUDF,ERRCTL,FILERR,SVTMO,EXSTRI,ERRLBL
-	public	ERRNUM,ERSEEN
+	public	ERRNUM,ERSEEN,ERRSEV,ERRTRP
 
 	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU,ALLOC
 	extrn	SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM,INPBUF
@@ -124,7 +124,7 @@ cmdat:	CMD	'DATA',		data
 	CMD	'DEC',		decx
 	CMD	'DELAY',	delay
 cmdis:	CMD	'DISABLE',	disabl
-	CMD	'ENABLE',	enabl
+cmenbl:	CMD	'ENABLE',	enabl
 cmend:	CMD	'END',		bend
 	CMD	'ERASE',	erase
 	CMD	'EXIT',		exit
@@ -608,7 +608,7 @@ askop0:	xor	a
 asker1:	ld	hl,erspec	; error if outside range
 	jp	ERROR
 
-erspec:	db	'Bad range or default specification',0
+erspec:	db	E_BRS,1,'Bad range or default specification',0
 
 ; get timeout argument, returns magnitude in HL and units in B.
 
@@ -928,7 +928,7 @@ ed4:	rlca
 EDOPTS:	db	2		; arg length
 	CMD	'ATTACH',	<(0 SHL 8) OR B0.ATT>
 	CMD	'CONTROL-Z',	<(0 SHL 8) OR B0.CTZ>
-	CMD	'DATA',		<(0 SHL 8) OR B0.DAT>
+optdat:	CMD	'DATA',		<(0 SHL 8) OR B0.DAT>
 	CMD	'DECIMAL',	<(0 SHL 8) OR B0.DEC>
 
 	CMD	'DELETE',	<(0 SHL 8) OR B0.DEL>
@@ -1016,7 +1016,7 @@ frestr:	dec	hl
 	ld	(hl),0
 	ret
 
-errcs:	db	'Null control string',0
+errcs:	db	E_NCS,1,'Null control string',0
 
 split:	ld	hl,(ctrs)
 	ld	c,(hl)		; get control char into C
@@ -1080,43 +1080,130 @@ gto1:	ld	hl,0		; blk #
 	ld	de,0		; char offset
 	ld	bc,1		; line #
 gto2:	call	SETPOS		; reset indirect file position
+	ld	hl,epos
 	jp	c,SYSERR
-	ld	b,0		; clear block nesting indicator
-gto3:	push	bc
-	call	RDCMD		; read line from file
-	pop	bc
+gto3:	call	skpblk		; skip .BEGIN-.END and .ENABLE DATA blocks
 	jr	c,gto6		; error if end of file reached
-	ld	de,INPBUF
-	call	GETNB
-	cp	'.'
-	jr	nz,gto3
-	inc	de
-	inc	b
-	dec	b		; at right level?
-	jr	nz,gto4		; no
-	push	de
+	jr	z,gto3
+	jp	m,be1		;  or on nesting error
 	ld	hl,varnam
 	call	cmplbl		; compare label name (includes colon)
-	pop	de
-	jp	z,PROCLN	; found label, resume normal processing
-gto4:	push	de
-	ld	hl,cmbgn
-	call	cmplbl		; .BEGIN statement?
-	pop	de
-	jr	nz,gto5		; no
-	inc	b		; else increment nesting level
-	jr	gto3
-gto5:	ld	hl,cmend
-	call	cmplbl		; .END statement?
-	jr	nz,gto3		; no
-	dec	b		; else decrement nesting level
-	jp	m,be1		; error if negative
-	jr	gto3
+	jr	nz,gto3		; loop until found
+	jp	PROCLN		; then resume normal processing
 
 gto6:	ld	hl,elabel
 	jp	ERROR
 
-elabel:	db	'Label not found',0
+elabel:	db	E_LNF,1,'Label not found',0
+epos:	db	E_SEK,1,'Command file seek error',0
+
+; Helper line scan routine(s) used by .GOTO, .GOSUB and .EXIT.
+
+; Return flags:
+;  C - EOF or read error
+;  NC, NZ - OK to test for label
+;  NC, Z - don't test for label
+;  NC, M - nesting error
+
+skpblk:	call	RDCMD
+	ret	c
+	ld	de,INPBUF
+	call	GETNB
+	cp	'.'
+	jr	nz,skip5	; return NC, Z
+	inc	de
+	push	de
+	ld	hl,cmbgn
+	call	cmplbl		; .BEGIN?
+	pop	de
+	jr	nz,skpdat	; no, try .ENABLE DATA
+
+skip1:	; skip lines until matching .END found
+
+	ld	b,1		; nesting level counter
+skip2:	push	bc
+	call	RDCMD
+	pop	bc
+	ret	c
+	ld	de,INPBUF
+	call	GETNB
+	cp	'.'
+	jr	nz,skip2
+	inc	de
+	push	de
+	ld	hl,cmend
+	call	cmplbl		; .END?
+	pop	de
+	jr	nz,skip3
+	or	a		; clear CY
+	dec	b
+	ret	m		; nesting error
+	ret	z		; done
+	jr	skip2
+skip3:	push	de
+	ld	hl,cmbgn
+	call	cmplbl		; .BEGIN?
+	pop	de
+	jr	nz,skip4
+	inc	b
+	ret	m		; >127, nesting error
+	jr	skip2
+
+skip4:	push	bc
+	call	skpdat
+	pop	bc
+	jr	nc,skip2
+	ret
+
+skip5:	xor	a
+	ret
+
+skpdat:	; check for .ENABLE DATA
+
+	push	de
+	ld	hl,cmenbl
+	call	cmplbl		; .ENABLE?
+	jr	z,skpd1		; yes
+	pop	de
+skpd0: 	xor	a		; NC
+	inc	a		; NZ
+	ret
+
+skpd1:	call	GETNB
+	ld	hl,optdat
+	call	cmplbl		; DATA?
+	pop	de
+	jr	nz,skpd0
+
+skpd2:	; skip lines until .DISABLE DATA found
+
+	call	RDCMD
+	ret	c
+	ld	de,INPBUF
+  if 0
+	call	GETNB
+  else
+	ld	a,(de)		; make sure dot is in first column
+  endif
+	cp	'.'
+	jr	nz,skpd2
+	inc	de
+	push	de
+	ld	hl,cmdis
+	call	cmplbl		; .DISABLE?
+	jr	nz,skpd3
+	call	GETNB
+	ld	hl,optdat
+	call	cmplbl		; DATA?
+	pop	de
+	jr	nz,skpd2
+	ret			; NC, Z
+
+skpd3:	pop	de
+	ld	hl,cmcls
+	call	cmplbl		; .CLOSE?
+	jr	nz,skpd2
+	ret			; NC, Z
 
 cmplbl:	ld	a,(hl)
 	or	a
@@ -1190,6 +1277,7 @@ gsb3:	ld	(GSBLVL),a
 	ld	de,0		; char offset
 	ld	bc,1		; line #
 	call	SETPOS		; reset indirect file position
+	ld	hl,epos
 	jp	c,SYSERR
 gsb4:	call	RDCMD		; read line from file
 	jp	c,gto6		; error if end of file reached
@@ -1198,12 +1286,15 @@ gsb4:	call	RDCMD		; read line from file
 	cp	'.'
 	jr	nz,gsb4
 	inc	de
+	call	skpdat		; skip .ENABLE DATA blocks
+	jr	z,gsb4
+	jp	c,gto6		; error if end of file reached
 	ld	hl,varnam
 	call	cmplbl		; compare label name (includes colon)
 	jr	nz,gsb4
 	jp	PROCLN		; found label, resume normal processing
 
-egsb:	db	'.GOSUB nesting too deep',0
+egsb:	db	E_TMG,1,'.GOSUB nesting too deep',0
 
 ; .RETURN
 
@@ -1239,13 +1330,14 @@ ret2:	ld	l,(ix+0)
 	ld	c,(ix+4)
 	ld	b,(ix+5)
 	call	SETPOS
+	ld	hl,epos
 	jp	c,SYSERR
 	ret
 
 ret1:	ld	hl,ertn
 	jp	z,ERROR
 
-ertn:	db	'.RETURN without .GOSUB',0
+ertn:	db	E_RWG,1,'.RETURN without .GOSUB',0
 
 ; .ONERR label
 
@@ -1258,10 +1350,10 @@ onerr:	ld	hl,ERRLBL
 	jp	z,CMDERR
 	ret
 
-goerr:	ld	hl,ERRLBL
+ERRTRP:	ld	hl,ERRLBL
 	push	hl
 	ld	de,varnam
-	ld	bc,9
+	ld	bc,8+2
 	ldir			; load error label
 	pop	hl
 	xor	a
@@ -1585,7 +1677,7 @@ ifdisa:	call	chkopt		; check option bit
 ERRUDF:	ld	hl,snferr
 	jp	ERROR
 
-snferr:	db	'Undefined symbol',0
+snferr:	db	E_SYM,1,'Undefined symbol',0
 
 ;-----------------------------------------------------------------------
 
@@ -1734,11 +1826,13 @@ fsetup:	call	GETNB		; skip spaces
 	ld	ix,FDB
 	call	PFN		; parse file name
 	ld	a,E.BADF
+	ld	hl,iedat
 	jp	c,SYSERR
 	ld	hl,datext
 	call	ADDEXT
 	call	SETDIR		; set task's dir to terminal's current dir
-	jp	c,SYSERR	;  in case the user changed it
+	ld	hl,iedat	;  in case the user changed it
+	jp	c,SYSERR
 	ld	de,(FDB+F.DEV)
 	ld	a,(FDB+F.UNIT)
 	ld	c,a
@@ -1746,7 +1840,7 @@ fsetup:	call	GETNB		; skip spaces
 	add	a,LUNFIL
 	ld	b,a
 	SC	.ALUN
-	jp	c,SYSERR
+	jp	c,SYSERR	; msg address still in HL
 	ret			; note: returns LUN in reg B
 
 opnfil:	ld	hl,IO.ACC OR (SF.ACR OR SF.ACW OR SF.SHR) SHL 8 ; !!!TODO: mode!
@@ -1757,6 +1851,7 @@ opn1:	ld	a,b
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; open the file
+	ld	hl,iedat
 	jp	c,SYSERR
 	ld	a,(iosb)	; check error code (lo-byte)
 	or	a
@@ -1767,11 +1862,14 @@ opn1:	ld	a,b
 	ld	(qio1+Q.LEN),hl
 	ld	hl,qio1
 	SC	.QIO		; read attrib (full filespec)
+	ld	hl,iedat
 	jp	c,SYSERR	; !!!TODO: close file!
 	ld	a,(iosb)	; check error code (lo-byte)
 	or	a
 	ret	z
 	jp	SYSERR		; !!!TODO: close file!
+
+iedat:	db	E_DAT,1,'Data file error',0
 
 ; .OPEN [#n] filespec
 
@@ -1815,6 +1913,7 @@ opna1:	dec	hl
 	ld	(ix+FB.BLK),l	; seek to last block
 	ld	(ix+FB.BLK+1),h
 	call	frblk		; load last block
+	ld	hl,iedat
 	jp	c,SYSERR	; !!!TODO: close file!
 	ld	(ix+FB.CUR),e	; seek to last char in buffer
 	ld	(ix+FB.CUR+1),d
@@ -1845,6 +1944,7 @@ read:	call	GETNB		; skip spaces
 	or	a
 	jp	nz,errfmd
 	call	FGETLN		; get line from file into askbuf
+	ld	hl,iedat
 ;;	jp	c,SYSERR
 	ld	hl,askbuf
 	call	ALLOC		; allocate string
@@ -1939,6 +2039,7 @@ dat2:	ld	(fileno),a
 	jp	z,errfmd
 	ld	de,(LNPTR)
 	call	FPUTLN		; write string to file
+	ld	hl,iedat
 ;;	jp	c,SYSERR
 	ret
 
@@ -1952,6 +2053,7 @@ edata:	call	GETNB		; skip following blanks
 	; we're now in DATA mode
 
 edat1:	call	RDCMD		; read line from file
+	ld	hl,0		; TODO: message
 	jp	c,SYSERR
 	call	SUBST		; perform substitutions
 	;jp	c,...		; !!!TODO: process subst errors?
@@ -1991,6 +2093,7 @@ edat3:	ld	a,(fileno)
 	jp	z,errfmd	; error if file not open for write
 	ld	de,LNBUF
 	call	FPUTLN		; write line to file
+	ld	hl,iedat
 ;;	jp	c,SYSERR
 	jr	edat1		; loop for more
 
@@ -2052,16 +2155,16 @@ cls1:	ld	a,(ix+FB.LUN)
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; close file
-	jr	nc,cls2
-	call	SYSERR
-	jr	cls3
-cls2:	ld	a,(iosb)	; check error code (lo-byte)
-	or	a
-	call	nz,SYSERR
-cls3:	ld	a,(fileno)
+	jr	c,cls2
+	ld	a,(iosb)
+cls2:	push	af
+	ld	a,(fileno)
 	call	FREBUF		; free file buffer
-	xor	a
-	ret
+	pop	af
+	or	a
+	ret	z
+	ld	hl,iedat
+	jp	SYSERR
 
 frblk:	push	ix
 	pop	hl
@@ -2194,12 +2297,12 @@ getfil:	ld	a,(de)
 errifn:	ld	hl,ifnerr
 	jp	ERROR
 
-ifnerr:	db	'Invalid file number',0
+ifnerr:	db	E_IFN,1,'Invalid file number',0
 
 errfno:	ld	hl,fnoerr
 	jp	ERROR
 
-fnoerr:	db	'File not open',0
+fnoerr:	db	E_FNO,1,'File not open',0
 
 ; We are here because ALLBUF failed (not enough memory). Channel in
 ; use error should have been trapped by ALUN.
@@ -2220,7 +2323,7 @@ errfmd:	ld	hl,fmderr
 				; !!!at least I/O to terminal is
 				; !!!posible using the same channel
 
-fmderr:	db	'Bad file mode',0
+fmderr:	db	E_BFM,1,'Bad file mode',0
 
 datext:	db	'DAT'
 
@@ -2382,7 +2485,7 @@ bgn1:	ld	a,(BLKLVL)
 	call	PSHBLK		; push block marker
 	ret
 
-blke1:	db	'Too many nested blocks',0
+blke1:	db	E_TMB,1,'Too many nested blocks',0
 
 ; .END
 
@@ -2396,7 +2499,7 @@ bend:	ld	a,(BLKLVL)	; get block nesting level
 be1:	ld	hl,blke2
 	jp	ERROR		; error if becomes negative
 
-blke2:	db	'.END without .BEGIN',0
+blke2:	db	E_EWB,1,'.END without .BEGIN',0
 
 ; .EXIT
 ; .EXIT value
@@ -2410,38 +2513,14 @@ ex0:	call	BASEBL		; get block base level from current file
 	ld	hl,BLKLVL	; check block nesting level
 	cp	(hl)		; at main level?
 	jp	z,INDEOF	; if yes, exit this file
-	ld	b,0		; clear block nesting level counter
-ex1:	push	bc
-	call	RDCMD		; read line from file
-	pop	bc
+ex1:	call	skip1		; skip until .END found
 	ld	hl,blke3
 	jp	c,ERROR		; error if end of file reached
-	ld	de,INPBUF
-	call	GETNB
-	cp	'.'
-	jr	nz,ex1
-	inc	de
-	push	de
-	ld	hl,cmbgn
-	call	cmplbl		; .BEGIN statement?
-	pop	de
-	jr	nz,ex2		; no
-	inc	b		; else increment nesting level
-	jr	ex1		; and loop
-ex2:	ld	hl,cmend
-	call	cmplbl		; .END statement?
-	jr	nz,ex1		; no
-	dec	b		; else decrement nesting level
-	jp	p,ex1		; and loop while positive
-  if 0
-	jp	PROCLN		; negative means end of block found,
-				;  resume normal processing
-  else
-	ret			; negative means end of block found,
-				;  resume normal processing
-  endif
+	jp	z,bend		; pop block context and resume processing
+	ld	hl,blke1
+	jp	ERROR
 
-blke3:	db	'.EXIT without .END',0
+blke3:	db	E_EWE,1,'.EXIT without .END',0
 
 ;-----------------------------------------------------------------------
 
@@ -2499,6 +2578,7 @@ delay:	call	gettmo		; get interval magnitude and units
 	ex	de,hl		; get magnitude back into HL
 	ld	d,b		; and units into B
 	call	SLEEP		; sleep for the specified amount
+	ld	hl,0
 	jp	c,SYSERR
 dly1:	ld	hl,dlyms2	; 'Continuing'
 dly2:	ld	a,(MODE+1)
@@ -2531,7 +2611,7 @@ pause:	ld	hl,pmsg
 	call	TTFLSH		; ensure all output is displayed
 	ld	hl,0
 	SC	.STOP		; stop task
-	jp	c,SYSERR
+	jp	c,SYSERR	; note HL still zero
 	jp	dly1		; unstopped, continue via common code
 
 pmsg:	db	'Pausing. To continue type "UNS ',0,'<ESC>"',0
@@ -2612,6 +2692,7 @@ SVTMO:	ds	1		; <TIMOUT> value
 ERRCTL:	ds	1		; <ERRCTL> value
 FILERR:	ds	1		; <FILERR> value
 ERRNUM:	ds	1		; <ERRNUM> value
+ERRSEV:	ds	1		; <ERRSEV> value
 ERSEEN:	ds	1		; user-set <ERSEEN>
 EXSTRI:	ds	132		; <EXSTRI> value
 

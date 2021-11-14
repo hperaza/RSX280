@@ -171,7 +171,7 @@ exps4:	dec	c
 ERRSTL:	ld	hl,emsstl
 	jp	ERROR
 
-emsstl:	db	'String too long',0
+emsstl:	db	E_STL,2,'String too long',0
 
 exps5:	ld	hl,(LNPTR)	; use new src pointer
 	jp	exps1		; loop to process next term
@@ -179,7 +179,7 @@ exps5:	ld	hl,(LNPTR)	; use new src pointer
 ERRTYP:	ld	hl,emstyp
 	jp	ERROR
 
-emstyp:	db	'Type mismatch',0
+emstyp:	db	E_TYP,1,'Type mismatch',0
 
 concat:	ld	a,(symtyp)
 	or	a
@@ -213,7 +213,7 @@ exps6:	ld	(LNPTR),hl
 ERRMEM:	ld	hl,nmerr
 	jp	ERROR
 
-nmerr:	db	'Not enough memory',0
+nmerr:	db	E_MEM,2,'Not enough memory',0
 
 strseg:	push	bc
 	call	sseg		; save string pointer and length
@@ -399,7 +399,7 @@ ERROVF:	ld	a,(MODE+1)
 	ld	hl,ovmsg
 	jp	ERROR
 
-ovmsg:	db	'Numeric overflow',0
+ovmsg:	db	E_OVF,2,'Numeric overflow',0
 
 ERRUFL:	ld	a,(MODE+1)
 	bit	B1.OVF,a	; .OVERFLOW mode enabled?
@@ -407,7 +407,7 @@ ERRUFL:	ld	a,(MODE+1)
 	ld	hl,unmsg
 	jp	ERROR
 
-unmsg:	db	'Numeric underflow',0
+unmsg:	db	E_UDF,2,'Numeric underflow',0
 
 ; Get next factor
 

@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.57'
+	ident	'2.60'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -55,6 +55,7 @@ ESC	equ	1Bh
 	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
 	extrn	ERRLBL,DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE,PSHFIL
 	extrn	POPFIL,POPBLK,ERRMEM,ERRCTL,FILERR,ERRNUM,ERSEEN
+	extrn	ERRSEV,ERRTRP
 
 ;-----------------------------------------------------------------------
 
@@ -118,6 +119,7 @@ INIT:	ld	hl,0
 	ld	(XQTMOD),a
 	ld	(ERRLBL),a	; clear .ONERR label
 	ld	(ERRNUM),a	; clear <ERRNUM>
+	ld	(ERRSEV),a	; clear <ERRSEV>
 	ld	(ERRNUM),a	; clear <FILERR>
 	ld	(ERSEEN),a	; clear user <ERSEEN>
 	inc	a
@@ -198,7 +200,10 @@ PRMCR:	ld	hl,(LNPTR)	; else send command to MCR
 	ld	hl,LNBUF
 	call	SNDMCR		; send command to MCR
 	ret	nc
-	jp	SYSERR
+	ld	hl,sperr
+	jp	SYSERR		; spawn error
+
+sperr:	db	E_SPW,1,'Spawn failure',0
 
 INDEOF:	ld	sp,(spsav)
 	call	CLSIND
@@ -218,9 +223,24 @@ INDOPN:	inc	hl
 
 CMDERR:	ld	hl,snerr	; 'syntax error'
 ERROR:	ld	sp,(spsav)
-	jp	ERRMSG		; display message and return with CY set
+	call	TRAP?		; trap this error?
+	jp	z,ERRMSG	; no
+	jp	ERRTRP		; yes
 
-snerr:	db	'Syntax error',0
+TRAP?:	ld	a,(hl)
+	ld	(ERRNUM),a
+	inc	hl
+	ld	a,(hl)
+	ld	(ERRSEV),a
+	ld	a,(ERRCTL)
+	and	(hl)		; processing this error class?
+	inc	hl
+	ret	z
+	ld	a,(ERRLBL)
+	or	a		; error trap set?
+	ret			; return with flags
+
+snerr:	db	E_SNE,2,'Syntax error',0
 
 ;-----------------------------------------------------------------------
 
@@ -388,18 +408,9 @@ ERRMSG:	push	hl
 
 PRLN:	ld	a,(INDLVL)
 	or	a
-	ret	z
-	add	a,a		; *2
-	add	a,a		; *4
-	ld	c,a
-	add	a,a		; *8
-	add	a,c		; *12 (push-down list struct size)
-	ld	c,a
-	ld	b,0
-	ld	hl,INDPDL
-	add	hl,bc
-	inc	hl		; point to device characteristics
-	bit	DV.DIR,(hl)
+	ret	z		; just in case
+	ld	a,(luninf+4)
+	bit	DV.DIR,a
 	ret	z		; return if not a directory device (file)
 	ld	hl,atln
 	call	PUTSTR
@@ -419,10 +430,29 @@ PRMSG:	push	hl
 	scf
 	ret
 
-SYSERR:	push	af
+SYSERR:	ld	sp,(spsav)
+SYSER1:	ld	c,a
+	ld	a,h
+	or	l
+	ld	a,c
+	jr	z,SYSMSG
+	call	TRAP?		; trap this error?
+	jp	nz,ERRTRP	; yes
+	ld	a,c
+SYSMSG:	push	af
+	push	hl
 	ld	hl,eprfx
 	call	PUTSTR
-	pop	af
+	pop	hl
+	ld	a,h
+	or	l
+	jr	z,sms1
+	call	PUTSTR
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+sms1:	pop	af
 	call	PERROR
 	ld	c,CR
 	call	PUTCH
@@ -466,7 +496,7 @@ GPRMPT:	ld	hl,mcrdpr
 OPNCMD:	ld	a,(INDLVL)	; check nesting level
 	cp	MAXIND		; at maximum?
 	ld	hl,ielvl
-	jp	nc,ERRMSG	; error if yes - too many nested files
+	jp	nc,ERROR	; error if yes - too many nested files
 	or	a
 	call	nz,CPUSH	; push current context
 	ld	hl,(LNPTR)
@@ -516,14 +546,14 @@ OPEN:	ld	ix,FDB
 	add	a,LUNIND
 	ld	c,a
 	SC	.GTLUN		; get LUN info
-	jp	c,SYSERR
+	jr	c,opn1
 
 	ld	a,(luninf+4)
 	bit	DV.DIR,a	; directory device?
 	jr	z,opn3		; branch if not
 
 	call	SETDIR		; set task directory to current directory
-	jp	c,SYSERR	;  in case the user changed ot
+	jp	c,opn1		;  in case the user changed it
 
 	ld	l,IO.ACC
 	ld	h,SF.ACR OR SF.SHR
@@ -534,10 +564,8 @@ OPEN:	ld	ix,FDB
 	ld	a,(res)		; get result code (lo-byte)
 	or	a
 	jr	z,opn2		; branch on success
-opn1:	ld	hl,iefnf
-	call	ERRMSG		; on error, display message and return
-	scf
-	ret
+opn1:	ld	hl,ieopn
+	jp	SYSER1		; on error, display message and return
 
 opn2:	ld	hl,IO.RAT
 	ld	(qio1+Q.FUNC),hl
@@ -711,16 +739,27 @@ rloop:	push	hl
   ENDIF
 	djnz	rloop
 	ld	hl,ielnsz	; if line too long, exit with error
+ if 0
 	call	ERRMSG
 	call	CLSIND		; close current level
 	jp	RDCMD		; and restart
+ else
+	jp	ERROR
+ endif
 
 reol:	xor	a
 	ld	(hl),a		; add a trailing zero
 	ret
 
-reof:	call	CLSIND		; close current level
+reof:
+ if 0
+	call	CLSIND		; close current level
 	jp	RDCMD		; and restart
+ else
+	ld	a,E.EOF
+	scf
+	ret
+ endif
 
 ; Get char from indirect file
 
@@ -799,6 +838,8 @@ CLOSE:	ld	a,(luninf+4)
 ; Close current indirect file, if open, and chain to next.
 
 CHNIND:	ld	a,(INDLVL)
+	or	a
+	ret	z
 	dec	a
 	ld	e,a
 	call	POPFIL		; purge old variables
@@ -822,9 +863,9 @@ CHNIND:	ld	a,(INDLVL)
 chn1:	pop	hl		; restore pointer to command line
 	jp	SETCMN		; set COMMAN variable and return
 
-ielvl:	db	'Too many nested command files',0
-ielnsz:	db	'Line too long',0
-iefnf:	db	'File not found',0
+ielvl:	db	E_TMC,2,'Too many nested command files',0
+ielnsz:	db	E_LEN,2,'Line too long',0
+ieopn:	db	E_FNF,2,'Failed to open command file',0
 
 ; Set indirect file position, HL = block #, DE = offset, BC = line #.
 

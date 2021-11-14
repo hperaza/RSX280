@@ -1,4 +1,4 @@
-DEBUG	equ	1	; enable .DEBUG command
+DEBUG	equ	0	; enable .DEBUG command
 
 MAXIND	equ	3	; max number of nested command files
 MAXGSB	equ	10	; max .GOSUB depth
@@ -14,15 +14,16 @@ LUNFIL	equ	6	; base LUN for user file I/O
 
 ; Variable types
 
-V.STR	equ	00h	; string
-V.LOG	equ	20h	; logical
-V.NUM	equ	40h	; numeric
-V.BLK	equ	80h	; block marker (note sign bit set)
-V.FIL	equ	0C0h	; file frame marker (sign bit also set)
-V.LMSK	equ	1Fh	; mask for length field
-V.TMSK	equ	0E0h	; mask for variable type bits
+V.STR	equ	00000000b ; string
+V.LOG	equ	00100000b ; logical
+V.NUM	equ	01000000b ; numeric
+V.BLK	equ	10000000b ; block marker (note sign bit set)
+V.FIL	equ	11000000b ; file frame marker (sign bit also set)
+V.ERR	equ	10100000b ; .ONERR frame marker (sign bit also set)
+V.LMSK	equ	00011111b ; mask for length field
+V.TMSK	equ	11100000b ; mask for variable type bits
 
-; Enable/disable option bit numbers
+; .ENABLE/.DISABLE option bit numbers
 
 B0.ATT	equ	0	; attach
 B0.CTZ	equ	1	; control-Z
@@ -66,4 +67,48 @@ CMD	MACRO	name,addr1,addr2
 	dw	addr2
 	ENDIF
 	ENDM
+
+; <ERRNUM> error codes
+
+; Class 0 - informational, can't be trapped
+
+E_IAT	equ	1	; Invalid answer or terminator
+E_VNR	equ	2	; Value not in range
+E_SLR	equ	3	; String length not in range
+;E_INV	equ	4	; Invalid keyword
+
+; Class 1 - handled with .ONERR
+
+E_BRS	equ	5	; Bad range or default specification
+E_FAO	equ	6	; File already open
+E_FNO	equ	7	; File not open
+E_BFM	equ	8	; Bad file mode
+E_DAT	equ	9	; Data file error (see <FILERR>)
+E_IFN	equ	10	; Invalid file number
+E_LNF	equ	11	; Label not found
+E_NCS	equ	12	; Null control string
+E_RDF	equ	13	; Redefining symbol to different type
+E_RWG	equ	14	; .RETURN without .GOSUB
+E_TMG	equ	15	; .GOSUB nesting too deep
+E_TYP	equ	16	; Type mismatch
+E_SYM	equ	17	; Undefined symbol
+E_TMB	equ	18	; Too many nested blocks [Out of memory]
+E_EWB	equ	19	; .END without .BEGIN
+E_EWE	equ	20	; .EXIT without .END
+E_SPW	equ	21	; Spawn failure
+;E_SUB	equ	22	; String substitution error
+;E_XQT	equ	23	; Too many concurrent .XQTs
+
+; Class 2 - can be handled with <ERRCTL>
+
+E_FNF	equ	24	; File not found (command file)
+E_LEN	equ	25	; Line too long (command file read error)
+E_SEK	equ	26	; Seek error (command file)
+E_STL	equ	27	; String too long (string expression)
+E_MEM	equ	28	; Not enough memory
+E_OVF	equ	29	; Numeric overflow
+E_UDF	equ	30	; Numeric underflow
+E_SNE	equ	31	; Syntax error
+E_TMC	equ	32	; Too many nested command files
+E_ROS	equ	33	; Redefining a read-only symbol
 

@@ -488,7 +488,7 @@ nomem:	pop	bc		; discard value
 ERRSET:	ld	hl,redef
 	jp	ERROR
 
-redef:	db	'Redefining symbol to different type',0
+redef:	db	E_RDF,1,'Redefining symbol to different type',0
 
 ; Allocate space and save a string into the dynamic area.
 ; HL = string addr. Returns HL = new string addr (text field)
@@ -841,7 +841,7 @@ FNDBLK:	push	de
 fbk1:	ld	a,(hl)		; get length and type
 	inc	a		; end of variables?
 	scf
-	ret	z		; return CY if yes -> variable not found
+	ret	z		; return CY if yes -> block marker not found
 	dec	a
 	jp	p,fbk3		; skip if not a block marker
 	and	V.TMSK
@@ -931,7 +931,7 @@ FNDFIL:	ld	hl,(stvar)	; point to start of variables
 ffm1:	ld	a,(hl)		; get length and type
 	inc	a		; end of variables?
 	scf
-	ret	z		; return CY if yes -> variable not found
+	ret	z		; return CY if yes -> file marker not found
 	dec	a
 	jp	p,ffm3		; skip if not a block or file marker
 	and	V.TMSK
@@ -957,7 +957,7 @@ ffm4:	ld	c,l
 
 ; Enter a file frame marker into the symbol table.
 
-PSHFIL:	ld	bc,2		; length of block marker, including len field
+PSHFIL:	ld	bc,2		; length of file marker, including len field
 	call	avail?		; check for available memory
 	jp	c,ERRMEM	; return error
 	ld	hl,(endvar)	; point to end of variable area
@@ -981,7 +981,7 @@ POPFIL:	call	FNDFIL
 	dec	hl
 	dec	hl
 	ld	ix,cmpla
-	call	del3		; delete block marker and local vars
+	call	del3		; delete higher block marker and local vars
 	xor	a
 	ret 
 
@@ -1151,7 +1151,7 @@ strbeg:	ds	2	; pointer to start of dynamic string storage
 ;
 ; where 'len' is the full entry length (9 bytes), 'blv' the block
 ; nesting level, 'blkno', 'offset' and 'lineno' contain the file
-; position corresponing to the start of the block (line after .BEGIN
+; position corresponding to the start of the block (line after .BEGIN
 ; statement) and 'ilv' is the indirect file nesting level.
 ;
 ; File markers have the following format:
