@@ -30,6 +30,7 @@
 #endif
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "fileio.h"
 #include "dirio.h"
@@ -61,7 +62,7 @@ void show_help(char *topic) {
     printf("dump <filename> [/h]              - dump file contents\n");
     printf("copy <srcfile> <dstfile> [/[-]c]  - copy a file\n");
     printf("delete <filename>                 - delete file\n");
-    printf("import <unixfile> <file> [/c]     - import file\n");
+    printf("import <unixfile> [<file> [/c]]   - import file\n");
     printf("export <file> <unixfile>          - export file\n");
     printf("updboot [<bootloader>]            - update boot record\n");
     printf("vmr <arguments...>                - enter a VMR command\n");
@@ -150,10 +151,13 @@ void show_help(char *topic) {
       printf("Copies a file from the host machine to the current directory of the mounted\n");
       printf("disk image.\n\n");
       printf("Syntax:\n\n");
-      printf("  import <unixfile> <file> [/c]\n\n");
+      printf("  import <unixfile> [<file> [/c[:<blocks>]]]\n\n");
       printf("where <unixfile> is the path name of the file to import, and <file> the name\n");
       printf("of the destination file on the mounted volume. If the /c option is specified\n");
-      printf("the destination file will be contiguous.\n\n");
+      printf("the destination file will be contiguous. When :<blocks> is appended, it is\n");
+      printf("created with that size.\n\n");
+      printf("When <unixfile> is a directory, no other arguments are needed and all files\n");
+      printf("in that directory are imported to the current directory.\n\n");
       printf("Examples:\n\n");
       printf("  import ../startup.cmd startup.cmd\n");
       printf("  import ~/rsx180/mcr/sys/sys.tsk sys.tsk /c\n\n");
@@ -485,12 +489,12 @@ int cmd_copy(char *srcfile, char *dstfile, int mode, int alloc) {
 int cmd_import(char *srcfile, char *dstfile, int contiguous, int alloc) {
   struct FCB *fcb;
   FILE *f;
-  long pos, size, blks;
+  long size, blks;
   char user, group;
-  int len, wlen;
+  int  retc, len, wlen;
   unsigned char buf[256];
   struct stat sbuf;
-        
+
   f = fopen(srcfile, "rb");
   if (!f) {
     printf("File not found\n");
@@ -517,14 +521,14 @@ int cmd_import(char *srcfile, char *dstfile, int contiguous, int alloc) {
     fclose(f);
     return 0;
   }
-  
-  pos = 0;
+
+  retc = 1;  
   while ((len = fread(buf, 1, 256, f)) > 0) {
     wlen = file_write(fcb, buf, len);
-    pos += wlen;
     if (wlen != len) {
-      printf("Error writing file: offset %ld, %d of %d bytes written\n",
-             pos, wlen, len);
+      printf("File write error\n");
+      retc = 0;
+      break; /* volume probably full */
     }
   }
   close_file(fcb);
@@ -535,7 +539,73 @@ int cmd_import(char *srcfile, char *dstfile, int contiguous, int alloc) {
   }
   free_fcb(fcb);
   fclose(f);
-  return 1;
+
+  return retc;
+}
+
+/* Import dir */
+int cmd_import_dir(char *src) {
+  struct stat sbuf;
+  DIR *d;
+  struct dirent *dp;
+  char *rname, *ename = NULL;
+
+  /* Sanity */
+  if (!cdfcb) {
+    printf("No current working directory\n");
+    return 0;
+  }
+  if (stat(src, &sbuf) < 0) {
+    printf("Directory not found\n");
+    return 0;
+  }
+  if ((sbuf.st_mode & S_IFMT) != S_IFDIR) {
+    printf("Import source not a directory\n");
+    return 0;
+  }
+
+  /* Walk entries */
+  d = opendir(src);
+  if (!d) {
+    printf("Can't walk the directory\n");
+    return 0;
+  }
+  while ((dp = readdir(d))) {
+    /* Skip dotfiles */
+    if (dp->d_name[0] == '.') {
+      continue;
+    }
+
+    /* This entry's name including path */
+    rname = realloc(ename, strlen(src) + 2 + strlen(dp->d_name));
+    if (!rname) {
+      printf("Out of memory\n");
+      if (ename) free(ename);
+      return 0;
+    }
+    ename = rname;
+    strcpy(ename, src);
+    strcat(ename, "/");
+    strcat(ename, dp->d_name);
+
+    /* A file? */
+    if (stat(ename, &sbuf) < 0) {
+      perror(ename);
+      continue;
+    }
+    if ((sbuf.st_mode & S_IFMT) != S_IFREG) {
+      /* Ignore non-files */
+      continue;
+    }
+
+    /* Do the copy using our common single file copy code */
+    cmd_import(ename, dp->d_name, 0, 0);
+    printf(" %s -> %s\n", ename, dp->d_name);
+  }
+  closedir(d);
+  if (ename) free(ename);
+  
+  return 0;
 }
 
 /* Export file */
@@ -806,15 +876,21 @@ int main(int argc, char *argv[]) {
             printf("Missing filename\n");
           }
         } else if (strcmp(cmd, "import") == 0) {
-          if (*arg1 && *arg2) {
-            int contiguous = 0, alloc = 0;
-            char *p;
-            
-            p = strchr(arg3, ':');
-            if (p) *p++ = '\0';
-            if (strcmp(arg3, "/c") == 0) contiguous = 1;
-            if (contiguous && p) alloc = atoi(p);
-            cmd_import(arg1, arg2, contiguous, alloc);
+          if (*arg1) {
+            if (!*arg2) {
+              /* Import directory */
+              cmd_import_dir(arg1);
+            } else {
+              /* Import one file */
+              int contiguous = 0, alloc = 0;
+              char *p;
+
+              p = strchr(arg3, ':');
+              if (p) *p++ = '\0';
+              if (strcmp(arg3, "/c") == 0) contiguous = 1;
+              if (contiguous && p) alloc = atoi(p);
+              cmd_import(arg1, arg2, contiguous, alloc);
+            }
           } else {
             printf("Missing argument\n");
           }
