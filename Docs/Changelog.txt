@@ -6617,7 +6617,7 @@ BUGS:
   * some special variables can now be (re)set by the user: <ERRCTL>,
     <ERRNUM>, <ERSEEN>, <ERRSEV>, <FILERR>, <EXSTRI> and <EOF>. The <ERR*>
     ones are rather useless as this moment, since they are meant to support
-    the .ONERR statement, which is not yet implemented
+    the .ONERR statement, which is not yet implemented.
 
 
 30/05/21
@@ -6674,5 +6674,12 @@ BUGS:
 
 - TKB bug fix: the output file size was not computed correctly for images
   containing absolute segments.
+
+
+21/11/21
+
+- vol180: applied Andy Valencia's patch: 'import' command now imports the
+  whole directory if the source filespec is a directory and no destination
+  is specified.
 
 
