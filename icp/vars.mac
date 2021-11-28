@@ -39,7 +39,7 @@ LF	equ	0Ah
 	public	CLRVAR,FNDVAR,GETVAR,DELVAR,SETNV,SETSV,SETLV
 	public	ALLOC,FREMEM,INIBUF,ALLBUF,FREBUF,GETBUF,DSPTR
 	public	DELLCL,DELGBL,PSHBLK,POPBLK,FNDBLK,PSHFIL,POPFIL
-	public	FNDFIL,ERRSET
+	public	FNDFIL,ERRSET,FNDERR,PSHERR,DELERR
 
 	extrn	SPECV,LNPTR,$MEMRY,ADDHLA,UCASE,ISDIG,MODE
 	extrn	CPHLDE,MEMTOP,EXTEND,ERRMEM,ERROR,BLKLVL,INDLVL
@@ -126,6 +126,8 @@ vl1:	call	PUTCH
 vmark:	and	V.TMSK
 	cp	V.BLK
 	jr	z,vblk
+	cp	V.ERR
+	jp	z,verr
 	call	print
 	db	'FILE level ',0
 	inc	hl		; skip length field
@@ -156,6 +158,19 @@ vblk:	call	print
 	call	HLDEC
 	ex	de,hl
 	inc	hl		; skip indlvl
+	call	CRLF
+	jp	v1
+
+verr:	call	print
+	db	'ONERR ',0
+	inc	hl		; skip length field
+	call	PUTSTR		; display label name
+	call	print
+	db	' blk level ',0
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	call	ADEC
 	call	CRLF
 	jp	v1
 
@@ -258,10 +273,11 @@ FREMEM:	ld	hl,(strbeg)
 ; Check for available memory, BC = requested space.
 ; If no space is available, garbage collection will be attempted.
 ; Returns CY if not enough memory.
-; avail4 is a convenience entry points, which adds 4 to BC before check.
+; avail3 and avail4 are a convenience entry points, which add 3 and 4
+; respectively to BC before check.
 
 avail4:	inc	bc
-	inc	bc
+avail3:	inc	bc
 	inc	bc
 	inc	bc
 avail?:	push	hl
@@ -906,7 +922,7 @@ POPBLK:	call	FNDBLK
 	ret 
 
 cmpla:	dec	a
-	jp	m,cmp1		; delete block markers
+	jp	m,cmp1		; delete error and block markers
 	ld	a,(MODE+1)
 	and	1 SHL B1.GBL	; GLOBAL mode enabled?
 	ret	z		; no, all variables are local
@@ -917,6 +933,75 @@ cmpla:	dec	a
 	ret
 cmp1:	xor	a
 	ret
+
+;-----------------------------------------------------------------------
+
+; Find topmost error marker for current file.
+; If found, return DE = pointer to value field.
+; If not found, return CY and Z flags set, and HL pointing to the end
+; of variable area.
+
+FNDERR:	ld	a,(INDLVL)
+	dec	a
+	ld	e,a
+	call	FNDFIL		; search only the current file frame
+	ld	l,c
+	ld	h,b
+	ld	de,0
+fer1:	ld	a,(hl)		; get length and type
+	inc	a		; end of variables?
+	jr	nz,fer2		; no
+	ld	a,d
+	or	e		; any marker found?
+	ret	nz		; yes, return success
+	scf
+	ret			; no, return with CY set
+fer2:	dec	a
+	jp	p,fer4		; skip if not an error marker
+	and	V.TMSK
+	cp	V.ERR		; error marker?
+	jr	nz,fer3		; no, try next
+	ld	e,l		; yes, remember it
+	ld	d,h
+fer3:	ld	a,(hl)		; get length field
+fer4:	and	V.LMSK		; leave length bits
+	call	ADDHLA		; point to next variable
+	jr	fer1
+
+; Enter an error marker into the symbol table.
+; Called with DE = pointer to .ONERR label name, BC = label name length.
+
+PSHERR:	call	avail3		; check for available memory
+	jp	c,ERRMEM	; return error
+	ld	hl,(endvar)	; point to end of variable area
+	ld	a,c		; get length
+	or	V.ERR		; add type bits
+	ld	(hl),a		; store it
+	inc	hl
+	dec	bc
+	dec	bc
+	dec	bc
+	ex	de,hl
+	ldir			; copy label name
+	ex	de,hl
+	ld	(hl),0		; add trailing null
+	inc	hl
+	ld	a,(BLKLVL)
+	ld	(hl),a		; store block nesting level
+	inc	hl
+	ld	(hl),0FFh	; set new end of variables
+	ld	(endvar),hl
+	ret
+
+; Delete error marker from symbol table. Called with HL = address of
+; error marker entry.
+
+DELERR:	ld	c,l		; BC = start of entry
+	ld	b,h
+	ld	a,(hl)
+	and	V.LMSK
+	call	ADDHLA		; HL = start of next entry
+	jp	dv1		; delete entry
 
 ;-----------------------------------------------------------------------
 
@@ -1124,6 +1209,7 @@ endvar:	ds	2	; pointer to end of variable area
 strbeg:	ds	2	; pointer to start of dynamic string storage
 
 ; The variable area grows from stvar up to the top of available memory.
+;
 ; The variables are stored using the following structure:
 ;
 ;   +---+----------+---+-----+-     -+---+----------+---+-----+---+
@@ -1153,6 +1239,15 @@ strbeg:	ds	2	; pointer to start of dynamic string storage
 ; nesting level, 'blkno', 'offset' and 'lineno' contain the file
 ; position corresponding to the start of the block (line after .BEGIN
 ; statement) and 'ilv' is the indirect file nesting level.
+;
+; .ONERR markers have the following format:
+;
+;   +---+----------+---+---+
+;   |len|   name   | 0 |blv|
+;   +---+----------+---+---+
+;
+; where 'len' contains the full entry length, 'name' the associated label
+; name and 'blv' the block nesting level of this entry.
 ;
 ; File markers have the following format:
 ;

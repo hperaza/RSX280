@@ -49,8 +49,8 @@ cnd$ge	equ	6
 	cseg
 
 	public	INTCMD,STYPE,SNUM,SALNM,SLEN,SVEOF,SVESC,SVDFLT
-	public	PARSE,ERRUDF,ERRCTL,FILERR,SVTMO,EXSTRI,ERRLBL
-	public	ERRNUM,ERSEEN,ERRSEV,ERRTRP
+	public	PARSE,ERRUDF,ERRCTL,FILERR,SVTMO,EXSTRI,ERRNUM
+	public	ERSEEN,ERRSEV,ERRTRP
 
 	extrn	CMDERR,ERROR,FNDCMD,SKIPBL,GETNB,GETNAM,ATOU,ALLOC
 	extrn	SETSV,SETNV,SETLV,GETVAR,MODE,STRCPY,CPNAM,INPBUF
@@ -60,7 +60,7 @@ cnd$ge	equ	6
 	extrn	EXSTAT,XQTMOD,PRMCR,DSPTR,ADDEXT,FDB,LNBUF,SUBST
 	extrn	ERRMEM,ERRTYP,FNDEV,ERROVF,ERRUFL,DELLCL,DELGBL
 	extrn	DELVAR,CHNIND,COMMAN,SETDIR,BLKLVL,PSHBLK,POPBLK
-	extrn	FNDBLK,INDLVL,STRCMP,BASEBL
+	extrn	FNDBLK,INDLVL,STRCMP,BASEBL,FNDERR,PSHERR,DELERR
 
 	extrn	PUTCH,PUTSTR,SYSERR,CRLF,GETLN,UCASE,GTBUF,SLEEP
 	extrn	CPHLDE,ALLBUF,FREBUF,GETBUF,PFN,PDN,TTLUN,TTFLSH
@@ -711,7 +711,7 @@ gtn2:	ld	(hl),' '
 ; Get label name into varnam buffer
 
 getlbl:	ld	hl,varnam
-getlb2:	ld	b,8
+	ld	b,8
 	call	GETNB		; skip spaces
 	call	GETNAM		; get label name
 	ld	(hl),':'	; add colon
@@ -1341,24 +1341,49 @@ ertn:	db	E_RWG,1,'.RETURN without .GOSUB',0
 
 ; .ONERR label
 
-onerr:	ld	hl,ERRLBL
-	push	hl
-	call	getlb2		; get label
-	pop	hl
-	ld	a,(hl)
-	or	a		; can't be empty
-	jp	z,CMDERR
-	ret
+onerr:	push	de
+	call	FNDERR		; get topmost .ONERR entry, if any
+	jr	c,on1		; none found
+	ld	l,e		; get entry address into HL
+	ld	h,d
+	ld	a,(hl)		; get type and length
+	and	V.LMSK		; strip type bits, leave length
+	call	ADDHLA		; poiny to end of entry
+	dec	hl		; backup to block nesting level
+	ld	a,(BLKLVL)
+	cp	(hl)		; same block level?
+	jr	nz,on1		; no, enter new one
+	ex	de,hl
+	call	DELERR		; delete old entry
+on1:	pop	de
+	call	getvn		; get label name
+	ld	hl,varnam
+	ld	e,l
+	ld	d,h
+	call	STRLEN		; compute name length
+	jp	PSHERR		; enter error entry in symbol table
 
-ERRTRP:	ld	hl,ERRLBL
+; called from TRAP? routine of main module with .ONERR entry address
+; on DE as returned by FNDERR.
+
+ERRTRP:	ex	de,hl		; get entry address into HL
 	push	hl
 	ld	de,varnam
-	ld	bc,8+2
-	ldir			; load error label
+	inc	hl
+	call	STRCPY		; copy label name
+	ex	de,hl
+	ld	(hl),':'	; add a colon
+	inc	hl
+	ld	(hl),0		; and a trailing null
+	inc	de
+	ld	a,(de)		; get block nesting level
+	ld	(BLKLVL),a
+	inc	a
+	ld	e,a
+	call	POPBLK		; purge any inner blocks
 	pop	hl
-	xor	a
-	ld	(hl),a		; disarm .ONERR
-	jp	gto0		; goto label
+	call	DELERR		; disarm further .ONERRs for this level
+	jp	gto0		; and goto label
 
 ;-----------------------------------------------------------------------
 
@@ -2679,7 +2704,6 @@ askopb:	ds	1		; .ASKx option bits:
 				;        bit 0 = range specified
 				;        bit 1 = default value specified
 				;        bit 2 = timeout specified
-ERRLBL:	ds	8+2		; .ONERR label name + trailing colon and null
 
 STYPE:	ds	1		; <SYMTYP> value
 SNUM:	ds	1		; <NUMBER> value

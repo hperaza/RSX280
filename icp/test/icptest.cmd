@@ -177,12 +177,12 @@
 	.ASKS s1 Enter first string
 	.ASKS s2 Enter second string
 	;
-	.IF s1 = s2  ; 's1' = 's2'
-	.IF s1 <> s2 ; 's1' <> 's2'
-	.IF s1 > s2  ; 's1' > 's2'
-	.IF s1 >= s2 ; 's1' >= 's2'
-	.IF s1 < s2  ; 's1' < 's2'
-	.IF s1 <= s2 ; 's1' <= 's2'
+	.IF s1 = s2  ; "'s1'" = "'s2'"
+	.IF s1 <> s2 ; "'s1'" <> "'s2'"
+	.IF s1 > s2  ; "'s1'" > "'s2'"
+	.IF s1 >= s2 ; "'s1'" >= "'s2'"
+	.IF s1 < s2  ; "'s1'" < "'s2'"
+	.IF s1 <= s2 ; "'s1'" <= "'s2'"
 ;
 ; 7a) .IFT/.IFF
 ;

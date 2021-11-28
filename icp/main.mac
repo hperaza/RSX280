@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.60'
+	ident	'2.61'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -53,9 +53,9 @@ ESC	equ	1Bh
 	extrn	INTCMD,SKIPBL,SKPNAM,STRLEN,CLRVAR,SUBST,GCCL,PFN
 	extrn	STRPEL,PUTCH,PUTSTR,TTFLSH,PERROR,HLDEC,CRLF,GETLNL
 	extrn	ADDHLA,INIBUF,ALLOC,SETSV,PARSE,EXSTRI,STRCPY,FNDEV
-	extrn	ERRLBL,DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE,PSHFIL
+	extrn	ERRSEV,DELLCL,ISBLNK,FNDCMD,UCASE,CPHLDE,PSHFIL
 	extrn	POPFIL,POPBLK,ERRMEM,ERRCTL,FILERR,ERRNUM,ERSEEN
-	extrn	ERRSEV,ERRTRP
+	extrn	FNDERR,ERRTRP
 
 ;-----------------------------------------------------------------------
 
@@ -117,7 +117,6 @@ INIT:	ld	hl,0
 	ld	(STPFLG),a
 	ld	(GSBLVL),a	; clear .GOSUB level
 	ld	(XQTMOD),a
-	ld	(ERRLBL),a	; clear .ONERR label
 	ld	(ERRNUM),a	; clear <ERRNUM>
 	ld	(ERRSEV),a	; clear <ERRSEV>
 	ld	(ERRNUM),a	; clear <FILERR>
@@ -235,10 +234,11 @@ TRAP?:	ld	a,(hl)
 	ld	a,(ERRCTL)
 	and	(hl)		; processing this error class?
 	inc	hl
-	ret	z
-	ld	a,(ERRLBL)
-	or	a		; error trap set?
-	ret			; return with flags
+	ret	z		; no, return
+	push	hl
+	call	FNDERR		; else get topmost .ONERR entry,
+	pop	hl		;  returns NZ if found, else Z and CY
+	ret
 
 snerr:	db	E_SNE,2,'Syntax error',0
 
@@ -360,28 +360,23 @@ echo4:	call	PUTSTR		; output command
 
 ; Get default MCR prompt.
 
-GETDPR:	ld	c,1
-	SC	.SUPER
-	jr	c,gdpr0
-	ld	de,($CLIST)	; TODO: get CLICB associated to terminal
-	ld	a,d
-	or	e		; valid CLICB?
-	jr	nz,gdpr1	; jump if yes
-gdpr0:	ld	hl,DPR
+GETDPR:	ld	hl,gcii
+	SC	.GCII		; get CLI information
+	jr	nc,gdpr1
+	ld	hl,DPR
 	ld	bc,DPRL
 	jr	gdpr2		; else use the 'emergency' prompt
-gdpr1:	ld	hl,CL.DPL
+gdpr1:	ld	de,(gcii)	; get a pointer to result buffer
+	ld	hl,CL.DPL
 	add	hl,de
 	ld	a,(hl)
-	and	1Fh		; trim length just in case
+	and	1Fh		; trim prompt length just in case
 	ld	c,a
 	ld	b,0
 	ld	hl,CL.DAT
 	add	hl,de
 gdpr2:	ld	de,mcrdpr
-	ldir
-	ld	c,0
-	SC	.SUPER
+	ldir			; copy CLI default prompt
 	ret
 
 DPR:	db	CR,LF,'>',0	; 'emergency' prompt in case CLICB is not set
@@ -1080,6 +1075,7 @@ EXTEND:	SC	.EXTSK
 
 prompt:	db	CR,LF,'AT.>',0
 
+gcii:	GCII$
 mcrdpr:	ds	32
 
 GTBUF:	ds	GTKSZ		; buffer for task info
