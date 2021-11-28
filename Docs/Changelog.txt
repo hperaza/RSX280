@@ -6536,7 +6536,7 @@ BUGS:
 18/05/21
 
 - If the address of an AST routine is specified in the QIO block, queue the
-  AST to the issuing task whe the I/O operation completes, pushing the IOSB
+  AST to the issuing task when the I/O operation completes, pushing the IOSB
   address as argument.
 
 - Changed the $IOEND routine interface, requiring the address of the I/O
@@ -6544,7 +6544,7 @@ BUGS:
   free the original I/O packet. BC and DE contains the result codes like
   IODONE requires.
 
-- ICP: the %C string substition option now compresses multiple blanks into
+- ICP: the %C string substitution option now compresses multiple blanks into
   a single space, for compatibility with RSX-11M. The option to remove all
   embedded spaces (not present in RSX-11M) is now %B.
 
@@ -6586,7 +6586,7 @@ BUGS:
     since the routine can be either inside or outside a block. The current
     block level is saved nevertheless, to purge any extra block frames on
     .RETURN.
-  * the curent indirect nesting level is now also saved into the .GOSUB
+  * the current indirect nesting level is now also saved into the .GOSUB
     return stack so we can detect .RETURN statements without .GOSUB inside
     an inner file.
   * .ERASE LOCAL inside a block now erases only the local variables defined
@@ -6682,4 +6682,16 @@ BUGS:
   whole directory if the source filespec is a directory and no destination
   is specified.
 
+
+28/11/21
+
+- ICP:
+  * use the new GCII function to get CLI information without having to access
+    the kernel database directly.
+  * ICP is now built as non-privileged task.
+  * .ONERR now operates within the current block and/or file only, context
+    for outer .ONERRs is saved/restored. An error inside a block with no local
+    .ONERR declaration will be trapped by an .ONERR of an outer block. But an
+    error inside a nested file will NOT be trapped by the .ONERR of an outer
+    file.
 
