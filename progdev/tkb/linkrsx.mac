@@ -1500,11 +1500,11 @@ CreateF:
 	ld	hl,511
 	add	hl,de
 	ld	a,c
-	adc	c,0
+	adc	a,0
 	rra
 	rr	h
 	ld	e,h
-	ld	d,0		; DE = blocks to allocate
+	ld	d,a		; DE = blocks to allocate
 	pop	hl
 	push	hl
 	push	de

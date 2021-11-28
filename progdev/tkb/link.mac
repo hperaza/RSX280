@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.15'
+	ident	'2.16'
 
 	extrn	GetTop,IOBuf,IrlBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -821,6 +821,7 @@ Wr$Y$byte:
 	push	bc
 	ld	hl,(Y.FCB)	; get FCB
 	ld	de,0
+	ld	c,d
 	call	CreateF		; create file
 	ld	(iy+Y$.WR),TRUE	; set file created flag
 	pop	bc
@@ -2557,6 +2558,7 @@ WriteMap:
 	call	AddExt		; set .MAP extension
 	ld	hl,FCB
 	ld	de,0
+	ld	c,d
 	call	CreateF		; create .MAP file
 	ld	hl,0
 	ld	(OutPtr),hl	; clear pointer
@@ -4300,6 +4302,7 @@ WrtSym:	ld	a,(symflg)	; symbol file wanted?
 	call	AddExt		; set .SYM extension
 	ld	hl,FCB
 	ld	de,0
+	ld	c,d
 	call	CreateF		; create .SYM file
 	ld	hl,0
 	ld	(OutPtr),hl	; reset pointer
@@ -4476,6 +4479,7 @@ wrec1:	ld	a,(ix+X$.WR)	; file already created?
 	jr	c,wrec2		; jump if yes
 	ld	hl,(X.FCB)	; else get FCB
 	ld	de,0
+	ld	c,d
 	call	CreateF		; and create file
 	ld	(ix+X$.WR),TRUE	; set file created flag
 wrec2:	call	Pos$X		; position file
