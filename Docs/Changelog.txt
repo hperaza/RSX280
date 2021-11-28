@@ -6695,3 +6695,6 @@ BUGS:
     error inside a nested file will NOT be trapped by the .ONERR of an outer
     file.
 
+- TKB bug fix: create symbol and map files as non-contiguous under RSX180/280.
+
+ 
