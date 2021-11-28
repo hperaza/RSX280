@@ -1348,7 +1348,7 @@ onerr:	push	de
 	ld	h,d
 	ld	a,(hl)		; get type and length
 	and	V.LMSK		; strip type bits, leave length
-	call	ADDHLA		; poiny to end of entry
+	call	ADDHLA		; point to end of entry
 	dec	hl		; backup to block nesting level
 	ld	a,(BLKLVL)
 	cp	(hl)		; same block level?
