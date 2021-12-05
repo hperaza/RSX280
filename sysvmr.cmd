@@ -32,7 +32,7 @@ ins bro				! install broadcast task
 ins mac				! install mac
 ins tkb/inc=30000		! install task builder
 ins lbr				! install object module librarian
-ins zap				! install hex edtor
+ins zap				! install hex file edtor
 ins who
 ins dmp				! install file dump utility
 ins mce				! install command line editor
@@ -47,6 +47,7 @@ ins dcu
 ins cpu
 ins cal				! install calendar display
 ins acnt/task=...pwd		! install user password change utility
+ins kermit			! install Kermit
 ;set /speed=tt0:115200
 set /speed=tt1:19200
 set /speed=tt2:19200
