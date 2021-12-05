@@ -6567,8 +6567,6 @@ BUGS:
 - MCR, VMR: implemented the 'SET /SPEED' command (code simply imported from
   the RSX280 version).
 
--
-
 
 23/05/21
 
@@ -6711,7 +6709,7 @@ BUGS:
     argument (OUTPUT, RECEIVE, etc.) caused corruption of the command line.
   * Bug fix: character count was not correctly kept after command autocomplete
     operations, which resulted in prompt erasing when deleting command line
-    chars and potential buffer corruption.
+    chars, and in potential buffer corruption.
   * Typing ^Z at the command prompt now exits Kermit-180.
   * Display an error message if the SET PORT command failed to attach the
     comm port.
@@ -6720,11 +6718,17 @@ BUGS:
 
 05/12/21
 
-- DEVTT: allow non-privileged users changing terminal characteristics of
+- DEVTT: allow non-privileged users to change terminal characteristics of
   any terminal set to Public.
 
 - The kernel now clears the Public bit of the terminal unit when a user
   logs in.
 
 - Kermit-180 is no longer built as privileged task.
+
+- ZSM4: set exit code to 'error' if errors were found during assembly, or
+  to 'severe' in case of I/O errors. When assembling multiple files via a
+  command file, the exit code will be set if errors occurred in at least
+  one of the files; ZSM4 will continue processing the rest of the files in
+  the list.
 
