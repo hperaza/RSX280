@@ -6567,6 +6567,8 @@ BUGS:
 - MCR, VMR: implemented the 'SET /SPEED' command (code simply imported from
   the RSX280 version).
 
+-
+
 
 23/05/21
 
@@ -6697,4 +6699,32 @@ BUGS:
 
 - TKB bug fix: create symbol and map files as non-contiguous under RSX180/280.
 
- 
+
+04/12/21
+
+- Kermit-180:
+  * Remote mode (PORT set to TI:) is now working. In Remote mode status
+    transfer display is suppressed to avoid conflicting with the Local
+    (PC-side) Kermit, and a message is displayed after GET, RECEIVE, SEND
+    and SERVER commands reminding the user to exit back to the Local Kermit.
+  * Bug fix: entering a '?' in commands that require an arbitrary text
+    argument (OUTPUT, RECEIVE, etc.) caused corruption of the command line.
+  * Bug fix: character count was not correctly kept after command autocomplete
+    operations, which resulted in prompt erasing when deleting command line
+    chars and potential buffer corruption.
+  * Typing ^Z at the command prompt now exits Kermit-180.
+  * Display an error message if the SET PORT command failed to attach the
+    comm port.
+  * The SET PORT command now also reminds about Local/Remote mode changes.
+
+
+05/12/21
+
+- DEVTT: allow non-privileged users changing terminal characteristics of
+  any terminal set to Public.
+
+- The kernel now clears the Public bit of the terminal unit when a user
+  logs in.
+
+- Kermit-180 is no longer built as privileged task.
+

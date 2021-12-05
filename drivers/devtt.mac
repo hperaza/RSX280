@@ -706,7 +706,9 @@ ttgmc4:	sub	8		; TC.SPD?
 ; Handle 'set multiple characteristics' function.
 ; BC still points to TCB of requesting task (see ioreq routine).
 
-ttsmc:	ld	hl,T.ATTR
+ttsmc:	bit	US.PUB,(iy+U.ST); public unit?
+	jr	nz,ttsmc0	; yes, anybody can change settings
+	ld	hl,T.ATTR
 	add	hl,bc
 	bit	TA.PRV,(hl)	; privileged task?
 	jr	nz,ttsmc0	; branch if yes
