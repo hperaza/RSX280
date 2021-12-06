@@ -6732,3 +6732,12 @@ BUGS:
   one of the files; ZSM4 will continue processing the rest of the files in
   the list.
 
+
+06/12/21
+
+- SYSFCP bug fix: the BMSNGL routine did not always return the correct error
+  code when the disk was full.
+
+- ZSM4: output file write error message only once per file.
+
+
