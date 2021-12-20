@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command INS for RSX280.                               ;
-;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;   Copyright (C) 2015-2021, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.09'
+	ident	'01.10'
 
 	cseg
 
@@ -737,11 +737,11 @@ usepri:	ld	(ix+T.DPRI),a
 fs1:	ldw	(ix+T.NBLK),de	; set number of blocks
 
 	ld	hl,(hdr+TH.STRT)
-	ldw	(ix+T.STRT),hl	; task space starts at 0000h
-	ld	hl,100h
-	ldw	(ix+T.EPT),hl	; entry point is at 0100h
+	ldw	(ix+T.STRT),hl	; set start of task area
+	ld	hl,(hdr+TH.EPT)
+	ldw	(ix+T.EPT),hl	; set task entry point
 	pop	hl		; pop saved task top
-	ldw	(ix+T.END),hl	; set top of task space
+	ldw	(ix+T.END),hl	; set top of task area
 	ldw	(ix+T.DEND),hl
 	inc	hl
 	ldw	(ix+T.SP),hl	; set stack to top of task memory
