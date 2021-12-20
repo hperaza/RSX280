@@ -471,6 +471,9 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 	ldw	(hl),bc		; set MSR on stack frame
 
 	pop	de
+	ldw	hl,(ix+T.STRT)
+	cpw	hl,0040h	; task start below RST vector area?
+	jr	c,tgo2		; yes, skip initialization
     if 0
 	ld	b,1		; map fisrt page of task in user space
 	call	USRMAP##
