@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.16'
+	ident	'2.17'
 
 	extrn	GetTop,IOBuf,IrlBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -1680,6 +1680,9 @@ dxnof:	pop	hl
 ; Determine if we need a jump vector to the entry point of code.
 
 CheckLoad:
+	ld	a,(O.opt)	; check output file type
+	cp	.OT		; .TSK?
+	jr	z,nojmp		; then the jump vector is superfluous
 	ld	de,(LoadAddr)	; get load address into DE
 	inc	de		; .. +3 (jump to entry point vector?)
 	inc	de
