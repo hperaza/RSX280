@@ -6741,3 +6741,15 @@ BUGS:
 - ZSM4: output file write error message only once per file.
 
 
+19/12/21
+
+- LDR: load tasks at the address specified in the task header and not at
+  fixed 0100h. Do not initialize RST vector area if task start is below
+  0040h.
+
+- INS: use task entry point address from file header, do not force it to
+  0100h.
+
+- TKB: a jump vector to the start address at load address is redundant
+  for .TSK files (the start address is stored in the task header.)
+
