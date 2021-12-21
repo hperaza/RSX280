@@ -49,6 +49,11 @@ and the List command will be useless.
 Things to watch out for
 -----------------------
 
+- When the G command hits a breakpoint, you must use the T command to skip
+  over the breakpoint before issuing a new G command without arguments to
+  continue execution. Otherwise the breakpoint will be hit immediately
+  again.
+
 - Debugging AST routines: not recommended, as a number of kernel services
   are not available inside an AST routine and things like the event flag
   mask are saved/restored on AST entry/exit, which can conflict with QIO
@@ -102,9 +107,11 @@ B addr        -- Place a breakpoint (HALT instruction) at address addr.
 
 C addr        -- Clear breakpoint at addr.
 
-G addr        -- Go to address addr. Starts executing the user code until
-                 a breakpoint is hit. If addr is not specified, the execution
-                 will continue from the current user PC value.
+G addr1,addr2 -- Go to address addr1. Starts executing the user code until
+                 a breakpoint is hit. If addr1 is not specified, the execution
+                 will continue from the current user PC value. If addr2 is
+                 specified, a temporary breakpoint will be set at that
+                 address; the breakpoint will be cleared once hit.
 
 T n           -- Trace the next n instructions (one if n is not specified)
                  starting from the current user PC value. Note that n is in

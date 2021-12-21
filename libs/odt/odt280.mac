@@ -46,6 +46,9 @@ MAXBP	equ	8		; max number of breakpoints
 
 ODT$IN:	ld	hl,sstvt
 	SC	.SVTBL		; setup SST table
+	xor	a
+	ld	(numbp),a	; no breakpoints set
+	ld	(tmpbp+3),a
 	ret
 
 ; Debugger entry point.
@@ -111,8 +114,8 @@ error:	call	cr_lf
 	call	ODT$CO
 	jr	cmd_loop
 
-banner:	db	CR,LF,"ODT V0.1",CR,0
-prompt:	db	CR,LF,"@",0
+banner:	db	CR,LF,"ODT V0.2",CR,0
+prompt:	db	CR,LF,"_",0
 
 ; get command line
 
@@ -494,53 +497,73 @@ dis3:	ld	hl,(arg1)
 	ld	(lastz),hl	; remember where we stopped
 	ret
 
-; G addr
-; Go (execute) program at addr.
+; G [addr][,break]
+; Go (execute) program at addr. If no address was specified, continue from
+; last PC. If a break address is given, place a temporary breakpoint at
+; that address.
 
 run:	ld	ix,(pgm_sp)
 	ld	a,(argset)
-	and	01h		; an address was given?
+	bit	0,a		; an address was given?
 	jr	nz,r1		; yes, use it
 	ld	hl,(pgm_pc)	; else continue from saved PC
 r1:	ldw	(ix),hl		; store PC on return stack
-	ld	hl,1000h	; SS and SSP bits clear, BH bit set
+	bit	1,a		; break address given?
+	jr	z,r2
+	ld	hl,(arg2)
+	ld	(tmpbp),hl	; yes, set temporary breakpoint
+	ld	a,1
+	ld	(tmpbp+3),a
+r2:	ld	hl,1000h	; SS and SSP bits clear, BH bit set
 	ld	(pgm_msr),hl
 	call	setbp		; set breakpoints in place
 	jp	continue
 
 ; place breakpoints prior to executing user code
 
-setbp:	ld	ix,bptbl
+setbp:	ld	ix,tmpbp
+	ld	a,(ix+3)
+	or	a		; temporary breakpoint active?
+	ld	b,1
+	call	nz,set1		; yes, set it
+	ld	ix,bptbl	; point to table of hard breakpoints
 	ld	a,(numbp)
 	or	a		; any breakpoints defined?
 	ret	z		; return if not
 	ld	b,a
-	ld	de,(pgm_pc)
+	ld	de,3
 set1:	ld	hl,(ix)		; get breakpoint address
 	ld	a,(hl)
 	ld	(ix+2),a	; remember original memory contents
-	cpw	hl,de
 	ld	(hl),76h	; store halt instruction (breakpoint-on-halt mode)
-	inc	ix
-	inc	ix
-	inc	ix
+	add	ix,de
 	djnz	set1
 	ret
 
 ; remove breakpoints from user code so they will not appear in the
 ; disassembler listing and will not interfere with single-stepping
 
-rembp:	ld	ix,bptbl
+rembp:	ld	ix,tmpbp
+	ld	a,(ix+3)
+	or	a		; temporary breakpoint active?
+	jr	z,rem1
+	ld	b,1
+	call	rem2		; yes, remove it
+	cpw	hl,(pgm_pc)	; just hit?
+	jr	nz,rem1
+	xor	a
+	ld	(tmpbp+3),a	; yes, disable it
+rem1:	ld	ix,bptbl	; point to table of hard breakpoints
 	ld	a,(numbp)
 	or	a		; any breakpoints defined?
 	ret	z		; return if not
 	ld	b,a
 	ld	de,3
-rem1:	ld	hl,(ix)		; get breakpoint address
+rem2:	ldw	hl,(ix)		; get breakpoint address
 	ld	a,(ix+2)
 	ld	(hl),a		; restore original memory contents
 	add	ix,de
-	djnz	rem1
+	djnz	rem2
 	ret
 
 ; T
@@ -925,6 +948,8 @@ pgm_msr:ds	2		; fake MSR for setting SS bits
 
 numbp:	ds	1		; number of breakpoints set
 bptbl:	ds	MAXBP*3		; breakpoint table: address + mem contents
+tmpbp:	ds	4		; temporary breakpoint for run command:
+				;  address + mem contents + active flag
 
 brkadr:	ds	2		; breakpoint address
 brkval:	ds	1		; breakpoint memory contents
