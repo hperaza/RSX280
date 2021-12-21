@@ -305,3 +305,7 @@ Changelog
   set for each terminal.
 
 
+21/12/21
+
+- ODT: the G command now accepts a break address as second argument.
+
