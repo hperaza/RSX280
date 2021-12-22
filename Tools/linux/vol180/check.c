@@ -978,6 +978,7 @@ int check_alloc_map(void) {
           if (bm[k] & mask) {
             printf("*** Multiple allocation of cluster %ld, inode %ld (%s)\n",
                    clno+j, i+1, get_name(inode));
+            list_cluster_usage(clno+j);
             ++errcnt;
           } else {
 #ifdef DEBUG
@@ -1009,6 +1010,7 @@ int check_alloc_map(void) {
             if (bm[k] & mask) {
               printf("*** Multiple allocation of cluster %ld, inode %ld (%s)\n",
                      clno, i+1, get_name(inode));
+              list_cluster_usage(clno);
               ++errcnt;
             } else {
 #ifdef DEBUG
@@ -1035,6 +1037,7 @@ int check_alloc_map(void) {
           if (bm[k] & mask) {
             printf("*** Multiple allocation of cluster %ld, inode %ld (%s)\n",
                    clno, i+1, get_name(inode));
+            list_cluster_usage(clno);
             ++errcnt;
           } else {
 #ifdef DEBUG
@@ -1081,6 +1084,7 @@ int check_alloc_map(void) {
               if (bm[k] & mask) {
                 printf("*** Multiple allocation of cluster %ld, inode %ld (%s)\n",
                        clno, i+1, get_name(inode));
+                list_cluster_usage(clno);
                 ++errcnt;
               } else {
 #ifdef DEBUG
@@ -1102,6 +1106,7 @@ int check_alloc_map(void) {
           if (bm[k] & mask) {
             printf("*** Multiple allocation of cluster %ld, inode %ld (%s)\n",
                    clno, i+1, get_name(inode));
+            list_cluster_usage(clno);
             ++errcnt;
           } else {
 #ifdef DEBUG
@@ -1185,3 +1190,115 @@ int check_alloc_map(void) {
 
 /* Still TODO: search for (and fix) cross-linked files */
 
+int list_cluster_usage(unsigned long cluster) {
+  unsigned char inode[64];
+  unsigned long i, j, k, clmask;
+  unsigned short lcnt;
+
+  clmask = (1 << clfactor) - 1;
+
+  for (i = 0; i < inodes; ++i) {
+    if (!read_inode(i+1, inode)) {
+      printf("*** Could not read inode %ld, aborting.\n", i+1);
+      return 0;
+    }
+    lcnt = GET_INT16(inode, 0);
+    if (lcnt > 0) {  /* inode in use */
+      unsigned long blkno, nalloc, clno, ncls;
+      unsigned char attrib;
+      
+      attrib = inode[2];
+      nalloc = GET_INT24(inode, 8);
+      if (attrib & _FA_CTG) {
+        /* contiguous file: 'nalloc' blocks starting from 'blkno' */
+        blkno = GET_INT24(inode, 32);
+        clno  = blkno >> clfactor;  /* starting cluster number */
+        ncls  = nalloc >> clfactor; /* allocated clusters */
+        for (j = 0; j < ncls; ++j) {
+          if (cluster == clno+j) {
+            printf("    Cluster %ld allocated to inode %ld (%s) with VCN %ld\n",
+                   cluster, i+1, get_name(inode), j);
+          }
+        }
+      } else {
+        /* non-contiguous file: walk the chain of allocated blocks */
+        unsigned long next;
+        struct BUFFER *buf = NULL;
+        int blkptr;
+
+        for (blkptr = 32, j = 0; blkptr < 47; blkptr += 3, ++j) {
+          blkno = GET_INT24(inode, blkptr);
+          clno  = blkno >> clfactor;
+          if ((clno > 0) && (cluster == clno)) {
+            printf("    Cluster %ld allocated to inode %ld (%s) with VCN %ld\n",
+                   cluster, i+1, get_name(inode), j);
+          }
+        }
+
+        k = 0;
+        blkno = GET_INT24(inode, 47);
+        if (blkno > 0) {  /* allocation block allocated */
+          buf = get_block(blkno);
+          if (!buf) {
+            printf("*** Could not read block %ld, aborting.\n", blkno);
+            return 0;
+          }
+          clno = blkno >> clfactor;
+          if ((clno > 0) && (cluster == clno)) {
+            printf("    Cluster %ld allocated to inode %ld (%s) as allocation map %ld\n",
+                   cluster, i+1, get_name(inode), k);
+          }
+          next = GET_INT24(buf->data, 3);
+          blkptr = 6;
+        } else {
+          next = 0;
+          blkptr = 512;
+          buf = NULL;
+        }
+        
+        ncls = nalloc >> clfactor;
+        if (nalloc & clmask) ++ncls;
+        for (j = 5; j < ncls; ++j) {
+          if (blkptr >= 510) {
+            if (next == 0) {
+              /* this should have been fixed during index file check:
+                 stblk = 0 when nalloc != 0 and file is not contiguous -
+                 the inode should be marked as deleted - then in the
+                 directory check pass the file will be reported and
+                 deleted as well */
+              if (buf) release_block(buf);
+              return 0;
+            }
+            if (buf) release_block(buf);
+            buf = get_block(next);
+            if (!buf) {
+              printf("*** Could not read block %ld, aborting.\n", next);
+              return 0;
+            }
+            ++k;
+            clno = next >> clfactor;
+            if ((next & clmask) == 0) {
+              if ((clno > 0) && (cluster == clno)) {
+                printf("    Cluster %ld allocated to inode %ld (%s) as allocation map %ld\n",
+                       cluster, i+1, get_name(inode), k);
+              }
+            }
+            next = GET_INT24(buf->data, 3);
+            blkptr = 6;
+          }
+          blkno = GET_INT24(buf->data, blkptr);
+          blkptr += 3;
+          clno = blkno >> clfactor;
+          if ((clno > 0) && (cluster == clno)) {
+            printf("    Cluster %ld allocated to inode %ld (%s) with VCN %ld\n",
+                   cluster, i+1, get_name(inode), j);
+          }
+          ++j;
+        }
+    
+        if (buf) release_block(buf);
+      }
+    }
+  }
+  return 1;
+}

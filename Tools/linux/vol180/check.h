@@ -28,5 +28,6 @@ int check_index_file(void);
 int check_master_dir(void);
 int check_directories(void);
 int check_alloc_map(void);
+int list_cluster_usage(unsigned long cluster);
 
 #endif
