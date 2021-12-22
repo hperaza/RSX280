@@ -135,7 +135,7 @@ int create_dir(char *filename, char group, char user) {
   time(&now);
   
   set_inode(inode, 1, _FA_DIR, group, user, 0, 0, 0, 0xFFF8);
-  SET_INT24(inode, 32, 0);
+  memset(&inode[32], 0, 6*3);
   set_cdate(inode, now);
   set_mdate(inode, now);
   set_name(inode, fname, ext, vers);
