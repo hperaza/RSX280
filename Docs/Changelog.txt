@@ -6753,3 +6753,14 @@ BUGS:
 - TKB: a jump vector to the start address at load address is redundant
   for .TSK files (the start address is stored in the task header.)
 
+
+22/12/21
+
+- vol180 bug fix: IE.BMAP was not fully erased in create_dir(), which could
+  result in any old block values being (re)used and therefore cross-linked
+  to existing file(s).
+
+- fsck180: when a cross-linked cluster is found, scan the index file and
+  report all the files sharing the offending cluster.
+
+
