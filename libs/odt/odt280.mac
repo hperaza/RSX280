@@ -293,9 +293,9 @@ cmp_eq:	inc	sp
 
 dump:	ld	a,(argset)
 	bit	0,a		; start address specified?
-	jr	nz,dmp4		; use it if yes
+	jr	nz,dmp1		; use it if yes
 	ld	hl,(lastd)	; else continue from where we stopped before
-dmp4:	bit	1,a		; end address specified?
+dmp1:	bit	1,a		; end address specified?
 	jr	nz,dmp2		; use it if yes
 	ld	e,l
 	ld	d,h
@@ -304,6 +304,7 @@ dmp4:	bit	1,a		; end address specified?
 
 dmp2:	call	out_addr	; output address
 	push	hl
+	call	dmps3		; align start
 dmph:   ld	a,(hl)		; get byte
 	call	outbyte		; output it as hexadecimal
 	call	?stop		; check for ^C abort
@@ -318,9 +319,15 @@ dmph:   ld	a,(hl)		; get byte
 	jr	dmp2
 
 enddmp:	inc	hl
+	ld	a,l
+	neg	a
 	ld	(lastd),hl	; remember where we stopped
+	ld	l,a
+	call	dmps3		; align end
 	pop	hl
-dmpa:	ld	a,(hl)		; get byte
+dmpa:	ld	c,1
+	call	dmps		; align start
+dmp3:	ld	a,(hl)		; get byte
 	cp	' '		; printable?
 	jr	c,outdot
 	cp	7Fh
@@ -334,7 +341,22 @@ char:	ld	c,a
 	inc	hl
 	ld	a,l
 	and	0Fh		; max 16 chars per line
-	jr	nz,dmpa
+	jr	nz,dmp3
+	ret
+
+dmps3:	ld	c,3
+dmps:	ld	a,l
+	and	0Fh
+	ret	z
+	push	de
+	ld	b,a
+	ld	e,c
+dmp4:	ld	d,e
+dmp5:	call	space
+	dec	d
+	jr	nz,dmp5
+	djnz	dmp4
+	pop	de
 	ret
 
 ; F addr1,addr2,byte

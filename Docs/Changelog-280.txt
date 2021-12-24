@@ -309,3 +309,9 @@ Changelog
 
 - ODT: the G command now accepts a break address as second argument.
 
+
+22/12/21
+
+- ODT: align neately the output of the D command when address is not a
+  multiple of 16 (borrowing code from Tony Nicholson's CP/M emulator).
+
