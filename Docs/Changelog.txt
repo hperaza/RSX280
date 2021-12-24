@@ -6764,3 +6764,8 @@ BUGS:
   report all the files sharing the offending cluster.
 
 
+23/12/21
+
+- SYSFCP: always set the F.DEV and F.UNIT fields on the internal FCB even
+  when they are not used, so RMD could display the correct values.
+
