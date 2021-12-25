@@ -3,7 +3,6 @@ ins $fmt
 ins $bad
 ins $vfy
 ins $clock
-ins $kermit
 ins [test]ds1820/task=...tem
 ins [test]bcdtest/task=...rpn
 ins [games]xonix
