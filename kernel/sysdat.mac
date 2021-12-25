@@ -50,7 +50,9 @@ SYSVER:	db	SVER.L	; system version
 
 SYSTYP:	db	2	; system type = RSX280
 
-$FEAT:	db	0	; feature bits
+fbits	equ	F$CHKP OR (F$HALT SHL 1) OR (F$TTMX SHL 2)
+
+$FEAT:	db	fbits	; feature bits
 
 $HOSTN:	ds	9	; host/node name
 
