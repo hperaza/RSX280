@@ -33,6 +33,7 @@
 	include	CLKQ.INC
 	include	TCB.INC
 	include	AST.INC
+	include	SYSCONF.INC
 	include	ERRORS.INC
 
 	cseg
@@ -40,6 +41,9 @@
 	public	MRKT		; mark-time request
 	public	CMKT		; clear mark-time request(s)
 	public	SRQST		; time-scheduled task request
+	IF	F$HALT
+	public	CKCLKQ		; check clock queue
+	ENDIF
 	public	DOCLKQ		; dispatch clock queue
 	public	CLNCLQ		; clock queue cleanup
 
@@ -296,6 +300,23 @@ lclk2:	push	ix
 	ret
 
 ;-----------------------------------------------------------------------
+
+; Check the clock queue, returns with CY clear if there are no items
+; ready to be dispatched. Called with *interrupts disabled* from the
+; idle loop.
+
+	IF	F$HALT
+CKCLKQ:	ld	hl,($CLKQ)	; get first queued item, if any
+	ld	a,h		; valid?
+	or	l
+	ret	z		; return CY clear if not
+	ld	bc,C.TIME+3
+	add	hl,bc		; HL = addr of time field of packet (MSB)
+	ld	de,TICCNT+3	; DE = addr of absolute system time (MSB)
+	call	CMPTIM		; compare with current system time
+	ccf			; invert comparison result
+	ret			;  and return
+	ENDIF
 
 ; Check the clock queue, remove expiring and/or expired items and
 ; perform the requested action.

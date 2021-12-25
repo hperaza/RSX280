@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2021, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -87,6 +87,10 @@
 	extrn	$FNDEV,TFLAG,DOFORK,TRPFLG,MEXTND,CLNCLQ,SRQST,NEWSUB
 	extrn	CHKPAR
 
+	if	F$HALT
+	extrn	CKCLKQ
+	ENDIF
+
 ;-----------------------------------------------------------------------
 
 ; Initialize task manager: init dynamic lists, queues, tables, etc.
@@ -126,16 +130,16 @@ INITKM:	xor	a
 
 DSPTCH:	ld	hl,TFLAG
 	IF	F$CHKP
-	bit	2,(hl)
-	jr	z,dsp0
+	bit	2,(hl)		; swap interval elapsed?
+	jr	z,dsp0		; no
 	res	2,(hl)
 	push	hl
 	call	DECSWP		; time to decrement swap priorities
 	call	CHKPAR
 	pop	hl
 dsp0:	ENDIF
-	bit	1,(hl)
-	jr	z,dsp1
+	bit	1,(hl)		; round-robin interval elapsed?
+	jr	z,dsp1		; no
 	res	1,(hl)		; time to dispatch next task
 	ld	hl,($RLIST)	; get first TCB from ready list
 	ld	a,h
@@ -158,7 +162,7 @@ dsp0:	ENDIF
 dsp1:	ld	hl,($RLIST)	; get next ready TCB
 	ld	a,h
 	or	l		; null task?
-	jr	nz,dsp4		; dispatch it if not
+	jr	nz,dsp4		; no, dispatch it
 dsp2:	call	DOFORK		; else dispatch fork queue...
 	jr	nc,dsp2
 	ld	hl,TFLAG
@@ -175,6 +179,29 @@ dsp3:	IF	F$CHKP
 	call	DECSWP		; time to decrement swap priorities
 	call	CHKPAR
 	ENDIF
+	IF	F$HALT
+	; We just checked these, but with interrupts enabled.
+	; Now atomically check them with interrupts off, and if
+	; we still have nothing to do, halt.
+	di
+	ld	hl,($RLIST)	; TCB list
+	ld	a,h
+	or	l
+	jr	nz,dsp5
+	ld	hl,($FORKQ)	; fork queue
+	ld	a,h
+	or	l
+	jr	nz,dsp5
+	call	CKCLKQ		; clock queue
+	jr	c,dsp5
+	ld	a,(TFLAG)	; clock tick flags
+	and	a,5
+	jr	nz,dsp5
+	ei			; OK, interrupts ON and quiesce CPU
+	halt
+	jr	dsp1		; and back around looking for activity
+dsp5:	ei			; work pending, run loop again
+ 	ENDIF
 	jr	dsp1		; loop until a task becomes ready
 dsp4:	ld	($CTCB),hl	; set as current TCB
 	ldw	hl,(hl+T.PCB)

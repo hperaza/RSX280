@@ -3,7 +3,7 @@
 ; Current system version
 
 SVER.H	equ	6	; major
-SVER.L	equ	26	; minor
+SVER.L	equ	27	; minor
 
 ; Filesystem version
 
@@ -14,12 +14,13 @@ FVER.L	equ	0	; minor
 
 TCKSEC	equ	100
 
-F$TTMX	equ	0	; set this to true to generate a terminal driver
+F$CHKP	equ	1	; set this to 1 to enable checkpoint file support
+
+F$HALT	equ	1	; set this to 1 to halt CPU on idle condition
+
+F$TTMX	equ	0	; set this to 1 to generate a terminal driver
 			;  that supports 8 software-multiplexed units on
 			;   the secondary serial port of the P112
-
-F$CHKP	equ	1	; set this to true to enable checkpoint file
-			;  support
 
 ; Resident device drivers
 ;
