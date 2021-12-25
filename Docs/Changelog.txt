@@ -6766,6 +6766,17 @@ BUGS:
 
 23/12/21
 
-- SYSFCP: always set the F.DEV and F.UNIT fields on the internal FCB even
-  when they are not used, so RMD could display the correct values.
+- SYSFCP: always set the F.DEV and F.UNIT fields of the internal FCB. The
+  fields are not used by the filesystem task, but RMD uses them to display
+  LUN assignment in the Task Header display page.
+
+
+25/12/21
+
+- Kernel:
+  * added Andy Valencia's "halt CPU on idle condition" configuration option:
+    the idle loop now halts the CPU if there is no task ready to dispatch
+    and no pending kernel processed.
+  * initialize the $FEAT system variable with the configuration bits.
+
 
