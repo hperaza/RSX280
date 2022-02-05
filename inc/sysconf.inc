@@ -3,7 +3,7 @@
 ; Current system version
 
 SVER.H	equ	6	; major
-SVER.L	equ	27	; minor
+SVER.L	equ	30	; minor
 
 ; Filesystem version
 
