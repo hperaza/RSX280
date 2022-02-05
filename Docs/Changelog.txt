@@ -6750,7 +6750,7 @@ BUGS:
 - INS: use task entry point address from file header, do not force it to
   0100h.
 
-- TKB: a jump vector to the start address at load address is redundant
+- TKB: a jump vector to the start address at load address is superfluous
   for .TSK files (the start address is stored in the task header.)
 
 
@@ -6776,7 +6776,152 @@ BUGS:
 - Kernel:
   * added Andy Valencia's "halt CPU on idle condition" configuration option:
     the idle loop now halts the CPU if there is no task ready to dispatch
-    and no pending kernel processed.
+    and no pending kernel processes.
   * initialize the $FEAT system variable with the configuration bits.
+
+
+23/01/21
+
+- TKB:
+  * fixed map file output for programs with overlays (the map file was
+    overwritten every time a new overlay was processed.)
+  * include task name, partition name, etc. in map report.
+  * set task ident to value specified on command line, else to ident of
+    main module, else to ident of first module with a valid ident, else
+    to all blanks.
+  * allow ':' as argument separator in addition to '='.
+
+
+29/01/22
+
+- Adding support for TSK overlays in TKB:
+  * enable overlay generation for TSK output file format.
+  * store all the overlays in the same TSK output file (COM overlays are
+    saved as before into separate files.)
+  * changed the auto-generated overlay load vectors to support overlays
+    having several entry points (load vectors for COM files are still of
+    the old type, and therefore limited to one entry point per overlay).
+  * the above change requires an additional overlay table to map overlay
+    numbers to file addresses (else the overlay load vectors become too
+    large), the table is also auto-generated (empty at this point) and
+    assigned the public symbol ?OVLTB; the table is always written to the
+    root segment.
+  * count the number of overlays during the first pass in order to obtain
+    the overlay table size.
+
+
+30/01/22
+
+- TKB:
+  * ensure ?OVLTB is output to the data segment.
+  * update the overlay table in root segment after processing each overlay.
+  * suppress overlay header generation for TSK overlays (the relevant
+    information is stored in the overlay table).
+
+
+31/01/22
+
+- Writing a new overlay manager for TSK files, adapted from the CP/M one.
+
+- TKB:
+  * set default LUNs 7 and 8 to pseudo-device OV0: if task has overlays.
+  * trying to solve some sort of chicken-and-egg problem: if an overlay
+    contains a forward reference to another *entry* point inside the same
+    overlay, the reference will be solved using the overlay load vector
+    symbol which is already present in the symbol table, but that is rather
+    inefficient (note that this problem happens when the forward reference
+    is defined in a different module; forward references within the same
+    module are solved correctly by the assembler). In addition, we don't
+    know if a symbol is a forward reference to an entry point of the current
+    overlay or a reference to *another* overlay until all the modules are
+    linked in. One possible solution is to mark the original load vector
+    symbol with a status bit to make it "invisible" for normal search
+    operations, and only re-enable it at the end of the overlay linking
+    process to fix any undefined references (at which point only references
+    to overlays deeper in the tree remain undefined). [The current symbol
+    table format doesn't have much room left for extensions!!!]
+  * overlay load vector symbols need to store file address information in
+    order to update the overlay number and target address once the vector
+    is resolved, but then again we know a symbol is a load vector only at
+    the end of root (or parent overlay) linking, when the promoted external
+    symbol is already deeply buried inside the symbol table. Shuffling the
+    table to make more space for a symbol may take some effort (pointers
+    need to be adjusted, hash table needs to be rebuilt).
+
+
+01/02/22
+
+- Trying to solve the two TKB problems mentioned above:
+  * at the start of a new overlay branch processing, we'll make a copy of
+    the overlay load vector symbols *above* the symbol table mark used to
+    remove the symbols once the branch processing is done. The old (parent)
+    symbols will be marked as "overlay load vector" with a bit of the Tlen
+    field, and the high bit of the symbol name set in order to hide them
+    from name searches (we ran out of status bits!). The new copy of the
+    symbol will have a pointer to the parent symbol, the file record number
+    of the root or overlay object in the TSK file and the object's load
+    address, required to compute the offset relative to the start of the
+    object). The value of the copy symbol is set to the value of the
+    original symbol, mode bits set to Absolute (since the address refer
+    to a location inside the linked root/parent object) and the Public bit
+    cleared (hack to make the linker use the load vector address by default,
+    and do a "chain external" if it happens to be a forward reference.)
+  * when done with the current branch and before purging the overlay symbols
+    from the table, any "copy" symbols that were resolved will set also the
+    Public bit and clear the "overlay load vector" bit of the parent symbol,
+    thus forcing further references only via the load vector (which is correct,
+    as the overlay that defined the symbol may be swapped out), then use the
+    extra added information to update the load vector arguments in the root
+    or parent object. After this, all the load vectors symbols are made
+    visible again. This process also allows detecting multiple-defined entry
+    symbols across overlay, something that the original CP/M version lacks.
+  * the above operations are repeated for further overlay branches, requiring
+    every time less and less symbol copies until all references are resolved.
+  * at the end of the compilation any remaining unsolved overlay load vector
+    symbols are reported as Undefined. [Right now undefined symbols are
+    reported after root and every overlay processing.]
+
+
+02/02/11
+
+- TKB:
+  * the internal overlay tree table now stores the TSK overlay file offsets,
+    which makes it easier to obtain the information for the "copy" overlay
+    load vector symbols.
+  * got the test program generated almost fully correctly (OV3 symbol still
+    not correctly set) ?OVLTB is correctly updated, as well as (most) overlay
+    call vectors, including the one inside OV2.
+  * updating the overlay information in the root or parent overlay objects
+    is done rather crudely at this point, requiring opening the task image
+    file several times for writing the relevant information, but it works.
+    [TODO: optimize access.]
+
+
+03/02/22
+
+- LDR: translate special pseudo-device OV: to task's load device.
+
+- Added new IO.LOV (load overlay) I/O function code, which is translated by
+  the kernel into a IO.RLB relative to the starting LBN of the requesting
+  task.
+
+- Debugging the new overlay manager.
+
+
+04/02/22
+
+- TKB:
+  * fixed a bug in the case where an overlay calls an overlay for which an
+    overlay call vector already exists in the parent or main module.
+  * first successful linking of the overlay example application, runs on
+    RSX280!
+
+05/02/22
+
+- The overlay manager is now part of SYSLIB.
+
+- TKB:
+  * request ?OVLAY on second pass *before* loading any modules, else SYSLIB
+    will miss it.
 
 
