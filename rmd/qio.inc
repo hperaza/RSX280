@@ -48,6 +48,10 @@ IO.HNG	equ	10		; hangup remote line
 SF.GMC	equ	11		; get multiple characteristics
 SF.SMC	equ	12		; set multiple characteristics
 
+; Special functions
+
+IO.LOV	equ	16		; load overlay
+
 ; Terminal sub-functions (some can be ORed)
 
 TF.AST	equ	01h		; attach with AST
