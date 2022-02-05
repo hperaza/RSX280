@@ -311,25 +311,51 @@ chk1:	ldw	de,(ix+I.TCB)	; get TCB of requester task into DE
 
 XLATE:	push	hl
 	push	bc
-	ld	bc,U.ST
-	add	hl,bc
-	bit	US.MNT,(hl)	; unit mounted?
-	jr	nz,xlt0		; return if yes, nothing to translate
 
 	ld	a,(ix+I.QDB+Q.FUNC)
+	cp	IO.LOV		; load overlay?
+	jr	nz,xlt1		; no
+
+	ex	de,hl		; get UCB address into DE
+	ldw	hl,(ix+I.TCB)	; get TCB of requesting task into HL
+	push	hl		; save TCB address
+	ldw	hl,(hl+T.LDEV)	; get UCB address of load device
+	call	$REDIR		; follow any redirections
+	cpw	hl,de		; requested device same as load device?
+	pop	hl		; restore TCB address
+	ld	a,E.BADOP
+	scf
+	jr	nz,xlt4		; no, error
+
+	;...error if I.QDB+Q.BLK >= T.NBLK
+
+	ldw	hl,(hl+T.SBLK)	; get LBN of task image file
+	ldw	de,(ix+I.QDB+Q.BLK)
+	add	hl,de
+	ldw	(ix+I.QDB+Q.BLK),hl
+	jr	nc,xlt11
+	incw	(ix+I.QDB+Q.BLK+2)
+xlt11:	ld	c,IO.RLB
+	jr	xlt2
+
+xlt1:	ld	bc,U.ST
+	add	hl,bc
+	bit	US.MNT,(hl)	; unit mounted?
+	jr	nz,xlt3		; return if yes, nothing to translate
+
 	cp	IO.RVB
 	ld	c,IO.RLB
 	jr	z,xlt2
 
 	cp	IO.WVB
 	ld	c,IO.WLB
-	jr	nz,xlt0
+	jr	nz,xlt3
 
 xlt2:	ld	(ix+I.QDB+Q.FUNC),c ; translate operation
 
-xlt0:	pop	bc
+xlt3:	xor	a		; return success
+xlt4:	pop	bc
 	pop	hl
-	or	a
 	ret
 
 ;-----------------------------------------------------------------------
