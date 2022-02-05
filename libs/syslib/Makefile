@@ -55,7 +55,8 @@ SRCS = bin2bcd.mac \
 	savreg.mac \
 	saval.mac \
 	savall.mac \
-	malloc.mac
+	malloc.mac \
+	ovlmgr.mac
 
 INC = sysfn.inc \
 	qio.inc
@@ -73,7 +74,7 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 syslib.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=gcml/e+attach/e+detach/e+malloc/e+cvtld/e"
+	$(ZXCC) $(LBR) -"$@=gcml/e+attach/e+detach/e+malloc/e+ovlmgr/e+cvtld/e"
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib/e+adec/e+adec2/e+hldec/e+ldec/e+hlhex/e"
 	@cp $@ src.lib

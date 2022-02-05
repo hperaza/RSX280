@@ -1,0 +1,334 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This library is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU Library General Public        ;
+;   License as published by the Free Software Foundation; either       ;
+;   version 2 of the License, or (at your option) any later version.   ;
+;                                                                      ;
+;   This library is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU Library General Public License for more details.               ;
+;                                                                      ;
+;   You should have received a copy of the GNU Library General Public  ;
+;   License along with this program; if not, write to the Free         ;
+;   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. ;
+;                                                                      ;
+;***********************************************************************
+
+;   Overlay Manager for TSK files.
+
+	.z80
+
+	name	'OVLMGR'
+
+	ident	'1.0'
+
+	include	QIO.INC
+	include	SYSFN.INC
+
+EFNOVL	equ	1	; event flag number for overlay I/O operations
+LUNOVL	equ	7	; TODO: use ?OVLUN variable instead of constant
+			; Note: right now OV: can only be statically
+			;       assigned by the linker!
+
+MAXOVL	equ	5	; max overlay nesting depth (limit impossed by TKB)
+OVTBSZ	equ	6	; ?OVLTB entry size
+
+	cseg
+
+	extrn	?MEMRY,?OVLTB,CPHLDE
+
+	public	?OVLAY,?OVLA0
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Called with overlay parameters following call.
+; This routine is used for automatic load of overlays.
+
+?OVLA0:	ex	(sp),hl		; save HL, get pointer to arguments
+	push	de		; save registers
+	push	bc
+	push	af
+	push	hl		; save HL
+	ld	hl,LDFLAG
+	ld	a,(hl)		; check load flag
+	or	a		; ?OVLAY routine just called?
+	ld	(hl),0		;  clear the flag
+	jr	nz,ovl01	; yes, overlay already loaded
+	pop	hl
+	ld	c,(hl)		; else get overlay number
+	push	hl
+	call	FNDOVL		;  and find overlay
+	call	c,LOAD		; if not loaded, load it
+ovl01:	pop	hl
+	inc	hl		; skip overlay number
+	ld	a,(hl)		; get routine address in overlay space
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	pop	af		; restore registers
+	pop	bc
+	pop	de
+	ex	(sp),hl		; push routine address, restore HL
+	ret			; jump to overlay entry point
+
+; Called with HL = addr of param block
+;  +0 = overlay number (1-based)
+;  +1 = flag: 0 means load overlay only if not already in memory,
+;             1 means unconditional load
+; This routine is used for manual load of overlays and will be eventually
+; followed by a call to ?OVLA0 in order to access the overlay routine.
+; It can also be used to load overlays that contain only data.
+
+?OVLAY:	ld	c,(hl)		; get overlay number into C
+	inc	hl
+	ld	b,(hl)		; get overlay load flag into B
+	ld	a,1
+	ld	(LDFLAG),a	; set flag for ?OVLA0
+	ld	a,b		; get load flag
+	or	a
+	jr	nz,ovl2		; branch if set to force load of overlay
+	call	FNDOVL		; else find overlay in memory
+	ret	nc		; return if found
+ovl2:	call	LOAD		; else load it
+	ret			; return to caller
+
+;-----------------------------------------------------------------------
+
+; Find active overlay, called with overlay number in reg C.
+; Returns with CY clear if the overlay is loaded.
+
+FNDOVL:	ld	a,MAXOVL	; max nesting level
+	ld	(COUNT),a	; save counter
+	ld	hl,OVLTBL	; table of entries
+fnd1:	or	a		; all entries scanned?
+	scf
+	ret	z		; yes, return with CY set (not found)
+	ld	a,(hl)		; check entry
+	or	a		; in use?
+	jr	z,fnd2		; branch if not
+	cp	c		; compare with number of overlay to load
+	jr	z,found		; branch if same
+fnd2:	ld	de,OVTESZ
+	add	hl,de		; else skip to next entry
+	ld	a,(COUNT)
+	dec	a
+	ld	(COUNT),a
+	jr	fnd1		; loop for more
+found:	inc	hl		; skip overlay number
+	ld	e,(hl)		; get address of entry point (load address)
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	ld	(OVLBOT),hl	; store it
+	ret			; return with CY clear
+
+; Load overlay, called with overlay number in reg C.
+
+LOAD:	ld	a,c
+	ld	(OVLNUM),a	; remember overlay number
+
+	ld	hl,?OVLTB
+	ld	de,OVTBSZ
+load0:	dec	c
+	jr	z,load1
+	add	hl,de		; find overlay entry in ?OVLTB table
+	jr	load0
+
+load1:	ld	e,(hl)		; fetch file offset (128-byte record number)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(RECNO),de
+	ld	e,(hl)		; fetch load address
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(OVLBOT),de
+	ld	a,(hl)		; fetch length
+	inc	hl
+	ld	h,(hl)
+	ld	l,a	
+	add	hl,de		; add to load address
+	dec	hl		;  obtain end address
+	ld	a,l
+	or	7Fh		; round to upper record boundary - 1
+	ld	l,a
+	ld	(OVLTOP),hl
+	ex	de,hl
+	ld	hl,(?MEMRY)
+	ld	a,e		; ensure enough space to load overlay
+	sub	l
+	ld	a,d
+	sbc	a,h
+	jp	nc,ABORT	; else error: bad overlay size
+
+	ld	a,MAXOVL
+	ld	(COUNT),a	; set counter
+	ld	hl,OVLTBL
+	ld	(TBLPTR),hl	; init overlay table ptr
+load2:	or	a		; end of table?
+	jr	z,load4		; exit loop if yes
+	ld	a,(hl)
+	or	a		; empty sloot?
+	jr	z,load3		; skip if yes
+	inc	hl		; skip overlay number
+	ld	e,(hl)		; get top address into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get bottom (load) address into BC
+	inc	hl
+	ld	b,(hl)
+	ld	hl,(OVLTOP)
+	or	a
+	sbc	hl,de
+	jr	c,load3		; branch if DE > (OVLTOP)
+	ld	de,(OVLBOT)
+	ld	l,c
+	ld	h,b
+	sbc	hl,de		; branch if (OVLBOT) > BC (note CY was clear)
+	jr	c,load3
+	ld	hl,(TBLPTR)
+	ld	(hl),0		; clear (free) this entry
+load3:	ld	hl,(TBLPTR)
+	ld	de,OVTESZ
+	add	hl,de
+	ld	(TBLPTR),hl	; point to next entry
+	ld	a,(COUNT)
+	dec	a		; decrement counter
+	ld	(COUNT),a
+	jr	load2		; and loop
+
+load4:	ld	hl,OVLTBL
+	ld	e,MAXOVL
+load5:	ld	a,(hl)
+	or	a		; free slot?
+	jr	z,load6		; branch if yes (found)
+	dec	e		; all entries scanned?
+	jp	z,ABORT		; yes, error - too many nested overlays
+	ld	bc,OVTESZ
+	add	hl,bc
+	jr	load5		; loop
+
+load6:	ld	a,(OVLNUM)	; recall saved overlay number
+	ld	(hl),a		; store in table
+	inc	hl
+	ex	de,hl
+	ld	hl,OVLBOT
+	ld	bc,4
+	ldir			; copy top and bottom addresses
+	ld	de,(OVLBOT)
+	ld	hl,(OVLTOP)
+	or	a
+	sbc	hl,de
+	ld	de,127
+	add	hl,de
+	ld	a,l
+	and	80h		; round length to the upper record number
+	ld	l,h
+	ld	h,0
+	add	a,a		; /128
+	adc	hl,hl		
+	ld	(RDLEN),hl	; store number of records to load
+	ld	hl,0
+	ld	(QIOB+Q.BLK),hl	; invalidate block number
+ if 0
+	call	ASNOV		; assign LUN
+ endif
+load7:	ld	hl,(RDLEN)
+	ld	a,h		; done loading?
+	or	l
+	ret	z		; yes, return
+	dec	hl		; else decrease record count
+	ld	(RDLEN),hl
+	ld	hl,(OVLBOT)	; get dest address
+	push	hl
+	call	RDREC		; read next record
+	pop	hl
+	ld	de,128
+	add	hl,de		; advance dest address
+	ld	(OVLBOT),hl
+	ld	hl,(RECNO)
+	inc	hl		; next record
+	ld	(RECNO),hl
+	jr	load7		; loop until all read
+
+  if 0
+ASNOV:	ld	de,'OV'
+	ld	c,0
+	ld	b,LUNOVL
+	SC	.ALUN		; assign LUN to OV:
+	ret	nc
+	jp	ABORT
+  endif
+
+RDREC:	push	hl		; save dest address
+	ld	de,(RECNO)
+	ld	a,e
+	and	3
+	rrca
+	rrca			; *64
+	ld	l,a
+	ld	h,0
+	add	hl,hl		; *128
+	push	hl		; save offset
+	srl	d
+	rr	e
+	srl	d
+	rr	e		; /4
+	ld	hl,(QIOB+Q.BLK)
+	call	CPHLDE		; same block?
+	jr	z,rd1		; yes
+	ld	(QIOB+Q.BLK),de	; else read new block
+	ld	hl,QIOB
+	SC	.QIO 
+	jp	c,ABORT		; abort on read error
+	ld	a,(IOSB)
+	or	a
+	jp	nz,ABORT
+rd1:	pop	hl		; get offset
+	ld	de,IOBUF
+	add	hl,de		; point to start of record
+	pop	de		; restore dest address
+	ld	bc,128
+	ldir			; copy record
+	ret			;  and return
+
+; Abort task on any errors (not passing any error codes since TKTN will
+; not display registers on abort via directive.)
+
+ABORT:	ld	hl,0
+	SC	.ABORT		; abort task
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+OVLNUM:	ds	1		; number of overlay to load
+COUNT:	ds	1		; temp overlay counter
+TBLPTR:	ds	2		; pointer to overlay table
+RECNO:	ds	2		; overlay record number
+OVLBOT:	ds	2		; overlay start (bottom) address ! do not
+OVLTOP:	ds	2		; overlay end (top) address      ! change order
+LDFLAG:	db	0		; overlay load flag, 1 = already loaded
+RDLEN:	ds	2		; read length
+
+OVLTBL:	REPT	MAXOVL		; overlay save area
+	db	0		; overlay number
+	dw	0,0		; overlay start and end addresses
+	ENDM
+OVTESZ	equ	5		; size of an entry in the above table
+
+
+QIOB:	QIOW$	IO.LOV,LUNOVL,EFNOVL,IOSB,,<IOBUF,512,,,>
+IOSB:	ds	4
+IOBUF:	ds	512		; disk buffer
+
+	END
