@@ -6914,7 +6914,7 @@ BUGS:
   * fixed a bug in the case where an overlay calls an overlay for which an
     overlay call vector already exists in the parent or main module.
   * first successful linking of the overlay example application, runs on
-    RSX280!
+    both RSX180 and RSX280!
 
 05/02/22
 
