@@ -4,7 +4,7 @@
 ; %%%% Fix up LINK revision NOTE: Base 1.31
 
 LINKver	macro
-	db	'2.17'
+	db	'2.30'
 	endm
 
 FALSE	equ	0
@@ -15,7 +15,6 @@ TRUE	equ	-1		; all bits set!
 @@HASH	equ	TRUE		;; Allow # in symbols
 
 TPA	equ	0100h		; default load address
-HDR.sz	equ	0100h		; header size for SPR,RSP,PRL,etc. files
 
 RecLen	equ	128		; record length
 ExtLen	equ	128		; extent size
@@ -42,8 +41,9 @@ BFlen5	equ	8192		; XXPRG
 @nam	equ	 8
 @ext	equ	 3
 
-.JP	equ	0C3h
 .LD.BC	equ	01h
+.JP	equ	0C3h
+.CALL	equ	0CDh
 
 @aseg	equ	00b
 @cseg	equ	01b
@@ -130,11 +130,13 @@ NoMSB	equ	01111111b
 
 $$ENT	equ	7
 
-X$$LIB	equ	7
+X$$ext	equ	7
 X$$fix	equ	6
+X$$ocv	equ	5
 
-X@@LIB	equ	1 SHL X$$LIB
+X@@ext	equ	1 SHL X$$ext
 X@@fix	equ	1 SHL X$$fix
+X@@ocv	equ	1 SHL X$$ocv
 
 X@@mod	equ	00000011b
 

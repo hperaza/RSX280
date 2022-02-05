@@ -3,19 +3,19 @@
 	include	LINK.INC
 	include	THDR.INC
 
-	extrn	LINK,InitSegs,Compare
+	extrn	LINK,InitSegs,Compare,CloseMap
 
-	extrn	OVflg,Linking,$HEAD,$EXT.Tab
+	extrn	OVnum,OVcnt,Pass,$HEAD,$EXT.Tab
 	extrn	ReadFile,SolveLBRQ,StOVL0,Del$XX,Del$YY
 	extrn	Finish,PutOVL,B.opt,IrlMax
 	extrn	StOVLY,PrgOrig,DatOrig,LoadAddr
-	extrn	O.opt,O.sav,LAdr.sav,NextOVL
+	extrn	O.opt,O.sav,RootLoad,NextOVL
 	extrn	RemOVL,OVlvl,S.opt,A.opt,Q.opt,Y.opt
 	extrn	P.opt,D.opt,G.opt,MemSize,optGlabel,optGlen
-	extrn	symflg,mapflg,objflg,ovlflg
+	extrn	symflg,mapflg,objflg,ovlflg,idflag
 	extrn	LUNtbl,TSKnam,TSKid,TSKpar,TSKpri,TSKattr
 
-	public	GetTop,IOBuf,IrlBuf,CmdPtr,CmdError
+	public	GetTop,IOBuf,IrlBuf,MapBuf,CmdPtr,CmdError
 	public	ProcessCommand,$OPNER,StrBuf,StrCpy
 
 	public	X$ABS$FIB,X$PRG$FIB,X$DAT$FIB,X$COM$FIB
@@ -130,13 +130,15 @@ cmd3:	ld	a,(hl)
 	cp	'&'		; ignore continuation markers
 	jr	z,cmd3
 	or	a		; empty line?
-	jr	z,LnkExt	; branch if yes, nothing to do
+	jr	z,cmd4		; branch if yes, nothing to do
 	ld	a,' '		; clear MainFCB
 	ld	(MainFCB+.nam),a
 	ld	a,.OC		; default to .COM under CP/M
 	ld	(O.opt),a
+	ld	(O.sav),a
 	call	LINK		; .. start processing
-LnkExt:	ld	a,(CmdMode)
+LnkExt:	call	CloseMap
+cmd4:	ld	a,(CmdMode)
 	or	a
 	jp	z,WBOOT		; exit
 	jr	cmd0		; else prompt for command again
@@ -404,12 +406,12 @@ UsrGet:	ld	a,(LogUsr)	; Get user
 ENDIF	;@@DU
 
 ; Set up overlay
-; Check syntax if Linking = 0
+; Check syntax if Pass = 0
 
-SetOVL:	ld	hl,OVflg
-	ld	(hl),TRUE	; Set overlay request
-	ld	a,(Linking)
-	or	a		; linking?
+SetOVL:	ld	hl,OVnum
+	inc	(hl)		; count overlay
+	ld	a,(Pass)
+	or	a		; linking phase?
 	call	nz,InitSegs	; init segment tables if yes
 	call	GetFCB.opt	; Get FCB
 	ld	hl,FCB
@@ -423,20 +425,12 @@ SetOVL:	ld	hl,OVflg
 	ld	de,SymFCB
 	call	CopyFN		; copy FCB
   endif
-	ld	a,(Linking)	; test flag
-	or	a		; linking?
-	jr	z,stov1		; branch if not
-	ld	de,$LINKING	; else tell action
-	call	String
-	ld	hl,ModFCB
-	call	PrFN		; output file name
-	call	NL
-stov1:	call	GetChar
+	call	GetChar
 	cp	'='		; Test assignment
-	jr	nz,stov4
-stov2:	call	NextChar
+	jr	nz,stov2
+stov1:	call	NextChar
 	call	GetFCB.opt	; Get source if so
-stov4:	ld	a,(Linking)	; test flag
+stov2:	ld	a,(Pass)	; test flag
 	or	a		; linking?
 	call	nz,ReadFile	; read and link file if yes
 	call	GetChar
@@ -445,26 +439,25 @@ stov4:	ld	a,(Linking)	; test flag
 	cp	')'
 	jr	z,stov3		; exit loop if either ( or )
 	cp	','		; else must be comma
-	jr	z,stov2		; loop
+	jr	z,stov1		; loop
 	jp	CmdError
-stov3:	ld	a,(Linking)	; test flag
+stov3:	ld	a,(Pass)	; test flag
 	or	a		; linking?
 	ret	z		; done if not
-	call	SolveLBRQ	; Solve externals
-	call	StOVL0 ;Set$OVLA0	; Set external ?OVLA0
-	ld	hl,O.opt
-	ld	(hl),.OY
+	call	SolveLBRQ	; solve externals
+	call	StOVL0		; require ?OVLA0
+	ld	a,.OY
+	ld	(O.opt),a
 	call	Finish		; end section
 	jp	PutOVL		; Put overlay and return
 
-$LINKING:
-	db	CR,LF,LF,'Linking ',0
-
 ; Process command.
-; ENTRY	Accu determines checking syntax only (if FALSE)
+; ENTRY	Accu holds pass number:
+;	0 = check syntax only
+;	1 = linking phase
 
 ProcessCommand:
-	ld	(Linking),a	; save flag
+	ld	(Pass),a	; save pass number
 	or	a
 	jr	nz,pcmd0
 	ld	(libdrv),a	; set default lib drive
@@ -496,6 +489,9 @@ ENDIF	;@@DU
 	jr	nz,pcmd11	; branch if not
 	call	NextChar
 	call	GetFCB.opt	; else get map filename and options
+	ld	a,(mapflg)
+	or	a		; map file already open
+	jr	nz,pcmd12	; skip if yes
 	ld	hl,FCB
 	ld	de,MapFCB
 	call	CopyFN
@@ -504,11 +500,11 @@ IF	@@DU
 ELSE	;@@DU
 	ld	a,(MapFCB+1)	; Test source file given
 ENDIF	;@@DU
-	sub	' '
-	add	a,0FFh
-	sbc	a,a
-	ld	(mapflg),a
-	call	GetChar
+	cp	' '
+	jr	z,pcmd12
+	ld	a,1
+	ld	(mapflg),a	; set flag
+pcmd12:	call	GetChar
 pcmd11:	cp	'='		; .. test assignment
 	jp	nz,CmdError
 	call	NextChar
@@ -539,10 +535,14 @@ ENDIF	;@@DU
 pcmd1:	ld	hl,ModFCB
 	ld	de,$EMP
 	call	SetExt		; clear extension of file
-pcmd2:	ld	a,(Linking)	; test flag
+pcmd2:	ld	a,(Pass)	; test flag
 	or	a		; linking?
-	call	nz,ReadFile	; read and link module if yes
-	call	GetChar
+	jr	z,pcmd21	; no, skip
+	ld	a,(OVcnt)
+	or	a		; any overlays?
+	call	nz,StOVLY 	; yes, require ?OVLAY
+	call	ReadFile	; read and link module
+pcmd21:	call	GetChar
 	or	a		; end of line?
 	jr	z,pcmd3
 	cp	'('
@@ -555,16 +555,16 @@ pcmd2:	ld	a,(Linking)	; test flag
 
 pcmd3:	ld	a,(objflg)
 	ld	(ovlflg),a	; set overlay output flag
-	ld	a,(Linking)	; test flag
+	ld	a,(Pass)	; test flag
 	or	a		; linking?
 	jr	z,pcmd6		; skip if not (scan only)
-	ld	a,(OVflg)
+;;	ld	a,(OVcnt)
+;;	or	a
+;;	call	nz,StOVLY 	; require ?OVLAY
+	call	SolveLBRQ	; solve externals
+	ld	a,(OVcnt)
 	or	a
-	call	nz,StOVLY ;Set$OVLAY	; Set external ?OVLAY
-	call	SolveLBRQ	; Solve externals
-	ld	a,(OVflg)
-	or	a
-	call	nz,StOVL0 ;Set$OVLA0	; Set external ?OVLA0
+	call	nz,StOVL0 	; require ?OVLA0
 	ld	a,(O.opt)
 	cp	.OR		; Test .RSP
 	jr	z,pcmd4
@@ -573,10 +573,8 @@ pcmd3:	ld	a,(objflg)
 pcmd4:	ld	hl,0		; load address is zero for .RSP or .SPR
 	ld	(LoadAddr),hl
 pcmd5:	call	Finish		; end section
-	ld	a,(O.opt)
-	ld	(O.sav),a
 	ld	hl,(LoadAddr)
-	ld	(LAdr.sav),hl
+	ld	(RootLoad),hl
 	call	PutOVL		; Put overlay
 pcmd6:	call	GetChar
 	cp	'('		; Test overlay follows
@@ -924,10 +922,9 @@ ProcessOptions:
 	or	a
 	jp	nz,CmdError
 	ld	a,c
-	cp	25		; options 8..25 are followed by '='
+	cp	25		; options 8..25 are followed by '=' or ':'
 	jr	nc,opt1
-	ld	a,(CmdChr)
-	cp	'='
+	call	ArgSep
 	jp	nz,CmdError
 	call	NextChar
 	ld	a,c
@@ -948,6 +945,12 @@ OptNext:
 	ld	a,(CmdChr)
 	cp	'/'
 	jr	z,ProcessOptions
+	ret
+
+ArgSep:	ld	a,(CmdChr)
+	cp	'='
+	ret	z
+	cp	':'
 	ret
 
 ; Check for negated option
@@ -1135,6 +1138,7 @@ Oopt:	call	GetOpt
 	cp	.OY
 	jp	z,CmdError
 	ld	(O.opt),a	; set output format
+	ld	(O.sav),a
 	cp	.OS
 	ret	nz
 	ld	a,(CmdChr)	; if SPR format, check for B suboption
@@ -1351,11 +1355,10 @@ NAMopt:	ld	de,TSKnam
 	jp	PadNam
 
 IDopt:	ld	de,TSKid
-	push	de
 	call	GetNam
 	call	PadNam
-	pop	hl
-	set	7,(hl)
+	ld	a,00000110b
+	ld	(idflag),a	; lock task ident
 	ret
 
 ; Get FCB and options
@@ -1999,13 +2002,15 @@ MapFCB:
 IF	@@DU
 	db	0
 ENDIF	;@@DU
-	db	0,'           '	; copy of map file FCB (disk and name)
+	db	0,'           '	; map file FCB
+	ds	21
 
 $MEMRY::
 	ds	2
 
 IOBuf:	ds	2
 IrlBuf:	ds	2
+MapBuf:	ds	2
 CmdBuf:	ds	2
 
 ; Temporary file XX???.$$$ parameter blocks
