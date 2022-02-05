@@ -1,0 +1,29 @@
+	.z80
+
+	cseg
+
+	extrn	PUTCH,PUTSTR,OV2B
+
+WRTLN	macro	msg
+	ld	c,0Ah
+	call	PUTCH
+	ld	hl,msg
+	call	PUTSTR
+	ld	c,0Dh
+	call	PUTCH
+	endm
+
+
+OV3::	WRTLN	msg1
+
+	WRTLN	msgov2
+	call	OV2B		; call back overlay 2 (use second entry
+				;  point to avoid a recursive loop)
+	WRTLN	msgbk
+	ret
+
+msgbk:	db	'Back '
+msg1:	db	'In Overlay 3',0
+msgov2:	db	'OV3 calling OV2B',0
+
+	end

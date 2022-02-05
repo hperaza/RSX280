@@ -1,0 +1,73 @@
+; Simple overlay test for a task with the following structure:
+;
+;         Root
+;          |
+;      +-------+
+;      |       |
+;     OV1     OV2
+;              |
+;           +-----+
+;           |     |
+;          OV3   OV4
+
+	.z80
+
+	include	ERRORS.INC
+	include	SYSFN.INC
+
+	ident	/V1.0/
+
+	cseg
+
+	public	?MEMRY
+
+	extrn	OV1,OV2A,OV2B,OV3,PUTSTR,PUTCH,CRLF,EXIT
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+WRTLN	macro	msg
+	ld	c,LF
+	call	PUTCH
+	ld	hl,msg
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	endm
+
+MAIN::	ld	sp,stack
+	WRTLN	msg1		; say we are here
+
+	WRTLN	msgov1
+	call	OV1		; call overlay 1
+	WRTLN	msov2a
+	call	OV2A		; OV2 has two entry points
+	WRTLN	msov2b
+	call	OV2B
+	WRTLN	msgov3
+	call	OV3		; call overlay 3 bypassing overlay 2
+
+	WRTLN	msgbk
+	WRTLN	msdone		; we're done
+
+	ld	hl,EX.SUC
+	jp	EXIT
+
+msgov1:	db	'Calling OV1 from Root',0
+msov2a:	db	'Calling OV2A from Root',0
+msov2b:	db	'Calling OV2B from Root',0
+msgov3:	db	'Calling OV3 from Root',0
+
+msgbk:	db	'Back '
+msg1:	db	'In Root',0
+
+msdone:	db	'Done.',0
+
+	dseg
+
+?MEMRY:	ds	2
+
+	ds	256
+stack	equ	$
+
+	end	MAIN

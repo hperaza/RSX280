@@ -1,0 +1,21 @@
+	.z80
+
+	cseg
+
+	extrn	PUTCH,PUTSTR
+
+WRTLN	macro	msg
+	ld	c,0Ah
+	call	PUTCH
+	ld	hl,msg
+	call	PUTSTR
+	ld	c,0Dh
+	call	PUTCH
+	endm
+
+OV1::	WRTLN	msg1		; references PUTCH and PUTSTR in root space
+	ret
+
+msg1:	db	'In Overlay 1',0
+
+	end

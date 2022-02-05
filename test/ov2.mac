@@ -1,0 +1,40 @@
+	.z80
+
+	cseg
+
+	extrn	PUTCH,PUTSTR,OV3,OV4
+
+WRTLN	macro	msg
+	ld	c,0Ah
+	call	PUTCH
+	ld	hl,msg
+	call	PUTSTR
+	ld	c,0Dh
+	call	PUTCH
+	endm
+
+; First entry point
+
+OV2A::	WRTLN	msg1		; referencing root symbols
+
+	WRTLN	msgov3
+	call	OV3		; call overlay 3
+	WRTLN	msgov4
+	call	OV4		; call overlay 4
+
+	WRTLN	msgbk		; say we're back
+	ret			; return to root
+
+msgbk:	db	'Back '
+msg1:	db	'In Overlay 2 (A)',0
+msgov3:	db	'OV2 calling OV3',0
+msgov4:	db	'OV2 calling OV4',0
+
+; Second entry point
+
+OV2B::	WRTLN	msg2		; referencing root symbols
+	ret
+
+msg2:	db	'In Overlay 2 (B)',0
+
+	end
