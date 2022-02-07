@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.30'
+	ident	'2.31'
 
 	extrn	GetTop,IOBuf,IrlBuf,MapBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -19,7 +19,7 @@
 	extrn	OpenF,CreateF,CloseF,SeekF,DiskRd,DiskWr,$OPNER
 	extrn	FCB,DeleteF,FExist,SetName,SetExt,AddExt,CopyFN
 	extrn	ChkExt,SetLibDir,ModFCB,MainFCB,SavMain,$REL,$IRL
-	extrn	$LIB,SymFCB,MapFCB,StrFN
+	extrn	$LIB,SymFCB,MapFCB,StrFN,CVTWD
 
 	public	LINK,InitSegs,Compare,DivRec,MulRec,CloseMap
 
@@ -363,13 +363,8 @@ PutOVL:	ld	hl,(CurAdr)	; get current load address
 	ld	l,a
 	ld	(LoadAddr),hl	; overlay starts on a record boundary
 	ex	de,hl
-	ld	hl,(OVlvl)
-	ld	h,0
-	add	hl,hl		; *2
-	add	hl,hl		; *4
-	add	hl,hl		; *8
-	ld	bc,OVLTab
-	add	hl,bc
+	ld	a,(OVlvl)
+	call	IndexOVLTab	; index into OVLTab
 	ld	(hl),e		; store *next* overlay load address
 	inc	hl		;  in first word of table
 	ld	(hl),d
@@ -384,6 +379,18 @@ PutOVL:	ld	hl,(CurAdr)	; get current load address
 	inc	hl		;  in third word
 	ld	(hl),d
 	jp	FixVecSym	; fix overlay load vectors and return
+
+IndexOVLTab:
+	ld	l,a
+	ld	h,0
+	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	add	hl,hl		; *4
+	add	hl,bc		; *6
+	ld	bc,OVLTab
+	add	hl,bc
+	ret
 
 ; Allocated next overlay. Increment overlay nesting level.
 
@@ -414,15 +421,11 @@ RemOVL:	ld	a,(OVlvl)
 	dec	a		; else decrement overlay nesting count
 	ld	(OVlvl),a
 	ld	l,a
-	ld	h,0
 	ld	a,(Pass)	; check linking pass
 	or	a
 	ret	z		; return if syntax check only
-	add	hl,hl		; *2
-	add	hl,hl		; *4
-	add	hl,hl		; *8
-	ld	bc,OVLTab
-	add	hl,bc		; index into table
+	ld	a,l
+	call	IndexOVLTab	; index into OVLTab
 	ld	e,(hl)		; get previous load address
 	inc	hl
 	ld	d,(hl)
@@ -769,7 +772,7 @@ PrSeg:	call	GetADRmod	; get address mode
 	ld	de,StrBuf
 	call	CnvHexWord	; output segment address
 	ld	a,8
-	call	PosCurs
+	call	TabTo		; tab to segment type column
 	pop	af
 	ld	c,a
 	ld	b,0
@@ -782,19 +785,19 @@ PrSeg:	call	GetADRmod	; get address mode
 	ld	l,a
 	call	StrCpy		; output segment type
 	ld	a,19
-	call	PosCurs
+	call	TabTo		; tab to module name column
 	ld	hl,(SymPtr)
 	push	hl
 	call	GetVal		; get value = ptr to module name
 	ld	(SymPtr),hl
 	call	PrSymbol	; output module name
 	ld	a,29
-	call	PosCurs
+	call	TabTo		; tab to ident column
 	call	PrIdent		; output ident
 	call	GetVal		; get value = ptr to file name
 	ld	(SymPtr),hl
 	ld	a,37
-	call	PosCurs
+	call	TabTo		; tab to file name column
 	call	PrSymbol	; output file name
 	pop	hl
 	ld	(SymPtr),hl
@@ -861,20 +864,17 @@ InsVec:	ld	a,(O.sav)
 	ret
 
 GetParentRecNo:
+	push	hl
+	call	HRecs		; get header size of the root section in recs
+	ex	de,hl
+	pop	hl
 	ld	a,(OVlvl)
 	or	a
-	ld	de,2		; !!!Header size in recs
 	ret	z
 	dec	a
 	ret	z
 	push	hl
-	ld	l,a
-	ld	h,0
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	ld	de,OVLTab
-	add	hl,de
+	call	IndexOVLTab	; index into OVLTab
 	inc	hl
 	inc	hl
 	inc	hl
@@ -894,13 +894,7 @@ GetLoadAddr:
 	ret	z
 	push	hl
 	dec	a
-	ld	l,a
-	ld	h,0
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	ld	de,OVLTab
-	add	hl,de
+	call	IndexOVLTab	; index into OVLTab
 	ld	e,(hl)
 	inc	hl
 	ld	d,(hl)
@@ -931,12 +925,9 @@ FixVec:	call	GetENT		; symbol defined?
 	ld	b,(hl)
 	pop	af
 	ret	z		; return if symbol still undefined
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
-	bit	X$$ocv,(hl)
+	call	GetOCV
 	ret	z		; return if vector already updated
-	res	X$$ocv,(hl)
+	res	X$$ocv,(hl)	; clear bit to indicate is updated
 	call	GetVAL		; get value
 	or	a
 	sbc	hl,bc		; subtract root/overlay base
@@ -945,7 +936,7 @@ FixVec:	call	GetENT		; symbol defined?
 	inc	hl		; point past call vector
 	ld	de,OVnum
 	ld	bc,3
-	jp	Set$M0		; patch root/parent module and return
+	jp	Set$M		; patch root/parent module and return
 
 ; Unmask overlay vector symbol
 
@@ -965,9 +956,7 @@ RemVec:	call	GetENT		; symbol defined?
 	res	7,(hl)		; make symbol visible again
 	pop	af
 	ret	z		; return if symbol still undefined
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
+	call	GetOCV
 	res	X$$ocv,(hl)	; mark vector fixed
 	inc	hl
 	inc	hl
@@ -1440,13 +1429,7 @@ GetSymBeg:
 	ld	hl,(SymBeg)	; return start of symbol table if at zero level
 	jr	z,gets1
 	dec	a
-	ld	l,a
-	ld	h,0
-	add	hl,hl		; *2
-	add	hl,hl		; *4
-	add	hl,hl		; *8
-	ld	bc,OVLTab	; get overlay table address into BC
-	add	hl,bc		; index into table
+	call	IndexOVLTab	; index into OVLTab
 	inc	hl
 	inc	hl		; point to symbol table field
 	ld	a,(hl)		; return value
@@ -1540,6 +1523,17 @@ GetRQST:
 	ld	a,(hl)
 	and	11100000b
 	cp	10000000b
+	ret
+
+; Check Overlay Load Vector bit
+; EXIT	NZ if symbol is an overlay load vector (copy or parent)
+; Preserves BC and DE
+
+GetOCV:
+	ld	hl,(SymPtr)
+	inc	hl
+	inc	hl
+	bit	X$$ocv,(hl)
 	ret
 
 ; Get ENTRY state of symbol
@@ -2133,12 +2127,13 @@ cln1:	call	Rd$Y$byte	; get status
 	ld	(Y$Cl.Sta),a	; store it
 	cp	Y.eof		; end of file?
 	jr	z,clnext	; exit loop if yes
+	push	af
 	call	Rd$Y$word	; get address
 	ld	(Y$Cl.Adr),hl
 	call	Rd$Y$word
 	ld	(Y$Cl.Val),hl	;  and value
-	ld	a,(Y$Cl.Sta)	; get status back
-	and	Y@@off		; offset bit set?
+	pop	af		; get status back
+	bit	Y$$off,a	; offset bit set?
 	jr	z,cln2		; branch if not
 	call	Rd$Y$word	; else read offset
 	ld	(Y$Cl.Off),hl
@@ -2176,7 +2171,7 @@ cln4:	ld	a,(hl)		; get YY structure address
 	inc	hl
 	push	hl
 	jr	z,cln5		; branch if not
-	inc	hl
+	inc	hl		; skip link
 	inc	hl
 	ld	e,(hl)		; else get offset
 	inc	hl
@@ -2279,7 +2274,7 @@ WriteTskInfo:
 	ld	de,StrBuf
 	call	StrCpy
 	ld	a,14
-	call	PosCurs
+	call	TabTo		; tab to value column
 	push	de
 	ld	de,ModFCB
 	push	de
@@ -2297,7 +2292,7 @@ wrti1:	push	de
 	ld	de,StrBuf
 	call	StrCpy
 	ld	a,14
-	call	PosCurs
+	call	TabTo		; tab to value column
 	pop	hl
 	ld	bc,6
 	ldir
@@ -2318,34 +2313,35 @@ WriteSegMap:
 	call	WrtBuf
 	ld	hl,$SEGH2
 	call	StrCpy
-
+	push	hl
 	ex	de,hl
-	ld	de,(OVnum)
+	ld	de,(OVnum)	; get overlay number
 	ld	d,0
 	xor	a
-	call	CVTWD##
-	ld	(hl),' '
+	call	CVTWD		; convert to decimal
+	ex	de,hl
+	pop	hl
 	inc	hl
-	ld	(hl),'o'
-	inc	hl
-	ld	(hl),'f'
-	inc	hl
-	ld	(hl),' '
-	inc	hl
-	ld	de,(OVcnt)
+	call	StrCpy
+	ex	de,hl
+	ld	de,(OVcnt)	; get current overlay number
 	ld	d,0
 	xor	a
-	call	CVTWD##
+	call	CVTWD		; convert to decimal
 	ld	(hl),' '
 	inc	hl
 	ex	de,hl
 
-	ld	hl,ModFCB	; else output overlay name
-	call	StrFN
+;;	ld	hl,ModFCB	; else output overlay name
+;;	call	StrFN
 	jr	WsMap7
 wsmap0:	ld	hl,$SEGH1
 	call	StrCpy
-wsmap7:	call	WrtBuf		; output header
+wsmap7:
+	ld	hl,ModFCB	; else output overlay name
+	call	StrFN
+
+	call	WrtBuf		; output header
 	call	WrtBuf		; follow with empty line
 	ld	hl,$SEGH3
 wsmap5:	call	StrCpy
@@ -2354,7 +2350,7 @@ wsmap5:	call	StrCpy
 	or	a
 	jr	z,wsmap6
 	push	hl
-	call	PosCurs
+	call	TabTo		; tab to column
 	pop	hl
 	inc	hl
 	jr	wsmap5
@@ -2392,36 +2388,37 @@ wsmap4:	inc	e
 	ret
 
 $SEGH1:	db	'Root segment:',0
-$SEGH2:	db	'Overlay ',0
+$SEGH2:	db	'Overlay ',0,' of ',0
 $SEGH3:	db	'Addr',0,8,'Seg',0,19,'Module',0,29,'Ident',0,37,'File',0,0
 
 ; Output symbol table to map file
 
 WriteSymMap:
-	xor	a
-	ld	(WrtSymCol),a	; clear symbol (column) counter
-	call	GetSymBeg	; get symbol base into SymPtr
-	ld	de,StrBuf
+	call	WrtLibRequests	; output library requests
+	call	WrtGlobals	; output global symbols
+	call	WrtOvlVectors	; output overlay load vectors
+	call	WrtUndef	; output undefined symbols
+	ret
+
+; Output all resolved globals
+
+WrtGlobals:
 	ld	hl,$SYMHD
-	call	StrCpy
-	call	WrtBuf		; output header
-
-wmap1:	; print all resolved globals
-
-	ld	hl,(SymPtr)
-	ld	bc,(SymTop)
+	ld	(MapHdr),hl	; set header address
+	ld	hl,GblFilter
+	ld	(MapFilt),hl	; set symbol filter routine
+wgbl0:	ld	hl,0
+	ld	(WrtSymCol),hl	; clear symbol (column) counter
+	ld	de,StrBuf
+	call	GetSymBeg	; get symbol base into SymPtr
+wgbl1:	ld	bc,(SymTop)
 	or	a
 	sbc	hl,bc		; end of symbol table reached?
-	jp	nc,wmap5	; exit loop if yes
-	call	ChkSpecial	; special entry?
-	jr	z,wmap11	; no
-	call	GetRQST		; lib request?
-	jr	nz,wmap4	; no, skip
-wmap11:	call	GetENT		; ENTRY?
-	jr	z,wmap4		; no, skip
-	call	TstSym		; printable?
-	rra
-	jr	nc,wmap4	; no, skip
+	jp	nc,wgbl3	; exit loop if yes
+	ld	hl,(MapFilt)
+	call	jphl		; skip this entry?
+	jr	c,wgbl2		; yes
+	call	WrHeader	; output header if first time
 	ld	a,(WrtSymCol)
 	and	ColMask
 	call	z,WrtBuf	; output buffer to file if at end
@@ -2443,67 +2440,109 @@ wmap11:	call	GetENT		; ENTRY?
 	add	hl,de		; obtain cursor position
 	pop	de
 	ld	a,l
-	call	PosCurs		; move to position
+	call	TabTo		; move to position
 	ld	a,'='
 	ld	(de),a
 	inc	de
 	ld	a,' '
 	ld	(de),a
 	inc	de
-;;	call	ChkSpecial	; special entry?
-;;	jr	z,wmap4		; no
-	call	GetRQST		; LIB request?
-	jr	nz,wmap2	; no, skip
-	ld	hl,$RQST
-	call	StrCpy		; else tell is LIB request
-	jr	wmap3
-wmap2:	call	GetVAL		; get value
+	call	GetVAL		; get value
 	call	CnvHexWord	; output it
-wmap3:	ld	a,' '
+	ld	a,' '
 	rept	LabDel
 	ld	(de),a		; output delimiter
 	inc	de
 	endm
-	ld	a,(WrtSymCol)
-	inc	a		; next columnt
-	or	80h
-	ld	(WrtSymCol),a
-wmap4:	call	NextSym		; point to next symbol
-	jp	wmap1		; and loop
+	ld	hl,(WrtSymCol)
+	inc	hl		; next columnt
+	ld	(WrtSymCol),hl
+wgbl2:	call	NextSym		; point to next symbol
+	jp	wgbl1		; and loop
+
+wgbl3:	ld	hl,(WrtSymCol)
+	ld	a,h
+	or	l		; anything output?
+	ret	z		; no, return
+	ld	hl,StrBuf
+	sbc	hl,de		; anything still in buffer?
+	call	nz,WrtBuf	; yes, output it
+	jp	WrtBuf		; output final newline and return
 
 WrCom:	ld	a,'/'
 	ld	(de),a
 	inc	de
 	ret
 
-wmap5:	; print undefined symbols
-
-	ld	a,(WrtSymCol)
-	or	a		; was anything output above?
-	call	nz,WrtBuf	; output buffer if yes
-	ld	hl,0
-	ld	(WrtSymCol),hl	; clear symbol (column) counter
-	call	GetSymBeg	; get symbol base into SymPtr
-wmap6:	ld	hl,(SymPtr)
-	ld	bc,(SymTop)
-	or	a
-	sbc	hl,bc		; end of symbol table reached?
-	jr	nc,wmap9	; exit loop if yes
-	call	ChkSpecial	; special entry?
-	jr	nz,wmap8	; yes, skip
-	call	GetENT		; ENTRY (global)?
-	jr	nz,wmap8	; yes, skip
+WrHeader:
 	ld	hl,(WrtSymCol)
 	ld	a,h
 	or	l		; first time?
-	jr	nz,wmap7	; branch if not
-	call	WrtBuf		; else display newline
-	ld	hl,$UNDFS
-	call	StrCpy
-	inc	hl
-	call	StrCpy
-	call	WrtBuf		; and header
-wmap7:	ld	a,(WrtSymCol)
+	ret	nz		; no
+	ld	hl,(MapHdr)
+	call	StrCpy		; else output header
+	ld	a,':'
+	ld	(de),a
+	inc	de
+	jp	WrtBuf
+
+GblFilter:
+	call	ChkSpecial	; skip special entries
+	scf
+	ret	nz
+	call	GetENT		; skip undefined
+	scf
+	ret	z
+	call	TstSym		; skip non-printable
+	rra
+	ccf
+	ret
+
+; Output overlay call vectors
+
+WrtOvlVectors:
+	ld	hl,$OVLV
+	ld	(MapHdr),hl	; set header address
+	ld	hl,OvlFilter
+	ld	(MapFilt),hl	; set filter routine address
+	jp	wgbl0		; list symbols with values
+
+OvlFilter:
+	call	ChkSpecial	; skip special entries
+	scf
+	ret	nz
+	call	GetOCV
+	scf
+	ret	z		; skip non-vectors
+	call	adv5
+	scf
+	ret	z		; skip copies
+	call	GetSymLen
+	bit	7,(hl)
+	scf
+	ret	nz		; skip hidden vectors
+	xor	a
+	ret
+
+; Output library requests
+
+WrtLibRequests:
+	ld	hl,$RQST
+	ld	(MapHdr),hl	; set header address
+	ld	hl,LibFilter
+	ld	(MapFilt),hl	; set filter routine address
+wrsym0:	ld	hl,0
+	ld	(WrtSymCol),hl	; clear symbol (column) counter
+	call	GetSymBeg	; get symbol base into SymPtr
+wrsym1:	ld	bc,(SymTop)
+	or	a
+	sbc	hl,bc		; end of symbol table reached?
+	jr	nc,wrsym3	; exit loop if yes
+	ld	hl,(MapFilt)	; get filter routine address
+	call	jphl		; skip this symbol?
+	jr	c,wrsym2	; yes
+	call	WrHeader	; output header if first time
+	ld	a,(WrtSymCol)
 	and	UnkMask		; get column
 	call	z,WrtBuf	; output buffer if at end
 	call	PrSymbol	; print symbol
@@ -2517,32 +2556,69 @@ wmap7:	ld	a,(WrtSymCol)
 	add	a,a
 	add	a,a
 	add	a,c
-	call	PosCurs		; tab to position
-wmap8:	call	NextSym		; point to next symbol
-	jr	wmap6		; and loop
+	call	TabTo		; tab to position
+wrsym2:	call	NextSym		; point to next symbol
+	jr	wrsym1		; and loop
 
-wmap9:	ld	a,(WrtSymCol)
-	or	a		; check column
-	call	nz,WrtBuf	; output buffer if not last
-	call	WrtBuf		; output final newline and return
-	ld	hl,(WrtSymCol)
+wrsym3:	ld	hl,(WrtSymCol)
 	ld	a,h
-	or	l
-	ret	z
-	push	de
-;;	call	CVTWD
+	or	l		; anything output?
+	ret	z		; no, return
+	push	hl
+	ld	hl,StrBuf
+	sbc	hl,de		; anything still in buffer?
+	call	nz,WrtBuf	; yes, output it
+	call	WrtBuf		; output final newline
+	pop	hl
+	scf
+	ret
+
+LibFilter:
+	call	GetRQST
+	scf
+	ret	nz
+	xor	a
+	ret
+
+; Output undefined symbols
+
+WrtUndef:
 	ld	hl,$UNDFS
-	call	StrCpy
+	ld	(MapHdr),hl	; set header address
+	ld	hl,UndefFilter
+	ld	(MapFilt),hl	; set filter routine address
+	call	wrsym0		; list symbols
+	ret	nc
+	push	de
+	ex	de,hl
+	xor	a
+	call	CVTWD		; store number of undefined symbols
+	ld	(hl),' '
+	inc	hl
+	ex	de,hl
+	ld	hl,$UNDFS
+	call	StrCpy		; follow with message
 	pop	de
 	jp	ErrMsg		; warn about undefined symbols on console
+
+UndefFilter:
+	call	ChkSpecial	; skip special entries
+	scf
+	ret	nz
+	call	GetENT		; and ENTRY (global) symbols
+	scf
+	ret	nz
+	xor	a
+	ret
 
 $HEAD:	db	FF,'TKB '
 	LINKver
 	db	0
 
-$RQST:	db	'RQST',0
-$SYMHD:	db	'Global symbols:',0
-$UNDFS:	db	'Undefined symbols',0,':',0
+$RQST:	db	'Requested Libraries',0
+$SYMHD:	db	'Global symbols',0
+$UNDFS:	db	'Undefined symbols',0
+$OVLV:	db	'Overlay load vectors',0
 
 ; Test valid symbol
 ; EXIT	Accu holds xxxx.xxx1 if symbol doesn't start with '?'
@@ -2553,9 +2629,7 @@ $UNDFS:	db	'Undefined symbols',0,':',0
 ;	returns always xxxx.xxx0
 ;	Preserves DE
 
-TstSym:	ld	hl,(SymPtr)
-	ld	bc,.SymNam
-	add	hl,bc		; point to symbol
+TstSym:	call	GetSymLen	; point to symbol name
 	ld	a,(hl)
 	or	a
 	ret	z
@@ -2579,7 +2653,7 @@ WriteModTop:
 	ld	hl,$TOP
 	call	StrCpy		; .. copy message
 	ld	a,14
-	call	PosCurs
+	call	TabTo		; tab to value field
 	ld	hl,(ModTop)
 	call	CnvHexWord	; .. convert module top to hex
 	call	WrtBuf		; .. output message
@@ -2628,8 +2702,7 @@ WrtIO:	push	hl
 ; ENTRY	Reg A holds column to move to
 ;	Reg DE points to current StrBuf position
 
-PosCurs:
-	ld	hl,StrBuf
+TabTo:	ld	hl,StrBuf
 	or	a
 	sbc	hl,de		; HL = -(current pos)
 	add	a,l
@@ -2637,9 +2710,9 @@ PosCurs:
 	ret	nc
 	ld	b,a
 	ld	a,' '
-Pos1:	ld	(de),a
+tab1:	ld	(de),a
 	inc	de
-	djnz	Pos1
+	djnz	tab1
 	ret
 
 ; Copy current symbol name to string buffer
@@ -2752,7 +2825,7 @@ stat1:	ld	de,$ABS
 	ld	hl,$USE
 	call	StrCpy		; display use factor
 	ld	a,11
-	call	PosCurs
+	call	TabTo		; tab to value field
 	push	de
 	ld	hl,(MinYTop)
 	ld	de,(SymTop)
@@ -2768,13 +2841,13 @@ stat1:	ld	de,$ABS
 	ld	b,0
 	call	DIV.BC		; .. divide by pages
 	ld	bc,100
-	call	MUL.BC
-	ld	l,h
+	call	MUL.BC		; multiply by 100
+	ld	l,h		; and divide by page size (256)
 	ld	h,0
 	pop	de
 	ex	de,hl
 	ld	a,' '
-	call	CVTWD##		; .. print
+	call	CVTWD		; .. print as decimal
 	ld	(hl),'%'
 	inc	hl
 	ld	(hl),0
@@ -2798,7 +2871,7 @@ PrVAL:	push	hl		; save start
 	ld	de,StrBuf
 	call	StrCpy		; output message
 	ld	a,14
-	call	PosCurs
+	call	TabTo		; tab to value field
 	pop	hl		; restore length
 	push	hl
 	call	CnvHexWord	; .. print
@@ -2868,7 +2941,6 @@ WriteMap:
 	ld	hl,MapFCB
 	ld	de,$MAP
 	call	AddExt		; set .MAP extension if none specified
-	ld	hl,MapFCB
 	ld	de,0
 	ld	c,d
 	call	CreateF		; create .MAP file
@@ -3077,7 +3149,6 @@ stchn1:	ld	hl,(SC.CurAdr)	; get current address
 	ld	e,(hl)		; get value
 	inc	hl
 	ld	d,(hl)
-	ld	(SC.adr),de	; .. save it
 	sub	@aseg		; Absolute segment?
 	or	d		; and zero address?
 	or	e		; call LD.W below on ASEG *and* zero address
@@ -3112,7 +3183,6 @@ stchn2:	ld	a,(X$Seg)	; get current current segment
 	rra
 	ret	nc		; return if not
 	call	LD.W		; get address from X temp file
-	ld	(SC.adr),hl	; .. save
 	ld	a,h
 	or	l		; zero?
 	ret	z		; return if yes
@@ -3174,7 +3244,7 @@ ENDIF	;NOT @@HASH
 
 ;-----------------------------------------------------------------------
 
-; Read link item
+; Read link item (type 15 is handled by the Item routine)
 ; ENTRY	Accu holds special link item
 
 RdItem:	ld	c,a		; save item
@@ -3187,17 +3257,7 @@ RdItem:	ld	c,a		; save item
 	push	bc
 	call	nc,BField	; get name
 	pop	bc
-	ld	a,c		; check item type
-	cp	.ENTRY
-	jp	z,LNK.0		; 0 - entry symbol
-	cp	.ModNam
-	jp	z,LNK.2		; 2 - module name
-	cp	.ModEnd
-	jp	z,LNK.E		; E - end of module
-	ld	a,(Loading)
-	or	a		; loading this module?
-	ret	z		; return if not (e.g. library search)
-	dec	c
+	ld	a,c		; get item type
 	ld	b,0
 	ld	hl,LNK.tab
 	add	hl,bc		; index into table
@@ -3206,24 +3266,28 @@ RdItem:	ld	c,a		; save item
 	inc	hl
 	ld	h,(hl)
 	ld	l,a
-	jp	(hl)		; process item
+	ld	a,(Loading)
+	or	a		; loading this module?
+jphl:	jp	(hl)		; process item with Loading flags in A
 
 ; Link item table
 
 LNK.tab:
-	dw	LNK.1		; 1 - select COMMON block
-	dw	LNK.2		; 2 - module name
-	dw	LNK.3		; 3 - request library search
-	dw	LNK.4		; 4 - extension item
-	dw	LNK.5		; 5 - define COMMON size
-	dw	LNK.6		; 6 - chain external
-	dw	LNK.7		; 7 - define entry point
-	dw	LNK.8		; 8 - external - offset
-	dw	LNK.9		; 9 - external + offset
-	dw	LNK.A		; A - define DSEG size
-	dw	LNK.B		; B - set location counter
-	dw	LNK.C		; C - chain address
-	dw	LNK.D		; D - define CSEG size
+	dw	LNK.0		;  0 - entry symbol
+	dw	LNK.1		;  1 - select COMMON block
+	dw	LNK.2		;  2 - module name
+	dw	LNK.3		;  3 - request library search
+	dw	LNK.4		;  4 - extension item
+	dw	LNK.5		;  5 - define COMMON size
+	dw	LNK.6		;  6 - chain external
+	dw	LNK.7		;  7 - define entry point
+	dw	LNK.8		;  8 - external - offset
+	dw	LNK.9		;  9 - external + offset
+	dw	LNK.A		; 10 - define DSEG size
+	dw	LNK.B		; 11 - set location counter
+	dw	LNK.C		; 12 - chain address
+	dw	LNK.D		; 13 - define CSEG size
+	dw	LNK.E		; 14 - end of module
 
 ; Link item 0 -->> ENTRY symbol
 ; (Also used by LIBRARY solver)
@@ -3245,7 +3309,8 @@ LNK.0:	ld	e,FALSE
 
 ; Link item 1 -->> Select COMMON block
 
-LNK.1:	ld	e,TRUE
+LNK.1:	ret	z		; return if not loading (Library search)
+	ld	e,TRUE
 	call	SrcName		; find COMMON
 	ld	de,$COMER
 	jp	nc,Abort	; error if not found
@@ -3259,14 +3324,14 @@ $COMER:	db	'COMMON error',0
 
 ; Link Item 2 -->> Name of module
 
-LNK.2:	ld	de,modidn
+LNK.2:	push	af		; save Loading flag
+	ld	de,modidn
 	ld	bc,6
 	ld	a,' '
 	call	FillMem		; reset module ident
 	ld	hl,idflag
 	res	0,(hl)		; clear modidn valid flag
-	ld	a,(Loading)	; loading this module?
-	or	a
+	pop	af		; loading this module?
 	jp	nz,InsMod	; yes, insert symbol for module name
 	ld	hl,BF.Len
 	ld	de,modnam	; else remember module name, but don't
@@ -3278,11 +3343,12 @@ lnk21:	ld	c,(hl)		;  enter it into the symbol table yet
 
 ; Link item 3 -->> Request library search
 
-LNK.3:	call	LibFind		; find LIB in table
+LNK.3:	ret	z		; return if not loading (Library search)
+	call	LibFind		; find LIB in table
 	ret	c		; if already there, return
 	ld	hl,0		; value = 0
-	ld	c,0		; no extra bytes to allocate
-	ld	a,1 SHL $$ENT	; addr mode = 0, Public bit set
+	xor	a		; addr mode = 0, Public bit not set
+	ld	c,a		; no extra bytes to allocate
 	call	InsSym		; insert new symbol
 	ld	hl,(SymPtr)
 	inc	hl
@@ -3324,14 +3390,19 @@ lnk43:	ld	hl,modidn
 	ld	bc,6
 	ldir			; and set task ident
 	ret
-lnk42:	ld	de,$UNREC
-	jp	ErrMsg		; error - unrecognized item
+
+lnk42:	ld	a,(Loading)
+	or	a		; loading this module?
+	ret	z		; no, return
+	ld	de,$UNREC
+	jp	ErrMsg		; else error - unrecognized item
 
 $UNREC:	db	'Unrecognized item',CR,LF,0
 
 ; Link item 5 -->> Define COMMON size
 
-LNK.5:	ld	e,TRUE
+LNK.5:	ret	z		; return if not loading (Library search)
+	ld	e,TRUE
 	call	SrcName		; find COMMON
 	jr	nc,lnk51	; branch if not found (new COMMON)
 	call	GetCOMlen	; get length of 1st
@@ -3369,7 +3440,8 @@ $CMNL:	db	'/',0,'/ First COMMON not largest',0
 
 ; Link item 6 -->> Chain external
 
-LNK.6:	ld	e,FALSE
+LNK.6:	ret	z		; return if not loading (Library search)
+lnk60:	ld	e,FALSE
 	call	SrcName		; find symbol
 	jr	c,lnk61		; branch if found
 	ld	hl,0		; value = 0
@@ -3382,7 +3454,8 @@ lnk61:	ld	hl,(SymPtr)
 
 ; Link item 7 -->> Define entry point
 
-LNK.7:	ld	hl,(AF.mode)	; get symbol mode (segment)
+LNK.7:	ret	z		; return if not loading (Library search)
+lnk70:	ld	hl,(AF.mode)	; get symbol mode (segment)
 	ld	h,0
 	add	hl,hl
 	ld	bc,CurBase
@@ -3429,16 +3502,18 @@ $MLTDF:	db	'Multiple definition: ',0
 
 ; Link item 8 -->> External - offset
 
-LNK.8:	ld	a,TRUE		; set - sign
+LNK.8:	ret	z		; return if not loading (Library search)
+	ld	a,TRUE		; set - sign
 	ld	(OffSgn),a
-	call	LNK.9		; do via external + offset
+	call	lnk91		; do via external + offset
 	xor	a		; reset + sign
 	ld	(OffSgn),a
 	ret
 
 ; Link item 9 -->> External + offset
 
-LNK.9:	ld	hl,(X$Seg)
+LNK.9:	ret	z		; return if not loading (Library search)
+lnk91:	ld	hl,(X$Seg)
 	ld	h,0
 	ld	bc,CurLoc
 	add	hl,hl
@@ -3458,7 +3533,8 @@ LNK.9:	ld	hl,(X$Seg)
 
 ; Link item A -->> Define DSEG size
 
-LNK.A:	ld	hl,(AF.val)
+LNK.A:	ret	z		; return if not loading (Library search)
+	ld	hl,(AF.val)
 	ld	(ModLen+IDSEG),hl	; copy length
 	ld	a,h
 	or	l
@@ -3468,7 +3544,8 @@ LNK.A:	ld	hl,(AF.val)
 
 ; Link item B -->> Set location counter
 
-LNK.B:	ld	a,(AF.mode)	; get address mode bits
+LNK.B:	ret	z		; return if not loading (Library search)
+	ld	a,(AF.mode)	; get address mode bits
 	call	Set$X		; select the corresponding XX file
 	ld	a,(X$Seg)
 	cp	@comn		; COMMON?
@@ -3504,7 +3581,8 @@ lnkb1:	ld	c,a
 
 ; Link item C -->> Chain address
 
-LNK.C:	ld	hl,(X$Seg)
+LNK.C:	ret	z		; return if not loading (Library search)
+	ld	hl,(X$Seg)
 	ld	h,0
 	ld	bc,CurLoc
 	add	hl,hl
@@ -3518,7 +3596,8 @@ LNK.C:	ld	hl,(X$Seg)
 
 ; Link item D -->> Define CSEG size
 
-LNK.D:	ld	hl,(AF.val)
+LNK.D:	ret	z		; return if not loading (Library search)
+	ld	hl,(AF.val)
 	ld	(ModLen+ICSEG),hl	; set length
 	ld	a,h
 	or	l
@@ -3759,9 +3838,7 @@ LoadRELfile:			; else Load from .REL file
 ReadFile:
 	ld	hl,FCB
 	ld	de,$REL
-	push	hl
 	call	AddExt		; set .REL extension if none present
-	pop	hl
 	call	FExist		; try to open file
 	jr	nc,rf1		; .. jump if found
 	ld	a,(S.opt)	; Library search?
@@ -3769,9 +3846,7 @@ ReadFile:
 	jr	z,rf2		; .. no, leave as it is
 	ld	hl,FCB
 	ld	de,$IRL
-	push	hl
 	call	SetExt		; else set .IRL extension
-	pop	hl
 	call	FExist		; file exists?
 	jr	nc,rf1		; .. yes
 	ld	hl,FCB
@@ -3833,9 +3908,9 @@ rbyte:	ld	de,(InPtr)	; get pointer
 	ld	hl,(IOBuf)
 	add	hl,de		; add to disk buffer
 	ld	a,(hl)		; get byte
-	ld	(BitVal),a	; .. as new value
+	ld	(RelByte),a	; .. as new value
 	pop	af
-rbit:	ld	hl,BitVal	; point to byte
+rbit:	ld	hl,RelByte	; point to byte
 	rlc	(hl)		; .. rotate it
 	rla			; .. shift into result
 	djnz	rbloop		; .. loop on
@@ -3883,22 +3958,22 @@ StOVL0:	call	StOVTB		; output dummy overlay table and define ?OVLTB
 	ld	(AF.mode),a	; set PROGRAM RELATIVE
 	call	Set$X		; select code segment file (note A=@cseg)
 	call	GetSymBeg	; get symbol base into SymPtr
-s0loop:	ld	hl,(SymPtr)
+s01:	ld	hl,(SymPtr)
 	ld	bc,(SymTop)
 	or	a
 	sbc	hl,bc		; all scanned?
 	ret	nc		; exit loop if yes
 	call	ChkSpecial	; special entry?
-	jr	nz,s0skip	; yes, skip
+	jr	nz,s03		; yes, skip
 	call	GetENT		; ENTRY symbol?
-	jr	nz,s0skip	; yes, skip
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
-	bit	X$$ocv,(hl)	; already an overlay call vector entry?
-	jr	nz,s0skip	; yes, skip
+	jr	nz,s03		; yes, skip
+	ld	a,(O.sav)
+	cp	.OT		; TSK output?
+	jr	nz,s02		; no
+	call	GetOCV		; already an overlay call vector entry?
+	jr	nz,s03		; yes, skip
 	set	X$$ocv,(hl)	; mark as overlay call vector entry
-	ld	hl,(CurLoc+ICSEG) ; set value of external to the current loc
+s02:	ld	hl,(CurLoc+ICSEG) ; set value of external to the current loc
 	ld	a,@cseg		; of code segment (overlay call vector)
 	call	SetVAL		; set value and mode
 	call	EmitOvlCall	; output overlay call vector
@@ -3906,8 +3981,8 @@ s0loop:	ld	hl,(SymPtr)
 	add	hl,de		; adjust code length for extra code
 	ld	(CurBase+ICSEG),hl
 	call	Wr$Y$Data	; fix temp chain and flush Y data to file
-s0skip:	call	NextSym		; point to next symbol
-	jr	s0loop		; .. loop
+s03:	call	NextSym		; point to next symbol
+	jr	s01		; .. loop
 
 AddVecSym:
 	call	GetSymBeg
@@ -3923,13 +3998,10 @@ adv1:	or	a
 	jr	nz,adv2		; yes, skip
 ;;	call	GetENT		; ENTRY symbol?
 ;;	jr	nz,adv2		; yes, skip
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
-	bit	X$$ocv,(hl)	; overlay vector entry?
+	call	GetOCV		; overlay vector entry?
 	jr	z,adv2		; no, skip
 	call	adv5
-	jr	z,adv2		; skip if vector'
+	jr	z,adv2		; skip if a copy of overlay load vector
 	call	GetSymLen
 	bit	7,(hl)
 	jr	nz,adv2		; skip if hidden
@@ -3982,10 +4054,7 @@ fixv1:	ld	bc,(SymTop)
 	jr	nz,fixv2	; yes, skip
 ;;	call	GetENT		; ENTRY symbol?
 ;;	jr	nz,fixv2	; yes, skip
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
-	bit	X$$ocv,(hl)	; overlay vector entry?
+	call	GetOCV		; overlay vector entry?
 	jr	z,fixv2		; no, skip
 	ld	hl,(SymPtr)
 	push	hl
@@ -4008,10 +4077,7 @@ remv1:	ld	bc,(SymTop)
 	jr	nz,remv2	; yes, skip
 ;;	call	GetENT		; ENTRY symbol?
 ;;	jr	nz,remv2	; yes, skip
-	ld	hl,(SymPtr)
-	inc	hl
-	inc	hl
-	bit	X$$ocv,(hl)	; overlay vector entry?
+	call	GetOCV		; overlay vector entry?
 	jr	z,remv2		; no, skip
 	ld	hl,(SymPtr)
 	push	hl
@@ -4038,7 +4104,7 @@ StOVTB:	ld	a,(O.sav)	; check output file format
 	ld	(AF.mode),a	; set DATA RELATIVE
 	ld	hl,0		; (CurBase has been set to CurLoc)
 	ld	(AF.val),hl	; set symbol value to current data loc
-	call	LNK.7		; add/update symbol (will add CurBase)
+	call	lnk70		; add/update symbol (will add CurBase)
 	ld	a,@dseg
 	call	Set$X		; select data segment file
 	ld	a,(OVcnt)
@@ -4073,7 +4139,7 @@ EmitOvlCall:
 	call	ST.W.0		; store zero word as placeholder for dest addr
 	ld	hl,(SymPtr)
 	push	hl		; save pointer
-	call	LNK.6		; execute CHAIN EXTERNAL - link to ?OVLA0
+	call	lnk60		; execute CHAIN EXTERNAL - link to ?OVLA0
 	pop	hl
 	ld	(SymPtr),hl	; restore pointer
 	call	GetSymLen	; get length of symbol
@@ -4106,7 +4172,7 @@ emtsk:	;TODO: solve chain
 	call	ST.W.0		; store zero word as placeholder for dest addr
 	ld	hl,(SymPtr)
 	push	hl		; save pointer
-	call	LNK.6		; execute CHAIN EXTERNAL - link to ?OVLA0
+	call	lnk60		; execute CHAIN EXTERNAL - link to ?OVLA0
 	pop	hl
 	ld	(SymPtr),hl	; restore pointer
 	xor	a
@@ -4135,23 +4201,27 @@ nxtlib:	ld	hl,(SymPtr)
 	call	GetSymLen	; get symbol length into A
 	ex	de,hl		; src name in DE
 	ld	hl,FCB		; dst FCB in HL
+	push	hl
 	call	SetName		; set file name
-	ld	hl,FCB
+	pop	hl
 	call	SetLibDir
 	ld	hl,IRLflag	; try first .IRL
 	ld	(hl),TRUE
 	ld	hl,FCB
 	ld	de,$IRL
 	call	SetExt		; set .IRL extension
-	ld	hl,FCB
 	call	FExist		; try to open file
 	jr	nc,lfound	; jump if file found
 	ld	hl,IRLflag	; else clear .IRL flag
 	ld	(hl),FALSE
 	ld	hl,FCB
-	ld	de,$REL
-	call	SetExt		; and try .REL
+	ld	de,$LIB
+	call	SetExt		; and set .LIB extension
+	call	FExist		; try to open file
+	jr	nc,lfound	; jump if file found
 	ld	hl,FCB
+	ld	de,$REL
+	call	SetExt		; finally, try .REL
 	ld	c,0		; open for read
 	call	OpenF		; open file
 lfound:	ld	hl,(SymPtr)
@@ -4432,7 +4502,6 @@ SetOutputExt:
 	ex	de,hl		; FCB address in HL, ext address in DE
 	jp	AddExt		; set extension if FCB has none
 
- IF 1
 ; Create or reopen output file
 
 OpenOutput:
@@ -4456,15 +4525,11 @@ OpenOutput:
 	ld	c,1
 	call	SeekF		; seek to end of file
 
-	ld	hl,(CurBase+ICSEG)
-	ld	de,(CurBase+IDSEG)
-	add	hl,de
-	ld	de,(CurBase+ICOMN)
-	add	hl,de		; compute total file size
+	call	ProgSize	; compute file size of current overlay
 	xor	a
-	call	DivRec1
+	call	DivRec1		; convert to records
 	ld	de,(TSKsiz)
-	add	hl,de
+	add	hl,de		; add to file size
 	ld	(TSKsiz),hl
 	ret
 
@@ -4475,11 +4540,7 @@ opn1:	ld	hl,ModFCB
 	pop	de
 	call	SetOutputExt	; set extension if FCB has none
 	ld	c,0
-	ld	hl,(CurBase+ICSEG)
-	ld	de,(CurBase+IDSEG)
-	add	hl,de
-	ld	de,(CurBase+ICOMN)
-	add	hl,de		; compute total file size
+	call	ProgSize	; compute file size of root segment
   if 1
 	ld	de,(ABS.end)
 	ld	a,l
@@ -4495,24 +4556,39 @@ opn2:	call	HeaderSize	; get header size for output file format
 	ex	de,hl		; CDE = requested file size in bytes
 	push	de
 	push	bc
-	ld	hl,FCB
+	ld	a,(OVcnt)
+	or	a		; any overlays?
+	jr	z,opn3		; no
+	ld	de,0		; else create output file non-contiguous
+	ld	c,e
+opn3:	ld	hl,FCB
 	call	CreateF		; create output file
 	pop	bc
 	pop	hl
 	ld	a,c
-	call	DivRec1
-	ld	(TSKsiz),hl
+	call	DivRec1		; convert file size to records
+	ld	(TSKsiz),hl	; store result
 	ld	(OvlRecNo),hl
 	jp	SavMain		; save MainFCB and return
- ENDIF
 
 DivRec1:
-	call	DivRec
+	call	DivRec		; compute record number
 	ret	z
-	inc	hl
+	inc	hl		; round up
 	ret
 
-; Get header size according to file type
+; Compute program size by adding the length of CODE, DATA and COMMON
+; segments. The Absolute segment is not taken into account here.
+
+ProgSize:
+	ld	hl,(CurBase+ICSEG)
+	ld	de,(CurBase+IDSEG)
+	add	hl,de
+	ld	de,(CurBase+ICOMN)
+	add	hl,de
+	ret
+
+; Get header size in bytes according to file type
 
 HeaderSize:
 	ld	a,(O.opt)	; get output file format
@@ -4528,6 +4604,13 @@ HSize:	ld	de,0
 	dec	d
 	ret			; else return 0
 
+; Get header size of the root section in records
+
+HRecs:	ld	a,(O.sav)	; get root module format
+	call	HSize		; get header size
+	ex	de,hl
+	jp	DivRec		; divide by rec size and return value in HL
+
 ; Write output file (root module or overlay) using the current module name
 ; and extension according to output type
 
@@ -4535,64 +4618,14 @@ WriteOutput:
 	ld	a,(objflg)	; output file wanted?
 	or	a
 	ret	z		; return if not
- IF 0
-	ld	a,(O.sav)	; check output format
-	cp	.OT		; TSK?
-	jr	nz,WO.0		; no
-	ld	a,(OVnum)
-	or	a		; root module?
-	jr	nz,WO.2		; no, file already open
-WO.0:	ld	hl,ModFCB
-	ld	de,FCB		; copy file name and extension,
-	push	de
-	call	CopyFN		;  use current module name
-	pop	de
-	call	SetOutputExt	; set extension if FCB has none
-	ld	c,0
-	ld	hl,(CurBase+ICSEG)
-	ld	de,(CurBase+IDSEG)
-	add	hl,de
-	ld	de,(CurBase+ICOMN)
-	add	hl,de		; compute total file size
-  if 1
-	ld	de,(ABS.end)
-	ld	a,l
-	sub	e
-	ld	a,h
-	sbc	a,d
-	jr	nc,WO.1
-	ex	de,hl
-  endif
-WO.1:	call	HeaderSize	; get header size for output file
-	add	hl,de		; add header size
-	rl	c		; carry to C
-	ex	de,hl		; CDE = requested file size in bytes
-	ld	hl,FCB
-	call	CreateF		; create output file
-WO.2:	call	SavMain		; save main FCB if not yet saved
- ELSE
 	call	OpenOutput	; create/reopen output file
- ENDIF
 	ld	hl,0
 	ld	(OutPtr),hl	; clear pointer
 	xor	a
 	ld	(MapByte),a	; .. and bitmap byte
 	ld	(MapCnt),a	; .. and bitmap count
 	call	BuildOutput	; build the output file
- IF 0
-	ld	a,(O.sav)
-	cp	.OT		; TSK file?
-	jr	nz,CloseOutput	; no, close output file
-	ld	a,(OVcnt)
-	or	a		; any overlays?
-	jr	z,CloseOutput	; no, close output file
-	ld	hl,OVnum
-	cp	(hl)		; just output the last overlay?
-	jr	z,CloseOutput	; yes, close output file
-	; continue below	; else pad record and return
- ELSE
 	jp	CloseOutput
- ENDIF
 
 ; Pad output file record with EOF chars
 
@@ -4756,12 +4789,8 @@ TSKheader:
 	call	WrNam		; task partition
 	ld	hl,(LoadAddr)	;;(StrtTab+ICSEG)
 	call	WrWord		; start address
-	ld	hl,(StrtTab+ICSEG)
-	ld	de,(CurBase+ICSEG)
-	add	hl,de
-	ld	de,(CurBase+IDSEG)
-	add	hl,de
-	ld	de,(CurBase+ICOMN)
+	call	ProgSize
+	ld	de,(StrtTab+ICSEG)
 	add	hl,de
 	dec	hl
 	call	WrWord		; end address
@@ -4980,7 +5009,6 @@ WriteSym:
 	ld	hl,FCB
 	ld	de,$SYM
 	call	AddExt		; set .SYM extension
-	ld	hl,FCB
 	ld	de,0
 	ld	c,d
 	call	CreateF		; create .SYM file
@@ -5050,19 +5078,13 @@ PosMEM:	ld	hl,(MEM$val)
 ;	Reg BC holds number of bytes to store
 
 Set$M0:	push	de
-	push	bc
-	jr	setm1
-
-Set$MEM:
-	call	GetVAL		; get symbol address
-	ld	de,ModTop
-	ld	bc,2
-Set$M:	push	de
-	push	bc
 	ld	de,(RootLoad)
 	or	a
 	sbc	hl,de		; subtract load address
-setm1:	ld	(MEM$val),hl	; store symbol file address
+	pop	de
+Set$M:	push	de
+	push	bc
+	ld	(MEM$val),hl	; store symbol file address
 	ld	hl,MainFCB
 	ld	de,FCB
 	call	CopyFN		; get name of main file back into FCB
@@ -5114,10 +5136,7 @@ SetMTop:
 skipmt:	ld	a,(ovlflg)
 	or	a		; output suppressed?
 	ret	z		; return if yes
-	ld	a,(O.sav)	; get root module format
-	call	HSize		; get header size
-	ex	de,hl
-	call	DivRec
+	call	HRecs		; get header size of the root section in recs
 	ld	(MEM$rec),hl
 	ld	hl,MEMRY?
 	call	FixMEM		; else fix ?MEMRY
@@ -5126,9 +5145,12 @@ skipmt:	ld	a,(ovlflg)
 FixMEM:	ld	a,MEMlen
 	ld	e,FALSE
 	call	SrcSym		; find symbol
-	push	af
-	call	c,Set$MEM	; set value if found
-	pop	af
+	ret	nc		; not found, return
+	call	GetVAL		; get symbol address
+	ld	de,ModTop
+	ld	bc,2
+	call	Set$M0		; set value in root section
+	scf			; done
 	ret
 
 MEMRY?:	db	'?MEMRY'
@@ -5148,10 +5170,7 @@ UpdateOvlTable:
 	ld	a,OVLlen
 	call	SrcSym		; search for ?OVLTB table
 	ret	nc		; not found, return
-	ld	a,(O.sav)	; get root module format
-	call	HSize		; get header size
-	ex	de,hl
-	call	DivRec
+	call	HRecs		; get header size of the root section in recs
 	ld	(MEM$rec),hl
 	call	GetVal		; get value
 	ld	a,(OVnum)
@@ -5163,7 +5182,7 @@ upd1:	add	hl,de		; index into table
 	jr	nz,upd1
 upd2:	ld	de,OvlRecNo
 	ld	bc,6
-	jp	Set$M
+	jp	Set$M0		; set value in root section and return
 
 ; Update TSK header
 
@@ -5182,7 +5201,7 @@ UpdateHeader:
 	ld	de,WrtSymCol
 	ld	hl,002Ah	; TH.INC
 	ld	bc,2
-	jp	Set$M0
+	jp	Set$M		; set value and return
 
 ;-----------------------------------------------------------------------
 
@@ -5611,12 +5630,11 @@ OVnum:	ds	1		; !    do not    ! current overlay number
 VecAdr:	ds	2		; ! change order ! overlay vector target
 OVcnt:	ds	1		; number of overlays
 OVlvl:	ds	1		; current overlay nesting level
-OVLTab:	ds	MaxOVL*8	; overlay branch table (one entry per nesting
+OVLTab:	ds	MaxOVL*6	; overlay branch table (one entry per nesting
 				;  level), each entry contains:
 				;   +0: overlay load address
 				;   +2: address of symbol table fence
 				;   +4: overlay TSK file record offset
-				;   +6: reserved
 
 MemTop:	ds	2		; top of memory available to the linker
 
@@ -5759,6 +5777,8 @@ SegOrder:
 ValidSegs:
 	ds	1		; number of valid segments
 
+; REL item fields
+
 AF.mode:
 	ds	1		; address mode
 AF.val:
@@ -5771,8 +5791,10 @@ BF.Name:						; | change order
 
 AdrCnt:	dw	0
 
+MapHdr:
 B$R.adr:
 	ds	2
+MapFilt:
 B$R.val:
 	ds	2
 B$R.ctrl:
@@ -5813,17 +5835,11 @@ SC.mode:
 	ds	1
 SC.CurAdr:
 	ds	2
-SC.adr:
-	ds	2
 
 STWval:	ds	2
 STWmod:	ds	1
 
-BitVal:	ds	1
-
-MapCnt:
-	ds	1
-MapByte:
+RelByte:
 	ds	1
 
 MEM$val:
@@ -5833,7 +5849,12 @@ MEM$rec:
 
 CurSeg:	ds	1		; segment being written to output file
 
-MapSeg:	ds	1		; index to segment during reloc bitmap build
+MapCnt:
+	ds	1
+MapByte:
+	ds	1
+MapSeg:
+	ds	1		; index to segment during reloc bitmap build
 
 WrtSymCol:
 	ds	2

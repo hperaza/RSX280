@@ -1432,6 +1432,7 @@ SetLibDir:
 ; Add file extension if none has been specified
 ; ENTRY	Reg HL holds FCB
 ;	Reg DE holds extension
+; Preserves HL
 
 AddExt:	push	hl
 	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
@@ -1445,6 +1446,7 @@ AddExt:	push	hl
 ; Set file extension
 ; ENTRY	Reg HL holds FCB
 ;	Reg DE holds extension
+; Preserves HL
 
 SetExt:	push	hl
 	ld	bc,F.EXT+3	; +3 because extra LUN and recno fields
@@ -1453,11 +1455,13 @@ SetExt:	push	hl
 	ld	bc,@ext
 	ldir
 	pop	hl
+	push	hl
 	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
 	add	hl,bc
 	ld	a,(hl)
 	or	FN.EXT
 	ld	(hl),a
+	pop	hl
 	ret
 
 ; Check file extension

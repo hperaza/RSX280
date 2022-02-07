@@ -72,6 +72,7 @@ MAIN::	sub	a		; ensure CPU is Z80
 	ld	de,$CPU.ERR
 	jp	pe,FATAL	; .. wrong one
 	ld	(CmdMode),a
+	ld	(CmdFlg),a
 	ld	sp,stack	; setup stack
 
 IF	@@DU
@@ -127,6 +128,8 @@ cmd3:	ld	a,(hl)
 	inc	hl
 	cp	' '		; skip initial blanks
 	jr	z,cmd3
+	cp	'@'		; command file?
+	jr	z,cmd5
 	cp	'&'		; ignore continuation markers
 	jr	z,cmd3
 	or	a		; empty line?
@@ -143,8 +146,31 @@ cmd4:	ld	a,(CmdMode)
 	jp	z,WBOOT		; exit
 	jr	cmd0		; else prompt for command again
 
+cmd5:	ld	a,(CmdFlg)
+	or	a		; command file already open
+	ld	de,$ERR.CMD
+	jp	nz,FATAL
+	ld	(CmdPtr),hl
+	call	Parse		; parse command file name
+	jp	c,CmdError
+	ld	hl,FCB
+	ld	de,$CMD
+	call	AddExt		; add .CMD extension if none specified
+	call	OpenF		; open command file
+	ld	(CmdFlg),a
+	ld	a,128
+	ld	(CmdPos),a
+	ld	hl,(CmdBuf)
+	ld	(CmdPtr),hl	; reset command pointer
+	push	hl
+	call	GetCmd
+	pop	hl
+	jp	cmd1
+
 $CPU.ERR:
-	db	'Requires Z80 CPU','$'
+	db	'Requires Z80 CPU$'
+$ERR.CMD:
+	db	'Nested Command Files not supported$'
 
 FATAL:	ld	c,.string
 	call	BDOS		; output error message
@@ -603,7 +629,10 @@ pcmd10:	ld	a,(OVlvl)
 
 ; Get (next) command line chunk
 
-GetCmd:	call	NL
+GetCmd:	ld	a,(CmdFlg)
+	or	a		; reading from command file?
+	jr	nz,mcmd2	; yes
+	call	NL
 	ld	a,'*'
 	call	PrChar		; display prompt
 	ld	de,CCPbuf	; use default CCP buffer
@@ -623,6 +652,58 @@ GetCmd:	call	NL
 	ldir			; else copy line
 	xor	a
 mcmd1:	ld	(de),a		; end with a null
+	ret
+
+mcmd2:	ld	hl,(CmdPtr)
+mcmd3:	push	hl
+	call	RdCmd		; get char from command file
+	pop	hl
+	jr	c,mcmd4
+	cp	LF
+	jr	z,mcmd3		; ignore LF
+	ld	(hl),a
+	inc	hl
+	cp	CR		; end of line?
+	jr	nz,mcmd3	; no, loop
+	dec	hl
+	push	hl
+	ld	de,(CmdBuf)
+	sbc	hl,de
+	ld	de,BFlen3	; don't go nuts
+	sbc	hl,de
+ 	call	nc,ClsCmd
+	pop	hl
+mcmd4:	ld	(hl),0		; end with a null
+	ret
+
+RdCmd:	ld	a,(CmdPos)
+	cp	128		; end of buffer reached?
+	jr	nz,rdc1		; no
+	ld	de,CCPbuf
+	ld	c,.setdma
+	call	BDOS		; else read next buffer
+	ld	de,FCB
+	ld	c,.rdseq
+	call	BDOS
+	or	a
+	jr	z,rdc1
+ClsCmd:	ld	de,FCB
+	ld	c,.close
+	call	BDOS
+	xor	a
+	ld	(CmdFlg),a
+	scf
+	ret
+rdc1:	ld	e,a
+	ld	d,0
+	ld	hl,CCPbuf
+	add	hl,de
+	inc	a
+	ld	(CmdPos),a
+	ld	a,(hl)
+	cp	EOF
+	jr	z,ClsCmd
+	or	a
 	ret
 
 ; Get UPPER case character
@@ -1666,22 +1747,26 @@ ENDIF	;@@DU
 ; Add file extension if none has been specified
 ; ENTRY	Reg HL holds FCB
 ;	Reg DE holds extension
+; Preserves HL
 
-AddExt:	ld	bc,.ext
+AddExt:	push	hl
+	ld	bc,.ext
 	add	hl,bc
 IF	@@DU
 	inc	hl
 ENDIF	;@@DU
 	ld	a,(hl)
 	cp	' '
-	ret	nz
+	jr	nz,set2
 	jr	set1
 
 ; Set file extension
 ; ENTRY	Reg HL holds FCB
 ;	Reg DE holds extension
+; Preserves HL
 
-SetExt:	ld	bc,.ext
+SetExt:	push	hl
+	ld	bc,.ext
 	add	hl,bc
 IF	@@DU
 	inc	hl
@@ -1689,6 +1774,7 @@ ENDIF	;@@DU
 set1:	ex	de,hl
 	ld	bc,@ext
 	ldir
+set2:	pop	hl
 	ret
 
 ; Check file extension
@@ -1887,6 +1973,7 @@ StrCpy:	ld	a,(hl)
 	inc	de
 	jr	StrCpy
 
+$CMD:	db	'CMD'
 $OVL:	db	'OVL'
 $REL:	db	'REL'
 $IRL:	db	'IRL'
@@ -2012,6 +2099,8 @@ IOBuf:	ds	2
 IrlBuf:	ds	2
 MapBuf:	ds	2
 CmdBuf:	ds	2
+CmdFlg:	ds	1		; command file open flag
+CmdPos:	ds	1		; command file buffer pos
 
 ; Temporary file XX???.$$$ parameter blocks
 ; 1 - ABSOLUTE

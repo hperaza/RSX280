@@ -4,7 +4,7 @@
 ; %%%% Fix up LINK revision NOTE: Base 1.31
 
 LINKver	macro
-	db	'2.30'
+	db	'2.31'
 	endm
 
 FALSE	equ	0
@@ -85,6 +85,7 @@ NoMSB	equ	01111111b
 
 .ENTRY	equ	0000b
 .ModNam	equ	0010b
+.ExtItm	equ	0100b
 .COMMON	equ	0101b
 .EntPnt	equ	0111b
 .ModEnd	equ	1110b
@@ -161,6 +162,8 @@ X@@mod	equ	00000011b
 ; Lnk		Link pointer, ends with zero
 ; Off		Offset, if defined
 
+.Y$Sta	equ	0
+.Y$Adr	equ	1
 .Y$Val	equ	3
 .Y$Lnk	equ	5
 .Y$Off	equ	7
