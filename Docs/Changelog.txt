@@ -6916,6 +6916,7 @@ BUGS:
   * first successful linking of the overlay example application, runs on
     both RSX180 and RSX280!
 
+
 05/02/22
 
 - The overlay manager is now part of SYSLIB.
@@ -6923,5 +6924,27 @@ BUGS:
 - TKB:
   * request ?OVLAY on second pass *before* loading any modules, else SYSLIB
     will miss it.
+  * the CP/M version now accepts @command files, with suport for continuation
+    lines, but nested command files are not allowed. This makes it easier to
+    pass long command lines to the linker without having to redirect zxcc's
+    standard input; fixing the problem of zxcc losing the first characters
+    of the redirected input file.
+  * fixed ident of library modules not being reported in the map file.
 
+
+06/02/22
+
+- TKB:
+  * include .lib files in requested library searches.
+  * map file: output requested library names in a separate section, instead
+    of mixing them with the globals.
+  * map file: output overlay load vector addresses as well.
+
+
+07/02/22
+
+- TKB:
+  * create TSK file non-contiguous on RSX180/280 if it contains overlays,
+    as we don't know beforehand the final file size (to be fixed.)
+  * show number of undefined symbols on console error message.
 
