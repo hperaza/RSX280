@@ -327,15 +327,19 @@ XLATE:	push	hl
 	scf
 	jr	nz,xlt4		; no, error
 
-	;...error if I.QDB+Q.BLK >= T.NBLK
+	;TODO: error if I.QDB+Q.BLK >= T.NBLK
 
-	ldw	hl,(hl+T.SBLK)	; get LBN of task image file
+	push	hl
+	ldw	hl,(hl+T.SBLK)	; add LBN of task image file to block number
 	ldw	de,(ix+I.QDB+Q.BLK)
 	add	hl,de
 	ldw	(ix+I.QDB+Q.BLK),hl
-	jr	nc,xlt11
-	incw	(ix+I.QDB+Q.BLK+2)
-xlt11:	ld	c,IO.RLB
+	pop	hl
+	ldw	hl,(hl+T.SBLK+2)
+	ldw	de,(ix+I.QDB+Q.BLK+2)
+	adc	hl,de
+	ldw	(ix+I.QDB+Q.BLK+2),hl
+	ld	c,IO.RLB
 	jr	xlt2
 
 xlt1:	ld	bc,U.ST
