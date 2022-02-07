@@ -2331,17 +2331,12 @@ WriteSegMap:
 	ld	(hl),' '
 	inc	hl
 	ex	de,hl
-
-;;	ld	hl,ModFCB	; else output overlay name
-;;	call	StrFN
-	jr	WsMap7
-wsmap0:	ld	hl,$SEGH1
-	call	StrCpy
-wsmap7:
 	ld	hl,ModFCB	; else output overlay name
 	call	StrFN
-
-	call	WrtBuf		; output header
+	jr	wsmap7
+wsmap0:	ld	hl,$SEGH1
+	call	StrCpy
+wsmap7:	call	WrtBuf		; output header
 	call	WrtBuf		; follow with empty line
 	ld	hl,$SEGH3
 wsmap5:	call	StrCpy
