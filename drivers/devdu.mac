@@ -833,17 +833,17 @@ pt:	; "Fake" partition table reflecting the disk layout of the
 	dw	0001h,003Fh	; 8M CP/M 3
 	db	0B2h,1
 	dw	0040h,0040h	; 8M CP/M 3
-	db	0B2,1
+	db	0B2h,1
 	dw	0080h,0040h	; 8M CP/M 3
-	db	0B2,0
+	db	0B2h,0
 	dw	00C0h,0040h	; 8M CP/M 3
-	db	0B2,0
+	db	0B2h,0
 	dw	0100h,0100h	; 32M RSX180/RSX280
 	db	0D8h,1
 	dw	0200h,0100h	; 32M UZI280
-	db	0D1,0
+	db	0D1h,0
 	dw	0300h,0100h	; 32M UZI280
-	db	0D1,0
+	db	0D1h,0
 	dw	0000h,0000h	; unused
 	db	0,0
   ENDIF

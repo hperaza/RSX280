@@ -1155,7 +1155,7 @@ ed861:	ld	a,(prefix)
 	or	a
 	jp	nz,unknw
 	ld	a,c
-	and	0F7
+	and	0F7h
 	cp	0A6h
 	jp	nz,unknw
 	ld	a,c
