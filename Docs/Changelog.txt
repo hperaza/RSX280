@@ -6948,3 +6948,49 @@ BUGS:
     as we don't know beforehand the final file size (to be fixed.)
   * show number of undefined symbols on console error message.
 
+
+09/02/22
+
+- TKB:
+  * report undefined symbols only after the current overlay *branch* is
+    closed and not after the overlay is linked; this is to avoid reporting
+    those overlay call vectors that will be defined by the next overlay.
+    Undefined root symbols are reported at the very end whan all overlays
+    have been linked.
+  * allow options to be specified after the last overlay group.
+
+
+10/02/22
+
+- RMD: each display page is now in a separate overlay. Memory footprint
+  reduced by about 600 bytes: not that much, but that will allow to add
+  extra pages or new functionality to existing ones while keeping the task
+  top below 16K as requered for accessing the kernel database.
+
+
+11/02/22
+
+- Added TH.UIC (default UIC) field to the task header.
+
+- INS: set T.NBLK to the task file size in blocks.
+
+- LDR:
+  * load only the main segment into memory.
+  * load task in 256-byte chunks (TODO: make the task header one full block
+    to simplify the code)
+
+- Kernel:
+  * don't use T.NBLK to top up the task size, since the file size of a task
+    containing overlays could grow above the 64K memory limit.
+  * IO.LOV now returns E.EOF when attempting to read beyond task file limits.
+
+
+12/02/22
+
+- INS: set default terminal device of installed task to user's terminal
+  or to CO:
+
+- VMR:
+  * set T.NBLK to the task file size in blocks.
+  * load only the main segment of fixed tasks into memory.
+
