@@ -620,7 +620,11 @@ pcmd9:	or	a
 	jr	z,pcmd10	; exit loop if end of command
 	cp	'('
 	jr	z,pcmd7		; loop if (
-	jp	CmdError	; else error
+	cp	'/'
+	jp	nz,CmdError	; error if not an option
+	call	ProcessOptions	; process option
+	call	GetChar
+	jr	pcmd9		; and loop
 
 pcmd10:	ld	a,(OVlvl)
 	or	a		; Test balanced
@@ -1425,6 +1429,8 @@ SetLUN:	ld	l,b
 	ld	(hl),c
 	inc	hl
 	ld	(hl),0
+	ld	hl,idflag
+	set	3,(hl)		; lock task LUN table
 	ret
 
 PARopt:	ld	de,TSKpar
