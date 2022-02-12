@@ -60,7 +60,7 @@
 	extrn	SYSOPN,SYSCLS,OPENF,CLOSEF,READF,PFN,PDN,RCTRLO
 
 	extrn	INSDEV,FNDDEV,FNDTSK,LNKTCB,TSKSIZ,FNDPAR,UCB2DN
-	extrn	NEWPAR,REMPAR,TALLOC,TFREE,TLOAD,CHKHDR
+	extrn	NEWPAR,REMPAR,TALLOC,TFREE,TLOAD,CHKHDR,THDR
 
 	extrn	LDSYM,KMINIT,KALLOC,KFREE,SGETB,SGETW,SPUTB,SPUTW
 	extrn	SGETM,SPUTM,LDHLHL,LDDEHL,LDBCHL,LDDEBC,LDABC
@@ -1239,6 +1239,10 @@ RDHDR:	ld	b,LUNFIL	; LUN in B
 	scf
 	jr	nz,rderr	; otherwise return error
 
+	ld	hl,IBUF
+	ld	de,THDR
+	ld	bc,256
+	ldir			; copy header to separate buffer
 	call	CHKHDR		; verify task header
 
 rderr:	push	af
