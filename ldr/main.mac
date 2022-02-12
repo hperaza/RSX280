@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2021, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -27,7 +27,7 @@
 
 	.Z280
 
-	ident	'V6.12'
+	ident	'V6.14'
 
 	include	SYSCONF.INC
 	include	SYSFN.INC
@@ -130,8 +130,7 @@ TLOAD:	IF	F$CHKP
 	ld	(TBASE),hl
 
 	ld	hl,0		; starting address
-	ld	b,(iy+P.SIZE)	; number of blocks to read/write in B
-				;  (note: assuming max 128 blocks = 64K)
+	ldw	bc,(iy+P.SIZE)	; number of blocks to read/write in BC
 
 	bit	T2.OUT,(ix+T.ST+1) ; checkpoint read?
 	jp	z,ckpwr		   ; branch if not (checkpoint write)
@@ -155,7 +154,10 @@ ckprd:	; checkpoint read
 
 	call	NXTBL
 	pop	bc
-	djnz	ckprd
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,ckprd
 
 	KCALL	$LDCKR		; move task to ready list to resume execution
 	ret	nc
@@ -183,7 +185,10 @@ ckpwr:	; checkpoint write
 	call	NXTBL
 	pop	hl
 	pop	bc
-	djnz	ckpwr
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,ckpwr
 
 	KCALL	$LDCKW		; move task to partition wait list
 	ret	nc
@@ -219,9 +224,39 @@ iload:	; initial task load
 	ldw	hl,(hl+P.BASE)
 	ld	(TBASE),hl
 
+	ld	hl,(TSKHDR+TH.END)
+	ld	de,(TSKHDR+TH.STRT)
+	sbc	hl,de		; compute code size (note CY is still clear)
+
+	ld	de,255		; convert value to 256-byte records
+	add	hl,de		; round to upper 256-byte record limit
+	ld	l,h		; divide by 256
+	ld	h,0
+
+	ex	de,hl
+	ldw	hl,(ix+T.NBLK)	; get file size in blocks
+	add	hl,hl		; compute file size in 256-byte records
+	jr	c,ld1		; CY means file size larger than code length
+	dec	hl		; don't count header
+	cpw	hl,de		; compare
+	jr	c,ld2		; file size is shorter, use T.NBLK*2-1 in HL
+	ex	de,hl		; else use computed code records
+
+ld2:	ex	de,hl
+ld1:	ldw	hl,(ix+T.PCB)
+	ldw	hl,(hl+P.SIZE)	; now get (sub)partition size
+	add	hl,hl		; convert pages to 256-byte records
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	jr	c,ld3		; CY here means partition is large enough
+	cpw	hl,de		; compare
+	jr	c,ld4		; use P.SIZE*16 in HL if smaller
+ld3:	ex	de,hl		; else use computed code records
+ld4:	ld	c,l		; result in BC
+	ld	b,h
+
 	ldw	de,(ix+T.STRT)	; program load address
-	ld	b,(ix+T.NBLK)	; number of blocks to read in B
-				;  kernel made sure that high byte is zero
 	ld	hl,IOBUF+256	; src in HL, dst in DE
 	push	bc		; save block counter
 	ld	bc,256		; length
@@ -231,25 +266,44 @@ iload:	; initial task load
 	exx
 	KCALL	$MCOPY		; copy 1st 256 bytes 
 	pop	bc
-	dec	b		; done with first block
-	jr	z,ldend
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	z,ldend		; yes
 
 load:	push	bc
 
-	call	NXTBL		; already copied first (half) block
+	call	NXTBL		; prepare to read next block
 	call	DSKRD		; read from task image file
 	jp	c,rderr		; abort task on error
 
 	ld	hl,IOBUF	; src
-	ld	bc,512		; len
+	ld	bc,256		; len
 	exx
 	ld	hl,($UBANK)	; src bank
 	ld	de,(TBASE)	; dst bank
 	exx
-	KCALL	$MCOPY		; copy block to task area
-
+	KCALL	$MCOPY		; copy first half of block to task area
 	pop	bc
-	djnz	load
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	z,ldend		; yes
+
+	push	bc
+	ld	bc,256		; len
+	exx
+	ld	hl,($UBANK)	; src bank
+	ld	de,(TBASE)	; dst bank
+	exx
+	KCALL	$MCOPY		; copy second half of block to task area
+	pop	bc
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	nz,load		; no, loop
+
+; TODO: clear any remaining recs?
 
 ldend:	call	INILUN		; initialize LUN table
 	ld	e,TK.MEM	; abort code = not enough pool
