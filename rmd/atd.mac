@@ -1,7 +1,7 @@
 ;***********************************************************************
 ;
 ;   This file is part of RMD, a Resource Monitoring Display utility
-;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;   for the RSX280 OS. Copyright (C) 1985-2022, Hector Peraza.
 ;
 ;   This program is free software; you can redistribute it and/or
 ;   modify it under the terms of the GNU General Public License as
@@ -37,7 +37,9 @@
 
 ;-----------------------------------------------------------------------
 
-ATDPG:	dw	dproc		; address of display procedure
+ATDPG:	ld	hl,$+4
+	ret
+	dw	dproc		; address of display procedure
 	dw	setup		; address of setup procedure
 	dw	hlptxt		; address of help text
 

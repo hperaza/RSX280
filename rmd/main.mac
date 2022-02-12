@@ -1,7 +1,7 @@
 ;***********************************************************************
 ;
 ;   This file is part of RMD, a Resource Monitoring Display utility
-;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;   for the RSX280 OS. Copyright (C) 1985-2022, Hector Peraza.
 ;
 ;   This program is free software; you can redistribute it and/or
 ;   modify it under the terms of the GNU General Public License as
@@ -23,7 +23,7 @@
 
 	.Z280
 
-	ident	'V6.15'
+	ident	'V6.30'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -231,7 +231,7 @@ MAIN:	ld	sp,stack
 	inc	a
 	ld	(RATE),a	; default replot rate is 1 second
 
-	ld	hl,MEMPG	; default mode is memory display
+	call	MEMPG		; default mode is memory display
 	ld	(ACTPG),hl	; set display procedure
 
 	ld	hl,SYSVN
@@ -243,7 +243,7 @@ MAIN:	ld	sp,stack
 
 	ld	c,1
 	SC	.SUPER		; put us in supervisor mode
-	jp	c,fatal
+	jp	c,FATAL
 
 	call	GCCL		; get MCR command line
 	call	PARSE		; parse command line and process options
@@ -324,7 +324,7 @@ loopk:	ld	hl,astflg	; see what happened
 	jr	nz,m1
 
 	ld	hl,(ACTPG)
-	cpw	hl,HELP
+	cpw	hl,HELP+4
 	jr	z,loopk		; ignore setup command for help screen
 
 	call	COMND		; else prompt for and get command
@@ -378,7 +378,8 @@ SELPG:	cp	'M'
 
 ;;	cp	'H'
 	ld	hl,HELP		; default mode for unknown commands
-setmod:	ld	(ACTPG),hl
+setmod:	call	(hl)
+	ld	(ACTPG),hl
 	ret			; return with CY clear
 
 syserr:	ld	hl,sysmsg
@@ -491,9 +492,29 @@ astflg:	ds	1		; AST flags:
 				;   bit 1 set = unsolicited char arrived
 astchr:	ds	1		; received char
 
+	public	?MEMRY
+?MEMRY:	ds	2
+
 	ds	128
 stack	equ	$
 
-	db	0		; force output of last byte
+;-----------------------------------------------------------------------
+
+; Persistent data used by the display pages (any data stored in the
+; overlay is volatile)
+
+	public	MTOP,MBOT,DEVTBL ; MEMPG
+
+MBOT:	dw	0		; bottom limit of region to display
+MTOP:	dw	0		; top limit of region to display
+
+DEVTBL:	db	'SY',0		; TODO: move the default settings to RMD.INC
+	db	'DY',1
+	db	'DU',0
+	db	'DU',2
+
+	public	TSKNAM		; THDRPG
+
+TSKNAM:	db	'...RMD'
 
 	end	START

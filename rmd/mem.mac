@@ -1,7 +1,7 @@
 ;***********************************************************************
 ;
 ;   This file is part of RMD, a Resource Monitoring Display utility
-;   for the RSX280 OS. Copyright (C) 1985-2020, Hector Peraza.
+;   for the RSX280 OS. Copyright (C) 1985-2022, Hector Peraza.
 ;
 ;   This program is free software; you can redistribute it and/or
 ;   modify it under the terms of the GNU General Public License as
@@ -35,7 +35,9 @@
 	extrn	HEADER,SHRHL,DIV32,SKIPBL,UCASE,ISLETR,STRCMP
 	extrn	GETDEC
 
-	extrn	DSKFRE,DEVTBL,POOLST
+	extrn	DSKFRE,POOLST
+
+	extrn	MTOP,MBOT,DEVTBL ; persistent data in root section
 
 	cseg
 
@@ -49,7 +51,9 @@ st_dev	equ	3
 
 ;-----------------------------------------------------------------------
 
-MEMPG:	dw	dproc		; address of display procedure
+MEMPG:	ld	hl,$+4
+	ret
+	dw	dproc		; address of display procedure
 	dw	setup		; address of setup procedure
 	dw	hlptxt		; address of help text
 
@@ -108,12 +112,12 @@ init:	ld	hl,($MEMSZ)	; in kbytes
 	add	hl,hl
 	ld	(mpages),hl	; in pages
 
-	ld	hl,(mtop)
+	ld	hl,(MTOP)
 	ld	a,h
 	or	l
 	ret	nz
 	ld	hl,(mpages)
-	ld	(mtop),hl
+	ld	(MTOP),hl
 	ret
 
 ;-----------------------------------------------------------------------
@@ -138,14 +142,14 @@ setup:	call	init		; preserves DE
 	cpw	hl,de
 	jr	nc,stb1		; jump if <= mpages-64
 	ex	de,hl		; else force mpages-64
-stb1:	ld	(mbot),de
+stb1:	ld	(MBOT),de
 	ld	hl,64
 	add	hl,de
-	ld	de,(mtop)
+	ld	de,(MTOP)
 	ex	de,hl
 	cpw	hl,de
-	ret	nc		; return with CY clear if mbot+64 <= mtop
-	ld	(mtop),de	; else adjust mtop
+	ret	nc		; return with CY clear if MBOT+64 <= MTOP
+	ld	(MTOP),de	; else adjust MTOP
 	xor	a
 	ret
 
@@ -169,15 +173,15 @@ stt0:	ld	de,(mpages)
 	ex	de,hl
 	jr	nc,stt1		; jump if <= mpages
 	ex	de,hl		; else force mpages
-stt1:	ld	(mtop),hl
+stt1:	ld	(MTOP),hl
 	ld	bc,-64
 	add	hl,bc
 	ex	de,hl
-	ld	hl,(mbot)
+	ld	hl,(MBOT)
 	ex	de,hl
 	cpw	hl,de
-	ret	nc		; return with CY clear if mtop-64 >= mbot
-	ld	(mbot),hl	; else adjust mbot
+	ret	nc		; return with CY clear if MTOP-64 >= MBOT
+	ld	(MBOT),hl	; else adjust MBOT
 	xor	a
 	ret
 
@@ -279,8 +283,8 @@ ruler:	VGTOXY	0,13
 	ld	c,'*'
 	call	line		; draw bottom axis (64 stars)
 
-	ld	hl,(mtop)	; get number of 256-byte pages to display
-	ld	de,(mbot)	;  into HL
+	ld	hl,(MTOP)	; get number of 256-byte pages to display
+	ld	de,(MBOT)	;  into HL
 	or	a
 	sbc	hl,de
 	ld	(tkincr),hl	; use full value as tick increment value to
@@ -383,7 +387,7 @@ tick:	; draw tick
 	ld	l,h
 	ld	h,a
 	push	bc
-	ld	bc,(mbot)
+	ld	bc,(MBOT)
 	add	hl,bc		; add bottom page
 	pop	bc
 	call	SHRHL		; convert to kbytes
@@ -678,7 +682,7 @@ tm8:	ld	(yn),hl
 ; 0..127 (top and bottom part of the display combined). Return CY set
 ; if the page number falls outside the displayed range.
 
-pg2x:	ld	de,(mbot)
+pg2x:	ld	de,(MBOT)
 	or	a
 	sbc	hl,de
 	jr	nc,wpg2x
@@ -701,8 +705,8 @@ wpg2x:	call	SHRHL
 	ld	l,h
 	ld	h,0		; HLDE = HL * 128
 	push	hl
-	ld	hl,(mtop)
-	ld	bc,(mbot)
+	ld	hl,(MTOP)
+	ld	bc,(MBOT)
 	or	a
 	sbc	hl,bc		; get display range in pages
 	ld	c,l		;  into BC
@@ -1239,11 +1243,11 @@ ino1:	call	VGETC
 	call	VPUTC		; advance cursor
 	djnz	ino1
   ELSE
-	ld	hl,(mbot)
+	ld	hl,(MBOT)
 	ld	a,h
 	or	l
 	ret	nz
-	ld	de,(mtop)
+	ld	de,(MTOP)
 	ld	hl,400*4	; ~400K in pages
 	cpw	hl,de
 	ret	c
@@ -1309,9 +1313,6 @@ esmsg:	db	'ERRSEQ',0
 	dseg
 
 mpages:	ds	2		; total memory pages
-
-mbot:	dw	0		; bottom limit of region to display
-mtop:	dw	0		; top limit of region to display
 
 y0:	ds	1		; task display Y coordinate
 x0:	ds	1		; task display X coordinate
