@@ -2618,7 +2618,10 @@ dlyms2:	db	'Continuing',0
 
 ; .PAUSE
 
-pause:	ld	hl,pmsg
+pause:	ld	hl,0
+	ld	de,GTBUF
+	SC	.GTSK		; reload our task info
+	ld	hl,pmsg
 	ld	de,askbuf	; prepare message
 	push	de
 	call	STRCPY
