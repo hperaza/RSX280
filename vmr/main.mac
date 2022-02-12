@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of VMR, an utility to configure the RSX280       ;
-;   system image. Copyright (C) 1985-2021, Hector Peraza.              ;
+;   system image. Copyright (C) 1985-2022, Hector Peraza.              ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -36,7 +36,7 @@
 
 	.Z80
 
-	ident	'V1.11'
+	ident	'V1.12'
 
 	include	SYSFN.INC
 	include	FCB.INC
@@ -1059,6 +1059,17 @@ usepri:	ld	(ix+T.DPRI),a
 	or	(ix+T.ATTR)	; merge with user bits
 	ld	(ix+T.ATTR),a	; set attribute bits in TCB
 
+	xor	a
+	ld	(ix+T.CPCB),a
+	ld	(ix+T.CPCB+1),a	; clear checkpoint PCB address
+
+	ld	de,'CO'
+	ld	c,0
+	call	FNDDEV		; find system console device
+;;	jp	c,inserr
+	ld	(ix+T.TI),l	; set as terminal device
+	ld	(ix+T.TI+1),h
+
 	ld	de,(tmpdev)
 	ld	a,(tmpdev+2)
 	ld	c,a
@@ -1068,35 +1079,28 @@ usepri:	ld	(ix+T.DPRI),a
 	ld	(ix+T.LDEV+1),h
 
 	ld	hl,(FDB+F.BMAP)
-	ld	(ix+T.SBLK),l	; starting block number
+	ld	(ix+T.SBLK),l	; set starting block number
 	ld	(ix+T.SBLK+1),h
 	ld	a,(FDB+F.BMAP+2)
 	ld	(ix+T.SBLK+2),a
 	ld	(ix+T.SBLK+3),0
 
-	pop	hl		; get saved task top
-	push	hl
-	ld	de,512		; conv to size (+1) and round to blk boundary
-	add	hl,de
-	rr	h		; /2
-	rr	l
-	ld	l,h
-	ld	h,0		; /512 = size in blocks
-	ld	de,(FDB+F.NUSED)
-	call	CPHLDE
-	jr	c,fs1		; use F.NUSED if < computed size 
-	ex	de,hl		; else don't load any extra stuff such as ovls
-fs1:	ld	(ix+T.NBLK),e	; store size in blocks
-	ld	(ix+T.NBLK+1),d
+	ld	hl,(FDB+F.NUSED)
+	ld	(ix+T.NBLK),l	; set size in blocks
+	ld	(ix+T.NBLK+1),h
+	ld	a,(FDB+F.NUSED+2)
+	or	a
+	ld	a,E.PBIG
+	jp	nz,inserr	; error if file is huge
 
 	ld	hl,(IBUF+TH.STRT)
-	ld	(ix+T.STRT),l	; task space starts at 0000h
+	ld	(ix+T.STRT),l	; set start address of task area
 	ld	(ix+T.STRT+1),h
-	ld	hl,100h
-	ld	(ix+T.EPT),l	; entry point is at 0100h
+	ld	hl,(IBUF+TH.EPT)
+	ld	(ix+T.EPT),l	; set entry point
 	ld	(ix+T.EPT+1),h
 	pop	hl		; pop saved task top
-	ld	(ix+T.END),l	; set top of task space
+	ld	(ix+T.END),l	; set end address of task area
 	ld	(ix+T.END+1),h
 	ld	(ix+T.DEND),l
 	ld	(ix+T.DEND+1),h
