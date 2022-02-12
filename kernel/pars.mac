@@ -654,7 +654,7 @@ acs3:	ld	bc,CPCBSZ
 	push	hl		; push next PCB address
 	push	de		; push size
 	call	$ALLOC		; allocate new sub PCB
-	pop	de		; pop sizs
+	pop	de		; pop size
 	pop	bc		; pop next PCB address into BC
 	ret	c		; not enough pool
 	push	hl
