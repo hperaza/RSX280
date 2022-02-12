@@ -228,6 +228,10 @@ ErrFN:	push	hl
 	call	String
 	pop	de
 	call	String		; output message
+	ld	a,':'
+	call	PrChar
+	ld	a,' '
+	call	PrChar
 	pop	hl
 	call	PrFN		; Print file name
 	ld	a,CR
@@ -1638,8 +1642,8 @@ Disk..end:
 	ld	hl,(IO.res)
 	ret
 
-$RDERR:	db	'Disk read error: ',0
-$WRERR:	db	'Disk write error: ',0
+$RDERR:	db	'Disk read error',0
+$WRERR:	db	'Disk write error',0
 
 ; Print name of file
 ; ENTRY	Reg HL points to FCB
@@ -1844,15 +1848,17 @@ ENDIF	;@@DU
 ; Create file
 ; ENTRY	Reg HL holds FCB
 
-FMake:	ex	de,hl
+FMake:	push	hl
+	ex	de,hl
 IF	@@DU
 	inc	de
 ENDIF	;@@DU
 	call	make		; Create
 	inc	a		; Test error
+	pop	hl
 	ret	nz
 	ld	de,$MKERR
-	jp	Abort		; abort
+	jp	ErrFN		; abort
 
 ; Check if file exists, open it if it does.
 ; ENTRY	Reg HL points to FCB
@@ -1933,15 +1939,17 @@ ENDIF	;@@DU
 ; Close file
 ; ENTRY	Reg HL points to FCB
 
-CloseF:	ex	de,hl
+CloseF:	push	hl
+	ex	de,hl
 IF	@@DU
 	inc	de
 ENDIF	;@@DU
 	call	close		; Close file
 	inc	a		; Test error
+	pop	hl
 	ret	nz
 	ld	de,$CLSER
-	jp	Abort		; abort
+	jp	ErrFN		; abort
 
 ; Prepare FCB for 1st access
 ; ENTRY	Reg HL points to FCB
@@ -1961,7 +1969,7 @@ clr1:	ld	(hl),a		; Clear remainder of FCB
 	ret
 
 $MKERR:	db	'No space',0
-$OPNER:	db	'No file: ',0
+$OPNER:	db	'No file',0
 $CLSER:	db	'Cannot close',0
 
 ; Get top of available memory
