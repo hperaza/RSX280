@@ -6994,3 +6994,10 @@ BUGS:
   * set T.NBLK to the task file size in blocks.
   * load only the main segment of fixed tasks into memory.
 
+- ICP .PAUSE command: reload task info since it may have been overwritten
+  by another command.
+
+- TKB bug fix: a 1-byte buffer overflow in GetFI caused sporadic CreateF
+  errors (affected only map file creation).
+
+
