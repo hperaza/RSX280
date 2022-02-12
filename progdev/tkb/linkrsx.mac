@@ -31,7 +31,7 @@
 	public	ChkExt,ModFCB,MainFCB,SavMain,SetLibDir,$REL,$IRL
 	public	$LIB,SymFCB,MapFCB,PrChar,Abort,ErrMsg,ErrFN
 
-	extrn	GCML,RCML,PUTCH,TTFLSH,PERROR,CVTWD,UCASE,PFN,PDN
+	extrn	GCML,RCML,PUTCH,TTFLSH,CVTWD,UCASE,PFN,PDN
 
 LUNCML	equ	1
 
@@ -161,6 +161,10 @@ ErrFN:	push	hl
 	call	String
 	pop	de
 	call	String		; output message
+	ld	a,':'
+	call	PrChar
+	ld	a,' '
+	call	PrChar
 	pop	hl
 	call	PrFN		; Print file name
 	ld	a,CR
@@ -1285,8 +1289,8 @@ wrerr:	pop	hl		; HL = FCB address
 	ld	de,$WRERR
 	jp	ErrFN		; .. abort on error
 
-$RDERR:	db	'Disk read error: ',0
-$WRERR:	db	'Disk write error: ',0
+$RDERR:	db	'Disk read error',0
+$WRERR:	db	'Disk write error',0
 
 ; Print name of file
 ; ENTRY	Reg HL points to FCB
@@ -1499,7 +1503,7 @@ CopyFN:	ld	bc,F.ATTR+3	; +3 because extra LUN and recno fields
 	ex	de,hl
 	add	hl,bc
 	ex	de,hl
-	ld	bc,2+3+9+9+3+2	; attr, dev, dir, name, ext, ver
+	ld	bc,1+3+9+9+3+2	; attr, dev, dir, name, ext, ver
 	ldir
 	ret
 
@@ -1550,6 +1554,8 @@ CreateF:
 	ld	h,SF.CTG	; set contiguous flag file accordingly
 nonctg:	ld	(qio1+Q.FUNC),hl
 	ld	(qio1+Q.P2),de
+	xor	a
+	ld	(qio1+Q.P2+2),a
 	ld	hl,qio1
 	SC	.QIO		; create file
 	pop	hl
@@ -1558,7 +1564,7 @@ nonctg:	ld	(qio1+Q.FUNC),hl
 	or	a
 	jp	z,GetFI		; get full filename info and return
 Emake:	ld	de,$MKERR
-	jp	Abort		; abort
+	jp	ErrFN		; abort
 
 ; Check if file exists and open it for read if it does.
 ; ENTRY	Reg HL points to FCB
@@ -1633,21 +1639,23 @@ OpenF:	call	fopn		; open the file
 ; Close file
 ; ENTRY	Reg HL points to FCB
 
-CloseF:	ld	a,(hl)		; get LUN
+CloseF:	push	hl
+	ld	a,(hl)		; get LUN
 	ld	(qio1+Q.LUN),a
 	ld	hl,IO.DEA
 	ld	(qio1+Q.FUNC),hl
 	ld	hl,qio1
 	SC	.QIO		; close file
+	pop	hl
 	jr	c,clse
 	ld	a,(iosb)
 	or	a
 	ret	z
 clse:	ld	de,$CLSER
-	jp	Abort		; abort
+	jp	ErrFN		; abort
 
-$MKERR:	db	'No space',0
-$OPNER:	db	'No file: ',0
+$MKERR:	db	'Create error',0
+$OPNER:	db	'Open error',0
 $CLSER:	db	'Cannot close',0
 
 ; Fill FCB with full file info
