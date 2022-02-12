@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of VMR, an utility to configure the RSX280       ;
-;   system image. Copyright (C) 1985-2021, Hector Peraza.              ;
+;   system image. Copyright (C) 1985-2022, Hector Peraza.              ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -160,30 +160,18 @@ lnk2:	push	ix		; get address of TCB to insert
 ; Compute required task size. Called with IX = TCB address in local memory.
 ; Returns in E the task size in pages.
 
-TSKSIZ:	ld	l,(ix+T.NBLK)
-	ld	h,(ix+T.NBLK+1)	; get file size in blocks
-	call	BL2PG		; convert to number of pages
-	ld	a,h
-	or	a
-	ld	a,E.PBIG
-	scf
-	ret	nz		; program too big
-	ex	de,hl		; save # of pages in reg E
-	ld	l,(ix+T.END)	; check task's upper limit (task end + INC)
+TSKSIZ:	ld	l,(ix+T.END)	; check task's upper limit (task end + INC)
 	ld	h,(ix+T.END+1)
 	inc	hl		; size = end address + 1
 	call	BY2PG		; convert to number of pages
-	cp	c		; larger than file size?
-	jr	nc,gz1		; yes, use it
-	ld	a,e		; else use file size
-gz1:	ld	e,a
+	ld	e,a		; result in E
 	or	a
 	ld	a,E.BADTF
 	scf			; size can't be zero
 	ret	z
 	ld	a,e
-	cp	16		; max allowed size in pages
-	ccf			;  (one page reserved for system common)
+	cp	16+1		; max allowed size in pages
+	ccf
 	ld	a,E.PBIG
 	ret	c		; task won't fit in memory
 	xor	a
@@ -376,6 +364,11 @@ TLOAD:	ld	e,(ix+T.LDEV)
 	call	DSKRD		; read 1st block (task header) into IBUF
 	ret	c
 
+	ld	hl,IBUF
+	ld	de,THDR
+	ld	bc,256
+	ldir			; copy header to local buffer
+
 	call	CHKHDR		; validate header
 	ret	c
 
@@ -387,30 +380,85 @@ TLOAD:	ld	e,(ix+T.LDEV)
 	call	SGETB
 	ld	(TBASE),a	; save bank number
 
-	ld	de,100h		; program load address
-	ld	b,(ix+T.NBLK)	; number of blocks to read in B
-				;  kernel made sure that high byte is zero
+	ld	hl,(THDR+TH.END)
+	ld	de,(THDR+TH.STRT)
+	or	a
+	sbc	hl,de		; compute code size
+
+	ld	de,255		; convert value to 256-byte records
+	add	hl,de		; round to upper 256-byte record limit
+	ld	l,h		; divide by 256
+	ld	h,0
+	ex	de,hl		; result in DE
+	ld	l,(ix+T.NBLK)	; get file size in blocks
+	ld	h,(ix+T.NBLK+1)
+	add	hl,hl		; compute file size in 256-byte records
+	jr	c,ld1		; CY means file size larger than code length
+	dec	hl		; don't count header
+	ex	de,hl
+	call	CPHLDE		; compare
+	jr	c,ld1		; file size is shorter, use T.NBLK*2-1 in DE
+	ex	de,hl		; else use computed code records
+ld1:	ld	l,(ix+T.PCB)
+	ld	h,(ix+T.PCB+1)
+	ld	bc,P.SIZE
+	add	hl,bc
+	ld	a,(hl)		; now get (sub)partition size
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	add	hl,hl		; convert pages to 256-byte records
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	jr	c,ld2		; CY here means partition is large enough
+	ex	de,hl
+	call	CPHLDE		; compare
+	jr	c,ld2		; use P.SIZE*16 in DE if smaller
+	ex	de,hl		; else use computed code records
+ld2:	ld	c,e		; result in BC
+	ld	b,d
+
+	ld	e,(ix+T.STRT)	; program load address
+	ld	d,(ix+T.STRT+1)
+
 	ld	hl,IBUF+256	; src in HL, dst in DE
 	push	bc		; save block counter
 	ld	bc,256		; length
 	ld	a,(TBASE)
 	call	SPUTM		; copy 1st 256 bytes 
 	pop	bc
-	dec	b		; done with first block
-	jr	z,ldend
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	z,ldend		; yes
 
-load:	call	NXTBL		; already copied first (half) block
+load:	call	NXTBL		; prepare to read next block
 	push	bc
 	push	de
-	call	DSKRD
-	pop	de		; dst
+	call	DSKRD		; read from task image file
+	pop	de
 	jp	c,rderr		; abort task on error
+
 	ld	hl,IBUF		; src
-	ld	bc,512		; len
+	ld	bc,256		; len
 	ld	a,(TBASE)
-	call	SPUTM		; copy next block
+	call	SPUTM		; copy next 256 bytes 
 	pop	bc
-	djnz	load
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	z,ldend		; yes
+
+	push	bc
+	ld	bc,256		; len
+	ld	a,(TBASE)
+	call	SPUTM		; copy next 256 bytes 
+	pop	bc
+	dec	bc		; decrement record count
+	ld	a,b
+	or	c		; done?
+	jr	nz,load		; no, loop
 
 ldend:	xor	a
 	ret
@@ -423,7 +471,7 @@ rderr:	pop	bc
 ; Validate task header. Right now it simply checks signature and
 ; version number.
 
-CHKHDR:	ld	hl,IBUF
+CHKHDR:	ld	hl,THDR
 	ld	de,thid
 	ld	b,6
 ckhdr:	ld	a,(de)		; check task header ID
@@ -434,7 +482,7 @@ ckhdr:	ld	a,(de)		; check task header ID
 	inc	hl
 	inc	de
 	djnz	ckhdr
-	ld	hl,(IBUF+TH.VER)
+	ld	hl,(THDR+TH.VER)
 	ld	de,0102h	; 1.2
 	or	a
 	sbc	hl,de
@@ -481,6 +529,8 @@ NXTBL:	ld	hl,qio1+Q.BLK
 	dseg
 
 TBASE:	ds	1		; task base page
+
+THDR:	ds	256		; buffer for task header
 
 qio1:	QIOW$	IO.RLB,LUNFIL,EIO,iosb,,<IBUF,512,0,0,0>
 iosb:	ds	4
