@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.31'
+	ident	'2.32'
 
 	extrn	GetTop,IOBuf,IrlBuf,MapBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -41,12 +41,8 @@
 ; %% MAIN PROCESSING %%
 ; %%%%%%%%%%%%%%%%%%%%%
 
-LINK:	xor	a
-	ld	(mapflg),a	; don't create map file by default
-	ld	(OVnum),a	; clear overlay number,
-	ld	(OVcnt),a	;  total overlay count,
-	ld	(OVlvl),a	;   and overlay nesting level
-;;	xor	a		; scan only
+LINK:	call	InitOpt		; initialize options
+	xor	a		; scan only
 	call	ProcessCommand	; scan command line, get global options
 	ld	hl,OVnum
 	ld	a,(hl)
@@ -64,7 +60,6 @@ OvlOK:	call	DefaultOpt	; setup default options
 	call	GetTop		; get top of available memory
 	ld	(MemTop),hl	; set top of memory
 	ld	(YTop),hl
-  IF 1
 	call	InitSegs	; init segment tables
 	xor	a
 	ld	(ABSLoc),a
@@ -76,7 +71,6 @@ OvlOK:	call	DefaultOpt	; setup default options
 	ld	hl,0
 	ld	(Y$Ptr),hl
 	ld	(ModTop),hl	; clear module top
-  ENDIF
 	ld	hl,(X$COM$FIB+X$.buf)
 	ld	de,(Dsk$COM)
 	add	hl,de
@@ -96,7 +90,9 @@ OvlOK:	call	DefaultOpt	; setup default options
 	ld	a,(OVcnt)	; any overlays?
 	or	a
 	ret	z		; return if not, end of LINK session
-	jp	WriteModTop	; else output Module Top to map file and return
+	ld	bc,$UNDRT
+	call	WrtUndefOvl	; else report undefined root symbols
+	jp	WriteModTop	; output Module Top to map file and return
 
 $INSUF:	db	'Insufficient memory',0
 
@@ -169,19 +165,16 @@ sm1:	ld	(X$ABS$FIB+X$.buf),hl	; place buffer for Absolute seg first
 
 	ret
 
-; Setup default options
+; Initialize options which may be modified during the first pass.
 
-DefaultOpt:
-	xor	a		; reset ..
-	ld	hl,P.opt
-	ld	(hl),a		; .. /CSEG option - program orgs at 0
-	inc	hl
-	ld	(hl),a		; .. /DSEG option - data orgs at 0
-	inc	hl
-	ld	(hl),a		; .. /EPT option - no start address
-	ld	(symflg),a	; don't create symbol file by default
-	ld	(idflag),a	; reset task/module ident flags
+InitOpt:
+	xor	a
+	ld	(mapflg),a	; don't create map file by default
+	ld	(OVnum),a	; clear overlay number,
+	ld	(OVcnt),a	;  total overlay count,
+	ld	(OVlvl),a	;   and overlay nesting level
 	ld	(TSKattr),a	; clear task attributes
+	ld	(idflag),a	; reset task/module ident flags
 	ld	a,50
 	ld	(TSKpri),a	; default task priority
 	ld	de,LUNtbl
@@ -196,13 +189,7 @@ DefaultOpt:
 	ld	(LUNtbl+16),hl
 	ld	hl,'CL'
 	ld	(LUNtbl+20),hl
-	ld	a,(OVcnt)
-	or	a		; task has overlays?
-	jr	z,df1
-	ld	hl,'OV'		; yes, reserve LUNs for overlay I/O
-	ld	(LUNtbl+24),hl
-	ld	(LUNtbl+28),hl
-df1:	ld	de,TSKnam
+	ld	de,TSKnam
 	ld	bc,6*3
 	ld	a,' '
 	call	FillMem		; clear TSKnam, TSKid and TSKpar
@@ -210,6 +197,19 @@ df1:	ld	de,TSKnam
 	ld	de,TSKpar
 	ld	bc,3
 	ldir			; set default partition name
+	ret
+
+; Setup default options according to result of first pass
+
+DefaultOpt:
+	xor	a		; reset ..
+	ld	hl,P.opt
+	ld	(hl),a		; .. /CSEG option - program orgs at 0
+	inc	hl
+	ld	(hl),a		; .. /DSEG option - data orgs at 0
+	inc	hl
+	ld	(hl),a		; .. /EPT option - no start address
+	ld	(symflg),a	; don't create symbol file by default
 	ld	a,TRUE
 	ld	(objflg),a	; create output file by default
 	ld	(Q.opt),a	; set quiet mode (do not display ?-labels)
@@ -217,6 +217,7 @@ df1:	ld	de,TSKnam
 	ld	(LoadAddr),hl	; set default load address to CP/M TPA
 	ld	hl,0
 	ld	(MemSize),hl	; no additional MP/M PRL memory requirements
+
 	ld	hl,BFlen3	; setup segment buffers
 	ld	(Dsk$ABS),hl
 	ld	hl,BFlen5
@@ -228,7 +229,7 @@ df1:	ld	de,TSKnam
 ;;	ld	(MapMax),hl
 	ld	a,(A.opt)	; check for additional memory option
 	or	a
-	ret	z		; return if not specified
+	jr	z,df1		; return if not specified
 	ld	hl,BFlen3	; else make segment buffers smaller
 	ld	(Dsk$PRG),hl
 	ld	(Dsk$DAT),hl
@@ -237,8 +238,18 @@ df1:	ld	de,TSKnam
 	ld	(Dsk$COM),hl
 ;;	ld	(MapMax),hl
 
-	ld	hl,0
+df1:	ld	hl,0
 	ld	(OvlRecNo),hl	; reset TSK overlay file offset
+
+	ld	hl,idflag
+	bit	3,(hl)		; LUN table set by user?
+	ret	nz		; yes, return
+	ld	a,(OVcnt)
+	or	a		; task has overlays?
+	ret	z
+	ld	hl,'OV'		; yes, reserve LUNs for overlay I/O
+	ld	(LUNtbl+24),hl
+	ld	(LUNtbl+28),hl
 	ret
 
 DefPar:	db	'GEN'		; default partition name
@@ -418,7 +429,7 @@ RemOVL:	ld	a,(OVlvl)
 	or	a		; linking?
 	call	nz,RemVecSym	; yes, make parent overlay load vectors
 	pop	af		;  visible again
-	dec	a		; else decrement overlay nesting count
+	dec	a		; decrement overlay nesting count
 	ld	(OVlvl),a
 	ld	l,a
 	ld	a,(Pass)	; check linking pass
@@ -435,7 +446,6 @@ RemOVL:	ld	a,(OVlvl)
 	inc	hl
 	ld	b,(hl)
 	ld	(SymTop),bc	; trim symbol table
-
 	ld	hl,HashTab	; now adjust hash table accordingly
 	ld	e,HashLen	; E = number of buckets
 htrim1:	push	de
@@ -803,8 +813,7 @@ PrSeg:	call	GetADRmod	; get address mode
 	ld	(SymPtr),hl
 	xor	a
 	ld	(de),a
-	call	WrtBuf
-	ret
+	jp	WrtBuf
 
 SegStr:	dw	sa,sc,sd,sm
 
@@ -2310,7 +2319,6 @@ WriteSegMap:
 	ld	a,(OVlvl)
 	or	a		; root module?
 	jr	z,wsmap0	; yes
-	call	WrtBuf
 	ld	hl,$SEGH2
 	call	StrCpy
 	push	hl
@@ -2350,7 +2358,7 @@ wsmap5:	call	StrCpy
 	inc	hl
 	jr	wsmap5
 wsmap6:	call	WrtBuf
-	call	WrtBuf		; follow with empty line
+	call	WrtBuf		; follow with an empty line
 
 	; TODO: what about absolute segments?
 
@@ -2379,8 +2387,7 @@ wsmap4:	inc	e
 	cp	4		; all segments output?
 	jr	c,wsmap1	; no, loop
 	ld	de,StrBuf
-	call	WrtBuf
-	ret
+	jp	WrtBuf		; follow with an empty line
 
 $SEGH1:	db	'Root segment:',0
 $SEGH2:	db	'Overlay ',0,' of ',0
@@ -2392,17 +2399,20 @@ WriteSymMap:
 	call	WrtLibRequests	; output library requests
 	call	WrtGlobals	; output global symbols
 	call	WrtOvlVectors	; output overlay load vectors
-	call	WrtUndef	; output undefined symbols
+	ld	a,(OVcnt)
+	or	a		; if no overlays,
+	call	z,WrtUndef	;  then output undefined symbols now
 	ret
 
 ; Output all resolved globals
 
 WrtGlobals:
 	ld	hl,$SYMHD
-	ld	(MapHdr),hl	; set header address
-	ld	hl,GblFilter
-	ld	(MapFilt),hl	; set symbol filter routine
-wgbl0:	ld	hl,0
+	ld	de,GblFilter
+wgbl0:	ld	(MapHdr),hl	; set header address
+	ld	(MapFilt),de	; set symbol filter routine
+	ld	hl,0
+	ld	(MapHdr2),hl
 	ld	(WrtSymCol),hl	; clear symbol (column) counter
 	ld	de,StrBuf
 	call	GetSymBeg	; get symbol base into SymPtr
@@ -2476,6 +2486,10 @@ WrHeader:
 	ret	nz		; no
 	ld	hl,(MapHdr)
 	call	StrCpy		; else output header
+	ld	hl,(MapHdr2)
+	ld	a,h
+	or	l
+	call	nz,StrCpy
 	ld	a,':'
 	ld	(de),a
 	inc	de
@@ -2496,10 +2510,8 @@ GblFilter:
 ; Output overlay call vectors
 
 WrtOvlVectors:
-	ld	hl,$OVLV
-	ld	(MapHdr),hl	; set header address
-	ld	hl,OvlFilter
-	ld	(MapFilt),hl	; set filter routine address
+	ld	hl,$OVLV	; header
+	ld	de,OvlFilter	; filter routine address
 	jp	wgbl0		; list symbols with values
 
 OvlFilter:
@@ -2523,11 +2535,14 @@ OvlFilter:
 
 WrtLibRequests:
 	ld	hl,$RQST
-	ld	(MapHdr),hl	; set header address
-	ld	hl,LibFilter
-	ld	(MapFilt),hl	; set filter routine address
-wrsym0:	ld	hl,0
+	ld	de,LibFilter
+	ld	bc,0
+wrsym0:	ld	(MapHdr),hl	; set header address
+	ld	(MapHdr2),bc
+	ld	(MapFilt),de	; set filter routine address
+	ld	hl,0
 	ld	(WrtSymCol),hl	; clear symbol (column) counter
+	ld	de,StrBuf
 	call	GetSymBeg	; get symbol base into SymPtr
 wrsym1:	ld	bc,(SymTop)
 	or	a
@@ -2578,10 +2593,9 @@ LibFilter:
 ; Output undefined symbols
 
 WrtUndef:
-	ld	hl,$UNDFS
-	ld	(MapHdr),hl	; set header address
-	ld	hl,UndefFilter
-	ld	(MapFilt),hl	; set filter routine address
+	ld	bc,0
+wrtu0:	ld	hl,$UNDFS	; header
+	ld	de,UndefFilter	; filter routine
 	call	wrsym0		; list symbols
 	ret	nc
 	push	de
@@ -2600,10 +2614,28 @@ UndefFilter:
 	call	ChkSpecial	; skip special entries
 	scf
 	ret	nz
+ if 1
+	call	adv5		; skip copies of overlay load vectors
+	scf
+	ret	z
+ endif
 	call	GetENT		; and ENTRY (global) symbols
 	scf
 	ret	nz
 	xor	a
+	ret
+
+; Report remaining undefined symbols after closing the root segment or an
+; overlay branch
+
+WrtUndefOvl:
+	ld	hl,(@@IO)
+	push	hl
+	ld	hl,WrCMap
+	ld	(@@IO),hl	; output to map file
+	call	wrtu0
+	pop	hl
+	ld	(@@IO),hl	; restore prev output
 	ret
 
 $HEAD:	db	FF,'TKB '
@@ -2613,6 +2645,8 @@ $HEAD:	db	FF,'TKB '
 $RQST:	db	'Requested Libraries',0
 $SYMHD:	db	'Global symbols',0
 $UNDFS:	db	'Undefined symbols',0
+$UNDOV:	db	' in last branch',0
+$UNDRT:	db	' in root segment',0
 $OVLV:	db	'Overlay load vectors',0
 
 ; Test valid symbol
@@ -2644,13 +2678,13 @@ WriteModTop:
 	ld	hl,WrCMap
 	ld	(@@IO),hl	; output to map file
 	ld	de,StrBuf
-	call	WrtBuf		; output newline
 	ld	hl,$TOP
 	call	StrCpy		; .. copy message
 	ld	a,14
 	call	TabTo		; tab to value field
 	ld	hl,(ModTop)
-	call	CnvHexWord	; .. convert module top to hex
+	dec	hl
+	call	CnvHexWord	; .. convert module top to hex string
 	call	WrtBuf		; .. output message
 	ld	hl,PrChar
 	ld	(@@IO),hl	; restore output to console
@@ -2847,7 +2881,8 @@ stat1:	ld	de,$ABS
 	inc	hl
 	ld	(hl),0
 	ex	de,hl
-	jp	WrtBuf
+	call	WrtBuf
+	jp	WrtBuf		; follow with an empty line
 
 $ABS:	db	'Absolute',0
 $CSEG:	db	'Code size',0
@@ -4060,9 +4095,9 @@ fixv2:	call	NextSym
 	jr	fixv1
 
 RemVecSym:
-	ld	a,(OVlvl)
-	or	a
-	ret	z
+	ld	hl,(@@IO)
+	ld	bc,$UNDOV
+	call	WrtUndefOvl
 	call	GetSymBeg
 remv1:	ld	bc,(SymTop)
 	or	a
@@ -4159,8 +4194,7 @@ emt2:	push	hl
 emt3:	ld	de,@nam+3+3	; return code length
 	ret
 
-emtsk:	;TODO: solve chain
-	ld	a,.CALL		; emit "CALL ?OVLA0"
+emtsk:	ld	a,.CALL		; emit "CALL ?OVLA0"
 	call	ST.B		; store opcode
 	ld	hl,1		; head of address chain = CALL argument = $+1
 	ld	(AF.val),hl
@@ -4172,7 +4206,6 @@ emtsk:	;TODO: solve chain
 	ld	(SymPtr),hl	; restore pointer
 	xor	a
 	call	ST.B		; placeholder for overlay number
-	;TODO: reset symbol chain to next word and mark again as unresolved
 	call	ST.W.0		; placeholder for symbol address
 	ld	de,6		; return code length
 	ret
@@ -5617,7 +5650,7 @@ SpecSym:
 	db	0		; #-symbols (???)
 ENDIF	;NOT @@HASH
 
-ModTop:	ds	2		; module top address
+ModTop:	ds	2		; module top address + 1
 
 Pass:	db	0		; 0 = syntax check, 1 = final link
 
@@ -5796,6 +5829,7 @@ B$R.ctrl:
 	ds	1		; mode + solve bit + offset bit
 B$R.cnt:
 	ds	1
+MapHdr2:
 B$R.offVal:
 	ds	2
 B$R.off:
@@ -5862,5 +5896,6 @@ modidn:	ds	6
 idflag:	db	0		; bit 0 set = modidn valid
 				; bit 1 set = TSKid valid
 				; bit 2 set = TSKid set to main module ID
+				; bit 3 set = LUN table set by user
 
 	end
