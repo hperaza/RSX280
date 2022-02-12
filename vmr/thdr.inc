@@ -12,6 +12,7 @@ TH.EPT	equ	2Ch		; entry point (2 bytes)
 TH.INC	equ	2Eh		; extension/increment size (2 bytes)
 TH.PRI	equ	30h		; task priority (1 byte)
 TH.ATTR	equ	31h		; task attributes (1 byte)
+TH.UIC	equ	38h		; task default UIC (2 bytes)
 TH.LUNT	equ	40h		; LUN table (16*4 = 64 bytes)
 
 ; Task File Header size
