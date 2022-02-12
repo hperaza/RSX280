@@ -707,7 +707,7 @@ void install_task(char *name, int argc, char *argv[]) {
   struct FCB *fcb;
   byte attr, thdr[THSZ];
   address tcb, tlist, prev, pcb, ucb, tiucb;
-  unsigned long blkno, nblks, nused, tskend;
+  unsigned long blkno, nblks, tskend;
   char *p, filename[256], pname[6], tname[6];
   int i, len, pri, inc, ckd, cli, acp, prv;
 
@@ -778,7 +778,7 @@ void install_task(char *name, int argc, char *argv[]) {
   }
   
   blkno = fcb->header->bmap[0];
-  nused = fcb->header->nused;
+  nblks = fcb->header->nused;
 
   if (file_read(fcb, thdr, THSZ) != THSZ) {
     printf("Error reading Task Header\n");
@@ -866,8 +866,6 @@ void install_task(char *name, int argc, char *argv[]) {
   sys_putw(0, tcb + T_SBLK, fcb->inode);
   sys_putw(0, tcb + T_SBLK + 2, 0);
 #endif
-  nblks = (((thdr[TH_END] | (thdr[TH_END+1] << 8)) + 1) + 511) / 512;
-  if (nused < nblks) nblks = nused;
   sys_putw(0, tcb + T_NBLK, nblks);
   sys_putw(0, tcb + T_PCB, pcb);
   sys_putw(0, tcb + T_CPCB, 0);
@@ -967,7 +965,7 @@ static int load_task(address tcb) {
     return 1;
   }
   /* TODO: validate header, etc */
-  addr = 0x100;
+  addr = sys_getw(0, tcb + T_STRT);
   for (i = 0; i < 256; ++i) sys_putb(bank, addr++, buf[256+i]);
   while (--nblk > 0) {
     if (read_block(sblk++, buf)) {
