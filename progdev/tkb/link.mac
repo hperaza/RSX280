@@ -2967,13 +2967,14 @@ WriteMap:
 	ret	z		; no, return
 	dec	a		; map file already open?
 	jr	nz,wrm1		; skip file creation if yes
-	inc	(hl)		; set flag to 2
 	ld	hl,MapFCB
 	ld	de,$MAP
 	call	AddExt		; set .MAP extension if none specified
 	ld	de,0
 	ld	c,d
 	call	CreateF		; create .MAP file
+	ld	a,2
+	ld	(mapflg),a	; set flag to 2
 	ld	hl,0
 	ld	(MapPtr),hl	; clear pointer
 	ld	de,StrBuf
