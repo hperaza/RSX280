@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command INS for RSX280.                               ;
-;   Copyright (C) 2015-2021, Hector Peraza.                            ;
+;   Copyright (C) 2015-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.10'
+	ident	'01.11'
 
 	cseg
 
@@ -722,26 +722,22 @@ usepri:	ld	(ix+T.DPRI),a
 	xor	a
 	ld	(ix+T.SBLK+3),a
 
-	pop	hl		; get saved task top
+	ld	hl,(fdb+F.NUSED)
+	ldw	(ix+T.NBLK),hl	; set number of blocks
+	ld	a,(fdb+F.NUSED+2)
+	or	a
+	ld	e,E.PBIG	; error if file is huge
+	scf
+	pop	hl
+	ret	nz
 	push	hl
-	ld	de,512		; conv to size (+1) and round to blk boundary
-	add	hl,de
-	rr	h
-	rr	l
-	ld	l,h
-	ld	h,0		; /512 = size in blocks
-	ld	de,(fdb+F.NUSED)
-	call	CPHLDE
-	jr	c,fs1		; use F.NUSED if smaller
-	ex	de,hl		; else don't load extra stuff such as overlays
-fs1:	ldw	(ix+T.NBLK),de	; set number of blocks
 
 	ld	hl,(hdr+TH.STRT)
 	ldw	(ix+T.STRT),hl	; set start of task area
 	ld	hl,(hdr+TH.EPT)
 	ldw	(ix+T.EPT),hl	; set task entry point
 	pop	hl		; pop saved task top
-	ldw	(ix+T.END),hl	; set top of task area
+	ldw	(ix+T.END),hl	; set end address of task area
 	ldw	(ix+T.DEND),hl
 	inc	hl
 	ldw	(ix+T.SP),hl	; set stack to top of task memory
@@ -762,6 +758,18 @@ upriv:	ld	c,1
 	ret	c
 	xor	a
 	ld	(SYSLVL),a	; disable task switching
+	ld	de,(tidev)
+	ld	a,(tidev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find terminal device
+	jr	nc,ins0		; found
+	ld	de,'CO'
+	ld	c,0
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; else try CO0:
+	jr	c,ins1		; error if not found
+ins0:	ld	(tcbbuf+T.TI),hl
 	ld	de,(ldev)
 	ld	a,(ldev+2)
 	ld	c,a
