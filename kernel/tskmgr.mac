@@ -805,20 +805,9 @@ UNFIX:	bit	TA.FIX,(ix+T.ATTR)
 ;   E  = number of 4K pages to allocate.
 ;   CY set and error code in A if task image will not fit in memory.
 
-GETSIZ:	ldw	hl,(ix+T.NBLK)	; get file size in blocks
-	call	BL2PG		; convert to number of pages
-	ld	a,h
-	or	a
-	ld	a,E.PBIG
-	scf
-	ret	nz		; program too big
-	ex	de,hl		; save # of pages in reg E
-	ldw	hl,(ix+T.END)	; check task's upper limit (task end + INC)
-	call	EA2PG		; convert upper limit to number of pages
-	cp	c		; larger than file size?
-	jr	nc,gz1		; yes, use it
-	ld	a,e		; else use file size
-gz1:	ld	e,a
+GETSIZ:	ldw	hl,(ix+T.DEND)	; get default upper limit (task end addr + INC)
+	call	EA2PG		; convert it to number of pages
+	ld	e,a		; result in E
 	or	a
 	ld	a,E.BADTF
 	scf			; size can't be zero
@@ -846,21 +835,6 @@ EA2PG:	push	hl
 	and	1Fh
 	pop	de
 	pop	hl
-	ret
-
-; Compute number of 4K pages from number of disk blocks in HL.
-; Return result in HL.
-
-BL2PG:	push	de
-	ld	de,8-1		; blocks per page - 1
-	add	hl,de		; round to upper page boundary
-	rr	h		; divide by 8
-	rr	l
-	srl	h
-	rr	l
-	srl	h
-	rr	l
-	pop	de
 	ret
 
 ;-----------------------------------------------------------------------
