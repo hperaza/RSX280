@@ -3,9 +3,9 @@ Help is available for the following MCR commands:
 
 	ABO	ACS	ACT	ALT	ASN	ATL	BYE
 	CAN	CLQ	DEV	DMO	FIX	HEL	HELP
-	INS	LOGIN	LUN	MOU	PAR	RED	REM
-	RES	RUN	SET	STP	SYN	TAL	TAS
-	TIM	UFD	UNF	WHO
+	INS	LOGIN	LUN	MOU	PAR	REA	RED
+	REM	RES	RUN	SET	STP	SYN	TAL
+	TAS	TIM	UFD	UNF	WHO
 
 When entering a command name, only the first three letters are meaningful,
 the rest is ignored. Exceptions are the commands HELP and LOGIN. If the
@@ -199,6 +199,17 @@ Displays on the entering terminal a description of each memory partition
 in the system. For each partition, the name, address of the PCB (Partition
 Control Block), base address, size, partition kind (MAIN or SUB), and
 partition type (TASK, COM, SYS, taskname, DYNAMIC, or DRIVER) are displayed.
+
+\REA*SSIGN
+
+Syntax:
+
+  REA taskname lun ddn:
+
+Reassigns a task's Logical Unit Number to the specified device. The
+reassignments affect only the static assignments stored in the task's
+image file header on disk. The command does not affect memory-resident
+tasks (i.e. currently executing tasks or tasks that are fixed in memory).
 
 \RED*IRECT
 
