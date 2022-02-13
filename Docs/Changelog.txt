@@ -7001,3 +7001,18 @@ BUGS:
   errors (affected only map file creation).
 
 
+13/02/22
+
+- Added CL: (Console Listing) pseudo-device device, by default redirected
+  to TT0:
+
+- The command processing part of the ...MCR task is now split into several
+  overlays to reduce memory footprint (is now around 2K shorter) and to make
+  space for new functionality.
+
+- Added the REA (Reassign LUN) MCR command: 'REA tsknam lun ddn:'.
+
+- The 'DEV ttn:' command, where ttn: is a terminal name (e.g. TT0: or TI:)
+  now displays the current terminal characteristics; 'DEV TT:' (no explicit
+  unit number) displays as before a summary of all terminals.
+
