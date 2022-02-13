@@ -7016,3 +7016,6 @@ BUGS:
   now displays the current terminal characteristics; 'DEV TT:' (no explicit
   unit number) displays as before a summary of all terminals.
 
+- The DEV command now also shows the label of mounted volumes if the user
+  is privileged.
+
