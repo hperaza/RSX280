@@ -32,6 +32,7 @@
 	include	TCB.INC
 	include	DCB.INC
 	include	LCB.INC
+	include	VCB.INC
 	include	BDRATES.INC
 	include	ERRORS.INC
 
@@ -869,7 +870,7 @@ shdst5:	ld	hl,devl
 	ldw	hl,(hl)
 	ld	a,h
 	or	l
-	ret	z
+	jr	z,shdst6
 	push	hl
 	ld	hl,devacp
 	call	PUTSTR
@@ -879,7 +880,26 @@ shdst5:	ld	hl,devl
 	ld	b,6
 	call	PRINTN		; display name of ACP
 	ld	c,' '
-	call	PUTCH		; TODO: display volume label if mounted
+	call	PUTCH
+shdst6:	ld	hl,($MVTBL)	; get head of Mounted Volume table
+shdst7:	ld	a,h		; end of list?
+	or	l
+	ret	z		; yes, return
+	push	hl
+	ldw	hl,(hl+M.UCB)	; get M.UCB
+	cpw	hl,de		; is this the one?
+	jr	z,shdst8	; yes, exit loop
+	pop	hl
+	ldw	hl,(hl)		; else move to next element
+	jr	shdst7		; and loop
+shdst8:	ld	hl,devlbl
+	call	PUTSTR
+	pop	hl
+	ld	bc,M.LABEL
+	add	hl,bc
+	call	PUTSTR		; display volume label
+	ld	c,' '
+	call	PUTCH
 	ret
 
 devswt:	db	'LOG',0
