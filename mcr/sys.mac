@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like command line interpreter for RSX280 - external commands.  ;
-;   Copyright (C) 2014-2021, Hector Peraza.                            ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -46,10 +46,22 @@ ESC	equ	1Bh
 
 EFN	equ	1
 
+	public	GETNS,GETFS,GETCMD,FNDCMD,CHKEQ,CHKTI,GETDEV,STRLEN
+	public	CMDERR,SYSERR,ERRMCR,GETDEC,CHKPRV,PDNAME,PRINTN
+	public	PNAM9,FNDEV,FNDLGN,ERFAIL,GETFN,GETUN,GETN,CHKT3
+	public	PADBL
+
+	public	LNPTR,CMDNAM,FNAME,OPTSW,SWVAL,DEVCW,TTDEV,LCBBUF
+	public	TMPDEV,TMPDV2,DEVST
+
 	extrn	PFN,PDN,PERROR,CRLF,UCASE,BCD2BIN,BIN2BCD,CPHLDE
 	extrn	ADEC,ADEC2,HLDEC,LDEC,AHEX,HLHEX,GCCL,CMLBUF,PUTCH
 	extrn	ATTACH,DETACH,PUTSTR,TTFLSH,TTLUN
 	extrn	QIOBLK,QIOSB
+
+	extrn	CMDSET			; SYSOV1
+	extrn	CMDATL,CMDTAL,CMDTAS	; SYSOV2
+	extrn	CMDASN,CMDRED,CMDDEV	; SYSOV3
 
 KCALL	MACRO	addr
 	call	$SWSTK
@@ -90,7 +102,7 @@ ex1:	push	hl
 ; Strip EOL from command line.
 
 STPEOL:	push	hl
-	call	strlen
+	call	STRLEN
 	ld	a,c
 	or	a
 	jr	z,stpe1
@@ -144,6 +156,11 @@ eprfx:	db	CR,LF,'SYS -- ',0
 snerr:	db	'Syntax error',0
 illfn:	db	'Illegal function',0
 
+ERFAIL:	ld	hl,opfail
+	jp	ERRMCR
+
+opfail:	db	'Operation failed',0
+
 ;-----------------------------------------------------------------------
 
 ; Parse the command line and execute the command.
@@ -151,10 +168,10 @@ illfn:	db	'Illegal function',0
 PARSE:	ex	de,hl
 	call	skpnam		; skip MCR name
 	ex	de,hl
-	ld	(lnptr),hl
-	call	getcmd		; get command name
+	ld	(LNPTR),hl
+	call	GETCMD		; get command name
 	ld	hl,cmdtab
-	call	fndcmd
+	call	FNDCMD
 	or	a
 	ret	z
 	cp	0FFh
@@ -179,6 +196,7 @@ cmdtab:	db	'ACT',0
 	db	'DEV',0
 	db	'LUN',0
 	db	'PAR',0
+	db	'REA',0
 	db	'RED',0
 	db	'RUN',0
 	db	'SET',0
@@ -187,8 +205,9 @@ cmdtab:	db	'ACT',0
 	db	'TIM',0
 	db	0
 
-jmptab:	dw	doact,doatl,altpri,doasgn,doclq,shdev,dolun
-	dw	dopar,dored,dorun,doset,dotal,shtsks,dotim
+jmptab:	dw	cmdact,CMDATL,altpri,cmdasn,cmdclq,cmddev,cmdlun
+	dw	cmdpar,cmdrea,cmdred,cmdrun,CMDSET,CMDTAL,CMDTAS
+	dw	cmdtim
 
 ;-----------------------------------------------------------------------
 
@@ -202,12 +221,12 @@ cpstr:	ld	a,(de)
 	inc	de
 	jr	cpstr
 
-; Get command name (9 chars max) from input line into cmdnam.
+; Get command name (9 chars max) from input line into CMDNAM.
 
-getcmd:	ld	b,9
-	ld	de,(lnptr)
-	ld	hl,cmdnam
-	call	getns
+GETCMD:	ld	b,9
+	ld	de,(LNPTR)
+	ld	hl,CMDNAM
+	call	GETNS
 gcm1:	call	getfs1
 	jr	z,gcm3
 	call	UCASE
@@ -220,40 +239,40 @@ gcm2:	call	getfs1
 	inc	de
 	jr	gcm2
 gcm3:	ld	(hl),0
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ret
 
-; Get name (B chars max) from input line into cmdnam.
+; Get name (B chars max) from input line into CMDNAM.
 
-getn:	ld	de,(lnptr)
-	ld	hl,cmdnam
-	call	getns
+GETN:	ld	de,(LNPTR)
+	ld	hl,CMDNAM
+	call	GETNS
 	call	getnam
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ret
 
-; Get filename from input into fname buffer.
+; Get filename from input into FNAME buffer.
 
-getfn:	ld	de,(lnptr)
-	ld	hl,fname
+GETFN:	ld	de,(LNPTR)
+	ld	hl,FNAME
 	ld	b,FNSZ-1
-	call	getns
+	call	GETNS
 	call	getnam
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ret
 
-; Get task name (6 chars max) into cmdnam, padding with blanks if neccessary.
+; Get task name (6 chars max) into CMDNAM, padding with blanks if neccessary.
 ; If the task name is empty, return a name of type TTnn.
 
-gettn:	ld	b,6
-	call	getn
-	call	fillsp
-	ld	hl,cmdnam
+GETTN:	ld	b,6
+	call	GETN
+	call	PADBL
+	ld	hl,CMDNAM
 	ld	a,(hl)
 	cp	' '		; empty task name?
 	ret	nz		; return if not
 	ld	hl,TTDEV
-	ld	de,cmdnam
+	ld	de,CMDNAM
 	ld	bc,2
 	ldir			; copy first two letters of device name
 	ld	a,(hl)
@@ -272,13 +291,13 @@ skip0:	ld	a,c
 	and	0Fh
 	add	a,'0'		; convert to ASCII
 	ld	(de),a		; the rest is already filled with with spaces
-	ld	hl,cmdnam	; return with HL = task name
+	ld	hl,CMDNAM	; return with HL = task name
 	ret
 
-; Get user name (9 chars) into cmdnam, padding with blanks if neccessary.
+; Get user name (9 chars) into CMDNAM, padding with blanks if neccessary.
 
-getun:	call	getcmd
-fillsp:	inc	b
+GETUN:	call	GETCMD
+PADBL:	inc	b
 	dec	b
 	ret	z
 sfill:	ld	(hl),' '
@@ -288,14 +307,14 @@ sfill:	ld	(hl),' '
 
 ; Get a name (up to B bytes in length) into HL buffer.
 
-getnam:	call	getfs		; get char
+getnam:	call	GETFS		; get char
 	jr	z,gn3		; exit loop if delimiter
 	call	UCASE
 	ld	(hl),a
 	inc	hl
 	inc	de
 	djnz	getnam
-gn2:	call	getfs		; skip any extra chars
+gn2:	call	GETFS		; skip any extra chars
 	jr	z,gn3
 	inc	de
 	jr	gn2
@@ -313,13 +332,13 @@ isblnk:	or	a
 
 ; Get next non-blank char.
 
-getns:	ld	a,(de)
+GETNS:	ld	a,(de)
 	or	a
 	ret	z
 	call	isblnk
 	ret	nz
 	inc	de
-	jr	getns
+	jr	GETNS
 
 ; Skip name
 
@@ -327,13 +346,13 @@ skpnam:	ld	a,(de)
 	or	a
 	ret	z
 	call	isblnk
-	jr	z,getns		; return via getns
+	jr	z,GETNS		; return via GETNS
 	inc	de
 	jr	skpnam
 
 ; Get next char. Returns Z on end of line or if char is a delimiter.
 
-getfs:	ld	a,(de)
+GETFS:	ld	a,(de)
 	or	a
 	ret	z
 	cp	' '
@@ -348,7 +367,7 @@ getfs:	ld	a,(de)
 gf1:	xor	a
 	ret
 
-getfs1:	call	getfs
+getfs1:	call	GETFS
 	ret	z
 	cp	':'
 	ret	z
@@ -358,8 +377,8 @@ getfs1:	call	getfs
 ; Read a decimal number from input line into HL
 ; Returns CY if the number contains invalid chars or if overflow happens.
 
-GETDEC:	ld	de,(lnptr)
-	call	getns
+GETDEC:	ld	de,(LNPTR)
+	call	GETNS
 	ld	hl,0
 newdig:	call	getfs1		; note getfs1
 	jr	z,endnum	; note no CY
@@ -371,7 +390,7 @@ newdig:	call	getfs1		; note getfs1
 	call	adddig		; note CY on overflow
 	inc	de
 	jr	nc,newdig
-endnum:	ld	(lnptr),de
+endnum:	ld	(LNPTR),de
 	ret
 
 adddig:	ld	c,l
@@ -392,8 +411,8 @@ adddig:	ld	c,l
 ; Read a binary-coded decimal number from input line into HL
 ; Returns CY if the number contains invalid chars or if overflow happens.
 
-GETBCD:	ld	de,(lnptr)
-	call	getns
+GETBCD:	ld	de,(LNPTR)
+	call	GETNS
 	ld	hl,0
 newbcd:	call	getfs1		; note getfs1
 	jr	z,endbcd	; note no CY
@@ -405,7 +424,7 @@ newbcd:	call	getfs1		; note getfs1
 	call	addbcd		; note CY on overflow
 	inc	de
 	jr	nc,newbcd
-endbcd:	ld	(lnptr),de
+endbcd:	ld	(LNPTR),de
 	ret
 
 addbcd:	add	hl,hl
@@ -421,16 +440,16 @@ addbcd:	add	hl,hl
 	add	hl,bc
 	ret
 
-; Search for the command (cmdnam) in the command table (HL = cmdtab).
-; Returns A=0FFh if not found, or 0 if cmdnam contains an empty string.
+; Search for the command (CMDNAM) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if CMDNAM contains an empty string.
 ; Otherwise returns the command position in the table (1-based).
 
-fndcmd:	ld	de,cmdnam
+FNDCMD:	ld	de,CMDNAM
 	ld	a,(de)
 	or	a
 	ret	z
 	ld	c,0		; keyword index
-fcmd0:	ld	de,cmdnam
+fcmd0:	ld	de,CMDNAM
 	inc	c
 fcmd1:	ld	a,(hl)
 	call	UCASE
@@ -459,27 +478,38 @@ fcmd4:	inc	hl		; else skip to end of keyword
 	ld	a,0FFh		; else return 'not found' flag
 	ret
 
+; Return Z if task name in CMDNAM is 3 chars or less.
+
+CHKT3:	ld	de,CMDNAM+3
+	ld	b,3
+ck3:	ld	a,(de)
+	cp	' '
+	ret	nz
+	inc	de
+	djnz	ck3
+	ret
+
 ;-----------------------------------------------------------------------
 
 ; ACT [/ALL][/TERM=ttn:] - show active tasks
 
-doact:	xor	a
-	ld	(optsw),a	; default action is to show tasks
+cmdact:	xor	a
+	ld	(OPTSW),a	; default action is to show tasks
 	ld	hl,(TTDEV)	;  active at current terminal
-	ld	(tmpdev),hl
+	ld	(TMPDEV),hl
 	ld	a,(TTDEV+2)
-	ld	(tmpdev+2),a
-actopt:	ld	de,(lnptr)
-	call	getns		; see if user supplied an argument
+	ld	(TMPDEV+2),a
+actopt:	ld	de,(LNPTR)
+	call	GETNS		; see if user supplied an argument
 	or	a
 	jr	z,act0		; jump if not
 	cp	'/'		; else it must be a switch
 	jp	nz,CMDERR
 	inc	de
-	ld	(lnptr),de
-	call	getcmd
+	ld	(LNPTR),de
+	call	GETCMD
 	ld	hl,actswt
-	call	fndcmd		; search for switch name in table
+	call	FNDCMD		; search for switch name in table
 	or	a
 	jp	z,CMDERR
 	cp	0FFh
@@ -487,30 +517,30 @@ actopt:	ld	de,(lnptr)
 	ld	c,a
 	dec	c		; ALL?
 	jr	z,actall
-	call	chkeq		; '=' required for TERM
+	call	CHKEQ		; '=' required for TERM
 	jp	nz,CMDERR
 	dec	c
 	jr	z,acterm
 	jp	CMDERR
 
 actall:	ld	a,1
-	ld	(optsw),a	; set ALL flag
+	ld	(OPTSW),a	; set ALL flag
 	jp	actopt
 
-acterm:	ld	a,(optsw)
+acterm:	ld	a,(OPTSW)
 	or	a
 	jp	nz,CMDERR
 	call	PDN		; parse terminal name
 	jp	c,CMDERR
-	ld	(tmpdev),de	; store it
+	ld	(TMPDEV),de	; store it
 	ld	a,c
-	ld	(tmpdev+2),a
-	ld	(lnptr),hl
+	ld	(TMPDEV+2),a
+	ld	(LNPTR),hl
 	jp	actopt
 
 act0:	ld	c,1
 	SC	.SUPER		; put MCR in supervisor mode
-	jp	c,ERRSYS
+	jp	c,ERFAIL
 	ld	c,5		; LUN 5 is console
 	ld	de,0		; no ASTs
 	call	ATTACH
@@ -531,12 +561,12 @@ act2:	ld	c,5
 
 shwact:	bit	TS.ACT,(ix+T.ST)
 	ret	z		; skip if task not active
-	ld	a,(optsw)	; check option
+	ld	a,(OPTSW)	; check option
 	or	a		; all?
 	jr	nz,shact1	; skip terminal check if yes
 	ldw	de,(ix+T.TI)
 	KCALL	$UCBDN
-	ld	hl,tmpdev
+	ld	hl,TMPDEV
 	ld	a,(hl)		; else compare terminal name
 	cp	e
 	ret	nz
@@ -563,685 +593,12 @@ actswt:	db	'ALL',0
 	db	'TERM',0
 	db	0
 
-chkeq:	ld	hl,(lnptr)
+CHKEQ:	ld	hl,(LNPTR)
 	ld	a,(hl)
 	cp	'='
 	ret	nz
 	inc	hl
-	ld	(lnptr),hl
-	ret
-
-chkneg:	xor	a
-	ld	(negsw),a
-	ld	a,(de)
-	cp	'-'
-	jr	z,n1
-	call	UCASE
-	cp	'N'
-	ret	nz
-	inc	de
-	ld	a,(de)
-	dec	de
-	call	UCASE
-	cp	'O'
-	ret	nz
-	inc	de
-n1:	inc	de
-	ld	a,1
-	ld	(negsw),a
-	ret
-
-;-----------------------------------------------------------------------
-
-; TAL - task list, ATL format
-
-dotal:	xor	a
-	jr	atl0
-
-; ATL - active task list
-
-; TODO: merge common code with TAS and ACT commands?
-
-doatl:	ld	a,1
-atl0:	ld	(temp),a
-	xor	a
-	ld	(optsw),a	; no dev match in fndtsk below
-
-	ld	b,6
-	call	getn		; get task name, if supplied, into cmdnam
-	call	fillsp
-
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
-
-	ld	c,5		; LUN 5 is console
-	ld	de,0		; no ASTs
-	call	ATTACH
-
-	ld	hl,cmdnam
-	ld	a,(hl)		; check argument to command
-	cp	' '		; user supplied a task name?
-	jr	z,atl2		; jump if not, display all tasks
-
-	call	fndtsk		; find task
-	jr	c,atl1		; error if not found
-
-	call	dmpt0		; else display details
-	jr	nc,atl4
-
-atl1:	call	SYSERR
-	jr	atl4
-
-atl2:	; show all tasks
-
-	ld	hl,($TLIST)
-atl3:	ld	a,h
-	or	l
-	jr	z,atl4
-	push	hl
-	pop	ix
-	call	dmpt0		; show task details
-	ldw	hl,(ix+T.TCBL)
-	jr	atl3
-
-atl4:	ld	c,5		; LUN
-	call	DETACH
-
-	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	ret
-
-dmpt0:	ld	a,(temp)
-	or	a		; check op
-	jr	z,dmpt1		; jump it TAL
-	bit	TS.ACT,(ix+T.ST); task active?
-	ld	a,E.TNAC
-	scf
-	ret	z		; return if not
-dmpt1:	call	dmptcb		; else show task details
-	xor	a
-	ret
-
-; Dump TCB like this:
-;
-; LDR... 06.05  8D1C  SYSPAR 82A3 01419D-0146B3  Pri = 250  DPri = 250
-;    Status: WTD PRV FIX
-;    TI = CO0:  IOC = 0   BIO = 0   Eflg: 00020000
-;    AF = 0044  BC = 0000  DE = 8D1C  HL = 8D1C  IX = B418  IY = 8D1C
-;    AF'= 0000  BC'= 0000  DE'= 0000  HL'= 0000  PC = 41B6  SP = 469D
-;
-; Registers are dumped only if the task is active.
-
-dmptcb:	call	CRLF
-	push	hl
-	ld	de,T.NAME	; task name offset
-	add	hl,de
-	ld	b,6
-	call	PRINTN		; display task name
-	ld	c,' '
-	call	PUTCH
-
-	pop	hl
-	ld	de,T.VID	; task version identification offset
-	add	hl,de
-	ld	b,6
-	call	PRINTN
-	ld	c,' '
-	call	PUTCH
-
-	push	ix
-	pop	hl
-	call	HLHEX		; display TCB address
-	call	sep2
-
-	call	shwpar		; display partition name
-	ld	c,' '
-	call	PUTCH
-
-	ldw	hl,(ix+T.PCB)
-	call	HLHEX		; display PCB address
-	ld	c,' '
-	call	PUTCH
-
-	ldw	hl,(hl+P.BASE)	; get task base page
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	ex	de,hl
-	push	de
-	ldw	hl,(ix+T.STRT)
-	ld	a,h
-	add	a,e
-	ld	h,a
-	ld	a,0
-	adc	a,d
-	call	AHEX		; display
-	call	HLHEX		;  start address
-	ld	c,'-'
-	call	PUTCH
-	pop	de
-	ldw	hl,(ix+T.END)
-	ld	a,h
-	add	a,e
-	ld	h,a
-	ld	a,0
-	adc	a,d
-	call	AHEX		; display
-	call	HLHEX		;  end address
-	call	sep2
-
-	ld	hl,msgpri
-	call	PUTSTR
-	ld	a,(ix+T.PRI)
-	call	ADEC		; display priority
-	ld	c,5
-	call	pad
-
-	ld	hl,msgdpr
-	call	PUTSTR
-	ld	a,(ix+T.DPRI)
-	call	ADEC		; display default priority
-	call	CRLF
-
-	call	sep3
-	ld	hl,msgst
-	call	PUTSTR
-	bit	TS.ACT,(ix+T.ST)
-	ld	hl,stna
-	call	z,PUTSTR
-	ld	d,(ix+T.ST)
-	ld	hl,stat
-	bit	TS.ACT,d
-	push	af
-	call	nz,tbits	; display task status
-	ld	d,(ix+T.ST+1)
-	ld	hl,stat2
-	pop	af
-	call	nz,tbits
-	ld	d,(ix+T.ATTR)
-	ld	hl,attr
-	call	tbits		; display task attrib
-	call	CRLF
-
-	call	sep3
-	ld	hl,msgti
-	call	PUTSTR
-	ldw	de,(ix+T.TI)
-	KCALL	$UCBDN
-	ld	b,c
-	ld	c,e
-	call	PUTCH		; display terminal name
-	ld	c,d
-	call	PUTCH
-	ld	a,b
-	call	ADEC
-	push	af
-	ld	c,':'
-	call	PUTCH
-	pop	af
-	ld	c,3
-	call	pad
-
-	call	sep2
-	ld	hl,msgioc
-	call	PUTSTR
-	ld	a,(ix+T.IOC)
-	call	ADEC		; display IOC
-	ld	c,3
-	call	pad
-
-	;...			; display BIO
-
-	call	sep2
-	ld	hl,msgfl
-	call	PUTSTR
-	ld	a,(ix+T.FLGS)
-	call	AHEX		; display event flags
-	ld	a,(ix+T.FLGS+1)
-	call	AHEX
-	ld	a,(ix+T.FLGS+2)
-	call	AHEX
-	ld	a,(ix+T.FLGS+3)
-	call	AHEX
-
-	ld	c,CR
-	call	PUTCH
-
-	bit	TS.ACT,(ix+T.ST)
-	ret	z
-	bit	T2.OUT,(ix+T.ST+1)
-	ret	nz
-
-	call	CRLF
-	call	regs		; if active and in memory, display regs
-	ld	c,CR
-	call	PUTCH		; CR also flushes output
-	ret
-
-msgdpr:	db	'D'
-msgpri:	db	'Pri = ',0
-msgst:	db	'Status: ',0
-msgti:	db	'TI = ',0
-msgioc:	db	'IOC = ',0
-msgfl:	db	'Eflg: ',0
-
-sep3:	ld	c,' '
-	call	PUTCH
-sep2:	ld	c,' '
-	call	PUTCH
-	jp	PUTCH
-
-pad:	ld	b,a
-	ld	a,c
-	sub	b
-	ret	z
-	ret	c
-	ld	b,a
-	ld	c,' '
-pad1:	call	PUTCH
-	djnz	pad1
-	ret
-
-tbits:	ld	b,8
-	ld	e,01h
-t1:	ld	a,d
-	and	e
-	jr	z,t2
-	ld	a,(hl)
-	inc	hl
-	or	a
-	jr	z,t3
-	dec	hl
-	push	bc
-	ld	b,3
-	call	PRINTN
-	pop	bc
-	ld	c,' '
-	call	PUTCH
-	jr	t3
-t2:	ld	a,(hl)
-	inc	hl
-	or	a
-	jr	z,t3
-	inc	hl
-	inc	hl
-t3:	rl	e
-	djnz	t1
-	ret
-
-regs:	xor	a
-	ld	(SYSLVL),a
-	ld	hl,regbuf
-	ldw	de,(ix+T.SP)
-	ldw	(hl),de		; store SP first
-	inc	hl
-	inc	hl
-	ex	de,hl		; DE = dst
-	ldw	hl,(ix+T.CTX)
-	ld	bc,TX.REGS
-	add	hl,bc		; HL = pointer to saved register frame
-	ld	bc,20
-	ldir			; copy the 10 general-purpose registers
-	inc	hl		; skip reason code
-	inc	hl
-	inc	hl		; skip MSR
-	inc	hl
-	ld	bc,2
-	ldir			; copy PC
-	inc	a
-	ld	(SYSLVL),a
-
-	push	ix
-	ld	ix,regofs
-	ld	hl,msgreg
-	ld	b,12
-r1:	ld	e,(ix)		; get offset to register pair value in regbuf
-	ld	d,0		;  into DE
-	ld	iy,regbuf
-	add	iy,de		; point to value
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
-	ld	c,' '
-	call	PUTCH
-	ex	de,hl		; save HL
-	ldw	hl,(iy)		; fetch value
-	call	HLHEX		; display it
-	call	sep2
-	ex	de,hl		; restore HL
-	inc	hl
-	inc	ix
-	djnz	r1
-	pop	ix
-	ret
-
-stna:	db	'-ACT ',0
-stat:	db	0,'AST','SUP','CKR',0,0,0,0
-stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
-attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
-
-regofs:	db	20,18,16,14,4,2
-	db	12,10,8,6,22,0
-
-msgreg:	db	"   AF ",0,"BC ",0,"DE ",0,"HL ",0,"IX ",0,"IY ",0,CR,LF
-	db	"   AF'",0,"BC'",0,"DE'",0,"HL'",0,"PC ",0,"SP ",0
-
-;-----------------------------------------------------------------------
-
-; TAS [tsknam][/DEV=ddn:] - display system task directory
-
-shtsks:	xor	a
-	ld	(optsw),a
-
-	ld	b,6
-	call	getn		; get task name, if supplied, into cmdnam
-	call	fillsp
-
-	call	getns
-	cp	'/'		; check for switch
-	jr	nz,tas0
-
-	call	tasw
-	jp	c,CMDERR
-
-tas0:	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
-
-	ld	c,5		; LUN 5 is console
-	ld	de,0		; no ASTs
-	call	ATTACH		; attach console
-
-	ld	hl,cmdnam
-	ld	a,(hl)		; check argument to command
-	cp	' '		; user supplied a task name?
-	jr	z,tas4		; jump if not, display all tasks
-
-	call	fndtsk		; find task
-	jr	c,tas3		; error if not found
-
-	call	shwtsk		; else display details
-	jr	tas6
-
-tas3:	call	SYSERR
-	jr	tas6
-
-tas4:	; show all installed tasks
-
-	ld	hl,($TLIST)
-tas5:	ld	a,h
-	or	l
-	jr	z,tas6
-	push	hl
-	pop	ix
-	call	shwtsk		; show task details
-	ldw	hl,(ix+T.TCBL)
-	jr	tas5
-
-tas6:	ld	c,5		; LUN
-	call	DETACH
-
-	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	ret
-
-; Check for /DEV switch
-
-tasw:	inc	de
-	call	getns
-	ld	hl,devsw
-tsw1:	ld	a,(hl)
-	or	a
-	jr	z,tsw2
-	ld	a,(de)
-	call	UCASE
-	cp	(hl)
-	scf
-	ret	nz
-	inc	hl
-	inc	de
-	jr	tsw1
-tsw2:	call	getfs
-	jr	z,tsw3
-	inc	de
-	jr	tsw2
-tsw3:	call	getns
-	cp	'='
-	scf
-	ret	nz
-	inc	de
-	call	getns
-	ex	de,hl
-	call	PDN		; parse device name
-	ret	c
-	ld	(tmpdev),de
-	ld	a,c
-	ld	(tmpdev+2),a
-	ld	a,1
-	ld	(optsw),a
-	ret
-
-devsw:	db	'DEV',0
-
-; Find task in STD, called in supervisor mode.
-; If found, return with IX = HL = TCB, else return CY set and A=E.TNF
-
-fndtsk:	; search first for exact match
-
-	call	ftsk0
-	ret	nc
-
-	; if not found, and task name is exactly 3 chars long,
-	; then search for a task like XXXTTn
-
-	call	chkt3		; task name is 3 chars or less?
-	ld	a,E.TNF
-	scf
-	ret	nz		; return error if not - task not found
-
-	ld	hl,TTDEV
-	ld	de,cmdnam+3
-	ldi			; copy first letter of terminal device name
-	inc	hl		; skip second
-	ld	a,(hl)
-	call	BIN2BCD		; convert unit number to two BCD digits
-	ld	c,a
-	rrca
-	rrca
-	rrca
-	rrca
-	and	0Fh
-	jr	z,skip		; skip first digit if zero
-	add	a,'0'		; else convert to ASCII
-	ld	(de),a		; and store it
-	inc	de
-skip:	ld	a,c
-	and	0Fh
-	add	a,'0'		; convert to ASCII
-	ld	(de),a		; the rest is already filled with with spaces
-
-	call	ftsk0
-	ret	nc
-
-	; if still not found, then search for a task like ...XXX
-
-	ld	hl,cmdnam	; else prepare only one string
-	push	hl
-	ld	de,cmdnam+3
-	ld	bc,3
-	ldir
-	pop	hl
-	ld	b,3
-dots:	ld	(hl),'.'	; setup first string
-	inc	hl
-	djnz	dots
-
-ftsk0:	ld	hl,($TLIST)
-	ld	bc,0
-ftsk1:	ld	a,h		; end of list?
-	or	l
-	ld	a,E.TNF
-	scf
-	ret	z		; return error if yes
-	push	hl
-	pop	ix
-	call	tmatch		; match task name
-	ret	z		; return if found
-	ldw	hl,(ix+T.TCBL)
-	jr	ftsk1		; else loop
-
-; Show task details, called with IX = HL = address of TCB in kernel space
-
-shwtsk:	ld	a,(optsw)
-	or	a
-	jr	z,shwt0
-
-	push	hl
-	call	cmpldv		; if /DEV option specified, match device name
-	pop	hl
-	ret	nz
-
-shwt0:	call	CRLF
-	push	hl
-	ld	de,T.NAME	; task name offset
-	add	hl,de
-	ld	b,6
-	call	PRINTN		; display task name
-
-	ld	c,' '
-	call	PUTCH
-
-	pop	hl
-	ld	de,T.VID	; task version identification offset
-	add	hl,de
-	ld	b,6
-	call	PRINTN
-
-	ld	c,' '
-	call	PUTCH
-
-	call	shwpar		; display task partition
-
-	ld	l,(ix+T.DPRI)
-	ld	h,0
-	ld	a,' '
-	call	HLDEC		; display task priority (sep not needed)
-
-	ld	c,' '
-	call	PUTCH
-	ldw	hl,(ix+T.DEND)	; display installed task size in bytes
-	ld	a,1
-	add	hl,a		; size = end address + 1
-	ld	a,0
-	rla			; CY into A
-	call	AHEX
-	call	HLHEX
-
-	ld	c,' '		; display load device and block number
-	call	PUTCH
-	ldw	de,(ix+T.LDEV)
-	KCALL	$UCBDN
-	ld	b,c
-	ld	c,e
-	call	PUTCH
-	ld	c,d
-	call	PUTCH
-	ld	a,b
-	call	ADEC
-	ld	c,':'
-	call	PUTCH
-	ld	c,'-'
-	call	PUTCH
-	ldw	hl,(ix+T.SBLK+2)
-	call	HLHEX
-	ldw	hl,(ix+T.SBLK)
-	call	HLHEX
-
-	bit	TA.FIX,(ix+T.ATTR)
-	ld	hl,TFIXED
-	call	nz,PUTSTR	; display FIXED attribute
-	
-	bit	T2.CKP,(ix+T.ST+1)
-	ld	hl,TCHKPT
-	call	nz,PUTSTR	; display CHECKPOINTED status
-	
-	ld	c,CR
-	call	PUTCH		; CR also flushes output
-	ret
-
-cmpldv:	ldw	de,(ix+T.LDEV)	; TODO: translate tmpdev to physical name
-	KCALL	$UCBDN		;  and follow T.LDEV redir links before
-	ld	hl,tmpdev	;   comparison
-	ld	a,(hl)
-	cp	e
-	ret	nz
-	inc	hl
-	ld	a,(hl)
-	cp	d
-	ret	nz
-	inc	hl
-	ld	a,(hl)
-	cp	c
-	ret
-
-; Display partition name of task
-
-shwpar:	ldw	hl,(ix+T.PCB)
-	ldw	hl,(hl+P.MAIN)
-	ld	de,P.NAME
-	add	hl,de
-	ld	b,6
-	jp	PRINTN
-
-; Match user-supplied name against name in TCB. Called with HL=IX=TCB.
-
-tmatch:	ld	a,(optsw)
-	or	a
-	jr	z,tcomp
-
-	push	hl
-	call	cmpldv		; if /DEV option specified, match device name
-	pop	hl
-	ret	nz
-
-tcomp:	ld	de,cmdnam
-	push	hl
-	ld	bc,T.NAME
-	add	hl,bc
-	ld	b,6
-tcmp1:	ld	a,(de)
-	cp	(hl)		; name matches?
-	jr	nz,tcmp2	; exit loop if not
-	inc	hl
-	inc	de
-	djnz	tcmp1
-tcmp2:	pop	hl
-	ret
-
-; Return Z if task name in cmdnam is 3 chars or less.
-
-chkt3:	ld	de,cmdnam+3
-	ld	b,3
-ck3:	ld	a,(de)
-	cp	' '
-	ret	nz
-	inc	de
-	djnz	ck3
-	ret
-
-ERRSYS:	ld	hl,opfail
-	jp	ERRMCR
-
-TFIXED:	db	' FIXED',0
-TCHKPT:	db	' CHECKPOINTED',0
-opfail:	db	'Operation failed',0
-
-PRINTN:	ld	c,(hl)
-	call	PUTCH
-	inc	hl
-	djnz	PRINTN
+	ld	(LNPTR),hl
 	ret
 
 ;-----------------------------------------------------------------------
@@ -1254,28 +611,28 @@ PRINTN:	ld	c,(hl)
 altpri:	call	CHKPRV
 	jp	c,SYSERR
 	xor	a
-	ld	(optsw),a
+	ld	(OPTSW),a
 	call	gettn		; get task name, return buf addr in HL
 	ld	de,tskn1
 	ld	bc,6
 	ldir
-altopt:	ld	de,(lnptr)
-	call	getns		; see if user supplied an argument
+altopt:	ld	de,(LNPTR)
+	call	GETNS		; see if user supplied an argument
 	or	a
 	jr	z,setpri
 	cp	'/'		; it must be a switch
 	jp	nz,CMDERR
 	inc	de
-	ld	(lnptr),de
-	call	getcmd
+	ld	(LNPTR),de
+	call	GETCMD
 	ld	hl,altswt
-	call	fndcmd		; search for switch name in table
+	call	FNDCMD		; search for switch name in table
 	or	a
 	jp	z,CMDERR
 	cp	0FFh
 	jp	z,CMDERR
 	ld	c,a
-	call	chkeq		; '=' required for all switches
+	call	CHKEQ		; '=' required for all switches
 	jp	nz,CMDERR
 	dec	c		; PRI?
 	jr	z,altp
@@ -1290,7 +647,7 @@ altp:	call	GETDEC
 	jp	nz,CMDERR	; priority must be < 256
 	ld	a,l
 	ld	(pri),a
-	ld	hl,optsw
+	ld	hl,OPTSW
 	set	0,(hl)		; bit 0 set = change installed priority
 	jr	altopt
 
@@ -1301,11 +658,11 @@ altrp:	call	GETDEC
 	jp	nz,CMDERR	; priority must be < 256
 	ld	a,l
 	ld	(rpri),a
-	ld	hl,optsw
+	ld	hl,OPTSW
 	set	1,(hl)		; bit 1 set = change running priority
 	jr	altopt
 
-setpri:	ld	a,(optsw)
+setpri:	ld	a,(OPTSW)
 	or	a
 	jp	z,CMDERR
 	ld	c,a
@@ -1332,866 +689,11 @@ altswt:	db	'PRI',0
 	db	'RPRI',0
 	db	0
 
-;-----------------------------------------------------------------------
-
-; ASN ppn:=lln:[/sw] - assign logical device to physical
-; ASN =lln:[/sw]     - delete assignment
-; ASN =[/sw]         - delete all assignments
-; ASN [/sw]          - show the current assignment table
-;
-; sw can be GBL, LOGIN or TERM
-
-doasgn:	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de
-	or	a		; no argument?
-	jp	z,shasn
-	cp	'/'		; or option switch?
-	jp	z,shasn		; then show device assignment
-
-	cp	'='		; delete assignment?
-	jp	z,dasn		; jump if yes
-
-	ex	de,hl
-	call	PDN		; get physical device name
-	jp	c,nophd		; error if name invalid
-
-	ld	(tmpdev),de
-	ld	a,c
-	ld	(tmpdev+2),a
-
-	ex	de,hl
-	call	getns
-	cp	'='
-	jp	nz,CMDERR
-
-	inc	de
-	call	getns
-	ex	de,hl
-	call	PDN		; get logical device name
-	ld	(lnptr),hl
-	jr	c,nolgd
-
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a
-
-	call	asnopt		; get options, if any
-	ret	c
-	ld	de,(lnptr)
-	call	getns
-	or	a
-	jp	nz,CMDERR
-
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-
-	ld	de,(tmpdv3)
-	ld	a,(tmpdv3+2)
-	ld	c,a
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB of terminal
-	jr	c,asn0
-	ld	(temp),hl
-	ld	de,U.CW
-	add	hl,de
-	bit	DV.TTY,(hl)
-	jr	nz,asn01
-
-	call	notty
-	xor	a
-	jr	asn0
-
-asn01:	ld	de,(tmpdev)
-	ld	a,(tmpdev+2)
-	ld	c,a		; DE-C = physical device name
-
-	ld	hl,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	b,a		; HL-B = logical device name
-
-	ld	ix,(temp)
-	push	bc
-	call	asntyp		; get assignment type
-	ld	a,b
-	pop	bc
-	KCALL	$ASGN
-
-asn0:	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	jp	c,SYSERR
-	ret
-
-nophd:	ld	hl,bpdmsg
-	jp	ERRMCR
-
-nolgd:	ld	hl,bldmsg
-	jp	ERRMCR
-
-notty:	ld	hl,nttmsg
-	jp	ERRMCR
-
-bpdmsg:	db	'Invalid physical device',0
-bldmsg:	db	'Invalid logical device',0
-nttmsg:	db	'Device is not a terminal',0
-
-; Get ASN options
-
-asnopt:	ld	ix,optsw
-	ld	(ix),0
-	ld	hl,(TTDEV)
-	ld	(tmpdv3),hl	; default to current terminal
-	ld	a,(TTDEV+2)
-	ld	(tmpdv3+2),a
-aopt1:	ld	de,(lnptr)
-	call	getns		; skip blanks and get next char
-	or	a
-	ret	z		; return if end of line
-	cp	'/'		; switch?
-	jr	z,aopt2
-	xor	a		; return if not
-	ret
-aopt2:	inc	de
-	ld	(lnptr),de
-	call	getcmd
-	ld	hl,asnswt
-	call	fndcmd		; search for switch name in table
-	or	a
-	jp	z,CMDERR
-	cp	0FFh
-	jp	z,CMDERR
-	ld	c,a
-	dec	c		; LOGIN?
-	jr	z,asnlgn
-	dec	c		; GBL?
-	jr	z,asngbl
-	call	chkeq		; '=' required for TERM
-	jp	nz,CMDERR
-	dec	c
-	jr	z,asntrm
-	jp	CMDERR
-
-asnlgn:	ld	a,(ix)
-	and	7Fh
-	jp	nz,CMDERR
-	call	CHKPRV		; LOGIN is privileged
-	jp	c,SYSERR
-	set	0,(ix)		; set LOGIN flag
-	jp	aopt1
-
-asngbl:	ld	a,(ix)
-	and	7Fh
-	jp	nz,CMDERR
-	call	CHKPRV		; GBL is privileged
-	jp	c,SYSERR
-	set	1,(ix)		; set GBL flag
-	jp	aopt1
-
-asntrm:	bit	7,(ix)
-	jp	nz,CMDERR
-	set	7,(ix)		; set TERM flag
-	push	hl
-	call	CHKPRV		; TERM is privileged
-	pop	hl
-	jp	c,SYSERR
-	call	PDN		; parse terminal name
-	jp	c,CMDERR
-	ld	(tmpdv3),de	; store it
-	ld	a,c
-	ld	(tmpdv3+2),a
-	ld	(lnptr),hl
-	jp	aopt1
-
-asnswt:	db	'LOGIN',0
-	db	'GBL',0
-	db	'TERM',0
-	db	0
-
-; Get assignment type according to option switch into reg B.
-
-asntyp:	ld	a,(optsw)
-	bit	0,a
-	ld	b,N.LGN
-	ret	nz
-	bit	1,a
-	ld	b,N.GBL
-	ret	nz
-	ld	b,N.LCL
-	ret
-
-; Delete assignment
-
-dasn:	inc	de
-	call	getns
-	ld	(lnptr),de
-	or	a
-	jp	z,dall		; if only '=' delete all assignments
-	cp	'/'
-	jp	z,dall
-
-	ex	de,hl
-	call	PDN		; get logical device
-	ld	(lnptr),hl
-	jp	c,nolgd
-
-	ld	(tmpdev),de
-	ld	a,c
-	ld	(tmpdev+2),a
-
-	call	asnopt		; get any options
-	ret	c
-	ld	de,(lnptr)
-	call	getns
-	or	a
-	jp	nz,CMDERR
-
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-
-	ld	de,(tmpdv3)
-	ld	a,(tmpdv3+2)
-	ld	c,a
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB of terminal
-	jr	c,da1
-	ld	(temp),hl
-	ld	de,U.CW
-	add	hl,de
-	bit	DV.TTY,(hl)
-	jr	nz,da0
-
-	call	notty
-	xor	a
-	jr	da1
-
-da0:	ld	de,(tmpdev)
-	ld	a,(tmpdev+2)
-	ld	c,a		; DE-C = logical device name
-
-	call	asntyp		; get assignment type
-	ld	ix,(temp)
-	ld	a,b
-	KCALL	$DEASN		; delete assignment
-
-da1:	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	jp	c,SYSERR
-	ret
-
-; Delete all assignments of the specified type
-
-dall:	call	asnopt		; get options
-	ret	c
-	ld	de,(lnptr)
-	call	getns
-	or	a
-	jp	nz,CMDERR
-
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-
-	ld	de,(tmpdv3)
-	ld	a,(tmpdv3+2)
-	ld	c,a
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB of terminal
-	jr	c,da2
-	ld	(temp),hl
-	ld	de,U.CW
-	add	hl,de
-	bit	DV.TTY,(hl)
-	jr	nz,da3
-
-	call	notty
-	xor	a
-	jr	da2
-
-da3:	ld	de,(temp)
-	call	asntyp		; get type
-	KCALL	$CLASN		; delete all assignments of that type
-
-da2:	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	jp	c,SYSERR
-	ret
-
-; Show current assignments
-
-shasn:	call	asnopt		; get any options
-	ret	c
-	ld	de,(lnptr)
-	call	getns
-	or	a
-	jp	nz,CMDERR
-
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-
-	ld	de,(tmpdv3)
-	ld	a,(tmpdv3+2)
-	ld	c,a
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB of terminal
-	jp	c,asn5
-	ld	(temp),hl
-	ld	de,U.CW
-	add	hl,de
-	bit	DV.TTY,(hl)
-	jr	nz,asn8
-
-	call	notty
-	xor	a
-	jp	asn5
-
-asn8:	ld	c,CR
-	call	PUTCH
-
-	ld	ix,$LOGDV	; ptr to head of logical dev assignment table
-asn2:	ldw	de,(ix)
-	ld	a,d
-	or	e		; end of table?
-	jp	z,asn5		; exit loop if yes
-	push	de
-	pop	ix
-	ld	a,(ix+N.TYPE)	; check record type
-	cp	N.GBL		; global?
-	jr	z,asn6		; branch if yes
-	ldw	de,(ix+N.TI)
-	ld	hl,(temp)
-	cpw	hl,de		; else match UCB of terminal
-	jr	nz,asn2
-	jr	asn7
-
-asn6:	ld	a,(optsw)
-	bit	1,a		; /GBL switch specified?
-	jr	z,asn2		; skip this record if not
-
-asn7:	ld	c,LF
-	call	PUTCH
-	ld	c,(ix+N.NAME)
-	call	PUTCH		; show logical device name
-	ld	c,(ix+N.NAME+1)
-	call	PUTCH
-	ld	a,(ix+N.UNIT)
-	call	ADEC		; and unit
-	ld	c,':'
-	call	PUTCH
-	ld	c,TAB
-	call	PUTCH
-	ldw	de,(ix+N.UCB)
-	ld	hl,U.UNIT
-	add	hl,de
-	ld	b,(hl)
-	ld	hl,U.DCB
-	add	hl,de
-	ldw	de,(hl)
-	ld	hl,D.NAME
-	add	hl,de
-	ld	c,(hl)
-	call	PUTCH		; show physical device name
-	inc	hl
-	ld	c,(hl)
-	call	PUTCH
-	ld	a,b
-	call	ADEC		; and unit
-	ld	c,':'
-	call	PUTCH
-	ld	c,TAB
-	call	PUTCH
-	ld	a,(ix+N.TYPE)	; check assignment type
-	ld	b,a
-	cp	N.LCL
-	ld	hl,asnu
-	jr	z,asn3
-	cp	N.LGN
-	ld	hl,asnl
-	jr	z,asn3
-	ld	hl,asng		; default to global
-asn3:	call	PUTSTR
-	ld	a,b
-	cp	N.GBL
-	jr	z,asn4
-	ld	c,TAB
-	call	PUTCH
-	ld	hl,asnt
-	call	PUTSTR
-	ldw	de,(ix+N.TI)
-	ld	hl,U.UNIT
-	add	hl,de
-	ld	b,(hl)
-	ld	hl,U.DCB
-	add	hl,de
-	ldw	de,(hl)
-	ld	hl,D.NAME
-	add	hl,de
-	ld	c,(hl)
-	call	PUTCH		; show terminal name
-	inc	hl
-	ld	c,(hl)
-	call	PUTCH
-	ld	a,b
-	call	ADEC		; and unit
-	ld	c,':'
-	call	PUTCH
-asn4:	ld	c,CR
-	call	PUTCH
-	jp	asn2		; loop to process next entry
-
-asn5:	push	af
-	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	pop	af
-	jp	c,SYSERR
-	ret
-
-asng:	db	'Global',0
-asnu:	db	'Local',0
-asnl:	db	'Login',0
-asnt:	db	'TI - ',0
-
-;-----------------------------------------------------------------------
-
-; RED new:=old: - redirect all I/O requests from old: to new:
-
-; Notes:
-; - can't redirect TI:
-; - can't redirect mounted device
-; - can't redirect an attached device
-
-dored:	call	CHKPRV
-	jp	c,SYSERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de
-	ex	de,hl
-	call	PDN		; get new device name
-	jp	c,CMDERR	; error if name invalid
-
-	ld	(tmpdev),de
-	ld	a,c
-	ld	(tmpdev+2),a
-
-	ex	de,hl
-	call	getns
-	cp	'='
-	jp	nz,CMDERR
-
-	inc	de
-	call	getns
-	ex	de,hl
-	call	PDN		; get old device name
-	ld	(lnptr),hl
-	jp	c,CMDERR
-
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a
-
-	ld	de,'TI'
-	ld	hl,(tmpdev)
-	cpw	hl,de
-	ld	a,E.BADOP
-	jp	z,SYSERR	; can't redirect TI:
-
-	ld	hl,(tmpdv2)
-	cpw	hl,de
-	ld	a,E.BADOP
-	jp	z,SYSERR	; can't redirect to TI:
-
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	ret	c
-
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB of old device
-	jp	c,red8		; jump on error
-
-	ex	de,hl
-	ld	hl,U.ST
-	add	hl,de
-	bit	US.RED,(hl)	; device redirectable?
-	ld	hl,erred2
-;;	jp	nz,red9		; error if not
-
-	ld	hl,U.CW
-	add	hl,de
-	bit	DV.TTY,(hl)	; is the old device a terminal?
-	jr	z,red1		; branch if not
-
-	push	de
-	ld	de,'NL'
-	ld	hl,(tmpdv2)
-	cpw	hl,de
-	pop	de
-	ld	a,E.BADOP
-	scf
-	jp	z,red8		; error if new dev is NL:
-
-red1:	push	de		; push old UCB
-
-	ld	de,(tmpdev)
-	ld	a,(tmpdev+2)
-	ld	c,a
-	KCALL	$FNDEV		; get UCB of new device
-	jp	c,red81		; jump on error
-
-	ex	(sp),hl		; push new UCB, pop old
-	push	hl		; push old back
-red2:	ex	de,hl
-	ld	hl,U.RED
-	add	hl,de
-	ldw	hl,(hl)
-	ld	a,h
-	or	l
-	jr	nz,red2		; follow redirection link of old device
-
-	ld	hl,U.CW
-	add	hl,de
-	bit	DV.MNT,(hl)	; device mountable?
-	jr	z,red3		; branch if not
-	ld	hl,U.ST
-	add	hl,de
-	bit	US.MNT,(hl)	; unit mounted?
-	ld	hl,erred3
-	jp	nz,red92	; error if yes
-
-red3:	ld	hl,U.ATT
-	add	hl,de
-	ld	a,(hl)
-	inc	hl
-	or	(hl)		; unit attached?
-	ld	hl,erred4
-	jp	nz,red92	; error if yes
-
-	pop	de		; pop old UCB
-	pop	hl		; pop new UCB
-	cpw	hl,de		; redirecting to self?
-	jr	nz,red4		; branch if not
-
-	ld	hl,U.CW
-	add	hl,de
-	bit	DV.PSE,(hl)	; pseudo-device?
-	ld	a,E.BADOP
-	scf
-	jr	nz,red8		; error if yes
-
-	ld	hl,0		; else redirect to self (thus no redirection)
-	jr	red7
-
-red4:	push	hl		; push new UCB, old still in DE
-red5:	ld	bc,U.RED
-	add	hl,bc
-	ldw	hl,(hl)		; follow redirection link of new device
-	ld	a,h
-	or	l		; end of list?
-	jr	z,red6		; exit loop if yes
-	cpw	hl,de		; redirected to old?
-	jr	nz,red5		; loop if not
-	ld	hl,erred1
-	jr	red91		; else is an error
-
-red6:	pop	hl		; restore new UCB, old still in DE
-red7:	ex	de,hl		; get new UCB into DE, old into HL
-	ld	bc,U.RED
-	add	hl,bc
-	xor	a
-	ld	(SYSLVL),a	; disable task dispatching
-	ldw	(hl),de		; set redirect pointer
-	inc	a
-	ld	(SYSLVL),a	; enable task dispatching
-	xor	a
-	jr	red8		; success
-
-red81:	pop	de
-red8:	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	jp	c,SYSERR
-	ret
-
-red92:	pop	de
-red91:	pop	de
-red9:	ld	c,0
-	SC	.SUPER
-	jp	ERRMCR
-
-erred1:	db	'Circular redirect error',0
-erred2:	db	'Device not redirectable',0
-erred3:	db	'Old device mounted',0
-erred4:	db	'Old device attached',0
-
-;-----------------------------------------------------------------------
-
-; DEV - show known physical devices
-
-shdev:	ld	hl,0
-	ld	(tmpdev),hl	; default = no device specified
-	xor	a
-	ld	(swval),a	; default = no switch
-
-	ld	de,(lnptr)
-	call	getns
-	or	a		; no arguments?
-	jr	z,shdv0		; then show full device list
-
-	ex	de,hl
-	call	PDN		; get device name
-	jr	c,shdvs		; jump if invalid (try option)
-
-	ld	(tmpdev),de	; store device name
-	ld	a,c
-	ld	(tmpdev+2),a	; store unit number
-	ld	a,b
-	ld	(uflg),a	; remember if explicit unit specified
-
-shdvs:	ex	de,hl
-	call	getns
-	or	a		; end of command?
-	jr	z,shdv0		; jump if yes
-	cp	'/'		; else must be a switch
-	jp	nz,CMDERR
-	inc	de
-	ld	(lnptr),de
-	call	getcmd		; get switch name
-	ld	hl,devswt
-	call	fndcmd		; find switch
-	or	a
-	jp	z,CMDERR	; error if empty
-	cp	0FFh
-	jp	z,CMDERR
-	cp	2+1		; ensure valid
-	jp	nc,CMDERR
-	ld	(swval),a
-	ld	de,(lnptr)
-	call	getns
-	or	a		; check for end of command line
-	jp	nz,CMDERR	; error if not
-
-shdv0:	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
-
-	ld	c,CR
-	call	PUTCH
-	ld	hl,($PHYDV)	; get head of physical devices list
-shdv1:	ld	a,h
-	or	l		; end of list?
-	jr	z,shdv5		; exit if yes
-	push	hl
-	pop	ix
-	ldw	de,(ix+D.UCBL)	; get UCB list head into DE
-shdv2:	ld	a,d
-	or	e		; end of UCB list?
-	jr	z,shdv4		; exit loop if yes
-	call	getdev		; else get full device name
-	call	chkdvn		; match against command
-	jr	c,shdv3		; skip if no match
-	call	chkdsw		; match against switch option
-	jr	c,shdv3		; skip if no match
-	ld	c,LF
-	call	PUTCH
-	ld	hl,(tmpdv2)
-	ld	c,l
-	call	PUTCH		; show physical device name
-	ld	c,h
-	call	PUTCH
-	ld	a,(tmpdv2+2)
-	call	ADEC
-	ld	c,':'
-	call	PUTCH
-	ld	c,' '
-	call	PUTCH
-	call	shdvst		; show device status
-	ld	c,CR
-	call	PUTCH
-shdv3:	ld	hl,U.LNK
-	add	hl,de
-	ldw	de,(hl)		; get address of next UCB into DE
-	jr	shdv2		; loop until all units processed
-shdv4:	ldw	hl,(ix+D.LNK)
-	jr	shdv1
-
-shdv5:	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	ret
-
-; Get device name, unit number, status byte and control word
-
-getdev:	ldw	hl,(ix+D.NAME)	; get physical device name
-	ld	(tmpdv2),hl
-	ld	hl,U.UNIT
-	add	hl,de
-	ld	a,(hl)		; get unit number
-	ld	(tmpdv2+2),a
-	ld	hl,U.ST
-	add	hl,de
-	ld	a,(hl)		; get unit status bits
-	ld	(devst),a
-	ld	hl,U.CW
-	add	hl,de
-	ldw	hl,(hl)		; get unit control word
-	ld	(devcw),hl
-	ret
-
-chkdvn:	ld	a,(tmpdev)
-	or	a		; explicit device on command line?
-	ret	z		; return with CY clear if not
-	push	de
-	ld	de,(tmpdev)
-	ld	hl,(tmpdv2)
-	cpw	hl,de		; else compare device names
-	pop	de
-	scf
-	ret	nz
-	ld	a,(uflg)	; explicit unit number?
-	or	a
-	ret	z
-	ld	a,(tmpdev+2)
-	ld	c,a
-	ld	a,(tmpdv2+2)
-	cp	c
-	ret	z
-	scf
-	ret
-
-chkdsw:	ld	a,(swval)	; check command line switch
-	or	a
-	ret	z		; return with CY clear if none
-	dec	a
-	jr	z,devlog
-	ld	a,(devst)
-	bit	US.MNT,a
-	ret	nz		; note CY is clear from above
-	scf
-	ret
-devlog:	ld	bc,(devcw)
-	bit	DV.TTY,c	; terminal device?
-	scf
-	ret	z		; return CY if not
-	call	fndlgn		; find session
-	ret			; return with CY set if not logged in
-
-; Show device status
-
-shdvst:	ld	hl,U.RED
-	add	hl,de
-	ldw	hl,(hl)		; get redirect pointer
-	ld	a,h
-	or	l		; device redirected?
-	jr	z,shdst3	; branch if not
-	push	de
-shdst2:	ex	de,hl
-	ld	hl,U.RED
-	add	hl,de
-	ldw	hl,(hl)		; follow redirect link
-	ld	a,h
-	or	l		; end of chain?
-	jr	nz,shdst2	; loop if not
-	ld	c,TAB
-	call	PUTCH
-	ld	hl,U.DCB
-	add	hl,de
-	ldw	bc,(hl)
-	ld	hl,D.NAME
-	add	hl,bc
-	ld	c,(hl)
-	call	PUTCH		; show device name this one is redirected to
-	inc	hl
-	ld	c,(hl)
-	call	PUTCH
-	ld	hl,U.UNIT
-	add	hl,de
-	ld	a,(hl)
-	call	ADEC
-	ld	c,':'
-	call	PUTCH
-	pop	de
-	ret
-
-shdst3:	call	devlog		; find session if terminal
-	jr	c,shdst1	; skip if not terminal or not logged in
-	push	iy
-	pop	hl
-	ld	bc,L.NAME
-	add	hl,bc
-	call	PDNAME		; display user name
-	ld	hl,devss
-	call	PUTSTR
-shdst1:	ld	bc,(devcw)
-	bit	DV.PSE,c	; pseudo-device?
-	ret	nz		; return if yes
-	ld	a,(devst)
-	ld	c,a
-	bit	US.OFL,c
-	ld	hl,devoff
-	call	nz,PUTSTR
-	bit	US.PUB,c
-	ld	hl,devp
-	call	nz,PUTSTR
-	bit	US.DMO,c
-	jr	z,shdst4
-	ld	hl,devdm
-	call	PUTSTR
-	jr	shdst5
-shdst4:	bit	US.MNT,c
-	ld	hl,devm
-	call	nz,PUTSTR
-shdst5:	ld	hl,devl
-	call	PUTSTR
-	push	de
-	call	CHKPRV
-	pop	de
-	ret	c
-	ld	hl,U.ACP	; display additional info if user is priv.
-	add	hl,de
-	ldw	hl,(hl)
-	ld	a,h
-	or	l
-	ret	z
-	push	hl
-	ld	hl,devacp
-	call	PUTSTR
-	pop	hl
-	ld	bc,T.NAME
-	add	hl,bc
-	ld	b,6
-	call	PRINTN		; display name of ACP
-	ld	c,' '
-	call	PUTCH		; TODO: display volume label if mounted
-	ret
-
-devswt:	db	'LOG',0
-	db	'MOU',0
-	db	0
-
-devoff:	db	'Offline ',0
-devp:	db	'Public ',0
-devm:	db	'Mounted ',0
-devdm:	db	'Dismount in progress ',0
-devl:	db	'Loaded ',0
-devss:	db	' - Logged in  ',0
-devacp:	db	'ACP=',0
-devlbl:	db	'Label=',0
-
-fndlgn:
+FNDLGN:
   IF 1
 	push	de
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
+	ld	de,(TMPDV2)
+	ld	a,(TMPDV2+2)
 	ld	c,a
 	push	ix
 	ld	ix,($CTCB)
@@ -2222,13 +724,39 @@ fndlgn:
 	ret
   ENDIF
 
+; Print directory name (HL = file info), do not show the extension.
+
+PDNAME:	ld	c,'['
+	call	PUTCH
+	call	PNAM9
+	ld	c,']'
+	call	PUTCH
+	ret
+
+PNAM9:	ld	b,9
+p91:	ld	a,(hl)
+	cp	' '
+	ld	c,a
+	call	nz,PUTCH
+	inc	hl
+	djnz	p91
+	ret
+
+; Print string @HL, length in B
+
+PRINTN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PRINTN
+	ret
+
 ;-----------------------------------------------------------------------
 
 ; CLQ - display clock queue
 
-doclq:	ld	c,1
+cmdclq:	ld	c,1
 	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
+	jp	c,ERFAIL
 
 	ld	c,5		; LUN 5 is console
 	ld	de,0		; no ASTs
@@ -2462,9 +990,9 @@ dd2:	djnz	dd1
 ;  -or-
 ; RUN taskname dtime[/RSI=rsi]
 
-dorun:	call	getfn		; get task file name into fname
-	ld	de,(lnptr)
-	call	getns		; get next non-blank char
+cmdrun:	call	GETFN		; get task file name into FNAME
+	ld	de,(LNPTR)
+	call	GETNS		; get next non-blank char
 	or	a
 	jp	z,run0		; if end of line
 	cp	'/'		;  or switch
@@ -2473,7 +1001,7 @@ dorun:	call	getfn		; get task file name into fname
 	call	CHKPRV		; else is a time-scheduled request
 	jp	c,SYSERR	; user must be privileged
 
-	ld	hl,fname
+	ld	hl,FNAME
 	ld	de,newtsk+TD.NAME
 	ld	bc,6
 	ldir				; set task name in TDB
@@ -2494,23 +1022,23 @@ dorun:	call	getfn		; get task file name into fname
 
 	ld	(dtime),hl	; store magnitude
 	ld	(dtime+2),de	; store units
-	ld	de,(lnptr)
-	call	getns
+	ld	de,(LNPTR)
+	call	GETNS
 	ld	hl,0
 	ld	de,1
 	or	a
 	jr	z,rs1
 	cp	'/'
 	jp	nz,CMDERR
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	inc	hl
-	ld	(lnptr),hl
-	call	getcmd		; get command name
+	ld	(LNPTR),hl
+	call	GETCMD		; get command name
 	ld	hl,rsiopt
-	call	fndcmd
+	call	FNDCMD
 	dec	a		; RSI?
 	jp	nz,CMDERR
-	call	chkeq
+	call	CHKEQ
 	jp	nz,CMDERR
 	call	tmval		; get reschedule interval
 	jp	c,CMDERR
@@ -2530,7 +1058,7 @@ run0:	; immediate RUN request
 	call	cpstr		; copy INS command name
 	ld	(hl),' '
 	inc	hl
-	ld	de,fname
+	ld	de,FNAME
 	call	cpstr		; copy requested task file name
 	ld	de,runopt
 	call	cpstr		; add run options
@@ -2556,7 +1084,7 @@ run1:	ld	a,c
 	ld	(de),a
 	inc	de
 	ex	de,hl
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	cpstr		; add user-supplied options
 	ld	(hl),0
 	ld	hl,buf
@@ -2570,21 +1098,21 @@ rsiopt:	db	'RSI',0
 
 ; Get time interval specification, returns magnitude in HL and units in DE.
 
-tmval:	ld	de,(lnptr)
-	call	getns
+tmval:	ld	de,(LNPTR)
+	call	GETNS
 	cp	'0'		; digit?
 	ret	c		; return error if not
 	cp	'9'+1
 	ccf
 	ret	c
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	GETDEC		; get magnitude of time interval into HL
 	ld	a,(de)		; get units
 	or	a
 	scf
 	ret	z
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	UCASE
 	ld	c,a
 	ld	de,1
@@ -2778,7 +1306,7 @@ rcmder:	xor	a		; syntax error
 ; Setup task command line. HL = address of command tail
 
 setcml:	push	hl
-	call	strlen
+	call	STRLEN
 	ld	hl,0
 	ld	(newtsk+TD.CMD),hl
 	ld	(newtsk+TD.CML),hl
@@ -2797,7 +1325,7 @@ setcml:	push	hl
 	ld	(de),a
 	ret
 
-strlen:	ld	c,0
+STRLEN:	ld	c,0
 strl1:	ld	a,(hl)
 	or	a
 	ret	z
@@ -2807,40 +1335,107 @@ strl1:	ld	a,(hl)
 
 ;-----------------------------------------------------------------------
 
-; LUN tsknam - display static LUN assignments
+; REA tsknam lun ddn: - reassign static LUN
 
-dolun:	ld	b,6
-	call	getn		; get task name into cmdnam
-	call	fillsp
-	ld	hl,cmdnam
+cmdrea:	call	gtsknm		; get task name and task info
+	jp	c,SYSERR
+	call	GETDEC		; get LUN
+	ld	a,h
+	or	a
+	jr	nz,rea1		; validate LUN
+	or	l
+	jr	z,rea1
+	cp	16+1
+	jr	nc,rea1
+	ld	(temp),hl	; store LUN
+	ex	de,hl
+	call	PDN		; get device name
+	jp	c,CMDERR
+	ld	(TMPDEV),de	; store device name
+	ld	a,c
+	ld	(TMPDEV+2),a
+	ld	hl,gtkbuf+GT.SBLK
+	ld	a,(hl)		; check starting block number
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	ret	z		; return if task is a resident kernel task
+	ld	de,(gtkbuf+GT.LDEV)
+	ld	a,(gtkbuf+GT.LDEV+2)
+	ld	c,a
+	ld	b,1		; assign task load device to LUN 1
+	SC	.ALUN
+	jp	c,SYSERR
+	ld	hl,buf
+	ld	bc,(gtkbuf+GT.SBLK)
+	ld	de,(gtkbuf+GT.SBLK+2)
+	call	dskrd		; read task header
+	jp	c,SYSERR
+	ld	hl,(temp)	; get LUN
+	dec	hl		; make it zero-based
+	add	hl,hl
+	add	hl,hl
+	ld	de,buf+TH.LUNT
+	add	hl,de		; index into LUN table of task header
+	ex	de,hl		; DE = dst
+	ld	hl,TMPDEV	; HL = src
+	ld	bc,3
+	ldir			; reassign LUN
+	ld	hl,buf
+	ld	bc,(gtkbuf+GT.SBLK)
+	ld	de,(gtkbuf+GT.SBLK+2)
+	call	dskwr		; write changes back
+	jp	c,SYSERR
+	ret
+
+rea1:	ld	hl,remsg
+	jp	ERRMCR
+
+remsg:	db	'Invalid LUN',0
+
+gtsknm:	ld	b,6
+	call	GETN		; get task name into CMDNAM
+	call	PADBL		; pad with blanks
+	ld	hl,CMDNAM
 	ld	de,gtkbuf
 	SC	.GTSK		; get task info
-	jr	nc,lun2		; jump on success
-	call	chkt3		; is task name 3 chars or less?
+	ret	nc		; return on success
+	call	CHKT3		; is task name 3 chars or less?
 	ld	a,E.TNF
-	jp	nz,SYSERR	; error if not
-	ld	hl,cmdnam
-	ld	de,cmdnam+3
+	scf
+	ret	nz		; error if not
+	ld	hl,CMDNAM
+	ld	de,CMDNAM+3
 	ld	bc,3
 	ldir
-	ld	hl,cmdnam
+	ld	hl,CMDNAM
 	ld	b,3
-lun1:	ld	(hl),'.'
+gt1:	ld	(hl),'.'	; try ...tsk
 	inc	hl
-	djnz	lun1
-	ld	hl,cmdnam
+	djnz	gt1
+	ld	hl,CMDNAM
 	ld	de,gtkbuf
 	SC	.GTSK		; get task info
+	ret
+
+;-----------------------------------------------------------------------
+
+; LUN tsknam - display static LUN assignments
+
+cmdlun:	call	gtsknm		; get task name and task info
 	jp	c,SYSERR
-lun2:	ld	hl,gtkbuf+GT.SBLK
-	ld	a,(hl)
+	ld	hl,gtkbuf+GT.SBLK
+	ld	a,(hl)		; get starting block number
 	inc	hl
 	or	(hl)
 	inc	hl
 	or	(hl)
 	inc	hl
 	or	(hl)
-	ret	z		; if task is a resident kernel task
+	ret	z		; return if task is a resident kernel task
 	ld	de,(gtkbuf+GT.LDEV)
 	ld	a,(gtkbuf+GT.LDEV+2)
 	ld	c,a
@@ -2854,15 +1449,15 @@ lun2:	ld	hl,gtkbuf+GT.SBLK
 	jp	c,SYSERR
 	ld	hl,buf+TH.LUNT
 	ld	b,16
-lun3:	ld	e,(hl)
+lun1:	ld	e,(hl)		; get device name and unit
 	inc	hl
 	ld	d,(hl)
 	inc	hl
 	ld	c,(hl)
 	inc	hl
 	inc	hl
-	call	shwlun
-	djnz	lun3
+	call	shwlun		; display LUN assignment
+	djnz	lun1
 	ret
 
 shwlun:	ld	a,d
@@ -2871,28 +1466,34 @@ shwlun:	ld	a,d
 	push	bc
 	call	CRLF
 	ld	c,e
-	call	PUTCH
+	call	PUTCH		; output device name
 	ld	c,d
 	call	PUTCH
 	pop	bc
 	ld	a,c
-	call	ADEC
+	call	ADEC		; output unit number
 	ld	c,':'
 	call	PUTCH
 	ld	c,TAB
 	call	PUTCH
 	ld	a,16+1
 	sub	b
-	call	ADEC
+	call	ADEC		; output LUN
 	ld	c,CR
 	call	PUTCH
 	ret
 
 ; Read disk block (number in DEBC) using LUN 1 to buffer @HL
 
-dskrd:	push	ix
+dskrd:	ld	a,IO.RLB	; function code
+	jr	dskio		; continue via common code
+
+; Write disk block (number in DEBC) using LUN 1 from buffer @HL
+
+dskwr:	ld	a,IO.WLB	; function code
+dskio:	push	ix
 	ld	ix,QIOBLK
-	ld	(ix+Q.FUNC),IO.RLB ; function code
+	ld	(ix+Q.FUNC),a	; store function code
 	ld	(ix+Q.SUBF),0	; subfunction
 	ld	(ix+Q.LUN),1	; use LUN 1
 	ldw	(ix+Q.BUF),hl	; buffer address
@@ -2922,9 +1523,9 @@ dskrd:	push	ix
 
 ; PAR - Display partitions
 
-dopar:	ld	c,1
+cmdpar:	ld	c,1
 	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
+	jp	c,ERFAIL
 
 	ld	c,5		; LUN 5 is console
 	ld	de,0		; no ASTs
@@ -3038,1130 +1639,6 @@ pstat2:	db	'TASK',0
 
 ;-----------------------------------------------------------------------
 
-; SET /option...
-
-doset:	ld	de,(lnptr)
-	call	getns		; get argument
-	cp	'/'		; it must be a switch
-	jp	nz,CMDERR
-	inc	de
-	call	chkneg		; check for NO or -
-	ld	(lnptr),de
-	call	getcmd
-	ld	hl,setopt
-	call	fndcmd		; search for switch name in table
-	or	a
-	jp	z,CMDERR	; switch name can't be empty
-	dec	a
-	cp	21		; ensure value is in range
-	jp	nc,CMDERR
-	rlca
-	ld	c,a
-	ld	b,0
-	ld	hl,setfn
-	add	hl,bc
-	ld	a,(hl)
-	inc	hl
-	ld	h,(hl)
-	ld	l,a
-	jp	(hl)		; execute function
-
-setopt	equ	$
-msbro:	db	'BRO',0
-msecho:	db	'ECHO',0
-mslowr:	db	'LOWER',0
-mscrt:	db	'CRT',0
-msansi:	db	'ANSI',0
-	db	'LOGON',0
-msslav:	db	'SLAVE',0
-mspriv:	db	'PRIV',0
-mspub:	db	'PUB',0
-msspd:	db	'SPEED',0
-	db	'DIR',0
-	db	'HOST',0
-	db	'NODE',0
-mspool:	db	'POOL',0
-	db	'COLOG',0
-msrndc:	db	'RNDC',0
-msrndh:	db	'RNDH',0
-msrndl:	db	'RNDL',0
-msswpc:	db	'SWPC',0
-msswpr:	db	'SWPR',0
-	db	'UIC',0
-	db	0
-
-setfn:	dw	stbro,stecho,stlowr,stcrt,stansi,stlogn,stslav
-	dw	stpriv,stpub,stspd,stdir,sthost,sthost,stpool
-	dw	stlog,strndc,strndh,strndl,stswpc,stswpr,stuic
-
-stecho:	; SET /ECHO
-
-	call	chkeq		; '=' present?
-	jr	nz,shecho
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jr	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jr	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jr	z,ster2		; error if not
-	ld	l,TC.NEC	; L = characteristic bit number
-setn:	ld	a,(negsw)
-setv:	ld	h,a		; H = state
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a		; DE-C = terminal name
-	call	TTSET
-	jr	c,ster1
-ste2:	ld	c,0
-	SC	.SUPER
-	ret
-
-ster1:	call	SYSERR
-	jr	ste2
-
-ster2:	ld	hl,errnt
-	call	ERRMCR
-	jr	ste2
-
-errnt:	db	'Not a terminal device',0
-
-shecho:	xor	a
-	set	TC.NEC,a
-	ld	(swval),a
-	ld	hl,chkexo	; matching routine address
-	ld	de,msecho
-	call	shds
-	ret
-
-chkexo:	ld	hl,(devcw)
-	bit	DV.TTY,l
-	scf
-	ret	z
-	ld	a,(swval)
-	and	h
-	ld	c,a
-	ld	a,(negsw)
-	or	a
-	jr	z,ckexo1
-	ld	a,c
-	or	a
-	ret	nz
-	scf
-	ret
-ckexo1:	ld	a,c
-	or	a
-	ret	z
-	scf
-	ret	
-
-stlowr:	; SET /LOWER
-
-	call	chkeq		; '=' present?
-	jr	nz,shlowr
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jp	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-	ld	l,TC.SMR	; L = characteristic bit number
-setp:	ld	a,(negsw)
-	cpl
-	and	01h
-	jp	setv		; finish via common code
-
-shlowr:	xor	a
-	set	TC.SMR,a
-	ld	(swval),a
-	ld	hl,chktsl	; matching routine address
-	ld	de,mslowr
-	call	shds
-	ret
-
-stcrt:	; SET /CRT
-
-	call	chkeq		; '=' present?
-	jr	nz,shcrt
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jp	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-	ld	l,TC.SCP	; L = characteristic bit number
-	jr	setp		; continue via common code
-
-shcrt:	xor	a
-	set	TC.SCP,a
-	ld	(swval),a
-	ld	hl,chktsl	; matching routine address
-	ld	de,mscrt
-	call	shds
-	ret
-
-stansi:	; SET /ANSI
-
-	call	chkeq		; '=' present?
-	jr	nz,shansi
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jp	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-	ld	l,TC.ANS	; L = characteristic bit number
-	jp	setp		; continue via common code
-
-shansi:	xor	a
-	set	TC.ANS,a
-	ld	(swval),a
-	ld	hl,chktsl	; matching routine address
-	ld	de,msansi
-	call	shds
-	ret
-
-stbro:	; SET /BRO
-
-	call	chkeq		; '=' present?
-	jr	nz,shbro	; jump if not
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	call	FNDEV		; get the physical device name
-	jp	c,SYSERR
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a
-	call	CHKTI		; if terminal is not TI:, then user
-	jp	c,SYSERR	;  must be privileged
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-	ld	l,TC.NBR	; L = characteristic bit number
-	jp	setn		; finish via common code
-
-shbro:	xor	a
-	set	TC.NBR,a
-	ld	(swval),a
-	ld	hl,chkexo	; matching routine address
-	ld	de,msbro
-	call	shds
-	ret
-
-stpriv:	; SET /PRIV
-
-	call	chkeq		; '=' present?
-	jr	nz,shp1		; jump if not
-	call	CHKPRV
-	jp	c,SYSERR
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	call	FNDEV		; get the physical device name
-	jp	c,SYSERR
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-	call	fndlgn		; find session
-	jr	nc,stp3
-	ld	hl,sserr
-	call	ERRMCR
-	jr	stp2
-stp3:	ld	a,(negsw)	; /nopriv?
-	or	a
-	jr	nz,stp1		; jump if yes
-	set	LS.PRV,(iy+L.ST)
-	jr	stp2
-stp1:	res	LS.PRV,(iy+L.ST)
-stp2:	ld	c,0
-	SC	.SUPER
-	ret
-
-shp1:	ld	hl,cktprv	; matching routine address
-	ld	de,mspriv
-	call	shds
-	ret
-
-cktprv:
-  IF 0
-	call	devlog		; get session if terminal
-	ret	c
-	ld	a,(negsw)
-	add	a,0FFh
-	sbc	a,a		; a=0FFh if negsw<>0 else a=0
-	xor	(iy+L.ST)
-	bit	LS.PRV,a	; privileged?
-	ret	nz		; return if yes (note CY is clear)
-	scf
-	ret
-  ELSE
-	ld	bc,(devcw)
-	bit	DV.TTY,c	; terminal device?
-	scf
-	ret	z		; return CY if not
-	call	fndlgn		; find session
-	ret	c
-	ld	a,(negsw)
-	add	a,0FFh
-	sbc	a,a		; a=0FFh if negsw<>0 else a=0
-	xor	(iy+L.ST)
-	bit	LS.PRV,a	; privileged?
-	ret	nz		; return if yes (note CY is clear)
-	scf
-	ret
-  ENDIF
-
-sserr:	db	'Session not found',0
-
-stpub:	; SET /PUB
-
-	call	chkeq		; '=' present?
-	jr	nz,shpub
-	call	CHKPRV
-	jp	c,SYSERR
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)
-	KCALL	$FNDEV		; get UCB address
-	jr	c,stpbe1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a
-	bit	US.MNT,(ix+U.ST); unit mounted?
-	jr	nz,stpbe2	; error if yes
-	ld	a,(negsw)	; /nopub?
-	or	a
-	jr	nz,stpb3	; jump if yes
-	set	US.PUB,(ix+U.ST)
-	jr	stpb2
-stpb3:	res	US.PUB,(ix+U.ST)
-stpb2:	ld	c,0
-	SC	.SUPER
-	ret
-
-stpbe1:	call	SYSERR
-	jr	stpb2
-
-stpbe2:	ld	hl,errdm
-	call	ERRMCR
-	jr	stpb2
-
-errdm:	db	'Device mounted',0
-
-shpub:	xor	a
-	set	US.PUB,a
-	ld	(swval),a
-	ld	hl,chkdvs	; matching routine address
-	ld	de,mspub
-	call	shds
-	ret
-
-chkdvs:	ld	hl,devst
-	ld	a,(swval)
-	and	(hl)
-	ld	c,a
-	ld	a,(negsw)
-	or	a
-	jr	nz,ckds1
-	ld	a,c
-	or	a
-	ret	nz
-	scf
-	ret
-ckds1:	ld	a,c
-	or	a
-	scf
-	ret	nz
-	or	a
-	ld	a,(swval)
-	bit	US.MNT,a
-	ret	nz
-	scf
-	ret	
-
-stslav:	; SET /SLAVE
-
-	call	chkeq		; '=' present?
-	jp	nz,shslav
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jp	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-	ld	l,TC.SLV	; L = characteristic bit number
-	jp	setp		; finish via common code
-
-shslav:	xor	a
-	set	TC.SLV,a
-	ld	(swval),a
-	ld	hl,chktsl	; matching routine address
-	ld	de,msslav
-	call	shds
-	ret
-
-chktsl:	ld	hl,(devcw)
-	bit	DV.TTY,l
-	scf
-	ret	z
-	ld	a,(swval)
-	and	h
-	ld	c,a
-	ld	a,(negsw)
-	or	a
-	jr	nz,cksl1
-	ld	a,c
-	or	a
-	ret	nz
-	scf
-	ret
-cksl1:	ld	a,c
-	or	a
-	ret	z
-	scf
-	ret	
-
-shds:	ld	(devmfn),hl	; save matching routine address
-	ex	de,hl
-	ld	(optmsg),hl	; save message address
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,ERRSYS
-
-	ld	c,CR
-	call	PUTCH
-	ld	hl,($PHYDV)	; get head of physical devices list
-shds1:	ld	a,h
-	or	l		; end of list?
-	jr	z,shds5		; exit if yes
-	push	hl
-	pop	ix
-	ldw	de,(ix+D.UCBL)	; get UCB list head into DE
-shds2:	ld	a,d
-	or	e		; end of UCB list?
-	jr	z,shds4		; exit loop if yes
-	call	getdev		; else get device name, status and control word
-	call	shds6		; match against switch option
-	jr	c,shds3		; skip if no match
-	ld	c,LF
-	call	PUTCH
-	ld	a,(negsw)
-	or	a
-	ld	hl,msno
-	call	nz,PUTSTR
-	ld	hl,(optmsg)
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
-	ld	hl,(tmpdv2)
-	ld	c,l
-	call	PUTCH		; show physical device name
-	ld	c,h
-	call	PUTCH
-	ld	a,(tmpdv2+2)
-	call	ADEC
-	ld	c,':'
-	call	PUTCH
-	ld	c,CR
-	call	PUTCH
-shds3:	ld	hl,U.LNK
-	add	hl,de
-	ld	e,(hl)		; get address of next UCB into DE
-	inc	hl
-	ld	d,(hl)
-	jr	shds2		; loop until all units processed
-shds4:	ldw	hl,(ix+D.LNK)
-	jr	shds1
-
-shds5:	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	ret
-
-shds6:	push	hl
-	ld	hl,(devmfn)	; get routine address
-	ex	(sp),hl		; push routine address, restore HL
-	ret			; exec routine
-
-msno:	db	'NO',0
-
-stlogn:	; SET /LOGON
-
-	; TODO: ensure that nothing follows command?
-
-	call	CHKPRV
-	jp	c,SYSERR
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	ld	hl,$MFLGS
-	ld	a,(negsw)	; /nologon?
-	or	a
-	jr	nz,stl1		; jump if yes
-	set	0,(hl)		; set logon bit on MCR flags
-	jr	stl2
-stl1:	res	0,(hl)		; clear logon bit on MCR flags
-stl2:	ld	c,0
-	SC	.SUPER
-	ret
-
-stspd:	; SET /SPEED
-
-	ld	a,(negsw)	; can't be negated
-	or	a
-	jp	nz,CMDERR
-	call	chkeq		; '=' present?
-	jr	nz,shtisp	; no, display speed of user's terminal TI:
-	ld	hl,(lnptr)
-	call	PDN		; parse device name
-	ld	(lnptr),hl
-	jp	c,CMDERR
-	push	bc
-	ld	c,1
-	SC	.SUPER
-	pop	bc
-	jp	c,SYSERR
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	ex	de,hl
-	KCALL	$UCBDN
-	ld	(tmpdv2),de
-	ld	a,c
-	ld	(tmpdv2+2),a	; if terminal is not TI:, then user
-	call	CHKTI		;  must be privileged
-	jp	c,ster1
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-	call	getcmd
-	ld	hl,bdrtbl	; address of baud rate table
-	call	fndcmd		; search speed in table
-	or	a		; no speed specified?
-	jr	z,shspd0	; then display speed for the specified terminal
-	cp	S.115K2+1
-	jp	nc,CMDERR	; ensure value is in range
-	ld	l,TC.SPD	; L = characteristic name
-	jp	setv		; continue via common code
-
-shspd0:	ld	c,0
-	SC	.SUPER
-	jr	shspd
-
-shtisp:	ld	hl,'TI'
-	ld	(tmpdv2),hl
-	xor	a
-	ld	(tmpdv2+2),a
-shspd:	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-	ld	de,(tmpdv2)
-	ld	a,(tmpdv2+2)
-	ld	c,a
-	ld	ix,($CTCB)	; needed for TI:
-	KCALL	$FNDEV		; get UCB address
-	jp	c,ster1
-	push	hl
-	pop	ix		; IX = UCB address
-	bit	DV.TTY,(ix+U.CW); unit is a terminal?
-	jp	z,ster2		; error if not
-
-UX.BDR	equ	UCBSZ + 0	; must match value in devtt.mac
-
-	ld	a,(ix+UX.BDR)	; fetch baudrate code
-	ld	(temp),a
-	ld	c,0
-	SC	.SUPER
-
-	ld	c,LF
-	call	PUTCH
-	ld	hl,msspd
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
-	ld	hl,(tmpdv2)
-	ld	c,l
-	call	PUTCH		; show physical device name
-	ld	c,h
-	call	PUTCH
-	ld	a,(tmpdv2+2)
-	call	ADEC
-	ld	c,':'
-	call	PUTCH
-	ld	hl,bdrmsg	; point to message table
-	ld	a,(temp)
-	or	a
-	jr	z,shsp2		; S.0 is "Unknown"
-	cp	S.115K2+1
-	jr	nc,shsp2	; and so is S.UNK and anything above S.115K2
-	ld	bc,0
-	ld	e,a		; get baudrate code into E
-	xor	a		; null delimites strings in table
-shsp1:	cpir			; skip string, point to start of next
-	dec	e		; decrement counter
-	jr	nz,shsp1	; and loop
-shsp2:	call	PUTSTR		; output baudrate
-	ld	c,CR
-	jp	PUTCH
-
-bdrmsg:	db	'Unknown',0
-bdrtbl:	db	'50',0
-	db	'75',0
-	db	'110',0
-	db	'134',0
-	db	'150',0
-	db	'200',0
-	db	'300',0
-	db	'600',0
-	db	'1200',0
-	db	'1800',0
-	db	'2000',0
-	db	'2400',0
-	db	'3600',0
-	db	'4800',0
-	db	'7200',0
-	db	'9600',0
-	db	'14400',0
-	db	'19200',0
-	db	'28800',0
-	db	'38400',0
-	db	'57600',0
-	db	'76800',0
-	db	'115200',0
-	db	0
-
-stdir:	; SET /DIR
-
-	ld	a,(negsw)
-	or	a
-	jp	nz,CMDERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de	; end of command?
-	jr	z,shwcd		; display current dir if yes
-	call	chkeq		; else require '='
-	jp	nz,CMDERR
-	call	getfn		; get directory name
-	ld	hl,fname
-	ld	a,(hl)
-	or	a		; valid?
-	jp	z,CMDERR	; error if not
-	ld	de,dirext
-	call	addext
-	ld	hl,fname
-	ld	ix,fdb
-	call	PFN
-	ld	a,E.BADF
-	jr	c,std1
-	ld	a,(ix+F.ATTR)
-	and	FN.DIR
-	ld	hl,fdb+F.DIR
-	jr	nz,std2
-	ld	hl,fdb+F.NAME
-std2:	ld	c,SD.TI
-	SC	.SDIR
-	ret	nc
-std1:	call	SYSERR
-	ret
-
-shwcd:	ld	hl,cmdnam	; use cmdnam as dest buffer
-	ld	c,GD.TI
-	SC	.GDIR		; get current dir name
-	jp	c,SYSERR
-	ld	a,(hl)		; current dir set?
-	or	a
-	ret	z		; return if not
-	push	hl
-	ld	hl,cdmsg
-	call	PUTSTR
-	pop	hl
-	call	PDNAME		; else display name
-	ld	c,CR
-	call	PUTCH
-	ret
-
-cdmsg:	db	CR,LF,'DIR=',0
-
-addext:	ld	hl,fname
-ade0:	ld	a,(hl)
-	cp	'.'
-	ret	z
-	or	a
-	jr	z,ade1
-	inc	hl
-	jr	ade0
-ade1:	ld	(hl),'.'
-	inc	hl
-	ex	de,hl
-	ld	bc,3
-	ldir
-	ex	de,hl
-	ld	(hl),0
-	ret
-
-dirext:	db	'DIR'
-tskext:	db	'TSK'
-
-stuic:	; SET /UIC
-
-	ld	a,(negsw)
-	or	a
-	jp	nz,CMDERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de	; end of command?
-	jr	z,shwuic	; display current UIC if yes
-	call	chkeq		; else require '='
-	jp	nz,CMDERR
-	ld	c,'['
-	call	stuic1		; test delimiter and get group ID
-	jp	c,CMDERR
-	ld	(temp),a
-	ld	c,','
-	call	stuic1		; test delimiter and get user ID
-	jp	c,CMDERR
-	ld	(temp+1),a
-	ld	de,(lnptr)
-	call	getns
-	cp	']'
-	jp	nz,CMDERR
-	call	CHKPRV		; user must be privileged to change UIC
-	jp	c,SYSERR
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
-	ld	ix,($CTCB)
-	ldw	ix,(ix+T.TI)
-	ldw	ix,(hl+U.LCB)
-	ld	hl,(temp)
-	ldw	(ix+L.USR),hl	; set effective UIC
-	ld	c,0
-	SC	.SUPER
-	ret
-
-stuic1:	ld	de,(lnptr)
-	call	getns		; get next char
-	cp	c		; delimiter?
-	scf
-	ret	nz		; return CY set if not
-	inc	de
-	ld	(lnptr),de
-	call	GETDEC		; get value
-	ld	a,h
-	or	a		; ensure 8-bit
-	scf
-	ret	nz		; else return with CY set
-	or	l
-	ret	nz
-	scf			; can't be zero, either
-	ret
-
-shwuic:	ld	hl,lcbbuf
-	ld	c,I.USCB
-	SC	.GIN
-	jp	c,SYSERR
-	ld	hl,uicmsg
-	call	PUTSTR
-	ld	c,'['
-	call	PUTCH
-	ld	a,(lcbbuf+L.GRP)
-	call	ADEC
-	ld	c,','
-	call	PUTCH
-	ld	a,(lcbbuf+L.USR)
-	call	ADEC
-	ld	c,']'
-	call	PUTCH
-	ld	c,CR
-	call	PUTCH
-	ret
-
-uicmsg:	db	CR,LF,'UIC=',0
-
-; Print directory name (HL = file info), do not show the extension.
-
-PDNAME:	ld	c,'['
-	call	PUTCH
-	call	pnam9
-	ld	c,']'
-	call	PUTCH
-	ret
-
-pnam9:	ld	b,9
-p91:	ld	a,(hl)
-	cp	' '
-	ld	c,a
-	call	nz,PUTCH
-	inc	hl
-	djnz	p91
-	ret
-
-sthost:	; SET /HOST
-
-	ld	a,(negsw)
-	or	a
-	jp	nz,CMDERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de	; end of command?
-	jr	z,shwhst	; display current host name if yes
-	call	chkeq		; else require '='
-	jp	nz,CMDERR
-	call	CHKPRV
-	jp	c,SYSERR	; setting host name requires privileges
-	call	getun		; get host name
- IF 0
-	ld	hl,cmdnam
-	ld	a,(hl)
-	cp	' '		; valid?
-	jp	z,CMDERR	; error if not
- ENDIF
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	ld	hl,cmdnam
-	ld	de,$HOSTN
-	ld	bc,9
-	ldir			; set host name
-	ld	c,0
-	SC	.SUPER		; exit supervisor mode
-	ret
-
-shwhst:	ld	hl,cmdnam	; use cmdnam as dest buffer
-	ld	c,I.HOST
-	SC	.GIN		; get host name
-	jp	c,SYSERR
-  IF 0
-	ld	a,(hl)		; host name set?
-	cp	' '
-	ret	z		; return if not
-  ENDIF
-	push	hl
-	ld	hl,hstmsg
-	call	PUTSTR
-	pop	hl
-	call	pnam9		; else display name
-	ld	c,CR
-	call	PUTCH
-	ret
-
-hstmsg:	db	CR,LF,'HOST=',0
-
-stpool:	; SET /POOL
-
-	ld	a,(negsw)
-	or	a
-	jp	nz,CMDERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de	; end of command?
-	jr	z,shpool	; display pool statistics if yes
-	call	chkeq		; else require '='
-	jp	nz,CMDERR
-	call	CHKPRV
-	jp	c,SYSERR	; setting pool limit requires privileges
-;;	call	getval		; get top address
-;;	ld	c,1
-;;	SC	.SUPER		; enter supervisor mode
-;;	jp	c,SYSERR
-;;	...
-;;	ld	c,0
-;;	SC	.SUPER		; exit supervisor mode
-	ret
-
-shpool:	ld	hl,0
-	ld	(ptotal),hl	; clear variables
-	ld	(plrgst),hl
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-
-	ld	hl,(SYSTOP)
-	ld	(plimit),hl
-	ld	hl,($POOL)
-	xor	a
-	ld	(SYSLVL),a
-sp1:	ld	a,h
-	or	l		; no (more) free blocks?
-	jr	z,sp3		; return then
-	ldw	de,(hl)		; get link to next block
-	inc	hl
-	inc	hl
-	push	de
-	ldw	de,(hl)		; get free block size
-	ld	hl,(ptotal)	; collect statistics
-	add	hl,de
-	ld	(ptotal),hl
-	ld	hl,(plrgst)
-	cpw	hl,de
-	jr	nc,sp2
-	ld	(plrgst),de
-sp2:	pop	hl
-	jr	sp1		; process next block
-
-sp3:	inc	(SYSLVL)
-	ld	c,0
-	SC	.SUPER
-	call	CRLF
-	ld	hl,mspool
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
-	ld	hl,(plimit)
-	xor	a
-	call	HLDEC
-	ld	c,':'
-	call	PUTCH
-	ld	hl,(plrgst)
-	xor	a
-	call	HLDEC
-	ld	c,':'
-	call	PUTCH
-	ld	hl,(ptotal)
-	xor	a
-	call	HLDEC
-	ld	c,CR
-	call	PUTCH
-	ret
-
-stlog:	; SET /COLOG
-
-	ld	a,(negsw)
-	or	a
-	jp	nz,SYSERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(newtsk+TD.CMD),de ; pass command tail to console logger
-	ex	de,hl
-	call	strlen
-	ld	(hl),CR
-	ld	b,0
-	inc	bc		; account for the CR terminator
-	ld	(newtsk+TD.CML),bc
-	ld	hl,cotsk
-	ld	de,newtsk+TD.NAME
-	ld	bc,6
-	ldir
-	xor	a
-	ld	(newtsk+TD.USR),a
-	ld	(newtsk+TD.GRP),a
-	set	TA.MCR,a
-	ld	(newtsk+TD.ATTR),a
-	ld	hl,0
-	ld	(newtsk+TD.SDAT),hl
-	ld	(newtsk+TD.SLEN),hl
-	ld	hl,TTDEV
-	ld	de,newtsk+TD.TI
-	ld	bc,3
-	ldir
-	ld	hl,newtsk
-	SC	.RPOI		; request COT... and pass offspring info
-	jp	c,SYSERR
-	ret
-
-cotsk:	db	'COT...'
-
-strndc:	; SET /RNDC
-
-	ld	ix,$RNDC
-	ld	iy,temp
-	ld	(iy),1		; min
-	ld	(iy+1),255	; max
-	ld	hl,msrndc
-strval:	ld	a,(negsw)
-	or	a
-	jp	nz,CMDERR
-	ld	de,(lnptr)
-	call	getns
-	ld	(lnptr),de	; end of command?
-	jr	z,shrval	; display current value if yes
-	call	chkeq		; else require '='
-	jp	nz,CMDERR
-	call	CHKPRV
-	jp	c,SYSERR	; operation requires privileges
-	call	GETDEC		; get value
-	ld	a,h
-	or	a
-	jp	nz,CMDERR	; value must be < 256
-	ld	a,l
-	cp	(iy)
-	jp	c,errval	; must be >= min
-	ld	a,(iy+1)
-	cp	l
-	jp	c,errval	; must be <= max
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	ld	(ix),l		; set value
-	ld	c,0
-	SC	.SUPER		; exit supervisor mode
-	ret
-
-shrval:	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	call	CRLF
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
-	ld	a,(ix)
-	call	ADEC
-	ld	c,CR
-	call	PUTCH
-	ld	c,0
-	SC	.SUPER
-	ret
-
-errval:	ld	hl,msginv
-	jp	ERRMCR
-
-msginv:	db	'Invalid value',0
-
-strndh:	; SET /RNDH
-
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	ld	ix,$RNDH
-	ld	iy,temp
-	ld	a,($RNDL)
-	inc	a
-	ld	(iy),a		; min
-	ld	(iy+1),250	; max
-	ld	hl,msrndh
-	ld	c,0
-	SC	.SUPER
-	jp	strval
-
-strndl:	; SET /RNDL
-
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	ld	ix,$RNDL
-	ld	iy,temp
-	ld	(iy),0		; min
-	ld	a,($RNDH)
-	dec	a
-	ld	(iy+1),a	; max
-	ld	hl,msrndl
-	ld	c,0
-	SC	.SUPER
-	jp	strval
-
-stswpc:	; SET /SWPC
-
-	ld	ix,$SWPC
-	ld	iy,temp
-	ld	(iy),0		; min
-	ld	(iy+1),255	; max
-	ld	hl,msswpc
-	jp	strval
-
-stswpr:	; SET /SWPR
-
-	ld	ix,$SWPRI
-	ld	iy,temp
-	ld	(iy),0		; min
-	ld	(iy+1),127	; max
-	ld	hl,msswpr
-	jp	strval
-
-;-----------------------------------------------------------------------
-
 ; TIM - Show/Set date and time
 
 ; TIM
@@ -4173,11 +1650,11 @@ stswpr:	; SET /SWPR
 ; TIM hh:mm[:ss] MM/DD/[YY]YY
 ; TIM MM/DD/[YY]YY hh:mm[:ss]
 
-dotim:	ld	hl,dtbuf	; get current date and time
+cmdtim:	ld	hl,dtbuf	; get current date and time
 	SC	.GDAT		;  for display or default values
 
-	ld	de,(lnptr)
-	call	getns		; get next non-blank character
+	ld	de,(LNPTR)
+	call	GETNS		; get next non-blank character
 	or	a		; end of command line?
 	jp	z,shdate	; then display current date and time
 
@@ -4191,7 +1668,7 @@ stm0:	call	tgetn		; get number
 	cp	':'		; time separator?
 	jr	nz,stm1		; jump if not, check for date
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ld	a,1
 	ld	(temp),a
 	ld	de,23h		; else must be hour (note BCD value!)
@@ -4203,13 +1680,13 @@ stm0:	call	tgetn		; get number
 	call	tvalid
 	ld	a,l
 	ld	(dtbuf+5),a
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	ld	a,(de)
 	cp	':'		; seconds given?
 	ld	hl,0
 	jr	nz,stm3		; no, zero the seconds field
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	tgetn
 	ld	de,59h
 	call	tvalid
@@ -4219,8 +1696,8 @@ stm3:	ld	a,l
 	or	a		; date already processed?
 	jp	nz,dtset	; set date&time and exit if yes
 
-	ld	de,(lnptr)
-	call	getns
+	ld	de,(LNPTR)
+	call	GETNS
 	or	a		; end of command line?
 	jp	z,dtset		; set time and exit if yes
 
@@ -4235,7 +1712,7 @@ stm1:	ld	c,a
 	cp	'-'		; try DD-MMM-YYYY
 	jr	nz,stm2
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ld	a,1
 	ld	(temp+1),a
 	ld	de,31h		; must be day, limit to 31 for now
@@ -4243,7 +1720,7 @@ stm1:	ld	c,a
 	ld	a,l
 	ld	(dtbuf+3),a
 	call	tgetm		; month must follow
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	ld	a,(de)
 	cp	'-'
 	jp	nz,CMDERR
@@ -4252,7 +1729,7 @@ stm1:	ld	c,a
 stm2:	cp	'/'		; try MM/DD/YYYY
 	jp	nz,CMDERR
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	ld	a,1
 	ld	(temp+1),a
 	ld	de,12h		; must be month
@@ -4264,12 +1741,12 @@ stm2:	cp	'/'		; try MM/DD/YYYY
 	call	tvalid
 	ld	a,l
 	ld	(dtbuf+3),a
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	ld	a,(de)
 	cp	'/'
 	jp	nz,CMDERR
 stm4:	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	tgetn		; get year
 	call	yvalid
 	ld	a,h
@@ -4280,8 +1757,8 @@ stm4:	inc	de
 	or	a		; time already processed?
 	jp	nz,dtset	; set date&time and return if yes
 
-	ld	de,(lnptr)
-	call	getns
+	ld	de,(LNPTR)
+	call	GETNS
 	or	a		; end of command line?
 	jp	z,dtset		; set date and exit if yes
 
@@ -4330,9 +1807,9 @@ yv1:	ld	de,1977h
 	inc	sp
 	jp	CMDERR
 
-tgetm:	call	getcmd
+tgetm:	call	GETCMD
 	ld	hl,month
-	call	fndcmd
+	call	FNDCMD
 	dec	a		; error if 0 or 0FFh
 	jp	m,tgm1
 	inc	a
@@ -4554,6 +2031,24 @@ fndv1:	pop	bc		; on error, return logical device name
 	pop	de
 	ret
 
+; Get device name, unit number, status byte and control word
+
+GETDEV:	ldw	hl,(ix+D.NAME)	; get physical device name
+	ld	(TMPDV2),hl
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	a,(hl)		; get unit number
+	ld	(TMPDV2+2),a
+	ld	hl,U.ST
+	add	hl,de
+	ld	a,(hl)		; get unit status bits
+	ld	(DEVST),a
+	ld	hl,U.CW
+	add	hl,de
+	ldw	hl,(hl)		; get unit control word
+	ld	(DEVCW),hl
+	ret
+
 ; Check if terminal name in DE-C is our terminal (TI:). If not, then
 ; check if user is privileged.
 
@@ -4568,48 +2063,16 @@ CHKTI:	ld	hl,(TTDEV)
 ; Check if user is privileged. Return with CY set and error code in A
 ; if not.
 
-CHKPRV:	ld	hl,lcbbuf
+CHKPRV:	ld	hl,LCBBUF
 	ld	c,I.USCB
 	SC	.GIN
 	ret	c
-	ld	hl,lcbbuf+L.ST
+	ld	hl,LCBBUF+L.ST
 	ld	a,E.PRIV
 	bit	LS.PRV,(hl)
 	scf
 	ret	z
 	xor	a
-	ret
-
-; Set single terminal characteristic. Called with terminal name in DE-C,
-; L = characteristic code, H = value.
-
-TTSET:	ld	(ttchr),hl	; store characteristic and state
-	ld	b,1
-	SC	.ALUN		; assign LUN to terminal
-	ret	c
-	ld	hl,4		; 4 seconds
-	ld	d,2
-	ld	e,EFN
-	ld	bc,0		; no AST
-	SC	.MRKT		; schedule timeout event
-	ld	hl,qttset
-	SC	.QIO
-	push	af
-	ld	e,EFN
-	ld	bc,0
-	SC	.CMKT		; cancel timeout event if still pending
-	pop	af
-	ret	c
-	ld	a,(iosb)	; check status
-	or	a
-	ret	z		; on success, return
-	cp	E.PEND		; request pending (timoeut)?
-	scf
-	ret	nz		; return error if not
-	ld	hl,qttkil
-	SC	.QIO		; else kill request
-	ld	a,E.TMO		; and return timeout error
-	scf
 	ret
 
 ;-----------------------------------------------------------------------
@@ -4618,37 +2081,22 @@ TTSET:	ld	(ttchr),hl	; store characteristic and state
 
 TTDEV:	ds	3
 
-qttset:	QIOW$	SF.SMC,1,EFN,iosb,,<ttchr,2>
-qttkil:	QIOW$	IO.KIL,1,EFN,iosb
-ttchr:	db	0,0
-iosb:	ds	4
+LCBBUF:	ds	LCBSZ
 
-lcbbuf:	ds	LCBSZ
-
-optsw:	ds	1
+OPTSW:	ds	1
 pri:	ds	1
 rpri:	ds	1
 
-lnptr:	ds	2
-cmdnam:	ds	9
+LNPTR:	ds	2
+CMDNAM:	ds	9
 tskn1:	ds	6
-fname:	ds	FNSZ
-fdb:	ds	FDBSZ
+FNAME:	ds	FNSZ
 
-tmpdev:	ds	3		; physical device name (ASN, DEV commands)
-tmpdv2:	ds	3		; temp device name (ASN, DEV commands)
-tmpdv3:	ds	3		; temp device name (ASN command)
-uflg:	ds	1		; explicit unit flag (DEV command)
-swval:	ds	1		; switch value (ASN, DEV command)
-devst:	ds	1		; device status (DEV command)
-devcw:	ds	2		; device/unit control word (DEV command)
-negsw:	ds	1		; 1 means negated switch (/NOsw or /-sw)
-devmfn:	ds	2		; dev matching func addr for shds routine
-optmsg:	ds	2		; option message address for shds routine
-
-ptotal:	ds	2		; total available pool space
-plrgst:	ds	2		; largest fragment size
-plimit:	ds	2		; pool top address
+TMPDEV:	ds	3		; physical device name (ASN, DEV commands)
+TMPDV2:	ds	3		; temp device name (ASN, DEV, SET commands)
+SWVAL:	ds	1		; switch value (ASN, DEV command)
+DEVST:	ds	1		; device status (DEV, SET commands)
+DEVCW:	ds	2		; device/unit control word (DEV command)
 
 tcksec:	ds	2
 dtbuf:	ds	7
@@ -4661,7 +2109,8 @@ dtime:	ds	4		; ! change ! dtime for RUN command
 rsi:	ds	4		; ! order  ! reschedule interval
 cmdptr:	ds	2		; ptr to command args (RUN command)
 
-regbuf:	ds	24		; buffer for task register values (ATL command)
+	public	?MEMRY
+?MEMRY:	ds	2
 
 	ds	256		; stack space
 stack	equ	$

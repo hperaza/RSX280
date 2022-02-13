@@ -19,26 +19,28 @@ SRCS = acnt.mac \
 	mcr.mac \
 	mou.mac \
 	shutup.mac \
-	sys.mac \
 	tkn.mac \
 	ufd.mac
+
+SYSSRCS = sys.mac \
+	sysov1.mac \
+	sysov2.mac \
+	sysov3.mac
 
 LIBSRCS = fdboot.mac \
 	hdboot.mac \
 	ttputch.mac
 
+SYSOBJS = $(SYSSRCS:.mac=.rel)
 LIBOBJS = $(LIBSRCS:.mac=.rel)
 
-OBJS = $(SRCS:.mac=.rel)
+OBJS  = $(SRCS:.mac=.rel)
 
 PROGS = $(OBJS:.rel=.tsk)
 
-all: $(PROGS)
+all: $(PROGS) sys.tsk
 
-$(OBJS): %.rel: %.mac *.inc
-	$(ZXCC) $(ZSM4) -"=$</l"
-
-$(LIBOBJS): %.rel: %.mac *.inc
+$(OBJS) $(SYSOBJS) $(LIBOBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 acnt.tsk: acnt.rel syslib.lib
@@ -74,8 +76,11 @@ mou.tsk: mou.rel syslib.lib
 shutup.tsk: shutup.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=shutup/of=tsk,syslib/lb/task=SHUTUP/pri=100/priv"
 
-sys.tsk: sys.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=sys/of=tsk,syslib/lb/task=...MCR/pri=160/priv"
+sys.tsk: $(SYSOBJS) syslib.lib
+	@echo -e "$@,sys,sys/q=sys/of:tsk,syslib/lb&\r" > build.cmd
+	@echo -e "(sysov1)(sysov2)(sysov3)/task=...MCR/pri=160/priv" >> build.cmd
+	$(ZXCC) $(TKB) -"@build"
+	@rm -f build.cmd
 
 tkn.tsk: tkn.rel ttputch.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=tkn/of=tsk,ttputch,syslib/lb/task=TKTN/pri=250/priv"
@@ -84,4 +89,4 @@ ufd.tsk: ufd.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=ufd/of=tsk,syslib/lb/task=...UFD/pri=100/priv"
 
 clean:
-	rm -f $(PROG) *.rel *.prn *.map *.sym core *.bin *.tsk *~ *.\$$\$$\$$
+	rm -f *.rel *.prn *.map *.sym core *.bin *.tsk *~ *.\$$\$$\$$

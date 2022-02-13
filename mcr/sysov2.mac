@@ -1,0 +1,693 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR-like command line interpreter for RSX280 - external commands.  ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   ATL, TAL and TAS commands
+
+	.Z280
+
+	cseg
+
+	ident	'02.25'
+
+	include	SYSTEM.INC
+	include	SYSFN.INC
+	include	PCB.INC
+	include	TCB.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	public	CMDATL,CMDTAL,CMDTAS
+
+	extrn	PDN,CRLF,UCASE,BIN2BCD,ADEC,HLDEC,AHEX,HLHEX,PUTCH
+	extrn	ATTACH,DETACH,PUTSTR
+
+	extrn	GETNS,GETFS,CMDERR,SYSERR,ERRMCR,ERFAIL,PRINTN,CHKT3
+	extrn	GETN,PADBL
+
+	extrn	CMDNAM,OPTSW,TTDEV,TMPDEV
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+; TAL - task list, ATL format
+
+CMDTAL:	xor	a
+	jr	atl0
+
+; ATL - active task list
+
+CMDATL:	ld	a,1
+atl0:	ld	(temp),a
+	xor	a
+	ld	(OPTSW),a	; no dev match in fndtsk below
+
+	ld	b,6
+	call	GETN		; get task name, if supplied, into CMDNAM
+	call	PADBL
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,ERFAIL
+
+	ld	c,5		; LUN 5 is console
+	ld	de,0		; no ASTs
+	call	ATTACH
+
+	ld	hl,CMDNAM
+	ld	a,(hl)		; check argument to command
+	cp	' '		; user supplied a task name?
+	jr	z,atl2		; jump if not, display all tasks
+
+	call	fndtsk		; find task
+	jr	c,atl1		; error if not found
+
+	call	dmpt0		; else display details
+	jr	nc,atl4
+
+atl1:	call	SYSERR
+	jr	atl4
+
+atl2:	; show all tasks
+
+	ld	hl,($TLIST)
+atl3:	ld	a,h
+	or	l
+	jr	z,atl4
+	push	hl
+	pop	ix
+	call	dmpt0		; show task details
+	ldw	hl,(ix+T.TCBL)
+	jr	atl3
+
+atl4:	ld	c,5		; LUN
+	call	DETACH
+
+	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	ret
+
+dmpt0:	ld	a,(temp)
+	or	a		; check op
+	jr	z,dmpt1		; jump it TAL
+	bit	TS.ACT,(ix+T.ST); task active?
+	ld	a,E.TNAC
+	scf
+	ret	z		; return if not
+dmpt1:	call	dmptcb		; else show task details
+	xor	a
+	ret
+
+; Dump TCB like this:
+;
+; LDR... 06.05  8D1C  SYSPAR 82A3 01419D-0146B3  Pri = 250  DPri = 250
+;    Status: WTD PRV FIX
+;    TI = CO0:  IOC = 0   BIO = 0   Eflg: 00020000
+;    AF = 0044  BC = 0000  DE = 8D1C  HL = 8D1C  IX = B418  IY = 8D1C
+;    AF'= 0000  BC'= 0000  DE'= 0000  HL'= 0000  PC = 41B6  SP = 469D
+;
+; Registers are dumped only if the task is active.
+
+dmptcb:	call	CRLF
+	push	hl
+	ld	de,T.NAME	; task name offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN		; display task name
+	ld	c,' '
+	call	PUTCH
+
+	pop	hl
+	ld	de,T.VID	; task version identification offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN
+	ld	c,' '
+	call	PUTCH
+
+	push	ix
+	pop	hl
+	call	HLHEX		; display TCB address
+	call	sep2
+
+	call	shwpar		; display partition name
+	ld	c,' '
+	call	PUTCH
+
+	ldw	hl,(ix+T.PCB)
+	call	HLHEX		; display PCB address
+	ld	c,' '
+	call	PUTCH
+
+	ldw	hl,(hl+P.BASE)	; get task base page
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	push	de
+	ldw	hl,(ix+T.STRT)
+	ld	a,h
+	add	a,e
+	ld	h,a
+	ld	a,0
+	adc	a,d
+	call	AHEX		; display
+	call	HLHEX		;  start address
+	ld	c,'-'
+	call	PUTCH
+	pop	de
+	ldw	hl,(ix+T.END)
+	ld	a,h
+	add	a,e
+	ld	h,a
+	ld	a,0
+	adc	a,d
+	call	AHEX		; display
+	call	HLHEX		;  end address
+	call	sep2
+
+	ld	hl,msgpri
+	call	PUTSTR
+	ld	a,(ix+T.PRI)
+	call	ADEC		; display priority
+	ld	c,5
+	call	pad
+
+	ld	hl,msgdpr
+	call	PUTSTR
+	ld	a,(ix+T.DPRI)
+	call	ADEC		; display default priority
+	call	CRLF
+
+	call	sep3
+	ld	hl,msgst
+	call	PUTSTR
+	bit	TS.ACT,(ix+T.ST)
+	ld	hl,stna
+	call	z,PUTSTR
+	ld	d,(ix+T.ST)
+	ld	hl,stat
+	bit	TS.ACT,d
+	push	af
+	call	nz,tbits	; display task status
+	ld	d,(ix+T.ST+1)
+	ld	hl,stat2
+	pop	af
+	call	nz,tbits
+	ld	d,(ix+T.ATTR)
+	ld	hl,attr
+	call	tbits		; display task attrib
+	call	CRLF
+
+	call	sep3
+	ld	hl,msgti
+	call	PUTSTR
+	ldw	de,(ix+T.TI)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e
+	call	PUTCH		; display terminal name
+	ld	c,d
+	call	PUTCH
+	ld	a,b
+	call	ADEC
+	push	af
+	ld	c,':'
+	call	PUTCH
+	pop	af
+	ld	c,3
+	call	pad
+
+	call	sep2
+	ld	hl,msgioc
+	call	PUTSTR
+	ld	a,(ix+T.IOC)
+	call	ADEC		; display IOC
+	ld	c,3
+	call	pad
+
+	;...			; display BIO
+
+	call	sep2
+	ld	hl,msgfl
+	call	PUTSTR
+	ld	a,(ix+T.FLGS)
+	call	AHEX		; display event flags
+	ld	a,(ix+T.FLGS+1)
+	call	AHEX
+	ld	a,(ix+T.FLGS+2)
+	call	AHEX
+	ld	a,(ix+T.FLGS+3)
+	call	AHEX
+
+	ld	c,CR
+	call	PUTCH
+
+	bit	TS.ACT,(ix+T.ST)
+	ret	z
+	bit	T2.OUT,(ix+T.ST+1)
+	ret	nz
+
+	call	CRLF
+	call	regs		; if active and in memory, display regs
+	ld	c,CR
+	call	PUTCH		; CR also flushes output
+	ret
+
+msgdpr:	db	'D'
+msgpri:	db	'Pri = ',0
+msgst:	db	'Status: ',0
+msgti:	db	'TI = ',0
+msgioc:	db	'IOC = ',0
+msgfl:	db	'Eflg: ',0
+
+sep3:	ld	c,' '
+	call	PUTCH
+sep2:	ld	c,' '
+	call	PUTCH
+	jp	PUTCH
+
+pad:	ld	b,a
+	ld	a,c
+	sub	b
+	ret	z
+	ret	c
+	ld	b,a
+	ld	c,' '
+pad1:	call	PUTCH
+	djnz	pad1
+	ret
+
+tbits:	ld	b,8
+	ld	e,01h
+t1:	ld	a,d
+	and	e
+	jr	z,t2
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	dec	hl
+	push	bc
+	ld	b,3
+	call	PRINTN
+	pop	bc
+	ld	c,' '
+	call	PUTCH
+	jr	t3
+t2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	inc	hl
+	inc	hl
+t3:	rl	e
+	djnz	t1
+	ret
+
+regs:	xor	a
+	ld	(SYSLVL),a
+	ld	hl,regbuf
+	ldw	de,(ix+T.SP)
+	ldw	(hl),de		; store SP first
+	inc	hl
+	inc	hl
+	ex	de,hl		; DE = dst
+	ldw	hl,(ix+T.CTX)
+	ld	bc,TX.REGS
+	add	hl,bc		; HL = pointer to saved register frame
+	ld	bc,20
+	ldir			; copy the 10 general-purpose registers
+	inc	hl		; skip reason code
+	inc	hl
+	inc	hl		; skip MSR
+	inc	hl
+	ld	bc,2
+	ldir			; copy PC
+	inc	a
+	ld	(SYSLVL),a
+
+	push	ix
+	ld	ix,regofs
+	ld	hl,msgreg
+	ld	b,12
+r1:	ld	e,(ix)		; get offset to register pair value in regbuf
+	ld	d,0		;  into DE
+	ld	iy,regbuf
+	add	iy,de		; point to value
+	call	PUTSTR
+	ld	c,'='
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ex	de,hl		; save HL
+	ldw	hl,(iy)		; fetch value
+	call	HLHEX		; display it
+	call	sep2
+	ex	de,hl		; restore HL
+	inc	hl
+	inc	ix
+	djnz	r1
+	pop	ix
+	ret
+
+stna:	db	'-ACT ',0
+stat:	db	0,'AST','SUP','CKR',0,0,0,0
+stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
+attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
+
+regofs:	db	20,18,16,14,4,2
+	db	12,10,8,6,22,0
+
+msgreg:	db	"   AF ",0,"BC ",0,"DE ",0,"HL ",0,"IX ",0,"IY ",0,CR,LF
+	db	"   AF'",0,"BC'",0,"DE'",0,"HL'",0,"PC ",0,"SP ",0
+
+;-----------------------------------------------------------------------
+
+; TAS [tsknam][/DEV=ddn:] - display system task directory
+
+CMDTAS:	xor	a
+	ld	(OPTSW),a
+
+	ld	b,6
+	call	GETN		; get task name, if supplied, into CMDNAM
+	call	PADBL
+
+	call	GETNS
+	cp	'/'		; check for switch
+	jr	nz,tas0
+
+	call	tasw
+	jp	c,CMDERR
+
+tas0:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,ERFAIL
+
+	ld	c,5		; LUN 5 is console
+	ld	de,0		; no ASTs
+	call	ATTACH		; attach console
+
+	ld	hl,CMDNAM
+	ld	a,(hl)		; check argument to command
+	cp	' '		; user supplied a task name?
+	jr	z,tas4		; jump if not, display all tasks
+
+	call	fndtsk		; find task
+	jr	c,tas3		; error if not found
+
+	call	shwtsk		; else display details
+	jr	tas6
+
+tas3:	call	SYSERR
+	jr	tas6
+
+tas4:	; show all installed tasks
+
+	ld	hl,($TLIST)
+tas5:	ld	a,h
+	or	l
+	jr	z,tas6
+	push	hl
+	pop	ix
+	call	shwtsk		; show task details
+	ldw	hl,(ix+T.TCBL)
+	jr	tas5
+
+tas6:	ld	c,5		; LUN
+	call	DETACH
+
+	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	ret
+
+; Check for /DEV switch
+
+tasw:	inc	de
+	call	GETNS
+	ld	hl,devsw
+tsw1:	ld	a,(hl)
+	or	a
+	jr	z,tsw2
+	ld	a,(de)
+	call	UCASE
+	cp	(hl)
+	scf
+	ret	nz
+	inc	hl
+	inc	de
+	jr	tsw1
+tsw2:	call	GETFS
+	jr	z,tsw3
+	inc	de
+	jr	tsw2
+tsw3:	call	GETNS
+	cp	'='
+	scf
+	ret	nz
+	inc	de
+	call	GETNS
+	ex	de,hl
+	call	PDN		; parse device name
+	ret	c
+	ld	(TMPDEV),de
+	ld	a,c
+	ld	(TMPDEV+2),a
+	ld	a,1
+	ld	(OPTSW),a
+	ret
+
+devsw:	db	'DEV',0
+
+; Find task in STD, called in supervisor mode.
+; If found, return with IX = HL = TCB, else return CY set and A=E.TNF
+
+fndtsk:	; search first for exact match
+
+	call	ftsk0
+	ret	nc
+
+	; if not found, and task name is exactly 3 chars long,
+	; then search for a task like XXXTTn
+
+	call	CHKT3		; task name is 3 chars or less?
+	ld	a,E.TNF
+	scf
+	ret	nz		; return error if not - task not found
+
+	ld	hl,TTDEV
+	ld	de,CMDNAM+3
+	ldi			; copy first letter of terminal device name
+	inc	hl		; skip second
+	ld	a,(hl)
+	call	BIN2BCD		; convert unit number to two BCD digits
+	ld	c,a
+	rrca
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	jr	z,skip		; skip first digit if zero
+	add	a,'0'		; else convert to ASCII
+	ld	(de),a		; and store it
+	inc	de
+skip:	ld	a,c
+	and	0Fh
+	add	a,'0'		; convert to ASCII
+	ld	(de),a		; the rest is already filled with with spaces
+
+	call	ftsk0
+	ret	nc
+
+	; if still not found, then search for a task like ...XXX
+
+	ld	hl,CMDNAM	; else prepare only one string
+	push	hl
+	ld	de,CMDNAM+3
+	ld	bc,3
+	ldir
+	pop	hl
+	ld	b,3
+dots:	ld	(hl),'.'	; setup first string
+	inc	hl
+	djnz	dots
+
+ftsk0:	ld	hl,($TLIST)
+	ld	bc,0
+ftsk1:	ld	a,h		; end of list?
+	or	l
+	ld	a,E.TNF
+	scf
+	ret	z		; return error if yes
+	push	hl
+	pop	ix
+	call	tmatch		; match task name
+	ret	z		; return if found
+	ldw	hl,(ix+T.TCBL)
+	jr	ftsk1		; else loop
+
+; Show task details, called with IX = HL = address of TCB in kernel space
+
+shwtsk:	ld	a,(OPTSW)
+	or	a
+	jr	z,shwt0
+
+	push	hl
+	call	cmpldv		; if /DEV option specified, match device name
+	pop	hl
+	ret	nz
+
+shwt0:	call	CRLF
+	push	hl
+	ld	de,T.NAME	; task name offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN		; display task name
+
+	ld	c,' '
+	call	PUTCH
+
+	pop	hl
+	ld	de,T.VID	; task version identification offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN
+
+	ld	c,' '
+	call	PUTCH
+
+	call	shwpar		; display task partition
+
+	ld	l,(ix+T.DPRI)
+	ld	h,0
+	ld	a,' '
+	call	HLDEC		; display task priority (sep not needed)
+
+	ld	c,' '
+	call	PUTCH
+	ldw	hl,(ix+T.DEND)	; display installed task size in bytes
+	ld	a,1
+	add	hl,a		; size = end address + 1
+	ld	a,0
+	rla			; CY into A
+	call	AHEX
+	call	HLHEX
+
+	ld	c,' '		; display load device and block number
+	call	PUTCH
+	ldw	de,(ix+T.LDEV)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e
+	call	PUTCH
+	ld	c,d
+	call	PUTCH
+	ld	a,b
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,'-'
+	call	PUTCH
+	ldw	hl,(ix+T.SBLK+2)
+	call	HLHEX
+	ldw	hl,(ix+T.SBLK)
+	call	HLHEX
+
+	bit	TA.FIX,(ix+T.ATTR)
+	ld	hl,TFIXED
+	call	nz,PUTSTR	; display FIXED attribute
+	
+	bit	T2.CKP,(ix+T.ST+1)
+	ld	hl,TCHKPT
+	call	nz,PUTSTR	; display CHECKPOINTED status
+	
+	ld	c,CR
+	call	PUTCH		; CR also flushes output
+	ret
+
+cmpldv:	ldw	de,(ix+T.LDEV)	; TODO: translate TMPDEV to physical name
+	KCALL	$UCBDN		;  and follow T.LDEV redir links before
+	ld	hl,TMPDEV	;   comparison
+	ld	a,(hl)
+	cp	e
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	ret	nz
+	inc	hl
+	ld	a,(hl)
+	cp	c
+	ret
+
+; Display partition name of task
+
+shwpar:	ldw	hl,(ix+T.PCB)
+	ldw	hl,(hl+P.MAIN)
+	ld	de,P.NAME
+	add	hl,de
+	ld	b,6
+	jp	PRINTN
+
+; Match user-supplied name against name in TCB. Called with HL=IX=TCB.
+
+tmatch:	ld	a,(OPTSW)
+	or	a
+	jr	z,tcomp
+
+	push	hl
+	call	cmpldv		; if /DEV option specified, match device name
+	pop	hl
+	ret	nz
+
+tcomp:	ld	de,CMDNAM
+	push	hl
+	ld	bc,T.NAME
+	add	hl,bc
+	ld	b,6
+tcmp1:	ld	a,(de)
+	cp	(hl)		; name matches?
+	jr	nz,tcmp2	; exit loop if not
+	inc	hl
+	inc	de
+	djnz	tcmp1
+tcmp2:	pop	hl
+	ret
+
+TFIXED:	db	' FIXED',0
+TCHKPT:	db	' CHECKPOINTED',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+regbuf:	ds	24		; buffer for task register values (ATL command)
+temp:	ds	1
+
+	end

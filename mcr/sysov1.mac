@@ -1,0 +1,1116 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR-like command line interpreter for RSX280 - external commands.  ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;   ASN, DEV and RED commands
+
+	.Z280
+
+	cseg
+
+	ident	'02.25'
+
+	include	SYSTEM.INC
+	include	SYSFN.INC
+	include	TCB.INC
+	include	DCB.INC
+	include	LCB.INC
+	include	BDRATES.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+ESC	equ	1Bh
+
+	public	CMDASN,CMDDEV,CMDRED
+
+	extrn	PDN,ADEC,PUTCH,PUTSTR,CRLF
+
+	extrn	GETDEV,GETNS,CMDERR,SYSERR,ERRMCR,GETCMD,FNDCMD
+	extrn	CHKEQ,CHKPRV,ERFAIL,FNDLGN,PRINTN,PDNAME
+
+	extrn	LNPTR,TTDEV,OPTSW,SWVAL,DEVCW,DEVST,TMPDEV,TMPDV2
+	extrn	LCBBUF
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+; ASN ppn:=lln:[/sw] - assign logical device to physical
+; ASN =lln:[/sw]     - delete assignment
+; ASN =[/sw]         - delete all assignments
+; ASN [/sw]          - show the current assignment table
+;
+; sw can be GBL, LOGIN or TERM
+
+CMDASN:	ld	de,(LNPTR)
+	call	GETNS
+	ld	(LNPTR),de
+	or	a		; no argument?
+	jp	z,shasn
+	cp	'/'		; or option switch?
+	jp	z,shasn		; then show device assignment
+
+	cp	'='		; delete assignment?
+	jp	z,dasn		; jump if yes
+
+	ex	de,hl
+	call	PDN		; get physical device name
+	jp	c,nophd		; error if name invalid
+
+	ld	(TMPDEV),de
+	ld	a,c
+	ld	(TMPDEV+2),a
+
+	ex	de,hl
+	call	GETNS
+	cp	'='
+	jp	nz,CMDERR
+
+	inc	de
+	call	GETNS
+	ex	de,hl
+	call	PDN		; get logical device name
+	ld	(LNPTR),hl
+	jr	c,nolgd
+
+	ld	(TMPDV2),de
+	ld	a,c
+	ld	(TMPDV2+2),a
+
+	call	asnopt		; get options, if any
+	ret	c
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a
+	jp	nz,CMDERR
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+
+	ld	de,(tmpdv3)
+	ld	a,(tmpdv3+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of terminal
+	jr	c,asn0
+	ld	(temp),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)
+	jr	nz,asn01
+
+	call	notty
+	xor	a
+	jr	asn0
+
+asn01:	ld	de,(TMPDEV)
+	ld	a,(TMPDEV+2)
+	ld	c,a		; DE-C = physical device name
+
+	ld	hl,(TMPDV2)
+	ld	a,(TMPDV2+2)
+	ld	b,a		; HL-B = logical device name
+
+	ld	ix,(temp)
+	push	bc
+	call	asntyp		; get assignment type
+	ld	a,b
+	pop	bc
+	KCALL	$ASGN
+
+asn0:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+nophd:	ld	hl,bpdmsg
+	jp	ERRMCR
+
+nolgd:	ld	hl,bldmsg
+	jp	ERRMCR
+
+notty:	ld	hl,nttmsg
+	jp	ERRMCR
+
+bpdmsg:	db	'Invalid physical device',0
+bldmsg:	db	'Invalid logical device',0
+nttmsg:	db	'Device is not a terminal',0
+
+; Get ASN options
+
+asnopt:	ld	ix,OPTSW
+	ld	(ix),0
+	ld	hl,(TTDEV)
+	ld	(tmpdv3),hl	; default to current terminal
+	ld	a,(TTDEV+2)
+	ld	(tmpdv3+2),a
+aopt1:	ld	de,(LNPTR)
+	call	GETNS		; skip blanks and get next char
+	or	a
+	ret	z		; return if end of line
+	cp	'/'		; switch?
+	jr	z,aopt2
+	xor	a		; return if not
+	ret
+aopt2:	inc	de
+	ld	(LNPTR),de
+	call	GETCMD
+	ld	hl,asnswt
+	call	FNDCMD		; search for switch name in table
+	or	a
+	jp	z,CMDERR
+	cp	0FFh
+	jp	z,CMDERR
+	ld	c,a
+	dec	c		; LOGIN?
+	jr	z,asnlgn
+	dec	c		; GBL?
+	jr	z,asngbl
+	call	CHKEQ		; '=' required for TERM
+	jp	nz,CMDERR
+	dec	c
+	jr	z,asntrm
+	jp	CMDERR
+
+asnlgn:	ld	a,(ix)
+	and	7Fh
+	jp	nz,CMDERR
+	call	CHKPRV		; LOGIN is privileged
+	jp	c,SYSERR
+	set	0,(ix)		; set LOGIN flag
+	jp	aopt1
+
+asngbl:	ld	a,(ix)
+	and	7Fh
+	jp	nz,CMDERR
+	call	CHKPRV		; GBL is privileged
+	jp	c,SYSERR
+	set	1,(ix)		; set GBL flag
+	jp	aopt1
+
+asntrm:	bit	7,(ix)
+	jp	nz,CMDERR
+	set	7,(ix)		; set TERM flag
+	push	hl
+	call	CHKPRV		; TERM is privileged
+	pop	hl
+	jp	c,SYSERR
+	call	PDN		; parse terminal name
+	jp	c,CMDERR
+	ld	(tmpdv3),de	; store it
+	ld	a,c
+	ld	(tmpdv3+2),a
+	ld	(LNPTR),hl
+	jp	aopt1
+
+asnswt:	db	'LOGIN',0
+	db	'GBL',0
+	db	'TERM',0
+	db	0
+
+; Get assignment type according to option switch into reg B.
+
+asntyp:	ld	a,(OPTSW)
+	bit	0,a
+	ld	b,N.LGN
+	ret	nz
+	bit	1,a
+	ld	b,N.GBL
+	ret	nz
+	ld	b,N.LCL
+	ret
+
+; Delete assignment
+
+dasn:	inc	de
+	call	GETNS
+	ld	(LNPTR),de
+	or	a
+	jp	z,dall		; if only '=' delete all assignments
+	cp	'/'
+	jp	z,dall
+
+	ex	de,hl
+	call	PDN		; get logical device
+	ld	(LNPTR),hl
+	jp	c,nolgd
+
+	ld	(TMPDEV),de
+	ld	a,c
+	ld	(TMPDEV+2),a
+
+	call	asnopt		; get any options
+	ret	c
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a
+	jp	nz,CMDERR
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+
+	ld	de,(tmpdv3)
+	ld	a,(tmpdv3+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of terminal
+	jr	c,da1
+	ld	(temp),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)
+	jr	nz,da0
+
+	call	notty
+	xor	a
+	jr	da1
+
+da0:	ld	de,(TMPDEV)
+	ld	a,(TMPDEV+2)
+	ld	c,a		; DE-C = logical device name
+
+	call	asntyp		; get assignment type
+	ld	ix,(temp)
+	ld	a,b
+	KCALL	$DEASN		; delete assignment
+
+da1:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+; Delete all assignments of the specified type
+
+dall:	call	asnopt		; get options
+	ret	c
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a
+	jp	nz,CMDERR
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+
+	ld	de,(tmpdv3)
+	ld	a,(tmpdv3+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of terminal
+	jr	c,da2
+	ld	(temp),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)
+	jr	nz,da3
+
+	call	notty
+	xor	a
+	jr	da2
+
+da3:	ld	de,(temp)
+	call	asntyp		; get type
+	KCALL	$CLASN		; delete all assignments of that type
+
+da2:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+; Show current assignments
+
+shasn:	call	asnopt		; get any options
+	ret	c
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a
+	jp	nz,CMDERR
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,SYSERR
+
+	ld	de,(tmpdv3)
+	ld	a,(tmpdv3+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of terminal
+	jp	c,asn5
+	ld	(temp),hl
+	ld	de,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)
+	jr	nz,asn8
+
+	call	notty
+	xor	a
+	jp	asn5
+
+asn8:	ld	c,CR
+	call	PUTCH
+
+	ld	ix,$LOGDV	; ptr to head of logical dev assignment table
+asn2:	ldw	de,(ix)
+	ld	a,d
+	or	e		; end of table?
+	jp	z,asn5		; exit loop if yes
+	push	de
+	pop	ix
+	ld	a,(ix+N.TYPE)	; check record type
+	cp	N.GBL		; global?
+	jr	z,asn6		; branch if yes
+	ldw	de,(ix+N.TI)
+	ld	hl,(temp)
+	cpw	hl,de		; else match UCB of terminal
+	jr	nz,asn2
+	jr	asn7
+
+asn6:	ld	a,(OPTSW)
+	bit	1,a		; /GBL switch specified?
+	jr	z,asn2		; skip this record if not
+
+asn7:	ld	c,LF
+	call	PUTCH
+	ld	c,(ix+N.NAME)
+	call	PUTCH		; show logical device name
+	ld	c,(ix+N.NAME+1)
+	call	PUTCH
+	ld	a,(ix+N.UNIT)
+	call	ADEC		; and unit
+	ld	c,':'
+	call	PUTCH
+	ld	c,TAB
+	call	PUTCH
+	ldw	de,(ix+N.UCB)
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	b,(hl)
+	ld	hl,U.DCB
+	add	hl,de
+	ldw	de,(hl)
+	ld	hl,D.NAME
+	add	hl,de
+	ld	c,(hl)
+	call	PUTCH		; show physical device name
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	a,b
+	call	ADEC		; and unit
+	ld	c,':'
+	call	PUTCH
+	ld	c,TAB
+	call	PUTCH
+	ld	a,(ix+N.TYPE)	; check assignment type
+	ld	b,a
+	cp	N.LCL
+	ld	hl,asnu
+	jr	z,asn3
+	cp	N.LGN
+	ld	hl,asnl
+	jr	z,asn3
+	ld	hl,asng		; default to global
+asn3:	call	PUTSTR
+	ld	a,b
+	cp	N.GBL
+	jr	z,asn4
+	ld	c,TAB
+	call	PUTCH
+	ld	hl,asnt
+	call	PUTSTR
+	ldw	de,(ix+N.TI)
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	b,(hl)
+	ld	hl,U.DCB
+	add	hl,de
+	ldw	de,(hl)
+	ld	hl,D.NAME
+	add	hl,de
+	ld	c,(hl)
+	call	PUTCH		; show terminal name
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	a,b
+	call	ADEC		; and unit
+	ld	c,':'
+	call	PUTCH
+asn4:	ld	c,CR
+	call	PUTCH
+	jp	asn2		; loop to process next entry
+
+asn5:	push	af
+	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	pop	af
+	jp	c,SYSERR
+	ret
+
+asng:	db	'Global',0
+asnu:	db	'Local',0
+asnl:	db	'Login',0
+asnt:	db	'TI - ',0
+
+;-----------------------------------------------------------------------
+
+; RED new:=old: - redirect all I/O requests from old: to new:
+
+; Notes:
+; - can't redirect TI:
+; - can't redirect mounted device
+; - can't redirect an attached device
+
+CMDRED:	call	CHKPRV
+	jp	c,SYSERR
+	ld	de,(LNPTR)
+	call	GETNS
+	ld	(LNPTR),de
+	ex	de,hl
+	call	PDN		; get new device name
+	jp	c,CMDERR	; error if name invalid
+
+	ld	(TMPDEV),de
+	ld	a,c
+	ld	(TMPDEV+2),a
+
+	ex	de,hl
+	call	GETNS
+	cp	'='
+	jp	nz,CMDERR
+
+	inc	de
+	call	GETNS
+	ex	de,hl
+	call	PDN		; get old device name
+	ld	(LNPTR),hl
+	jp	c,CMDERR
+
+	ld	(TMPDV2),de
+	ld	a,c
+	ld	(TMPDV2+2),a
+
+	ld	de,'TI'
+	ld	hl,(TMPDEV)
+	cpw	hl,de
+	ld	a,E.BADOP
+	jp	z,SYSERR	; can't redirect TI:
+
+	ld	hl,(TMPDV2)
+	cpw	hl,de
+	ld	a,E.BADOP
+	jp	z,SYSERR	; can't redirect to TI:
+
+	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	ret	c
+
+	ld	de,(TMPDV2)
+	ld	a,(TMPDV2+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; get UCB of old device
+	jp	c,red8		; jump on error
+
+	ex	de,hl
+	ld	hl,U.ST
+	add	hl,de
+	bit	US.RED,(hl)	; device redirectable?
+	ld	hl,erred2
+;;	jp	nz,red9		; error if not
+
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)	; is the old device a terminal?
+	jr	z,red1		; branch if not
+
+	push	de
+	ld	de,'NL'
+	ld	hl,(TMPDV2)
+	cpw	hl,de
+	pop	de
+	ld	a,E.BADOP
+	scf
+	jp	z,red8		; error if new dev is NL:
+
+red1:	push	de		; push old UCB
+
+	ld	de,(TMPDEV)
+	ld	a,(TMPDEV+2)
+	ld	c,a
+	KCALL	$FNDEV		; get UCB of new device
+	jp	c,red81		; jump on error
+
+	ex	(sp),hl		; push new UCB, pop old
+	push	hl		; push old back
+red2:	ex	de,hl
+	ld	hl,U.RED
+	add	hl,de
+	ldw	hl,(hl)
+	ld	a,h
+	or	l
+	jr	nz,red2		; follow redirection link of old device
+
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.MNT,(hl)	; device mountable?
+	jr	z,red3		; branch if not
+	ld	hl,U.ST
+	add	hl,de
+	bit	US.MNT,(hl)	; unit mounted?
+	ld	hl,erred3
+	jp	nz,red92	; error if yes
+
+red3:	ld	hl,U.ATT
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; unit attached?
+	ld	hl,erred4
+	jp	nz,red92	; error if yes
+
+	pop	de		; pop old UCB
+	pop	hl		; pop new UCB
+	cpw	hl,de		; redirecting to self?
+	jr	nz,red4		; branch if not
+
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.PSE,(hl)	; pseudo-device?
+	ld	a,E.BADOP
+	scf
+	jr	nz,red8		; error if yes
+
+	ld	hl,0		; else redirect to self (thus no redirection)
+	jr	red7
+
+red4:	push	hl		; push new UCB, old still in DE
+red5:	ld	bc,U.RED
+	add	hl,bc
+	ldw	hl,(hl)		; follow redirection link of new device
+	ld	a,h
+	or	l		; end of list?
+	jr	z,red6		; exit loop if yes
+	cpw	hl,de		; redirected to old?
+	jr	nz,red5		; loop if not
+	ld	hl,erred1
+	jr	red91		; else is an error
+
+red6:	pop	hl		; restore new UCB, old still in DE
+red7:	ex	de,hl		; get new UCB into DE, old into HL
+	ld	bc,U.RED
+	add	hl,bc
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+	ldw	(hl),de		; set redirect pointer
+	inc	a
+	ld	(SYSLVL),a	; enable task dispatching
+	xor	a
+	jr	red8		; success
+
+red81:	pop	de
+red8:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+red92:	pop	de
+red91:	pop	de
+red9:	ld	c,0
+	SC	.SUPER
+	jp	ERRMCR
+
+erred1:	db	'Circular redirect error',0
+erred2:	db	'Device not redirectable',0
+erred3:	db	'Old device mounted',0
+erred4:	db	'Old device attached',0
+
+;-----------------------------------------------------------------------
+
+; DEV - show known physical devices
+
+CMDDEV:	ld	hl,0
+	ld	(TMPDEV),hl	; default = no device specified
+	xor	a
+	ld	(SWVAL),a	; default = no switch
+
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a		; no arguments?
+	jr	z,shdv0		; then show full device list
+
+	ex	de,hl
+	call	PDN		; get device name
+	ld	(LNPTR),hl
+	jr	c,shdvs		; jump if invalid (try option)
+
+	ld	(TMPDEV),de	; store device name
+	ld	a,c
+	ld	(TMPDEV+2),a	; store unit number
+	ld	a,b
+	ld	(uflg),a	; remember if explicit unit specified
+
+	call	shterm		; if terminal, display characteristics
+				;  and return one level higher
+shdvs:	ld	de,(LNPTR)
+	call	GETNS
+	or	a		; end of command?
+	jr	z,shdv0		; jump if yes
+	cp	'/'		; else must be a switch
+	jp	nz,CMDERR
+	inc	de
+	ld	(LNPTR),de
+	call	GETCMD		; get switch name
+	ld	hl,devswt
+	call	FNDCMD		; find switch
+	or	a
+	jp	z,CMDERR	; error if empty
+	cp	0FFh
+	jp	z,CMDERR
+	cp	2+1		; ensure valid
+	jp	nc,CMDERR
+	ld	(SWVAL),a
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a		; check for end of command line
+	jp	nz,CMDERR	; error if not
+
+shdv0:	ld	c,1
+	SC	.SUPER		; enter supervisor mode
+	jp	c,ERFAIL
+
+	ld	c,CR
+	call	PUTCH
+	ld	hl,($PHYDV)	; get head of physical devices list
+shdv1:	ld	a,h
+	or	l		; end of list?
+	jr	z,shdv5		; exit if yes
+	push	hl
+	pop	ix
+	ldw	de,(ix+D.UCBL)	; get UCB list head into DE
+shdv2:	ld	a,d
+	or	e		; end of UCB list?
+	jr	z,shdv4		; exit loop if yes
+	call	GETDEV		; else get full device name
+	call	chkdvn		; match against command
+	jr	c,shdv3		; skip if no match
+	call	chkdsw		; match against switch option
+	jr	c,shdv3		; skip if no match
+	ld	c,LF
+	call	PUTCH
+	ld	hl,(TMPDV2)
+	ld	c,l
+	call	PUTCH		; show physical device name
+	ld	c,h
+	call	PUTCH
+	ld	a,(TMPDV2+2)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	call	shdvst		; show device status
+	ld	c,CR
+	call	PUTCH
+shdv3:	ld	hl,U.LNK
+	add	hl,de
+	ldw	de,(hl)		; get address of next UCB into DE
+	jr	shdv2		; loop until all units processed
+shdv4:	ldw	hl,(ix+D.LNK)
+	jr	shdv1
+
+shdv5:	ld	c,0
+	SC	.SUPER		; leave supervisor mode
+	ret
+
+chkdvn:	ld	a,(TMPDEV)
+	or	a		; explicit device on command line?
+	ret	z		; return with CY clear if not
+	push	de
+	ld	de,(TMPDEV)
+	ld	hl,(TMPDV2)
+	cpw	hl,de		; else compare device names
+	pop	de
+	scf
+	ret	nz
+	ld	a,(uflg)	; explicit unit number?
+	or	a
+	ret	z
+	ld	a,(TMPDEV+2)
+	ld	c,a
+	ld	a,(TMPDV2+2)
+	cp	c
+	ret	z
+	scf
+	ret
+
+chkdsw:	ld	a,(SWVAL)	; check command line switch
+	or	a
+	ret	z		; return with CY clear if none
+	dec	a
+	jr	z,devlog
+	ld	a,(DEVST)
+	bit	US.MNT,a
+	ret	nz		; note CY is clear from above
+	scf
+	ret
+devlog:	ld	bc,(DEVCW)
+	bit	DV.TTY,c	; terminal device?
+	scf
+	ret	z		; return CY if not
+	call	FNDLGN		; find session
+	ret			; return with CY set if not logged in
+
+; Show device status
+
+shdvst:	ld	hl,U.RED
+	add	hl,de
+	ldw	hl,(hl)		; get redirect pointer
+	ld	a,h
+	or	l		; device redirected?
+	jr	z,shdst3	; branch if not
+	push	de
+shdst2:	ex	de,hl
+	ld	hl,U.RED
+	add	hl,de
+	ldw	hl,(hl)		; follow redirect link
+	ld	a,h
+	or	l		; end of chain?
+	jr	nz,shdst2	; loop if not
+	ld	c,TAB
+	call	PUTCH
+	ld	hl,U.DCB
+	add	hl,de
+	ldw	bc,(hl)
+	ld	hl,D.NAME
+	add	hl,bc
+	ld	c,(hl)
+	call	PUTCH		; show device name this one is redirected to
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	ld	hl,U.UNIT
+	add	hl,de
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	call	PUTCH
+	pop	de
+	ret
+
+shdst3:	call	devlog		; find session if terminal
+	jr	c,shdst1	; skip if not terminal or not logged in
+	push	iy
+	pop	hl
+	ld	bc,L.NAME
+	add	hl,bc
+	call	PDNAME		; display user name
+	ld	hl,devss
+	call	PUTSTR
+shdst1:	ld	bc,(DEVCW)
+	bit	DV.PSE,c	; pseudo-device?
+	ret	nz		; return if yes
+	ld	a,(DEVST)
+	ld	c,a
+	bit	US.OFL,c
+	ld	hl,devoff
+	call	nz,PUTSTR
+	bit	US.PUB,c
+	ld	hl,devp
+	call	nz,PUTSTR
+	bit	US.DMO,c
+	jr	z,shdst4
+	ld	hl,devdm
+	call	PUTSTR
+	jr	shdst5
+shdst4:	bit	US.MNT,c
+	ld	hl,devm
+	call	nz,PUTSTR
+shdst5:	ld	hl,devl
+	call	PUTSTR
+	push	de
+	call	CHKPRV
+	pop	de
+	ret	c
+	ld	hl,U.ACP	; display additional info if user is priv.
+	add	hl,de
+	ldw	hl,(hl)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,devacp
+	call	PUTSTR
+	pop	hl
+	ld	bc,T.NAME
+	add	hl,bc
+	ld	b,6
+	call	PRINTN		; display name of ACP
+	ld	c,' '
+	call	PUTCH		; TODO: display volume label if mounted
+	ret
+
+devswt:	db	'LOG',0
+	db	'MOU',0
+	db	0
+
+devoff:	db	'Offline ',0
+devp:	db	'Public ',0
+devm:	db	'Mounted ',0
+devdm:	db	'Dismount in progress ',0
+devl:	db	'Loaded ',0
+devss:	db	' - Logged in  ',0
+devacp:	db	'ACP=',0
+devlbl:	db	'Label=',0
+
+; Show terminal characteristics
+
+UX.BDR	equ	UCBSZ + 0	; must match the value in devtt.mac
+
+shterm:	ld	de,(TMPDEV)	; get device name into DE-C
+	ld	a,(TMPDEV+2)
+	ld	c,a
+	ld	hl,'TI'
+	cpw	hl,de		; TI:?
+	jr	nz,s0		; no
+	or	a
+	jr	z,s1		; yes
+s0:	ld	a,(uflg)	; explicit unit number?
+	or	a
+	ret	z		; no, return
+
+s1:	ld	b,c
+	ld	c,1
+	SC	.SUPER		; map kernel database
+	ret	c
+	ld	c,b
+	ld	ix,($CTCB)	; needed for TI:
+	KCALL	$FNDEV		; get UCB address
+	jr	c,s2
+	KCALL	$REDIR		; follow redirections
+	push	hl
+	pop	ix
+	ldw	hl,(ix+U.CW)	; get device characteristics word
+	ld	(DEVCW),hl
+	push	ix
+	pop	de
+	KCALL	$UCBDN		; get device name and unit
+	ld	(TMPDEV),de
+	ld	a,c
+	ld	(TMPDEV+2),a
+	ld	a,(ix+UX.BDR)	; get serial speed
+	ld	(ttspd),a
+	ldw	hl,(ix+U.LCB)
+	ld	(temp),hl	; store LCB address
+	ld	a,h
+	or	l		; test and clear CY
+	jr	z,s2
+	ld	de,LCBBUF
+	ld	bc,LCBSZ
+	ldir			; copy LCB
+s2:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret	c		; on error, return
+	ld	a,(DEVCW)
+	bit	DV.TTY,a	; terminal device?
+	ret	z		; no, return
+
+	pop	hl		; discard return address
+
+	call	CRLF
+	ld	hl,TMPDEV
+	ld	c,(hl)
+	call	PUTCH		; output device name
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC		; output unit number
+	ld	c,':'
+	call	PUTCH
+	ld	c,TAB
+	call	PUTCH
+	call	loginf		; output login info
+	call	CRLF
+	ld	c,TAB
+	call	PUTCH
+	call	info1		; output CLI name and speed
+	call	CRLF
+	ld	c,TAB
+	call	PUTCH
+	call	info2		; output characteristics bits
+	ld	c,CR
+	call	PUTCH		; end the line
+	xor	a
+	ret			; return success
+
+loginf:	ld	hl,(temp)
+	ld	a,h		; logged in?
+	or	l
+	ld	hl,ttnli
+	jp	z,PUTSTR	; no, display message and return
+	ld	hl,LCBBUF+L.NAME
+	call	PDNAME		; output user name
+	ld	c,TAB
+	call	PUTCH
+	ld	c,'['
+	call	PUTCH
+	ld	a,(LCBBUF+L.GRP)
+	call	ADEC		; output UIC
+	ld	c,','
+	call	PUTCH
+	ld	a,(LCBBUF+L.USR)
+	call	ADEC
+	ld	c,']'
+	jp	PUTCH		; and return
+
+ttnli:	db	'Not logged in',0
+
+info1:	ld	hl,mscli
+	call	PUTSTR		; LCB is still lacking a CLI field
+	ld	c,TAB
+	call	PUTCH
+	ld	hl,msspd
+	call	PUTSTR
+	ld	hl,bdrmsg
+	ld	a,(ttspd)
+	call	i11
+	jp	PUTSTR
+
+i11:	or	a
+	ret	z
+	cp	S.115K2+1
+	ret	nc
+	ld	bc,0
+	ld	e,a
+	xor	a		; null delimites strings in table
+i12:	cpir			; skip string, point to start of next
+	dec	e
+	jr	nz,i12
+	ret
+
+mscli:	db	'CLI   =',TAB,'MCR',0
+msspd:	db	'SPEED =',TAB,0
+
+bdrmsg:	db	'Unknown',0
+	db	'50',0
+	db	'75',0
+	db	'110',0
+	db	'134',0
+	db	'150',0
+	db	'200',0
+	db	'300',0
+	db	'600',0
+	db	'1200',0
+	db	'1800',0
+	db	'2000',0
+	db	'2400',0
+	db	'3600',0
+	db	'4800',0
+	db	'7200',0
+	db	'9600',0
+	db	'14400',0
+	db	'19200',0
+	db	'28800',0
+	db	'38400',0
+	db	'57600',0
+	db	'76800',0
+	db	'115200',0
+	db	0
+
+info2:	ld	hl,tcbits
+	ld	b,(hl)		; get number of entries
+	inc	hl
+i21:	ld	e,(hl)		; get bit mask
+	inc	hl
+	ld	d,(hl)		; and polarity
+	inc	hl
+	ld	a,e
+	cp	-1		; PRIV?
+	jr	nz,i22		; no
+	ld	de,(temp)
+	ld	a,d
+	or	e
+	jr	nz,i25
+i26:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,i26
+	jr	i24
+i25:	ld	a,(LCBBUF+L.ST)
+	bit	LS.PRV,a	; privileged session?
+	jr	i23
+i22:	ld	a,(DEVCW+1)	; get terminal characteristics byte
+	xor	d		; apply polarity
+	and	e		; mask bit
+i23:	call	z,prntno	; output 'NO' if set
+	call	PUTSTR		; output name
+	inc	hl
+	ld	c,TAB
+	call	PUTCH
+i24:	djnz	i21		; loop
+	ret
+
+tcbits:	db	8		; number of entries
+	db	1 SHL TC.ANS,  0,'ANSI',0
+	db	1 SHL TC.NBR, -1,'BRO',0
+	db	1 SHL TC.SCP,  0,'CRT',0
+	db	1 SHL TC.NEC, -1,'ECHO',0
+	db	1 SHL TC.SMR,  0,'LOWER',0
+	db	-1,            0,'PRIV',0
+	db	1 SHL TC.BIN,  0,'RPA',0
+	db	1 SHL TC.SLV,  0,'SLAVE',0
+
+prntno:	ex	de,hl
+	ld	hl,msgno
+	call	PUTSTR
+	ex	de,hl
+	ret
+
+msgno:	db	'NO',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+tmpdv3:	ds	3		; temp device name (ASN command)
+uflg:	ds	1		; explicit unit flag (DEV command)
+ttspd:	ds	1
+temp:	ds	2
+
+	end
