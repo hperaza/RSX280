@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;   Copyright (C) 2019-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 ;----------------------------------------------------------------------;
 ;                                                                      ;
-;   TI:, LB: and SY: pseudo-devices.                                   ;
+;   TI:, CL:, LB: and SY: pseudo-devices.                              ;
 ;                                                                      ;
 ;----------------------------------------------------------------------;
 
@@ -39,6 +39,13 @@
 DEVTI::	db	'TI',1
 	dw	ucbti
 	jp	initti
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+DEVCL::	db	'CL',1
+	dw	ucbcl
+	jp	initcl
 	jp	ioreq
 	jp	iokill
 	jp	tmout
@@ -73,6 +80,23 @@ ucbti:	dw	0		; end of list
 	dw	0		; no owner
 
 scbti:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+ucbcl:	dw	0		; end of list
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scbcl		; pointer to status block
+	dw	0		; redirect pointer
+	db	0		; control bits
+	db	(1 SHL DV.PSE) OR (1 SHL US.RED) ; device characteristics, lo
+	db	0		; device characteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; no owner
+
+scbcl:	db	0		; status byte
 	dw	0		; head of I/O packet list
 	dw	0		; address of current I/O packet
 
@@ -117,6 +141,9 @@ scbsy:	db	0		; status byte
 ; Initialization.
 
 initti:	ld	iy,ucbti
+	jr	init
+
+initcl:	ld	iy,ucbcl
 	jr	init
 
 initlb:	ld	iy,ucblb
