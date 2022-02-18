@@ -411,24 +411,27 @@ mav1:	ld	a,d
 ; Find main partition.
 ;
 ; Input:
-;   BC = name
+;   BC = pointer to name string
 ; Returns:
 ;   HL = PCB address
+;   DE = prev pointer
 ;   CY set on error and error code in A
 
-$FNPAR:	ld	hl,($PLIST)
-fp1:	ld	a,h
+$FNPAR:	ld	hl,$PLIST
+fp1:	ldw	de,(hl)
+	ex	de,hl		; PCB address in HL, prev ptr in DE
+	ld	a,h
 	or	l
 	scf
 	ld	a,E.PNF		; main partition not found
 	ret	z
-	push	hl
-	push	de
+	push	hl		; push PCB address
+	push	de		; push prev ptr
 	push	bc
 	ld	de,P.NAME
-	add	hl,de
+	add	hl,de		; point to name field
 	ld	e,6
-fp2:	ld	a,(bc)
+fp2:	ld	a,(bc)		; compare names
 	sub	(hl)
 	jr	nz,fp3
 	inc	hl
@@ -436,11 +439,10 @@ fp2:	ld	a,(bc)
 	dec	e
 	jr	nz,fp2
 fp3:	pop	bc
-	pop	de
-	pop	hl
-	ret	z		; found
-	ldw	hl,(hl)
-	jr	fp1
+	pop	de		; pop prev ptr
+	pop	hl		; pop PCB address
+	jr	nz,fp1
+	ret			; found
 
 ;-----------------------------------------------------------------------
 
