@@ -87,7 +87,7 @@ ft3:	pop	bc
 
 ; Search STL for tasks installed into the specified partition.
 ; Note that if no such tasks are found, the partition's subpartition
-; and waiting lists will be empty, so we do not have to check for that.
+; and waiting lists will be empty, so we do not have to check them.
 ;
 ; Input:
 ;   DE = addr of partition in system space

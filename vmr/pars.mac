@@ -203,7 +203,6 @@ np8:	ld	de,(PSIZE)
 	ld	de,(BASE)
 	call	CPHLDE
 	jr	z,np9
-	ccf
 	ld	a,E.BADOP
 	ret	c		; error if > base
 
@@ -217,6 +216,9 @@ np10:	bit	1,(iy)		; wilcard size?
 	ld	de,(BASE)
 	or	a
 	sbc	hl,de		; size -= base
+	ld	a,E.BADOP
+	scf
+	ret	z		; result can't be zero
 	ld	(SIZE),hl
 
 np11:	ld	bc,PCBSZ
