@@ -178,7 +178,7 @@ fnmnt:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,d
 	or	e
-	ld	a,E.INV		; LUN not assigned
+	ld	a,E.LUN		; LUN not assigned
 	ret	z
 	call	MOUNT		; mount device
 	ret
@@ -190,7 +190,7 @@ fndsm:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,d
 	or	e
-	ld	a,E.INV		; LUN not assigned
+	ld	a,E.LUN		; LUN not assigned
 	ret	z
 	call	VALVCB		; get address of VCB
 	ret	c		; error if not set
@@ -204,7 +204,7 @@ fnmake:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,h
 	or	l
-	ld	a,E.INV		; return error if yes
+	ld	a,E.BADOP	; return error if yes
 	ret	nz
 	call	VALVCB		; get address of VCB
 	ret	c
@@ -263,7 +263,7 @@ fnopen:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,h
 	or	l
-	ld	a,E.INV		; return error if yes
+	ld	a,E.BADOP	; return error if yes
 	ret	nz
 	call	VALVCB		; get address of VCB
 	ret	c
@@ -341,7 +341,7 @@ fnunlk:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,d
 	or	e
-	ld	a,E.INV		; LUN not assigned
+	ld	a,E.LUN		; LUN not assigned
 	ret	z
 	call	VALVCB		; get address of VCB
 	ret	c
@@ -478,7 +478,7 @@ fndel:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,d
 	or	e
-	ld	a,E.INV		; LUN not assigned
+	ld	a,E.LUN		; LUN not assigned
 	ret	z
 	call	VALVCB		; get address of VCB
 	ret	c
@@ -498,7 +498,7 @@ fnren:	ld	a,(QDB+Q.LUN)	; get LUN
 	ret	c
 	ld	a,d
 	or	e
-	ld	a,E.INV		; LUN not assigned
+	ld	a,E.LUN		; LUN not assigned
 	ret	z
 	call	VALVCB		; get address of VCB
 	ret	c
@@ -582,7 +582,7 @@ gt1:	ldw	hl,(ix+T.CTX)	; get address of context block
 LUNFCB:	dec	a		; 1..16 -> 0..15
 	ld	e,a
 	cp	16		; valid?
-	ld	a,E.INV
+	ld	a,E.LUN
 	ccf
 	ret	c		; return error if not
 	ld	ix,(USRTSK)
@@ -633,7 +633,7 @@ VALVCB:	push	hl
 STOFCB:	dec	a		; 1..16 -> 0..15
 	ld	e,a
 	cp	16		; valid?
-	ld	a,E.INV
+	ld	a,E.LUN
 	ccf
 	ret	c		; return error if not
 	ld	ix,(USRTSK)
@@ -641,7 +641,7 @@ STOFCB:	dec	a		; 1..16 -> 0..15
 	ld	a,h
 	or	l
 	scf
-	ld	a,E.INV
+	ld	a,E.LUN
 	ret	z		; error if not set
 	lda	hl,(hl+TX.LUT)	; HL = start of LUN table
 	ld	d,0

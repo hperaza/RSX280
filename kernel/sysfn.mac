@@ -1158,7 +1158,7 @@ urcv3:	pop	bc		; restore bytes copied
 GETLUN:	dec	c		; 1..16 -> 0..15
 	ld	a,c
 	cp	16		; valid?
-	ld	a,E.INV
+	ld	a,E.LUN
 	ccf
 	ret	c
 	ld	ix,($CTCB)
@@ -1174,7 +1174,7 @@ GETLUN:	dec	c		; 1..16 -> 0..15
 	ldw	hl,(hl)
 	ld	a,h		; get UCB address into HL
 	or	l		; ensure valid UCB
-	ld	a,E.INV		; TODO: change this to 'LUN not assigned'
+	ld	a,E.LUN		; TODO: change this to 'LUN not assigned'
 	scf
 	ret	z
 	call	$REDIR		; follow any redirect links
