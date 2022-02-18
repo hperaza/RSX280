@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	/6.27/
+	ident	/6.28/
 
 	include	DCB.INC
 	include	TCB.INC
@@ -36,6 +36,9 @@
 	extrn	$PLIST,GO
 
 	extrn	INIT_S,INIT_E
+
+BOOTDV	equ	0081h		; address of the boot device name set
+				;  by the bootstrap loader
 
 	cseg
 
@@ -75,8 +78,7 @@ START::	di
 p1:	ld	a,h
 	or	l
 	jr	z,nopar		; no partitions defined
-p2:	push	hl
-	pop	ix		; get PCB address into IX
+p2:	ex	ix,hl		; get PCB address into IX
 	ldw	hl,(ix+P.LNK)
 	ld	a,h
 	or	l		; last in list?
@@ -124,8 +126,8 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	call	$ASGN
   ENDIF
 
-	ld	de,(0081h)	; get boot device
-	ld	a,(0083h)
+	ld	de,(BOOTDV)	; get boot device
+	ld	a,(BOOTDV+2)
 	ld	c,a
 	call	$FNDEV##
 ;;	jp	c,...
@@ -166,7 +168,7 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	; start initialization task
 
 	ld	bc,SYSPAR
-	call	$FNPAR##	; find system partition
+	call	$FNPAR		; find system partition
 	jp	c,uncfg		; error if not found
 	ld	(INITCB+T.PCB),hl ; set pointer to partition in TCB
 	ld	de,'TT'
@@ -184,23 +186,6 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	ld	hl,INITCB
 	ld	bc,TCBSZ
 	ldir			; copy TCB
-	ldw	hl,(ix+T.END)
-	ldw	de,(ix+T.STRT)
-	or	a
-	sbc	hl,de
-	ld	de,4095
-	add	hl,de
-	ld	a,h
-	rrca
-	rrca
-	rrca
-	rrca
-	and	0Fh		; number of pages
-	ldw	de,(ix+T.PCB)	; get PCB address
-	ld	hl,P.SIZE
-	add	hl,de
-	ld	(hl),a		; (assumes user-controlled partition!)
-				; (but this routine will be removed soon anyway)
 	ldw	de,(ix+T.END)	; get initial top of stack into DE
 ;;	inc	de
 	ldw	(ix+T.SP),hl	; set SP value in TCB
