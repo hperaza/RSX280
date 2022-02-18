@@ -48,8 +48,8 @@ EFN	equ	1
 
 	public	GETNS,GETFS,GETCMD,FNDCMD,CHKEQ,CHKTI,GETDEV,STRLEN
 	public	CMDERR,SYSERR,ERRMCR,GETDEC,CHKPRV,PDNAME,PRINTN
-	public	PNAM9,FNDEV,FNDLGN,ERFAIL,GETFN,GETUN,GETN,CHKT3
-	public	PADBL
+	public	PNAM,PNAM9,FNDEV,FNDLGN,ERFAIL,GETFN,GETUN,GETN
+	public	CHKT3,PADBL
 
 	public	LNPTR,CMDNAM,FNAME,OPTSW,SWVAL,DEVCW,TTDEV,LCBBUF
 	public	TMPDEV,TMPDV2,DEVST
@@ -734,12 +734,12 @@ PDNAME:	ld	c,'['
 	ret
 
 PNAM9:	ld	b,9
-p91:	ld	a,(hl)
+PNAM:	ld	a,(hl)
 	cp	' '
 	ld	c,a
 	call	nz,PUTCH
 	inc	hl
-	djnz	p91
+	djnz	PNAM
 	ret
 
 ; Print string @HL, length in B
@@ -1337,7 +1337,9 @@ strl1:	ld	a,(hl)
 
 ; REA tsknam lun ddn: - reassign static LUN
 
-cmdrea:	call	gtsknm		; get task name and task info
+cmdrea:	call	CHKPRV
+	jp	c,SYSERR
+	call	gtsknm		; get task name and task info
 	jp	c,SYSERR
 	call	GETDEC		; get LUN
 	ld	a,h

@@ -30,6 +30,7 @@
 	include	SYSTEM.INC
 	include	SYSFN.INC
 	include	TCB.INC
+	include	PCB.INC
 	include	FCB.INC
 	include	DCB.INC
 	include	LCB.INC
@@ -46,11 +47,11 @@ EFN	equ	1
 
 	public	CMDSET
 
-	extrn	PFN,PDN,CRLF,ADEC,HLDEC,PUTCH,PUTSTR,UCASE
+	extrn	PFN,PDN,ADEC,HLDEC,PUTCH,PUTSTR,UCASE
 
 	extrn	GETNS,GETCMD,FNDCMD,CHKEQ,CHKTI,GETDEV,STRLEN
 	extrn	CMDERR,SYSERR,ERRMCR,GETDEC,CHKPRV,PDNAME,PNAM9
-	extrn	FNDEV,FNDLGN,ERFAIL,GETFN,GETUN
+	extrn	FNDEV,FNDLGN,ERFAIL,GETN,GETFN,GETUN,PNAM
 
 	extrn	LNPTR,CMDNAM,FNAME,SWVAL,DEVCW,TTDEV,LCBBUF,DEVST
 	extrn	TMPDV2
@@ -64,20 +65,20 @@ KCALL	MACRO	addr
 
 ; SET /option...
 
-cmdset:	ld	de,(lnptr)
+CMDSET:	ld	de,(LNPTR)
 	call	GETNS		; get argument
 	cp	'/'		; it must be a switch
 	jp	nz,CMDERR
 	inc	de
 	call	chkneg		; check for NO or -
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	GETCMD
 	ld	hl,setopt
 	call	FNDCMD		; search for switch name in table
 	or	a
 	jp	z,CMDERR	; switch name can't be empty
 	dec	a
-	cp	21		; ensure value is in range
+	cp	23		; ensure value is in range
 	jp	nc,CMDERR
 	rlca
 	ld	c,a
@@ -101,22 +102,25 @@ msslav:	db	'SLAVE',0
 mspriv:	db	'PRIV',0
 mspub:	db	'PUB',0
 msspd:	db	'SPEED',0
-	db	'DIR',0
-	db	'HOST',0
+msdir:	db	'DIR',0
+mshost:	db	'HOST',0
 	db	'NODE',0
 mspool:	db	'POOL',0
+mspar:	db	'PAR',0
+	db	'TOP',0
 	db	'COLOG',0
 msrndc:	db	'RNDC',0
 msrndh:	db	'RNDH',0
 msrndl:	db	'RNDL',0
 msswpc:	db	'SWPC',0
 msswpr:	db	'SWPR',0
-	db	'UIC',0
+msguic:	db	'UIC',0
 	db	0
 
 setfn:	dw	stbro,stecho,stlowr,stcrt,stansi,stlogn,stslav
 	dw	stpriv,stpub,stspd,stdir,sthost,sthost,stpool
-	dw	stlog,strndc,strndh,strndl,stswpc,stswpr,stuic
+	dw	stpar,sttop,stlog,strndc,strndh,strndl,stswpc
+	dw	stswpr,stuic
 
 chkneg:	xor	a
 	ld	(negsw),a
@@ -142,7 +146,7 @@ stecho:	; SET /ECHO
 
 	call	CHKEQ		; '=' present?
 	jr	nz,shecho
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -218,7 +222,7 @@ stlowr:	; SET /LOWER
 
 	call	CHKEQ		; '=' present?
 	jr	nz,shlowr
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -258,7 +262,7 @@ stcrt:	; SET /CRT
 
 	call	CHKEQ		; '=' present?
 	jr	nz,shcrt
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -295,7 +299,7 @@ stansi:	; SET /ANSI
 
 	call	CHKEQ		; '=' present?
 	jr	nz,shansi
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -332,7 +336,7 @@ stbro:	; SET /BRO
 
 	call	CHKEQ		; '=' present?
 	jr	nz,shbro	; jump if not
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	call	FNDEV		; get the physical device name
@@ -362,7 +366,7 @@ stpriv:	; SET /PRIV
 	jr	nz,shp1		; jump if not
 	call	CHKPRV
 	jp	c,SYSERR
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	call	FNDEV		; get the physical device name
@@ -430,7 +434,7 @@ stpub:	; SET /PUB
 	jr	nz,shpub
 	call	CHKPRV
 	jp	c,SYSERR
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -504,7 +508,7 @@ stslav:	; SET /SLAVE
 
 	call	CHKEQ		; '=' present?
 	jp	nz,shslav
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
 	jp	c,CMDERR
 	push	bc
@@ -560,7 +564,7 @@ cksl1:	ld	a,c
 
 shds:	ld	(devmfn),hl	; save matching routine address
 	ex	de,hl
-	ld	(optmsg),hl	; save message address
+	ld	(optnam),hl	; save message address
 	ld	c,1
 	SC	.SUPER		; enter supervisor mode
 	jp	c,ERFAIL
@@ -580,16 +584,8 @@ shds2:	ld	a,d
 	call	GETDEV		; else get device name, status and control word
 	call	shds6		; match against switch option
 	jr	c,shds3		; skip if no match
-	ld	c,LF
-	call	PUTCH
-	ld	a,(negsw)
-	or	a
-	ld	hl,msno
-	call	nz,PUTSTR
-	ld	hl,(optmsg)
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
+	ld	hl,(optnam)
+	call	optmsg
 	ld	hl,(TMPDV2)
 	ld	c,l
 	call	PUTCH		; show physical device name
@@ -619,11 +615,21 @@ shds6:	push	hl
 	ex	(sp),hl		; push routine address, restore HL
 	ret			; exec routine
 
+optmsg:	ld	c,LF
+	call	PUTCH
+	push	hl
+	ld	a,(negsw)
+	or	a
+	ld	hl,msno
+	call	nz,PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,'='
+	jp	PUTCH
+
 msno:	db	'NO',0
 
 stlogn:	; SET /LOGON
-
-	; TODO: ensure that nothing follows command?
 
 	call	CHKPRV
 	jp	c,SYSERR
@@ -648,9 +654,9 @@ stspd:	; SET /SPEED
 	jp	nz,CMDERR
 	call	CHKEQ		; '=' present?
 	jr	nz,shtisp	; no, display speed of user's terminal TI:
-	ld	hl,(lnptr)
+	ld	hl,(LNPTR)
 	call	PDN		; parse device name
-	ld	(lnptr),hl
+	ld	(LNPTR),hl
 	jp	c,CMDERR
 	push	bc
 	ld	c,1
@@ -709,13 +715,8 @@ UX.BDR	equ	UCBSZ + 0	; must match value in devtt.mac
 	ld	(temp),a
 	ld	c,0
 	SC	.SUPER
-
-	ld	c,LF
-	call	PUTCH
 	ld	hl,msspd
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
+	call	optmsg
 	ld	hl,(TMPDV2)
 	ld	c,l
 	call	PUTCH		; show physical device name
@@ -772,20 +773,20 @@ stdir:	; SET /DIR
 	ld	a,(negsw)
 	or	a
 	jp	nz,CMDERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
-	ld	(lnptr),de	; end of command?
+	ld	(LNPTR),de	; end of command?
 	jr	z,shwcd		; display current dir if yes
 	call	CHKEQ		; else require '='
 	jp	nz,CMDERR
-	call	getfn		; get directory name
-	ld	hl,fname
+	call	GETFN		; get directory name
+	ld	hl,FNAME
 	ld	a,(hl)
 	or	a		; valid?
 	jp	z,CMDERR	; error if not
 	ld	de,dirext
 	call	addext
-	ld	hl,fname
+	ld	hl,FNAME
 	ld	ix,fdb
 	call	PFN
 	ld	a,E.BADF
@@ -809,17 +810,15 @@ shwcd:	ld	hl,CMDNAM	; use CMDNAM as dest buffer
 	or	a
 	ret	z		; return if not
 	push	hl
-	ld	hl,cdmsg
-	call	PUTSTR
+	ld	hl,msdir
+	call	optmsg
 	pop	hl
 	call	PDNAME		; else display name
 	ld	c,CR
 	call	PUTCH
 	ret
 
-cdmsg:	db	CR,LF,'DIR=',0
-
-addext:	ld	hl,fname
+addext:	ld	hl,FNAME
 ade0:	ld	a,(hl)
 	cp	'.'
 	ret	z
@@ -844,9 +843,9 @@ stuic:	; SET /UIC
 	ld	a,(negsw)
 	or	a
 	jp	nz,CMDERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
-	ld	(lnptr),de	; end of command?
+	ld	(LNPTR),de	; end of command?
 	jr	z,shwuic	; display current UIC if yes
 	call	CHKEQ		; else require '='
 	jp	nz,CMDERR
@@ -858,7 +857,7 @@ stuic:	; SET /UIC
 	call	stuic1		; test delimiter and get user ID
 	jp	c,CMDERR
 	ld	(temp+1),a
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
 	cp	']'
 	jp	nz,CMDERR
@@ -876,13 +875,13 @@ stuic:	; SET /UIC
 	SC	.SUPER
 	ret
 
-stuic1:	ld	de,(lnptr)
+stuic1:	ld	de,(LNPTR)
 	call	GETNS		; get next char
 	cp	c		; delimiter?
 	scf
 	ret	nz		; return CY set if not
 	inc	de
-	ld	(lnptr),de
+	ld	(LNPTR),de
 	call	GETDEC		; get value
 	ld	a,h
 	or	a		; ensure 8-bit
@@ -897,8 +896,8 @@ shwuic:	ld	hl,LCBBUF
 	ld	c,I.USCB
 	SC	.GIN
 	jp	c,SYSERR
-	ld	hl,uicmsg
-	call	PUTSTR
+	ld	hl,msguic
+	call	optmsg
 	ld	c,'['
 	call	PUTCH
 	ld	a,(LCBBUF+L.GRP)
@@ -913,16 +912,14 @@ shwuic:	ld	hl,LCBBUF
 	call	PUTCH
 	ret
 
-uicmsg:	db	CR,LF,'UIC=',0
-
 sthost:	; SET /HOST
 
 	ld	a,(negsw)
 	or	a
 	jp	nz,CMDERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
-	ld	(lnptr),de	; end of command?
+	ld	(LNPTR),de	; end of command?
 	jr	z,shwhst	; display current host name if yes
 	call	CHKEQ		; else require '='
 	jp	nz,CMDERR
@@ -956,24 +953,22 @@ shwhst:	ld	hl,CMDNAM	; use CMDNAM as dest buffer
 	ret	z		; return if not
   ENDIF
 	push	hl
-	ld	hl,hstmsg
-	call	PUTSTR
+	ld	hl,mshost
+	call	optmsg
 	pop	hl
 	call	PNAM9		; else display name
 	ld	c,CR
 	call	PUTCH
 	ret
 
-hstmsg:	db	CR,LF,'HOST=',0
-
 stpool:	; SET /POOL
 
 	ld	a,(negsw)
 	or	a
 	jp	nz,CMDERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
-	ld	(lnptr),de	; end of command?
+	ld	(LNPTR),de	; end of command?
 	jr	z,shpool	; display pool statistics if yes
 	call	CHKEQ		; else require '='
 	jp	nz,CMDERR
@@ -1021,11 +1016,8 @@ sp2:	pop	hl
 sp3:	inc	(SYSLVL)
 	ld	c,0
 	SC	.SUPER
-	call	CRLF
 	ld	hl,mspool
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
+	call	optmsg
 	ld	hl,(plimit)
 	xor	a
 	call	HLDEC
@@ -1043,16 +1035,585 @@ sp3:	inc	(SYSLVL)
 	call	PUTCH
 	ret
 
+stpar:	; SET /PAR
+
+	ld	a,(negsw)
+	or	a		; /NOPAR?
+	jp	nz,delpar	; yes, delete partition
+	ld	iy,wcmask
+	ld	(iy),a		; clear wildcard mask
+	ld	de,(LNPTR)
+	call	GETNS
+	call	CHKEQ		; require '='
+	jp	nz,CMDERR
+	call	GETUN		; get partition name
+	ld	hl,CMDNAM
+	ld	a,(hl)
+	cp	' '
+	jp	z,CMDERR	; can't be empty
+	ld	de,pname
+	ld	bc,6
+	ldir			; make a local copy
+	ld	de,(LNPTR)
+	call	GETNS
+	jp	z,shwpar	; if nothing follows name, display details
+	call	CHKPRV
+	jp	c,SYSERR	; creating partitions requires privileges
+	ld	a,(de)
+	cp	':'
+	jp	nz,CMDERR
+	inc	de
+	call	GETNS
+	jp	z,CMDERR
+	cp	'*'		; wildcard base?
+	jr	nz,spar1	; no
+	inc	de
+	ld	(LNPTR),de
+	set	0,(iy)		; else set flag
+	jr	spar2
+spar1:	ld	(LNPTR),de
+	call	GETDEC		; get base
+	ld	(base),hl
+	cpw	hl,4096		; validate
+	ld	a,E.INV
+	jp	nc,SYSERR
+spar2:	call	GETNS
+	cp	':'
+	jp	nz,CMDERR
+	inc	de
+	call	GETNS
+	jp	z,CMDERR
+	cp	'*'		; wildcard size?
+	jr	nz,spar3	; no
+	inc	de
+	ld	(LNPTR),de
+	set	1,(iy)		; else set flag
+	jr	spar4
+spar3:	ld	(LNPTR),de
+	call	GETDEC		; get size
+	ld	(size),hl
+	ld	a,h
+	or	l		; validate
+	ld	a,E.INV
+	jp	z,SYSERR	
+	cpw	hl,4096
+	jp	nc,SYSERR
+spar4:	call	GETNS
+	cp	':'
+	jp	nz,CMDERR
+	inc	de
+	ld	(LNPTR),de
+	ld	b,6
+	call	GETN		; get type
+	ld	hl,ptyp1
+	call	FNDCMD
+	or	a
+	jp	z,CMDERR	; can't be empty
+	cp	0FFh
+	jp	z,CMDERR
+	ld	(type),a
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	xor	a
+	ld	(SYSLVL),a
+
+	ld	hl,pname
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir
+	pop	bc
+	KCALL	$FNPAR		; make sure partition does not exist
+	ccf
+	ld	hl,pemsg
+	ld	a,0
+	jr	c,spar5
+	call	newpar		; create partition
+	jr	c,spar5
+	xor	a
+spar5:	inc	(SYSLVL)
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret	nc
+	or	a
+	jp	nz,SYSERR
+	ld	a,h
+	or	l
+	jp	nz,ERRMCR
+	ret
+
+newpar:	ld	iy,wcmask
+	bit	0,(iy)		; wilcard base?
+	jr	z,np1		; branch if not
+	ld	hl,16		; else default to 16 (skips kernel partition)
+	ld	(base),hl	; store base
+np1:	bit	1,(iy)		; wildcard size?
+	jr	z,np2		; branch if not
+	ld	hl,($MEMSZ)	; else default to max
+	srl	h
+	rr	l
+	srl	h
+	rr	l
+	ld	(size),hl
+
+np2:	ld	hl,$PLIST	; scan main partition list
+np3:	ld	(prev),hl	; remember address of 'prev' link
+	ldw	de,(hl)		; get pointer to next PCB in list
+	ld	(next),de	; save address of next PCB
+	ld	a,d
+	or	e		; end of list?
+	jp	z,np10		; exit loop if yes, create new partition @end
+
+	ld	hl,P.BASE
+	add	hl,de
+	ldw	bc,(hl)		; get base of this partition
+	ld	(pbase),bc
+	ld	hl,P.SIZE
+	add	hl,de
+	ldw	bc,(hl)		; and its size
+	ld	(psize),bc
+
+	bit	0,(iy)		; wildcard base?
+	jr	z,np6		; no
+
+	; wildcard base, check for gap
+
+	ld	de,(pbase)
+	ld	hl,(base)
+	cpw	hl,de		; pbase > base?
+	jr	nc,np5		; no
+
+	; gap found
+
+	bit	1,(iy)		; wildcard size?
+	jr	z,np4		; no
+
+	; wildcard size, make the partition as large as the gap
+
+	ld	hl,(pbase)
+	ld	(size),hl	; size = pbase (base will be subtracted below)
+	jr	np10		; exit loop
+
+np4:	; size specified
+
+	ld	hl,(pbase)
+	ld	de,(base)
+	or	a
+	sbc	hl,de		; gap size = pbase - base
+	ld	de,(size)
+	cpw	hl,de
+	jr	nc,np10		; exit loop if >= size (fits in gap)
+
+np5:	ld	hl,(pbase)
+	ld	de,(psize)
+	add	hl,de
+	ld	(base),hl	; new base = pbase + psize
+	ld	a,h
+	cp	10h
+	ccf
+	ld	hl,spmsg
+	ld	a,0
+	ret	c		; error if overflow
+	jr	np9		; loop to process next PCB
+
+np6:	; base specified
+
+	ld	de,(pbase)
+	ld	hl,(base)
+	cpw	hl,de		; pbase > base?
+	ex	de,hl
+	jr	nc,np8		; no
+
+	bit	1,(iy)		; wildcard size?
+	jr	z,np7		; no
+
+	; wildcard size, make the partition as large as the gap
+
+	ld	(size),hl	; size = pbase (base will be subtracted below)
+	jr	np10		; exit loop
+
+np7:	; size specified
+
+	ld	hl,(pbase)
+	ld	de,(base)
+	or	a
+	sbc	hl,de		; pbase - base
+	ld	de,(size)
+	cpw	hl,de
+	jr	nc,np10		; exit loop if >= size (fits in gap)
+
+	ld	hl,spmsg	; else return error (note CY set)
+	ld	a,0
+	ret
+
+np8:	ld	de,(psize)
+	add	hl,de		; pbase + psize
+	ld	de,(base)
+	ex	de,hl
+	cpw	hl,de
+	jr	z,np9
+	ld	hl,spmsg
+	ld	a,0
+	ret	c		; error if > base
+
+np9:	ld	hl,(next)
+	jp	np3		; loop
+
+np10:	bit	1,(iy)		; wilcard size?
+	jr	z,np11		; skip if yes
+
+	ld	hl,(size)
+	ld	de,(base)
+	or	a
+	sbc	hl,de		; size -= base
+	ld	a,E.INV
+	scf
+	ret	z		; result can't be zero
+	ld	(size),hl
+
+np11:	ld	bc,PCBSZ
+	KCALL	$ALLOC
+	ret	c
+	push	hl
+	pop	ix
+	ldw	(ix+P.MAIN),hl
+	ld	hl,(base)
+	ldw	(ix+P.BASE),hl	; set partition base
+	ld	hl,(size)
+	ldw	(ix+P.SIZE),hl	; set partition size
+	lda	hl,(ix+P.NAME)
+	ex	de,hl
+	ld	hl,pname
+	ld	bc,6
+	ldir			; set partition name
+	ld	hl,0
+	ldw	(ix+P.SUB),hl	; subpartition list is initially empty
+	ldw	(ix+P.WAIT),hl
+	ld	(ix+P.ATTR),l
+	ld	(ix+P.STAT),l
+	ldw	(ix+P.TCB),hl
+	ld	hl,(next)
+	ldw	(ix+P.LNK),hl	; set address of next PCB
+	push	ix
+	pop	de
+	ld	hl,(prev)
+	ldw	(hl),de		; set link on prev PCB
+	ld	a,(type)
+	dec	a		; system-controlled type?
+	jr	nz,np12		; return if not
+	set	PA.SYS,(ix+P.ATTR) ; else set PA.SYS bit
+np12:	xor	a		; return success
+	ret
+
+ptyp1:	db	'SYS',0
+ptyp2:	db	'TASK',0
+	db	0
+
+pemsg:	db	'Partition already exists',0
+spmsg:	db	'Space used',0
+
+shwpar:	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	ld	hl,pname
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir
+	pop	bc
+	KCALL	$FNPAR		; find partition
+	jr	c,spar7
+	push	hl
+	pop	ix
+	ld	hl,mspar
+	call	optmsg
+	lda	hl,(ix+P.NAME)
+	ld	b,6
+	call	PNAM		; output name
+	ld	c,':'
+	call	PUTCH
+	ldw	hl,(ix+P.BASE)
+	xor	a
+	call	HLDEC		; output base
+	ld	c,':'
+	call	PUTCH
+	ldw	hl,(ix+P.SIZE)
+	xor	a
+	call	HLDEC		; output size
+	ld	c,':'
+	call	PUTCH
+	bit	PA.SYS,(ix+P.ATTR)
+	ld	hl,ptyp1
+	jr	nz,spar6	; branch if system-controlled
+	ld	hl,ptyp2
+spar6:	call	PUTSTR		; display status (SYS or TASK)
+	ld	c,CR
+	call	PUTCH
+spar7:	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+delpar:	call	CHKPRV
+	jp	c,SYSERR	; deleting partitions requires privileges
+	ld	de,(LNPTR)
+	call	GETNS
+	call	CHKEQ		; require '='
+	jp	nz,CMDERR
+	call	GETUN		; get partition name
+	ld	hl,CMDNAM
+	ld	a,(hl)
+	cp	' '
+	jp	z,CMDERR	; can't be empty
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	xor	a
+	ld	(SYSLVL),a
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; copy name to schratch buffer
+	pop	bc
+	KCALL	$FNPAR		; find partition by name
+	jr	c,dp3		; error if not found
+	push	de		; push prev ptr
+	ex	de,hl		; get PCB address into DE
+	ld	hl,$TLIST	; check task list
+dp1:	ldw	hl,(hl)		; get TCB address
+	ld	a,h
+	or	l
+	jr	z,dp2		; no tasks installed in the partition
+	push	hl
+	ldw	hl,(hl+T.PCB)	; get pointer to partition
+	ldw	hl,(hl+P.MAIN)	; get main PCB address
+	cpw	hl,de		; match?
+	pop	hl
+	ld	a,E.PBSY
+	scf
+	jr	z,dp2		; yes, partition is busy
+	ld	bc,T.TCBL
+	add	hl,bc
+	jr	dp1		; loop to process next task
+dp2:	ex	de,hl		; get PCB address back into HL
+	pop	de		; restore prev ptr
+	jr	c,dp3		; can't remove partition
+	ldw	bc,(hl)		; get next pointer into BC
+	ex	de,hl
+	ldw	(hl),bc		; unlink PCB
+	ex	de,hl
+	ld	de,PCBSZ
+	KCALL	$FREE		; free PCB
+	xor	a		; success
+dp3:	inc	(SYSLVL)
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	jp	c,SYSERR
+	ret
+
+sttop:	; SET /TOP
+
+	ld	a,(negsw)
+	or	a
+	jp	nz,CMDERR	; can't be negated
+	call	CHKPRV
+	jp	c,SYSERR	; operation requires privileges
+	ld	iy,wcmask
+	ld	(iy),a		; clear wildcard mask
+	ld	de,(LNPTR)
+	call	GETNS
+	call	CHKEQ		; require '='
+	jp	nz,CMDERR
+	call	GETUN		; get partition name
+	ld	hl,CMDNAM
+	ld	a,(hl)
+	cp	' '
+	jp	z,CMDERR	; can't be empty
+	ld	de,pname
+	ld	bc,6
+	ldir			; make a local copy
+	ld	de,(LNPTR)
+	call	GETNS
+	cp	':'		; delimiter required
+	jp	nz,CMDERR
+	inc	de
+	call	GETNS
+	jp	z,CMDERR
+	cp	'+'		; relative value?
+	jr	nz,stt1		; no
+	set	0,(iy)		; else set flag
+	inc	de
+	call	GETNS
+stt1:	cp	'-'		; negative value?
+	jr	nz,stt2		; no
+	bit	0,(iy)
+	jp	nz,CMDERR	; can't appear after '+'
+	set	1,(iy)		; set flag
+	inc	de
+	call	GETNS
+stt2:	cp	'*'		; wildcard?
+	jr	nz,stt3		; no
+	inc	de
+	ld	(LNPTR),de
+	set	2,(iy)		; else set flag
+	jr	stt4
+stt3:	call	GETNS
+	jp	z,CMDERR
+	ld	(LNPTR),de
+	call	GETDEC		; get top
+	ld	(temp),hl
+	ld	a,h
+	or	l		; validate
+	ld	a,E.INV
+	jp	z,SYSERR
+	cpw	hl,4096
+	jp	nc,SYSERR
+stt4:	call	GETNS
+	jp	nz,CMDERR	; that should be it
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	xor	a
+	ld	(SYSLVL),a
+
+	ld	hl,pname
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir
+	pop	bc
+	KCALL	$FNPAR		; find partition
+	jp	c,stt11
+
+	; compute current top
+
+	push	hl
+	pop	ix
+	ldw	hl,(ix+P.BASE)	; current partition top = base + size
+	addw	hl,(ix+P.SIZE)
+	ld	(top),hl
+
+	; compute mintop
+
+	ldw	de,(ix+P.BASE)	; minimum possible top = base + 1
+	inc	de
+	ldw	hl,(ix+P.SUB)
+	ld	a,h
+	or	l		; partition empty?
+	jr	z,stt6		; yes, use min top
+	push	ix
+stt5:	ex	ix,hl
+	ldw	hl,(ix+P.LNK)	; else search for last subpartition in list
+	ld	a,h
+	or	l		; this one?
+	jr	nz,stt5		; no, loop
+	ldw	hl,(ix+P.BASE)
+	addw	hl,(ix+P.SIZE)	; minimum top = top of last subpartition
+	ex	de,hl
+	pop	ix
+stt6:	ld	(mintop),de
+
+	; compute maxtop
+
+	ld	de,($MEMSZ)
+	srl	d
+	rr	e
+	srl	d
+	rr	e
+	ldw	hl,(ix+P.LNK)
+	ld	a,h
+	or	l		; is this the last partition in system?
+	jr	z,stt7		; yes, max possible top = memtop
+	ldw	hl,(hl+P.BASE)	; else is the base of the next partition
+	ex	de,hl
+stt7:	ld	(maxtop),de	
+
+	ld	hl,(temp)	; get value
+	addw	hl,(ix+P.BASE)
+	ld	iy,wcmask
+	ld	a,(iy)
+	or	a
+	jr	z,stt10		; value is absolute size
+	bit	2,(iy)		; wildcard top?
+	jr	z,stt8		; no
+	bit	1,(iy)		; min possible?
+	ld	hl,(mintop)
+	jr	nz,stt10	; yes
+	ld	hl,(maxtop)	; else is max possible
+	jr	stt10		; set value
+
+stt8:	ld	de,(temp)
+	ld	hl,(top)
+	bit	1,(iy)		; adjust down?
+	jr	z,stt9		; no
+	or	a
+	sbc	hl,de
+	ld	a,E.INV
+	jr	c,stt11		; alignment error or E.INV
+	jr	stt10
+stt9:	add	hl,de
+	ld	a,E.INV
+	jr	c,stt11
+	cpw	hl,4096
+	ccf
+	ld	a,E.INV
+	jr	c,stt11		; alignment error or E.INV
+
+stt10:	ld	de,(mintop)
+	cpw	hl,de
+	ld	a,E.INV
+	jr	c,stt11		; alignment error or E.INV
+	ld	de,(maxtop)
+	ex	de,hl
+	cpw	hl,de
+	ex	de,hl
+	jr	c,stt12		; space used
+
+	ldw	de,(ix+P.BASE)
+	or	a
+	sbc	hl,de
+	ld	a,E.INV
+	scf
+	jr	z,stt11		; result can't be zero
+	ldw	(ix+P.SIZE),hl
+	xor	a		; success
+	jr	stt11
+
+stt12:	ld	hl,spmsg
+	xor	a
+	scf
+stt11:	inc	(SYSLVL)
+	push	af
+	ld	c,0
+	SC	.SUPER
+	pop	af
+	ret	nc
+	or	a
+	jp	nz,SYSERR
+	ld	a,h
+	or	l
+	jp	nz,ERRMCR
+	ret
+
 stlog:	; SET /COLOG
 
 	ld	a,(negsw)
 	or	a
 	jp	nz,SYSERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
 	ld	(newtsk+TD.CMD),de ; pass command tail to console logger
 	ex	de,hl
-	call	strlen
+	call	STRLEN
 	ld	(hl),CR
 	ld	b,0
 	inc	bc		; account for the CR terminator
@@ -1090,9 +1651,9 @@ strndc:	; SET /RNDC
 strval:	ld	a,(negsw)
 	or	a
 	jp	nz,CMDERR
-	ld	de,(lnptr)
+	ld	de,(LNPTR)
 	call	GETNS
-	ld	(lnptr),de	; end of command?
+	ld	(LNPTR),de	; end of command?
 	jr	z,shrval	; display current value if yes
 	call	CHKEQ		; else require '='
 	jp	nz,CMDERR
@@ -1119,10 +1680,7 @@ strval:	ld	a,(negsw)
 shrval:	ld	c,1
 	SC	.SUPER		; enter supervisor mode
 	jp	c,SYSERR
-	call	CRLF
-	call	PUTSTR
-	ld	c,'='
-	call	PUTCH
+	call	optmsg
 	ld	a,(ix)
 	call	ADEC
 	ld	c,CR
@@ -1237,9 +1795,24 @@ ptotal:	ds	2		; total available pool space
 plrgst:	ds	2		; largest fragment size
 plimit:	ds	2		; pool top address
 
-optmsg:	ds	2		; option message address for shds routine
+optnam:	ds	2		; option message address for shds routine
 devmfn:	ds	2		; dev matching func addr for shds routine
 temp:	ds	2
+
+pname:	ds	6		; partition name
+base:	ds	2		; partition base
+size:	ds	2		; partition size
+type:	ds	1		; partition type
+wcmask:	ds	1		; wilcard mask
+
+prev:	ds	2		; pointer to prev partition in list
+next:	ds	2		; pointer to next partition in list
+pbase:	ds	2		; base of partition in list
+psize:	ds	2		; size of partition in list
+
+top	equ	base		; current partition top !  shared   !
+mintop	equ	size		; minimum partition top ! variables !
+maxtop	equ	pbase		; maximum partition top !           !
 
 newtsk:	ds	TDBSZ		; task descriptor for console logger
 
