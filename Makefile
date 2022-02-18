@@ -53,10 +53,11 @@ update-incs:
 	done
 
 update-system-inc:
-	@find . -name system.inc -exec test "{}" -ot ./system.inc \; -exec cp -v ./system.inc {} \; ; \
+	@find . -name system.inc -exec test "{}" -ot ./system.inc \; -exec cp -v ./system.inc {} \;
 
-update-syslib:
-	@find . -name syslib.lib -exec test "{}" -ot ./mcr/syslib.lib \; -exec cp -v ./mcr/syslib.lib {} \; ; \
+update-libs:
+	@find . -name syslib.lib -exec test "{}" -ot ./mcr/syslib.lib \; -exec cp -v ./mcr/syslib.lib {} \;
+	@find . -name fcslib.lib -exec test "{}" -ot ./mcr/fcslib.lib \; -exec cp -v ./mcr/fcslib.lib {} \;
 
 # Compile libraries
 .PHONY: libs
