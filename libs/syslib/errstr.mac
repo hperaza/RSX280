@@ -53,7 +53,7 @@ errtab:	dw	err0,err1,err2,err3,err4,err5,err6,err7
 	dw	err29,err30,err31,err32,err33,err34,err35
 	dw	err36,err37,err38,err39,err40,err41,err42
 	dw	err43,err44,err45,err46,err47,err48,err49
-	dw	err50,err51,err52,err53,err54,err55
+	dw	err50,err51,err52,err53,err54,err55,err56
 	dw	errunk
 
 err0:	db	'No error',0
@@ -69,51 +69,52 @@ err9:	db	'Invalid operation',0
 err10:	db	'Channel already in use',0
 err11:	db	'Channel I/O error',0
 err12:	db	'Privilege violation',0
-err13:	db	'Invalid channel number',0
-err14:	db	'Out of disk buffers',0
-err15:	db	'Device not mounted',0
-err16:	db	'Device already mounted',0
-err17:	db	'Dismount in progress',0
-err18:	db	'Unit offline',0
-err19:	db	'Invalid volume type',0
-err20:	db	'Unallocated block read',0
-err21:	db	'File access is locked',0
-err22:	db	'No such device',0
-err23:	db	'File exists',0
-err24:	db	'Directory not empty',0
-err25:	db	'Version limit reached',0
-err26:	db	'Invalid system call',0
-err27:	db	'Invalid task header',0
-err28:	db	'Task image checksum error',0
-err29:	db	'Invalid or corrupt task image file',0
-err30:	db	'Task not in system',0
-err31:	db	'Task name in use',0
-err32:	db	'File not contiguous',0
-err33:	db	'No contiguous space',0
-err34:	db	'Not enough room',0
-err35:	db	'Request pending',0
-err36:	db	'Task already running',0
-err37:	db	'Task already stopped',0
-err38:	db	'Task already delayed',0
-err39:	db	'Task already fixed',0
-err40:	db	'Task not fixed',0
-err41:	db	'Task active',0
-err42:	db	'Task not active',0
-err43:	db	'Task name in use',0
-err44:	db	'Task is being aborted',0
-err45:	db	'Operation failed',0
-err46:	db	'Operation aborted',0
-err47:	db	'Operation timed out',0
-err48:	db	'Privileged command',0
-err49:	db	'Program too big',0
-err50:	db	'Queue empty',0
-err51:	db	'Invalid flag number',0
-err52:	db	'Partition busy',0
-err53:	db	'Partition not in system',0
-err54:	db	'Session not found',0
-err55:	db	'Session not active',0
+err13:	db	'Invalid value',0
+err14:	db	'Invalid channel number',0
+err15:	db	'Out of disk buffers',0
+err16:	db	'Device not mounted',0
+err17:	db	'Device already mounted',0
+err18:	db	'Dismount in progress',0
+err19:	db	'Unit offline',0
+err20:	db	'Invalid volume type',0
+err21:	db	'Unallocated block read',0
+err22:	db	'File access is locked',0
+err23:	db	'No such device',0
+err24:	db	'File exists',0
+err25:	db	'Directory not empty',0
+err26:	db	'Version limit reached',0
+err27:	db	'Invalid system call',0
+err28:	db	'Invalid task header',0
+err29:	db	'Task image checksum error',0
+err30:	db	'Invalid or corrupt task image file',0
+err31:	db	'Task not in system',0
+err32:	db	'Task name in use',0
+err33:	db	'File not contiguous',0
+err34:	db	'No contiguous space',0
+err35:	db	'Not enough room',0
+err36:	db	'Request pending',0
+err37:	db	'Task already running',0
+err38:	db	'Task already stopped',0
+err39:	db	'Task already delayed',0
+err40:	db	'Task already fixed',0
+err41:	db	'Task not fixed',0
+err42:	db	'Task active',0
+err43:	db	'Task not active',0
+err44:	db	'Task name in use',0
+err45:	db	'Task is being aborted',0
+err46:	db	'Operation failed',0
+err47:	db	'Operation aborted',0
+err48:	db	'Operation timed out',0
+err49:	db	'Privileged command',0
+err50:	db	'Program too big',0
+err51:	db	'Queue empty',0
+err52:	db	'Invalid flag number',0
+err53:	db	'Partition busy',0
+err54:	db	'Partition not in system',0
+err55:	db	'Session not found',0
+err56:	db	'Session not active',0
 errunk:	db	'Unknown error',0
 
-MAXERR	equ	55
+MAXERR	equ	56
 
 	end

@@ -49,8 +49,14 @@ update-incs:
 	@for i in system.inc inc/*inc; do \
 		f=`basename $$i` ; \
 		d=`dirname $$i` ; \
-		find . -wholename './00-*' -prune -o -name $$f -exec test "{}" -ot $$d/$$f \; -exec cp -v $$d/$$f {} \; ; \
+		find . -name $$f -exec test "{}" -ot $$d/$$f \; -exec cp -v $$d/$$f {} \; ; \
 	done
+
+update-system-inc:
+	@find . -name system.inc -exec test "{}" -ot ./system.inc \; -exec cp -v ./system.inc {} \; ; \
+
+update-syslib:
+	@find . -name syslib.lib -exec test "{}" -ot ./mcr/syslib.lib \; -exec cp -v ./mcr/syslib.lib {} \; ; \
 
 # Compile libraries
 .PHONY: libs
