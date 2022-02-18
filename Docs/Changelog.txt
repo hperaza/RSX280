@@ -7019,3 +7019,31 @@ BUGS:
 - The DEV command now also shows the label of mounted volumes if the user
   is privileged.
 
+
+14/02/22
+
+- Added E.LUN (invalid LUN) error code; E.INV is too ambiguous.
+
+- Added 'SET /[NO]PAR' and 'SET /TOP' MCR commands to dynamically create,
+  delete and/or alter partitions:
+  * SET /PAR=pname:base:size:type  -- create partition pname; base and size
+    are decimal page numbers, can be also a wildcard '*' (base of the first
+    free gap, largest size possible respectively); type is either TASK
+    (user-controlled) or SYS (system-controlled).
+  * SET /PAR=pname    -- display partition parameters
+  * SET /NOPAR=pname  -- delete partition pname
+  * SET /TOP=pname:value  -- resize partition, value is new size in pages,
+    +value moves top up (increases size), -value moves top down (decreases
+    size), * or +* means make it as large as possible, -* means shrink it
+    to minimum size (top page of the last resident task).
+
+- Kernel: don't resize the SYSPAR partition on startup.
+
+
+15/02/22
+
+- VMR: added 'SET /TOP' command.
+
+- MCR: REA is a privileged command.
+
+
