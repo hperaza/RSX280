@@ -7046,4 +7046,16 @@ BUGS:
 
 - MCR: REA is a privileged command.
 
+- RSX180: fixed a bug in the IO.LOV handler (use 'adc' and not 'add' in the
+  32-bit addition loop!)
+
+
+18/02/22
+
+- RMD: added a (D)evice Activity Display page. On the Z280RC RMD does not
+  show that much activity for disk devices (if any at all) since CompactFlash
+  I/O is done synchronously and therefore RMD will seldom detect a packet
+  queued to the device. OTOH on the P112 RMD catches the loader, filesystem
+  manager and other tasks queued to the disk devices, especially for the
+  slower floppy.
 
