@@ -13,6 +13,7 @@ SRCS = main.mac \
 	mem.mac \
 	atd.mac \
 	tskhdr.mac \
+	devact.mac \
 	command.mac \
 	misc.mac \
 	help.mac \
@@ -33,7 +34,7 @@ $(OBJS): %.rel: %.mac *.inc
 
 $(PROG): $(OBJS) syslib.lib
 	@echo -e "$@/ofmt:tsk,rmd,rmd/q=main,date,uptime,help,command,misc,vbuf,syslib/lb&\r" > link.cmd
-	@echo -e "(atd)(mem,disk,pool)(tskhdr)/task=...RMD/pri=225/priv\r" >> link.cmd
+	@echo -e "(atd)(mem,disk,pool)(tskhdr)(devact)/task=...RMD/pri=225/priv\r" >> link.cmd
 	$(ZXCC) $(TKB) -"@link"
 	@rm -f link.cmd
 #	$(ZXCC) $(TKB) -"$@,rmd,rmd=main/ofmt=tsk,date,uptime,atd,mem,tskhdr,disk,pool,help,command,misc,vbuf,syslib/lb/task=...RMD/pri=225/priv"

@@ -1,0 +1,281 @@
+;***********************************************************************
+;
+;   This file is part of RMD, a Resource Monitoring Display utility
+;   for the RSX280 OS. Copyright (C) 1985-2022, Hector Peraza.
+;
+;   This program is free software; you can redistribute it and/or
+;   modify it under the terms of the GNU General Public License as
+;   published by the Free Software Foundation; either version 2 of
+;   the License, or (at your option) any later version.
+;
+;   This program is distributed in the hope that it will be useful,
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;   GNU General Public License for more details.
+;
+;   You should have received a copy of the GNU General Public License
+;   along with this program; if not, write to the Free Software
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;***********************************************************************
+
+;   Device Activity Display page
+
+	.Z280
+
+	include	RMD.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	DCB.INC
+	include	QIO.INC
+	include	IOPKT.INC
+
+	public	DEVPG
+
+	extrn	VPUTC,VPUTS,VPUTN,VXY,VGETXY,VHLHEX,VADEC
+	extrn	VCLEOL,VCLEOS,VRPAD,HEADER,SKIPBL,STRCMP
+	extrn	UCASE
+
+	extrn	DEVNAM		; persistent data in root section
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+DEVPG:	ld	hl,$+4
+	ret
+	dw	dproc		; address of display procedure
+	dw	setup		; address of setup procedure
+	dw	hlptxt		; address of help text
+
+; This is the device activity display procedure. It is called with a code
+; in register A:
+;   0 means redraw everything
+;   1 means draw only what has changed from the previous call
+
+dproc:	push	af
+	call	HEADER
+	pop	af
+
+	or	a		; check redraw flag
+	jr	nz,m0
+
+	call	thdr
+m0:	call	upddev		; update device activity display
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process setup command @DE
+
+setup:	call	SKIPBL
+	ld	hl,hlptxt
+	ld	b,6
+	call	STRCMP		; is it DEVICE?
+	scf
+	ret	nz
+	call	SKIPBL
+	cp	'='		; delimiter required
+	scf
+	ret	nz
+	inc	de
+	ld	hl,0
+	call	SKIPBL
+	cp	'*'		; asterisk means all devices
+	jr	z,set1
+	or	a		; so does empty assignment
+	jr	z,set1
+	call	UCASE		; else get device name
+	call	valid		; make sure is valid
+	ret	c
+	ld	l,a
+	inc	de
+	ld	a,(de)
+	call	UCASE
+	call	valid
+	ld	h,a
+set1:	ld	(DEVNAM),hl
+	ret
+
+valid:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Help text to add to the setup command page, if any
+
+hlptxt:	db	"DEVICE=tt   display activity for device type 'tt'",CR,LF
+	db	0
+
+;-----------------------------------------------------------------------
+
+; Display heading
+
+thdr:	VGTOXY	0,2
+	ld	hl,hdr
+	call	VPUTS
+	ret
+
+hdr:	db	'Device  Status  Attached  Queued tasks',0
+
+;-----------------------------------------------------------------------
+
+; Update device activity display
+
+upddev:	VGTOXY	0,4
+	ld	hl,($PHYDV)	; get head of list of physical devices
+
+upd1:	ld	a,h
+	or	l		; end of list?
+	jr	z,upd6		; exit loop if yes
+	ex	ix,hl		; get DCB address into IX
+
+	ld	hl,(DEVNAM)
+	ld	a,h
+	or	l		; user wants specific device type?
+	jr	z,upd2		; no
+	ld	a,(ix+D.NAME)
+	cp	l		; else compare name
+	jr	nz,upd5
+	ld	a,(ix+D.NAME+1)
+	cp	h
+	jr	nz,upd5
+
+upd2:	ldw	hl,(ix+D.UCBL)	; get UCB list head
+upd3:	ld	a,h
+	or	l		; end of list?
+	jr	z,upd5		; exit inner loop if yes
+
+	ex	iy,hl		; get UCB address into IY
+	bit	DV.PSE,(iy+U.CW)
+	jr	nz,upd4		; skip pseudo-devices
+
+	call	shwdev		; show device activity
+
+	call	VCLEOL
+	call	VGETXY
+	ld	h,0
+	inc	l
+	ld	a,l
+	cp	vsize
+	jr	nc,upd6
+	call	VXY		; next row
+
+upd4:	ldw	hl,(iy+U.LNK)
+	jr	upd3		; loop
+
+upd5:	ldw	hl,(ix+D.LNK)
+	jr	upd1
+
+upd6:	call	VCLEOS
+	ret
+
+; Show activity of a single device
+
+shwdev:	ld	c,(ix+D.NAME)	; output device name
+	call	VPUTC
+	ld	c,(ix+D.NAME+1)
+	call	VPUTC
+	ld	a,(iy+U.UNIT)	; output unit number
+	call	VADEC
+	ld	c,':'
+	call	VPUTC
+
+	call	VGETXY
+	ld	h,8
+	bit	US.OFL,(iy+U.ST)
+	ld	de,ostat
+	jr	nz,s1
+	bit	US.BSY,(iy+U.ST)
+	ld	de,bstat
+	jr	nz,s1
+	ld	de,istat
+s1:	call	VXY
+	ex	de,hl
+	call	VPUTS		; output status
+
+	call	VGETXY
+	ld	h,16
+	call	VXY
+
+	push	hl
+	ldw	hl,(iy+U.ATT)
+	ld	a,h
+	or	l
+	call	nz,shwt1	; output name of attached task, if any
+	pop	hl
+	ld	d,h
+	ld	e,6
+	call	VRPAD
+
+;;	call	VGETXY
+	ld	h,26
+	call	VXY
+
+	call	s2		; display tasks queued to device
+	ldw	hl,(iy+U.ACP)
+	ld	a,h		; ACP-controlled device?
+	or	l
+	ldw	hl,(hl+T.RCVL)	; fetch packets from ACP receive list
+	call	nz,s4		; yes, display tasks queued to ACP
+	call	VCLEOL		; erase to end of line and return
+	ret
+
+s2:	ldw	hl,(iy+U.SCB)
+	push	hl
+	ldw	hl,(hl+S.CPKT)
+	ld	a,h		; any current packet being processed?
+	or	l
+	jr	z,s3		; no, skip
+	call	cmpucb		; packet destined for this unit?
+	call	z,shwtsk	; yes, output task name
+s3:	pop	hl
+	ldw	hl,(hl+S.PKTL)	; process device's packet list
+s4:	ld	a,h
+	or	l
+	ret	z
+	call	cmpucb		; packet destined for this unit?
+	jr	nz,s5		; no, skip
+	push	hl
+	call	shwtsk		; else output queued task name
+	pop	hl
+	ret	c		; return if out of screen space
+s5:	ldw	hl,(hl+I.LNK)
+	jr	s4		; loop to process next packet
+
+; Ensure packet is destined to the current unit, as some device drivers
+; (e.g. floppy and hard disk drivers) share the same controller for all
+; units and therefore have a single packet queue.
+
+cmpucb:	push	hl
+	ldw	hl,(hl+I.UCB)	; get packet's UCB address
+	cpw	hl,iy		; compare
+	pop	hl
+	ret
+
+; Display queued task name
+
+shwtsk:	ldw	hl,(hl+I.TCB)
+shwt1:	ex	de,hl
+	call	VGETXY
+	ld	a,80-6
+	cp	h		; out of screen space?
+	ex	de,hl
+	ret	c		; yes, return
+	ld	de,T.NAME
+	add	hl,de
+	ld	b,6
+	call	VPUTN		; show task name
+	ld	c,' '
+	call	VPUTC
+	xor	a
+	ret
+
+istat:	db	'Idle',0
+bstat:	db	'Busy',0
+ostat:	db	'Offline',0
+
+	end

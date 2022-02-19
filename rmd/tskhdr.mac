@@ -75,7 +75,6 @@ setup:	call	SKIPBL
 	scf
 	ret	nz		; return if not
 	call	SKIPBL
-	ld	a,(de)
 	cp	'='		; '=' must follow
 	scf
 	ret	nz

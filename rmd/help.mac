@@ -60,9 +60,10 @@ hloop:	ld	d,(hl)		; X
 
 hlpmsg:	db	0,0,'Use the following keys to switch display pages:',0
 	db	4,2,'A - Active Task Display',0
-	db	4,3,'H - Help Display (this page)',0
-	db	4,4,'M - Memory Display',0
-	db	4,5,'T - Task Header Display',0
+	db	4,3,'D - Device Activity Display',0
+	db	4,4,'H - Help Display (this page)',0
+	db	4,5,'M - Memory Display',0
+	db	4,6,'T - Task Header Display',0
 	db	4,20,'<ESC> lets you enter a setup command if any setup '
 	db	     'commands',0
 	db	10,21,'are available for that display page',0

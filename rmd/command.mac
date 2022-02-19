@@ -81,7 +81,6 @@ chkcmd:	call	SKIPBL
 	or	0FFh		; else return NZ and CY clear
 	ret
 cmd1:	call	SKIPBL
-	ld	a,(de)
 	cp	'='		; '=' must follow
 	scf
 	ret	nz		; else return error

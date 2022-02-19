@@ -201,7 +201,6 @@ st2:	ld	hl,hlptxt
 	ccf
 	ret	c
 	call	SKIPBL
-	ld	a,(de)
 	cp	'='		; '=' must follow
 	scf
 	ret	nz
@@ -213,8 +212,7 @@ st3:	dec	l
 	inc	ix
 	inc	ix
 	jr	st3
-st4:	call	SKIPBL
-	ld	a,(de)		; get device name
+st4:	call	SKIPBL		; get device name
 	call	UCASE
 	call	ISLETR
 	ret	c
@@ -247,7 +245,6 @@ chkcmd:	call	STRCMP		; command name matches?
 	scf
 	ret	nz		; return with CY set if not
 	call	SKIPBL
-	ld	a,(de)
 	cp	'='		; '=' must follow
 	scf
 	ret	nz		; else return error
