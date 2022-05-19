@@ -1,0 +1,133 @@
+	.Z80
+
+	.xlist
+	include	SYSFN.INC
+	include	QIO.INC
+	include	ERRORS.INC
+	.list
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;-----------------------------------------------------------------------
+
+; Test of Vertical Format Control of the terminal driver.
+
+	cseg
+
+VFCTEST::
+	ld	sp,stack
+
+	ld	b,5
+t1:	ld	hl,qio1		; single spacing
+	SC	.QIO
+	djnz	t1
+	call	pause
+
+	ld	b,5
+t2:	ld	hl,qio2		; double spacing
+	SC	.QIO
+	djnz	t2
+	call	pause
+
+	ld	b,5
+t3:	ld	hl,qio3		; page eject
+	SC	.QIO
+	djnz	t3
+	call	pause
+
+	ld	b,5
+t4:	ld	hl,qio4		; overprint
+	SC	.QIO
+	djnz	t4
+	call	pause
+
+	ld	b,5
+t5:	ld	hl,qio5		; prompting
+	SC	.QIO
+	djnz	t5
+	call	pause
+
+	ld	b,5
+	ld	de,2*256+2
+	set	7,d		; clear screen first time
+t6:	ld	(qio6+Q.VFC),de
+	ld	hl,qio6		; cursor control
+	SC	.QIO
+	inc	d
+	res	7,d
+	inc	e
+	inc	e
+	djnz	t6
+	call	pause
+
+	ld	b,5
+t7:	ld	hl,qio7		; none
+	SC	.QIO
+	djnz	t7
+	call	pause
+
+	ld	b,5
+t8:	ld	hl,qio8		; null, single space
+	SC	.QIO
+	djnz	t8
+	call	pause
+
+	ld	hl,qio9		; bye!
+	SC	.QIO
+
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+pause:	ld	hl,qio10
+	SC	.QIO
+	ret
+
+	dseg
+
+qio1:	QIOW$	IO.WVB,5,1,iosb,,<msg1,len1,' '>
+qio2:	QIOW$	IO.WVB,5,1,iosb,,<msg2,len2,'0'>
+qio3:	QIOW$	IO.WVB,5,1,iosb,,<msg3,len3,'1'>
+qio4:	QIOW$	IO.WVB,5,1,iosb,,<msg4,len4,'+'>
+qio5:	QIOW$	IO.WVB,5,1,iosb,,<msg5,len5,'$'>
+qio6:	QIOW$	IO.WVB,5,1,iosb,,<msg6,len6,0>
+qio7:	QIOW$	IO.WVB,5,1,iosb,,<msg7,len7,0>
+qio8:	QIOW$	IO.WVB,5,1,iosb,,<0,0,' '>
+qio9:	QIOW$	IO.WVB,5,1,iosb,,<msg9,len9,' '>
+
+qio10:	QIOW$	IO.RPR,5,1,iosb,,<buf,10,,prm,prl,'$'>
+
+msg1:	db	'Single Space'
+len1	equ	$-msg1
+
+msg2:	db	'Double Space'
+len2	equ	$-msg2
+
+msg3:	db	'Page Eject'
+len3	equ	$-msg3
+
+msg4:	db	'Overprint'
+len4	equ	$-msg4
+
+msg5:	db	'Prompting'
+len5	equ	$-msg5
+
+msg6:	db	'Cursor'
+len6	equ	$-msg6
+
+msg7:	db	'None'
+len7	equ	$-msg7
+
+msg9:	db	'Bye!'
+len9	equ	$-msg9
+
+prm:	db	'Press ENTER to continue...'
+prl	equ	$-prm
+
+buf:	ds	10
+iosb:	ds	4
+
+	ds	64		; stack space
+stack	equ	$
+
+	end	VFCTEST
