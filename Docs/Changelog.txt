@@ -7059,3 +7059,68 @@ BUGS:
   manager and other tasks queued to the disk devices, especially for the
   slower floppy.
 
+
+25/02/22
+
+- TTDRV: implementing vertical format control as per RSX-11M docs. The
+  format is specified via Q.VFC QIO parameter in terminal output functions
+  such as IO.WLB, IO.WVB, IO.CCO, IO.RPR, etc.:
+
+    ' ' (single space)             -> LF,string,CR
+    '0' (double space)             -> LF,LF,string,CR
+    '1' (page eject)               -> FF,string,CR or LF,LF,LF,LF,string,CR
+    '+' (overprint)                -> string,CR
+    '$' (prompting output)         -> LF,string
+    00h (internal vertical format) -> string
+    any other value is interpreted as ' '
+
+
+26/02/22
+
+- TTDRV: if high byte of Q.VFC is nonzero, then Q.VFC is interpreted as
+  cursor control: low byte = column number, high byte = row humber; the
+  upper-left corner of the screen has coordinates 1,1.
+
+
+05/03/22
+
+- SYSLIB: PUTCH, GCML and RCTRLO routines now clears Q.VFC (no carriage
+  control) to keep old behavior.
+
+- MD5: fixed a stupid cut-and-paste bug from the conversion to 24-bit
+  file block numbers.
+
+
+18/05/22
+
+- TTDRV:
+  * vertical format control: if a cursor control is specified and the
+    high bit of the row value is set, clear the screen before positioning
+    the cursor (as per RSX-11M I/O Driver Reference docs).
+  * IO.RPR now requires a prompt length parameter just like in RSX-11M.
+
+- Re-arranged QIO arguments to match RSX-11M ones: Q.VFC is now the
+  3rd parameter, block number is moved to 4th and 5th. Thus:
+
+  Terminal I/O:
+
+    IO.RLB, IO.RVB:  <bufadr,len[,tmo]>  (Note: timeout still not implemented)
+    IO.WLB, IO.WVB:  <bufadr,len,vfc>
+    IO.RPR:          <bufadr,len,[tmo],prbuf,prlen,vfc>
+
+  Disk I/O does not use vfc, but the parameter is nevertheless reserved:
+
+    IO.RLB, IO.RVB:  <bufadr,len,,blkl,blkh,offs>
+    IO.WLB, IO.WVB:  <bufadr,len,,blkl,blkh,offs>
+
+  Note that blkh and blkl are reversed in RSX-11M, but the RSX180/280
+  order makes it easier to perform 32-bit arithmetic on a Z80. The offs
+  parameter (offset within block) is unique to RSX180/280.
+
+- SYSLIB: GETLN now sets prompt length in QIO block.
+
+- Updated existing applications to use the new QIO parameter ordering
+  (since most applications used Q.xxx values defined in QIO.INC minimal
+  or no changes were required.)
+
+
