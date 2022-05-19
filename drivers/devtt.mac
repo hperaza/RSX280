@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -61,6 +61,8 @@
 
 CR	equ	0Dh
 LF	equ	0Ah
+FF	equ	0Ch
+ESC	equ	1Bh
 
 ; OX16C954 addresses as seen from the Z280RC
 
@@ -136,9 +138,11 @@ UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
 UX.CNT	equ	UX.BNK + 2	; byte count (2 bytes)
 UX.CXF	equ	UX.CNT + 2	; count of bytes transferred (2 bytes)
 UX.PRM	equ	UX.CXF + 2	; optional prompt addr in user space (2 bytes)
-UX.UBF	equ	UX.PRM + 2	; address of unsolicited input buffer (2 bytes)
+UX.PRL	equ	UX.PRM + 2	; optional prompt length (2 bytes)
+UX.UBF	equ	UX.PRL + 2	; address of unsolicited input buffer (2 bytes)
 UX.UCC	equ	UX.UBF + 2	; unsolicited character count (1 byte)
-UX.TMO	equ	UX.UCC + 1	; timeout counter (2 bytes)
+UX.VFC	equ	UX.UCC + 1	; vertical format control (2 bytes)
+UX.TMO	equ	UX.VFC + 2	; timeout counter (2 bytes)
 UX.TQ	equ	UX.TMO + 2	; address of typeahead queue (2 bytes)
 UX.OQ	equ	UX.TQ + 2	; address of output queue (2 bytes)
 UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
@@ -247,8 +251,10 @@ ucbt0:	dw	ucbt1		; link to next
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
+	ds	2		; UX.PRL
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
+	ds	2		; UX.VFC
 	dw	0		; UX.TMO
 	dw	tt0tq		; UX.TQ
 	dw	tt0oq		; UX.OQ
@@ -282,8 +288,10 @@ ucbt1:	dw	ucbt2		; link to next
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
+	ds	2		; UX.PRL
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
+	ds	2		; UX.VFC
 	dw	0		; UX.TMO
 	dw	tt1tq		; UX.TQ
 	dw	tt1oq		; UX.OQ
@@ -317,8 +325,10 @@ ucbt2:	dw	ucbt3		; link to next
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
+	ds	2		; UX.PRL
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
+	ds	2		; UX.VFC
 	dw	0		; UX.TMO
 	dw	tt2tq		; UX.TQ
 	dw	tt2oq		; UX.OQ
@@ -352,8 +362,10 @@ ucbt3:	dw	ucbt4		; link to next
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
+	ds	2		; UX.PRL
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
+	ds	2		; UX.VFC
 	dw	0		; UX.TMO
 	dw	tt3tq		; UX.TQ
 	dw	tt3oq		; UX.OQ
@@ -387,8 +399,10 @@ ucbt4:	dw	0		; link to next
 	ds	2		; UX.CNT byte count (remaining)
 	ds	2		; UX.CXF bytes processed
 	ds	2		; UX.PRM
+	ds	2		; UX.PRL
 	ds	2		; UX.UBF
 	ds	1		; UX.UCC
+	ds	2		; UX.VFC
 	dw	0		; UX.TMO
 	dw	tt4tq		; UX.TQ
 	dw	tt4oq		; UX.OQ
@@ -448,6 +462,7 @@ ini0:	res	US.BSY,(iy+U.ST)
 	ld	(iy+UX.UCC),a	; clear unsolicited char count
 	ldw	(iy+UX.UBF),hl	; clear user buffer address
 	ldw	(iy+UX.PRM),hl	; clear IO.RPR prompt address
+	ldw	(iy+UX.PRL),hl	; clear IO.RPR prompt length
 	ldw	(iy+UX.TXC),hl	; clear TX count
 	ldw	ix,(iy+UX.TQ)
 	call	qinit		; init typeahead queue
@@ -585,8 +600,12 @@ ttclr:	push	ix
 
 ; Handle 'read with prompt' function.
 
-ttrpr:	ldw	hl,(ix+Q.P3)	     ; get address of prompt string
+ttrpr:	ldw	hl,(ix+Q.PRB)	     ; get address of prompt string
 	ldw	(iy+UX.PRM),hl
+	ldw	hl,(ix+Q.PRL)	     ; get prompt length
+	ldw	(iy+UX.PRL),hl
+	ldw	hl,(ix+Q.PVF)	     ; get prompt vertical format control
+	ldw	(iy+UX.VFC),hl
 	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
 	ld	a,(iy+UX.CNT)
 	or	(iy+UX.CNT+1)
@@ -602,6 +621,7 @@ ttrpr:	ldw	hl,(ix+Q.P3)	     ; get address of prompt string
 
 ttrlb:	ld	hl,0
 	ldw	(iy+UX.PRM),hl
+	ldw	(iy+UX.PRL),hl
 	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
 	ld	a,(iy+UX.CNT)
 	or	(iy+UX.CNT+1)
@@ -617,7 +637,9 @@ ttr1:	di
 
 ; Handle write function.
 
-ttwlb:	ld	a,(iy+U.ATT)
+ttwlb:	ldw	hl,(ix+Q.VFC)	     ; get vertical format control word
+	ldw	(iy+UX.VFC),hl
+	ld	a,(iy+U.ATT)
 	or	(iy+U.ATT+1)	     ; task attached?
 	jr	z,wlb1		     ; branch if not - reset ^O
 	bit	TB.CCO,(iy+UX.SBF)   ; cancel ^O?
@@ -625,10 +647,15 @@ ttwlb:	ld	a,(iy+U.ATT)
 wlb1:	res	U2.CTO,(iy+UX.MOD+1)
 wlb2:	bit	U2.CTO,(iy+UX.MOD+1) ; ^O active?
 	call	nz,supres	     ; suppress output if yes
+	call	vfpre		     ; output leading vfc
 	ld	a,(iy+UX.CNT)
-	or	(iy+UX.CNT+1)
-	jp	z,iend		     ; terminate immediately if nothing to send
-	res	UM.INP,(iy+UX.MOD)
+	or	(iy+UX.CNT+1)	     ; anything to send?
+	jr	nz,wlb3		     ; branch if yes
+	call	vfpost		     ; else output trailing vfc
+	ldw	ix,(iy+UX.OQ)
+	call	qsize		     ; vfc queued?
+	jp	z,iend		     ; no, terminate operation
+wlb3:	res	UM.INP,(iy+UX.MOD)
 	set	UM.OUT,(iy+UX.MOD)
 	bit	U2.XOF,(iy+UX.MOD+1) ; check XON/XOFF
 	ret	nz
@@ -783,6 +810,136 @@ ttsmc6:	pop	af
 
 ;-----------------------------------------------------------------------
 
+; Process vertical format control word.
+
+; If the high byte of vfc is zero, then the low byte is interpreted as
+; a FORTRAN-style carriage control char:
+;   ' ' (single space)     -> LF,string,CR
+;   '0' (double space)     -> LF,LF,string,CR
+;   '1' (page eject)       -> FF,string,CR (or LF,LF,LF,LF,string,CR)
+;   '+' (overprint)        -> string,CR
+;   '$' (prompting output) -> LF,string
+;   00h (internal vertical format) -> string
+;   any other character value is interpreted as ' '
+;
+; If the high byte of vfc is non-zero, then the value is interpreted as
+; screen coordinates for cursor positioning, with the top-left corner of
+; the screen at (1,1):
+;   low byte  = column position
+;   high byte = row position, if hi-bit is set then the clear screen
+;               before positioning the cursor
+
+vfpre:	ld	a,(iy+UX.VFC+1)	; cursor control?
+	or	a
+	jr	nz,vfcur	; yes
+	ld	a,(iy+UX.VFC)	; get vertical format char
+	or	a		; null?
+	ret	z		; yes, return - no carriage control
+	cp	'+'		; '+'?
+	ret	z		; yes, return - stay there
+	ldw	ix,(iy+UX.OQ)
+	cp	'1'		; '1'?
+	ld	c,FF		; yes, output a formfeed
+	jp	z,qput
+	cp	'0'		; '0'?
+	ld	c,LF		; yes, output two linefeeds
+	call	z,qput
+	jp	qput		; '$', ' ' and anything else - single linefeed
+
+vfpost:	ld	a,(iy+UX.VFC+1)	; cursor control?
+	or	a
+	ret	nz		; yes, return
+	ld	a,(iy+UX.VFC)	; get vertical format char
+	or	a		; null?
+	ret	z		; yes, return - no carriage control
+	cp	'$'		; '$'?
+	ret	z		; yes, return - stay there
+	ldw	ix,(iy+UX.OQ)
+	ld	c,CR		; anything else - output a carriage return
+	jp	qput
+
+vfcur:	ldw	ix,(iy+UX.OQ)	; get output queue address
+	ld	a,(iy+U.CW+1)	; get mode
+	ld	b,(iy+UX.VFC+1)	; get row
+	bit	7,b		; high bit of row set?
+	call	nz,vfcls	; yes, clear screen
+	bit	TC.ANS,a	; ANSI mode?
+	jr	nz,vfc2		; yes
+	ld	c,ESC		; else output a VT52 cursor control sequence
+	call	qput
+	ld	c,'Y'
+	call	qput
+	ld	a,b		; row
+	call	vfc1
+	ld	a,(iy+UX.VFC)	; column
+vfc1:	add	20h-1		; make base zero and add offset
+	ld	c,a
+	jp	qput
+
+vfc2:	ld	c,ESC		; output a VT100/ANSI cursor control sequence
+	call	qput
+	ld	c,'['
+	call	qput
+	ld	a,b		; row
+	call	qdec
+	ld	c,';'
+	call	qput
+	ld	a,(iy+UX.VFC)	; column
+	call	qdec
+	ld	c,'H'
+	jp	qput
+	
+qdec:	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	ld	c,a
+	jp	qput
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad3
+	inc	d
+	dec	d
+	jr	z,ad4
+ad3:	call	qput
+	ld	d,1
+ad4:	pop	af
+	ret
+
+vfcls:	push	af
+	res	7,b		; clear hi-bit of row
+	bit	TC.ANS,a	; ANSI mode?
+	jr	nz,vfc3		; yes
+	ld	c,ESC		; else output VT52 clear screen sequence
+	call	qput
+	ld	c,'H'
+	call	qput
+	ld	c,ESC
+	call	qput
+	jr	vfc4
+
+vfc3:	ld	c,ESC
+	call	qput
+	ld	c,'['
+	call	qput
+	ld	c,'2'
+	call	qput
+vfc4:	ld	c,'J'
+	call	qput
+	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
 ; Characters ^C, ^O, ^S, ^Q and ^X require immediate processing (unless
 ; terminal is in binary mode). All others are moved to the typeahead
 ; queue for processing during the next input operation.
@@ -893,7 +1050,6 @@ ctrls:	set	U2.XOF,(iy+UX.MOD+1) ; stop output
 	ret
 
 ctrlq:	res	U2.XOF,(iy+UX.MOD+1) ; resume output
- IF 1
 	push	iy
 	call	proc6		; restart transmitter
 	pop	iy
@@ -905,9 +1061,6 @@ ctrlq:	res	U2.XOF,(iy+UX.MOD+1) ; resume output
 	call	chkend		; else (possibly) terminate output operation
 	ei
 	ret
- ELSE
-	jp	proc6		; restart transmitter
- ENDIF
 
 ctrlc:	di
 	call	qinit		; purge typeahead queue
@@ -1021,7 +1174,7 @@ pch4:	call	store		; store char in buffer (char in reg C)
 	jp	z,eol
 
 	cp	1Bh		; ESC
-	jp	z,esc		; ends line, but does not get echoed
+	jp	z,escape	; ends line, but does not get echoed
 
 	cp	1Ah		; ^Z
 	jp	z,ctrlz
@@ -1137,20 +1290,18 @@ chktmo:	or	a
 	ret
 
 ctrlr:	call	ctrl		; output ^R
+	ld	c,CR
+	call	qput
 	call	prompt		; display prompt
 	jr	nc,ctr1		; jump if no prompt was specified
 	set	U2.CTR,(iy+UX.MOD+1) ; else set ^R flag
 	scf			; and kick transmitter
 	ret
 
-ctr1:	di
-	ld	c,CR		; else display just a CR/LF
+ctr1:	ld	c,LF		; no prompt, restart on a new line
 	call	qput
-	ld	c,LF
-	call	qput
-	ei
-	call	prepcr
-	scf			; always kick the transmitter to force
+	call	prepcr		; prepare to output input buffer
+	scf			; always restart the transmitter to force
 	ret			;  output of CR/LF
 
 ; Prepare to output whatever we have in the input buffer.
@@ -1316,7 +1467,7 @@ ctrlz:	call	ctrl
 eol:	di
 	call	qput		; echo CR
 	ei
-esc:	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+escape:	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
 	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 	jr	nz,ueol		   ; jump if yes
 	push	iy
@@ -1452,7 +1603,9 @@ prompt:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 	bit	U2.CTC,(iy+UX.MOD+1) ; processing ^C?
 	jr	nz,prm1		; jump if yes
 	dec	b		; else get default prompt
-prm1:	call	cliprm		; get prompt from CLICB
+prm1:	ld	hl,0
+	ldw	(iy+UX.VFC),hl	; no vfc for CLI prompt
+	call	cliprm		; get prompt from CLICB
 	ex	de,hl
 	ldw	hl,(iy+U.DCB)
 	ldw	hl,(hl+D.BANK)	; $SBANK
@@ -1463,8 +1616,13 @@ pruser:	ldw	hl,(iy+UX.PRM)	; did user specify a prompt?
 	ld	a,h
 	or	l
 	ret	z		; return with CY clear if not
+	push	hl
+	call	vfpre		; queue leading vertical format string
+	pop	hl
+	ldw	bc,(iy+UX.PRL)	; get length (may be zero)
 	ldw	de,(iy+UX.BNK)	; task bank
 prm2:	ldw	(iy+UX.TXP),hl	; else set address of string to display
+	ldw	(iy+UX.TXC),bc	; set length
 	ldw	(iy+UX.TXB),de	; set bank
 	set	U2.PRM,(iy+UX.MOD+1) ; set 'display prompt' bit
 	scf			; and return with CY set
@@ -1503,10 +1661,10 @@ iend1:	push	bc
 	res	UM.SOP,(iy+UX.MOD)	;???  in
 	res	UM.SBY,(iy+UX.MOD)	;??? case
 	res	US.BSY,(iy+U.ST)   ; clear busy bit
- IF 1
+
 	; need this to restart input processing after *output* operation
 	call	ifpq		; schedule input fork process
- ENDIF
+
 	ei
 	pop	bc		; error/success code in BC
 	ldw	de,(iy+UX.CXF)	; transfer count in DE
@@ -1518,58 +1676,53 @@ iend1:	push	bc
 ; Do not call from the interrupt routine.
 
 FF4	equ	1		; test code - translate FF to 4xLF
+				; (for future SET /[NO]FORMFEED support)
 
-nextch:
-  IF 0
-	bit	U2.XOF,(iy+UX.MOD+1)
-	scf
-	ret	nz
+nextch:	call	nextc		; get the char
+  IF FF4
+	ret	c
+	cp	FF		; form-feed?
+	jr	nz,nxch3	; return if not
+	ld	c,LF		; else convert it to four line-feeds
+	ld	b,4-1
+	ldw	ix,(iy+UX.OQ)
+ff1:	call	qput
+	djnz	ff1
+	ld	a,c
+nxch3:	or	a
   ENDIF
-	ldw	ix,(iy+UX.OQ)	; handle pending chars in output queue first
+	ret
+
+nextc:	ldw	ix,(iy+UX.OQ)	; handle pending chars in output queue first
 	call	qget
 	ret	nc
 	bit	U2.PRM,(iy+UX.MOD+1) ; displaying prompt?
 	jr	z,nxch0		     ; jump if not
 	call	nxuch		; else fetch byte from prompt in user space
-	or	a		; end of string?
-  IF FF4
-	jr	nz,nxch4	; branch if not
-  ELSE
-	ret	nz		; return if not
-  ENDIF
+	ret	nc		; got one, return it
 	res	U2.PRM,(iy+UX.MOD+1) ; else clear 'display prompt' bit
+	call	vfpost		; queue trailing vf string for prompt
+	call	nxch4		; ^R redisplay of prompt?
+	jr	nc,nxch5	; no, return trailing vfc of prompt, if any
+	call	nxch5		; yes, but handle vfc of prompt first
+	ret	nc
+	jr	nxch0		; no vfc, so redisplay buffer
+
+nxch5:	ld	ix,(iy+UX.OQ)
+	jp	qget
+
+nxch4:	xor	a		; clear CY
 	bit	U2.CTR,(iy+UX.MOD+1) ; ^R redisplay of prompt?
-	scf
-	ret	z		; return if not
+	ret	z		; return CY clear if not
 	call	prepcr		; else prepare to output input buffer
-	jr	c,nxch0		; continue if something to send
+	ret	c		; return CY if something to send
 	res	U2.CTR,(iy+UX.MOD+1) ; otherwise clear ^R bit
-	scf
 	ret			; and return
-nxch0:	ldw	hl,(iy+UX.TXC)	; check UX.TXC
-	ld	a,h
-	or	l		; anything to send?
-	jr	z,nxch1		; jump if not
-	dec	hl
-	ldw	(iy+UX.TXC),hl
-	call	nxuch		; else get byte from task space
-	or	a		; clear CY
+
+nxch0:	call	nxuch		; else get byte from task space
+	jr	c,nxch1		; branch if end of buffer
 	bit	U2.CTR,(iy+UX.MOD+1) ; ^R redisplay of buffer?
-  IF FF4
-	jr	nz,nxch2	     ; branch if yes
-nxch4:	cp	0Ch		; form-feed?
-	jr	nz,nxch3	; return if not
-	ld	c,0Ah		; else convert it to four line-feeds
-	ld	b,4-1
-	ldw	ix,(iy+UX.OQ)
-ff:	call	qput
-	djnz	ff
-	ld	a,c
-nxch3:	or	a
-	ret
-  ELSE
-	ret	z		     ; return unmodified char if not
-  ENDIF
+	ret	z		; return unmodified char and CY clear if not
 nxch2:	cp	20h		; control char?
 	ret	nc		; return if not
 	add	a,40h		; else echo it as ^x
@@ -1578,23 +1731,16 @@ nxch2:	cp	20h		; control char?
 	ld	a,'^'
 	or	a
 	ret
+
 nxch1:	res	U2.CTR,(iy+UX.MOD+1) ; clear ^R bit
-  IF 0
-	bit	UM.UNS,(iy+UX.MOD) ; check unsolicited input flag
-	scf			   ; return if set
-	ret	nz
-  ELSE
-	bit	US.BSY,(iy+U.ST) ; busy?
-	scf
-	ret	z		 ; return if not
-  ENDIF
-	bit	UM.OUT,(iy+UX.MOD) ; output mode?
-	scf			   ; return if not
-	ret	z
+	bit	US.BSY,(iy+U.ST)     ; busy?
+	ret	z		     ; return if not (note CY still set)
+	bit	UM.OUT,(iy+UX.MOD)   ; output mode?
+	ret	z		     ; return if not (note CY still set)
 	ldw	ix,(iy+U.SCB)
 	ld	a,(ix+S.CPKT)	; check current packet address
 	or	(ix+S.CPKT+1)	; anything being processed?
-	scf			; return if not
+	scf			; return CY if not
 	ret	z
 	ldw	hl,(iy+UX.CNT)	; check byte counter
 	ld	a,h
@@ -1603,34 +1749,39 @@ nxch1:	res	U2.CTR,(iy+UX.MOD+1) ; clear ^R bit
 	ret	z		; nothing else to send, return with CY set
 	dec	hl		; decrement byte counter
 	ldw	(iy+UX.CNT),hl	; save value back
+	ld	a,h
+	or	l		; all output?
+	call	z,vfpost	; yes, queue output of trailing vfc
 	incw	(iy+UX.CXF)	; increment count of bytes processed
 	ldw	hl,(iy+UX.BFP)	; get user buffer address into HL
 	ldw	de,(iy+UX.BNK)	; and bank into DE
 	call	$UGETB		; get char from user space
 	inc	hl
 	ldw	(iy+UX.BFP),hl	; save next address
-  IF FF4
-	jr	nxch4
-  ELSE
 	or	a
 	ret
-  ENDIF
 
-nxuch:	ldw	hl,(iy+UX.TXP)
+nxuch:	ldw	hl,(iy+UX.TXC)	; check UX.TXC
+	ld	a,h
+	or	l		; anything to send?
+	scf
+	ret	z		; return CY if not
+	dec	hl		; else decrement count
+	ldw	(iy+UX.TXC),hl
+	ldw	hl,(iy+UX.TXP)
 	ldw	de,(iy+UX.TXB)
 	call	$UGETB		; get byte from task space
 	inc	hl
 	ldw	(iy+UX.TXP),hl
+	or	a
 	ret
 
 ; Check for end of output operation
 
 chkend:	bit	US.BSY,(iy+U.ST)   ; check busy flag
 	ret	z		   ; return if not set
-  IF 1
 	bit	U2.XOF,(iy+UX.MOD+1)
 	ret	nz
-  ENDIF
 	bit	UM.OUT,(iy+UX.MOD) ; check output flag
 	ret	z		   ; return if not set
 	jp	iend		   ; else end output operation
