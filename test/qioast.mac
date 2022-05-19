@@ -70,14 +70,14 @@ ast:	ex	(sp),hl		; fetch argument
 
 	dseg
 
-qio1:	QIOW$	IO.WVB,5,1,iosb,,<str1,len1,0,0,>
-str1:	db	LF,'Attaching terminal...',CR
+qio1:	QIOW$	IO.WVB,5,1,iosb,,<str1,len1,' '>
+str1:	db	'Attaching terminal...'
 len1	equ	$-str1
 
 qioatt:	QIOW$	IO.ATT,5,1,iosb,ast
 
-qio2:	QIOW$	IO.WVB,5,1,iosb,ast,<str2,len2,0,0,>
-str2:	db	LF,'Outputting text...',CR
+qio2:	QIOW$	IO.WVB,5,1,iosb,ast,<str2,len2,' '>
+str2:	db	'Outputting text...'
 len2	equ	$-str2
 
 fmode	equ	SF.ACR OR SF.SHR
@@ -91,27 +91,27 @@ fdb:	dw	0
 	db	0,0
 	dw	0
 
-qio3:	QIOW$	IO.WVB,5,1,iosb,,<str3,len3,0,0,>
-str3:	db	LF,'Opening file...',CR
+qio3:	QIOW$	IO.WVB,5,1,iosb,,<str3,len3,' '>
+str3:	db	'Opening file...'
 len3	equ	$-str3
 
-qiorvb:	QIOW$	IO.RVB,1,1,iosb,ast,<buf,512,0,0,>
+qiorvb:	QIOW$	IO.RVB,1,1,iosb,ast,<buf,512,,0,0,>
 buf:	ds	512
 
-qio4:	QIOW$	IO.WVB,5,1,iosb,,<str4,len4,0,0,>
-str4:	db	LF,'Reading from file...',CR
+qio4:	QIOW$	IO.WVB,5,1,iosb,,<str4,len4,' '>
+str4:	db	'Reading from file...'
 len4	equ	$-str4
 
 qiodea:	QIOW$	IO.DEA,1,1,iosb,ast,<fdb,0>
 
-qio5:	QIOW$	IO.WVB,5,1,iosb,,<str5,len5,0,0,>
-str5:	db	LF,'Closing file...',CR
+qio5:	QIOW$	IO.WVB,5,1,iosb,,<str5,len5,' '>
+str5:	db	'Closing file...'
 len5	equ	$-str5
 
-qio6:	QIOW$	IO.WVB,5,1,iosb,,<str6,len6,0,0,>
-str6:	db	LF,'IOSB = '
+qio6:	QIOW$	IO.WVB,5,1,iosb,,<str6,len6,' '>
+str6:	db	'IOSB = '
 res1:	db	'XXXX '
-res2:	db	'XXXX',CR
+res2:	db	'XXXX'
 len6	equ	$-str6
 
 iosb:	ds	4
