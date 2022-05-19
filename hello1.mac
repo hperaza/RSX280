@@ -3,7 +3,6 @@
 	.xlist
 	include	$SYSFN.INC
 	include	$QIO.INC
-	include	$ERRORS.INC
 	.list
 
 CR	equ	0Dh
@@ -18,11 +17,11 @@ LF	equ	0Ah
 HELLO::	ld	sp,stack
 	ld	hl,qio1
 	SC	.QIO
-	ld	hl,EX.SUC
+	ld	hl,0
 	SC	.EXIT
 
-qio1:	QIOW$	IO.WVB,5,1,iosb,,<str,len,0,0,>
-str:	db	CR,LF,'Hello, world!',CR,LF
+qio1:	QIOW$	IO.WVB,5,1,iosb,,<str,len,' '>
+str:	db	'Hello, world!'
 len	equ	$-str
 
 	dseg

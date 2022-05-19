@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Account File Maintenance Program for RSX180.                       ;
-;   Copyright (C) 2018-2020, Hector Peraza.                            ;
+;   Copyright (C) 2018-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.z80
 
-	ident	'01.06'
+	ident	'01.07'
 
 	include	FCB.INC
 	include	TCB.INC
@@ -2401,11 +2401,11 @@ fdb2:	dw	0
 
 qio1:	QIOW$	IO.CRE,AFLUN,3,iosb,,<fdb1,0>
 qio2:	QIOW$	<<IO.ACC OR ((SF.ACR OR SF.ACW) SHL 8)>>,AFLUN,3,iosb,,<fdb1>
-qio3:	QIOW$	IO.RVB,AFLUN,3,iosb,,<rec,AFSZ,,,>
-qio4:	QIOW$	IO.WVB,AFLUN,3,iosb,,<new,AFSZ,,,>
+qio3:	QIOW$	IO.RVB,AFLUN,3,iosb,,<rec,AFSZ,0,,,>
+qio4:	QIOW$	IO.WVB,AFLUN,3,iosb,,<new,AFSZ,0,,,>
 qio5:	QIOW$	IO.DEA,AFLUN,3,iosb
 qio6:	QIOW$	IO.CRE,TMPLUN,3,iosb,,<fdb2,0>
-qio7:	QIOW$	IO.WVB,TMPLUN,3,iosb,,<rec,AFSZ,,,>
+qio7:	QIOW$	IO.WVB,TMPLUN,3,iosb,,<rec,AFSZ,0,,,>
 qio8:	QIOW$	IO.DEA,TMPLUN,3,iosb
 iosb:	ds	4
 blkno:	ds	2

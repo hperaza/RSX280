@@ -72,6 +72,8 @@ snd0:	ld	ix,QIOBLK
 	xor	a
 	ld	(ix+Q.AST),a	; no AST
 	ld	(ix+Q.AST+1),a
+	ld	(ix+Q.VFC),a	; no carriage control
+	ld	(ix+Q.VFC+1),a
 	ld	hl,QIOSB
 	ld	(ix+Q.IOSB),l	; set result address
 	ld	(ix+Q.IOSB+1),h

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   DMP - File Dump Utility for RSX180.                                ;
-;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;   Copyright (C) 2015-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	"V3.14"
+	ident	"V3.15"
 
 	cseg
 
@@ -998,11 +998,11 @@ SQIO:	QIOW$	IO.ACC,LUNSRC,11,res1,,<RFCB,0,0,0>
 
 	IF	DBLBUF
 
-QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,0,0,0>
+QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,,0,0,0>
 res1:	ds	2		; result
 nread1:	ds	2		; byte count
 
-QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,0,0,0>
+QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,,0,0,0>
 res2:	ds	2		; result
 nread2:	ds	2		; byte count
 
@@ -1012,7 +1012,7 @@ buf2:	ds	512		; I/O buffer
 
 	ELSE
 
-QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,0,0,0>
+QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,,0,0,0>
 res1:	ds	2		; result
 nread:	ds	2		; byte count
 buf:	ds	512		; I/O buffer

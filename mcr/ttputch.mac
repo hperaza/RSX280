@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Replacement PUTCH routine for MCR and TKTN tasks - RSX180.         ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -28,6 +28,8 @@
 ; also happens automatically when a CR character is output.
 
 	.Z80
+
+	ident	/1.2/
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -82,6 +84,8 @@ snd0:	ld	de,(TTDEV)
 	ld	(ix+Q.LEN),a	; bytes to write
 	ld	(ix+Q.LEN+1),0
 	ld	hl,0
+	ld	(ix+Q.VFC),l	; no vertical format control
+	ld	(ix+Q.VFC+1),h
 	ld	(QIOSB+2),hl	; clear counter of bytes sent
 	ld	(ix+Q.AST),l	; no AST
 	ld	(ix+Q.AST+1),h

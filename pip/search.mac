@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of PIP, a Peripheral Interchange Program for     ;
-;   RSX180. Copyright (C) 2014-2020, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2014-2022, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -880,7 +880,7 @@ tfnsz	equ	$-tmpfdb
 	ds	FINFSZ-tfnsz	; size = FINFSZ
 
 qio1:	QIOW$	IO.ACC,0,9,iosb,,<,,>
-qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,,>
 iosb:	ds	4
 
 tbuf:	ds	512		; buffer used by temp storage file

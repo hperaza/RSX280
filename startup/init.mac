@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	/6.27/
+	ident	/6.28/
 
 	include	DCB.INC
 	include	TCB.INC
@@ -487,7 +487,7 @@ slen:	ld	a,(hl)
 lbqio:	QIOW$	IO.RVB,1,9,iosb,,<,,,,,>
 iosb:	ds	4
 
-ttqio:	QIOW$	IO.WLB,5,3,iosb,,<BUF,,,,,>
+ttqio:	QIOW$	IO.WLB,5,3,iosb,,<BUF,,0,,,>
 BUF:	ds	80	; terminal output buffer
 BUFPTR:	ds	2
 BUFCNT:	ds	1

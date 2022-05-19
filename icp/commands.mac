@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2022, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -724,7 +724,10 @@ getlbl:	ld	hl,varnam
 ; Returns the response length (not counting the terminator) in BC
 ; and the terminator char in E. CY set on error and error code in A.
 
-tgetln:	ld	a,(TTLUN)
+tgetln:	ld	hl,askprm
+	call	STRLEN
+	ld	(qio3+Q.PRL),bc	; set prompt length in QIO block
+	ld	a,(TTLUN)
 	ld	(qio3+Q.LUN),a
 	ld	(qio4+Q.LUN),a
 	call	TTFLSH		; flush any pending output
@@ -2231,6 +2234,7 @@ fwblk:	push	ix
 	ld	(ix+FB.BLK+1),h
 	ld	hl,0
 	ld	(qio2+Q.BLK+2),hl
+	ld	(qio2+Q.VFC),hl
 	ld	l,(ix+FB.CNT)
 	ld	h,(ix+FB.CNT+1)
 	ld	(qio2+Q.LEN),hl	; set length
@@ -2678,8 +2682,8 @@ exec:	call	GETNB		; skip blanks
 	dseg
 
 qio1:	QIOW$	IO.ACC,0,9,iosb,,<FDB,0>
-qio2:	QIOW$	IO.RVB,0,9,iosb,,<,512,0,0,>
-qio3:	QIOW$	IO.RPR,0,9,iosb,,<askbuf,130,askprm,,>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,512,,0,0,>
+qio3:	QIOW$	IO.RPR,0,9,iosb,,<askbuf,130,0,askprm,,0>
 qio4:	QIOW$	IO.KIL,0,9,iosb
 iosb:	ds	4
 

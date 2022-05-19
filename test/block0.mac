@@ -154,8 +154,8 @@ skpnam:	ld	a,(hl)
 
 	dseg
 
-qio1:	QIOW$	IO.RLB,1,9,iosb,,<buf,512,0,0,>
-qio2:	QIOW$	IO.RPB,1,9,iosb,,<buf,512,0,0,>
+qio1:	QIOW$	IO.RLB,1,9,iosb,,<buf,512,,0,0,>
+qio2:	QIOW$	IO.RPB,1,9,iosb,,<buf,512,,0,0,>
 iosb:	ds	4
 buf:	ds	512
 

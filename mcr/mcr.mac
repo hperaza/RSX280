@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like Command Line Interpreter for RSX280.                      ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.15'
+	ident	'02.12'
 
 	cseg
 
@@ -1188,7 +1188,7 @@ cmdptr:	ds	2		; ptr to command args (RUN command)
 ; assumes that the buffer contents does not change, which is correct since
 ; we use this routine only to (re)display the prompt.
 
-ASTQBK:	QIO$	IO.WLB,4,3,0,AIOSB,,<0,0,0,0,>
+ASTQBK:	QIO$	IO.WLB,4,3,0,AIOSB,,<0,0,0,,,>
 AIOSB:	ds	4
 
 	ds	256		; stack space

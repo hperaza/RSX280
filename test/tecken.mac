@@ -15,7 +15,7 @@ TAB	equ	09h
 	extrn	CVTWD,UCASE
 
 	CSEG
-;
+
 START::	ld	sp,stack
 	ld	hl,qio1
 	SC	.QIO
@@ -61,9 +61,7 @@ CTL:	add	a,a
 	ld	(qio6+Q.BUF),hl
 	ld	hl,qio6
 	SC	.QIO
-DONE:	ld	hl,qio7
-	SC	.QIO
-CHKEND:	ld	a,(QPOS)
+DONE:	ld	a,(QPOS)
 	ld	e,a
 	ld	d,0
 	ld	hl,QSTR
@@ -78,7 +76,7 @@ CHKEND:	ld	a,(QPOS)
 	jr	z,LOOP
 	xor	a
 	ld	(QPOS),a
-	jr	CHKEND
+	jr	DONE
 MATCH:	inc	hl
 	ld	a,(hl)
 	or	a
@@ -87,9 +85,9 @@ MATCH:	inc	hl
 	inc	a
 	ld	(QPOS),a
 	jp	LOOP
-END::	ld	hl,qio8
+END::	ld	hl,qio7
 	SC	.QIO
-	ld	hl,qio9
+	ld	hl,qio8
 	SC	.QIO
 	ld	hl,EX.SUC
 	SC	.EXIT
@@ -100,14 +98,13 @@ IO.RAL	equ	IO.RLB OR (TF.RAL SHL 8)
 IO.RNE	equ	IO.RLB OR (TF.RNE SHL 8)
 qio1:	QIOW$	IO.ATT,5,1,iostat
 qio10:	QIOW$	SF.SMC,5,1,iostat,,<ttchr,2>
-qio2:	QIOW$	IO.WLB,5,1,iostat,,<HELO,HELOL>
+qio2:	QIOW$	IO.WLB,5,1,iostat,,<HELO,HELOL,' '>
 qio3:	QIOW$	<<IO.RNE OR IO.RAL>>,5,1,iostat,,<BUF,1>
-qio4:	QIOW$	IO.WLB,5,1,iostat,,<MSG,>
-qio5:	QIOW$	IO.WLB,5,1,iostat,,<BUF,1>
-qio6:	QIOW$	IO.WLB,5,1,iostat,,<,3>
-qio7:	QIOW$	IO.WLB,5,1,iostat,,<HELO,2>
-qio8:	QIOW$	IO.WLB,5,1,iostat,,<EMSG,EMSGL>
-qio9:	QIOW$	IO.DET,5,1,iostat
+qio4:	QIOW$	IO.WLB,5,1,iostat,,<MSG,,'$'>
+qio5:	QIOW$	IO.WLB,5,1,iostat,,<BUF,1,'+'>
+qio6:	QIOW$	IO.WLB,5,1,iostat,,<,3,'+'>
+qio7:	QIOW$	IO.WLB,5,1,iostat,,<EMSG,EMSGL,' '>
+qio8:	QIOW$	IO.DET,5,1,iostat
 iostat:	defs	4
 ttchr:	db	TC.BIN,1
 
@@ -118,10 +115,10 @@ ASCII:	defb	'NUL SOH STX ETX EOT ENQ ACK BEL BS  HT  LF  VT  FF  CR  '
 	defb	'SS2 SS3 DCS PU1 PU2 STS CRH MW  SPA EPA 98  99  9A  CSI '
 	defb	'ST  OSC PM  APC NSP '
 
-HELO:	defb	CR,LF,'Character check. End with "exit"<CR>',CR,LF
+HELO:	defb	'Character check. End with "exit"<CR>'
 HELOL	equ	$-HELO
 
-EMSG:	defb	CR,LF,'Program finished.',CR
+EMSG:	defb	'Program finished.'
 EMSGL	equ	$-EMSG
 
 BUF:	defs	2

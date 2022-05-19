@@ -2,9 +2,9 @@
 
 	TITLE	MCE - CLI Command Line Editor
 
-	IDENT	-V4.29-		; This ident code appears in MCE messages
+	IDENT	-V4.30-		; This ident code appears in MCE messages
 
-;	Port of the DECUS RSX-11M MCE version V4.28, (C) Hector Peraza, 2018
+;	Port of the DECUS RSX-11M MCE version V4.28, (C) H. Peraza, 2018-2022
 ;	Original MCE is Copyright (C) 1987-1998 J. H. Hamakers,
 ;	pAkUiT International
 
@@ -146,11 +146,12 @@ $$$	equ	$
 
 	org	$$$
 
-QIODIR:	QIO$	IO.WLB,TI,EFN,,IOSTAT,,<,,,,>
+QIODIR:	QIO$	IO.WLB,TI,EFN,,IOSTAT,,<,,,,,>
 
 CODE	equ	QIODIR+Q.FUNC	; I/O function code
 ADR	equ	QIODIR+Q.BUF	; I/O buffer address
 LEN	equ	QIODIR+Q.LEN	; I/O length (also used for Spawn)
+VFC	equ	QIODIR+Q.VFC	; I/O vertical format control
 
 ; File stuff
 
@@ -4344,6 +4345,8 @@ IO:	push	hl
 	ld	(TMOCNT),hl	; set new time-out count
 	ENDIF
 
+	ld	hl,0
+	ld	(VFC),hl
 	ld	hl,QIODIR
 	SC	.QIO		; do I/O
 	ld	e,EFN

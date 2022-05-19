@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ICP, an Indirect Command Processor for        ;
-;   RSX180. Copyright (C) 2015-2021, Hector Peraza.                    ;
+;   RSX180. Copyright (C) 2015-2022, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -25,7 +25,7 @@
 
 	.Z80
 
-	ident	'2.61'
+	ident	'2.62'
 
 	include	ICP.INC
 	include	SYSFN.INC
@@ -1107,7 +1107,7 @@ BLKLVL:	ds	1		; current block nesting level
 INDPDL:	ds	MAXIND*12	; indirect nesting push-down list
 
 qio1:	QIOW$	IO.ACC,LUNIND,9,res,,<FDB,0>
-qio2:	QIOW$	IO.RVB,LUNIND,9,res,,<indbuf,512,0,0,0>
+qio2:	QIOW$	IO.RVB,LUNIND,9,res,,<indbuf,512,,0,0,0>
 res:	ds	2		;!   do not   !
 nread:	ds	2		;!change order!
 

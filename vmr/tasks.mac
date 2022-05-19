@@ -530,7 +530,7 @@ TBASE:	ds	1		; task base page
 
 THDR:	ds	256		; buffer for task header
 
-qio1:	QIOW$	IO.RLB,LUNFIL,EIO,iosb,,<IBUF,512,0,0,0>
+qio1:	QIOW$	IO.RLB,LUNFIL,EIO,iosb,,<IBUF,512,,0,0,0>
 iosb:	ds	4
 
 	end

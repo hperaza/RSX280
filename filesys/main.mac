@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSFCP, the standard filesystem task of       ;
-;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;   RSX280. Copyright (C) 1985-2022, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -23,7 +23,7 @@
 
 	.Z280
 
-	IDENT	"V5.0-4"
+	IDENT	"V5.0-5"
 
 	include	SYSFN.INC
 	include	SYSFCP.INC
@@ -109,7 +109,7 @@ process:
 	inc	hl
 	inc	hl		; skip I.PRI
 	ld	de,RCVBUF
-	ld	bc,QDBSZ+4	; TCB addr + UCB addr + QDB
+	ld	bc,QDBSZ+6	; size + TCB addr + UCB addr + QDB
 	ldir			; local copy
 	ld	hl,0
 	ld	(IOS2),hl

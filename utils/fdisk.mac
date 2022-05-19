@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;  GIDE FDISK utility for the P112 - RSX180 version.                   ;
-;  Copyright (C) 2019-2020, Hector Peraza.                             ;
+;  Copyright (C) 2019-2022, Hector Peraza.                             ;
 ;                                                                      ;
 ;  This program is free software; you can redistribute it and/or       ;
 ;  modify it under the terms of the GNU General Public License as      ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.01'
+	ident	'01.02'
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -1790,9 +1790,9 @@ hdbuf:	ds	1024	; new-style boot code is 2 sectors long
 
 ptable:	ds	PTSIZE * MAXENT
 
-qio1:	QIOW$	IO.RPB,LUN,1,iosb,,<hdbuf,512,0,0,>
-qio2:	QIOW$	IO.WPB,LUN,1,iosb,,<hdbuf,512,0,0,>
-qio3:	QIOW$	IO.IDN,LUN,1,iosb,,<idbuf,512,,,>
+qio1:	QIOW$	IO.RPB,LUN,1,iosb,,<hdbuf,512,,0,0,>
+qio2:	QIOW$	IO.WPB,LUN,1,iosb,,<hdbuf,512,,0,0,>
+qio3:	QIOW$	IO.IDN,LUN,1,iosb,,<idbuf,512,,,,>
 iosb:	ds	4
 
 	ds	100

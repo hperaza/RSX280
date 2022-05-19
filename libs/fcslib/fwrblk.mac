@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of FCSLIB, a file I/O library for the RSX180 OS. ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This library is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU Library General Public        ;
@@ -20,6 +20,8 @@
 ;**********************************************************************;
 
 	.z80
+
+	ident	/FCS1.2/
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -53,6 +55,7 @@ FWRBLK:	push	hl
 	ld	(QIOBLK+Q.FUNC),hl
 	ld	hl,0		; offset within block
 	ld	(QIOBLK+Q.OFS),hl
+	ld	(QIOBLK+Q.VFC),hl
 	ld	(QIOBLK+Q.AST),hl
 	ld	hl,QIOBLK
 	SC	.QIO		; write block

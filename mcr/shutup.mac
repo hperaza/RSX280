@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   RSX280 SHUTUP program.                                             ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	/01.06/
+	ident	/01.07/
 
 	cseg
 
@@ -971,6 +971,8 @@ TTSTR:	push	ix
 	ld	l,b
 	ld	h,0
 	ld	(qio3+Q.LEN),hl	; bytes to write
+	ld	hl,0
+	ld	(qio3+Q.VFC),hl	; no vertical format
 	ld	hl,qio3
 	SC	.QIO		; write message
 	push	af
@@ -1056,7 +1058,7 @@ qio2:	QIOW$	IO.DEA,LUN2,EFN,iosb
 
 btmode	equ	IO.WVB OR (TF.WBT SHL 8)
 
-qio3:	QIOW$	btmode,LUN1,EFN,iosb,,<,,,,>
+qio3:	QIOW$	btmode,LUN1,EFN,iosb,,<,,,,,>
 qio4:	QIOW$	IO.KIL,LUN1,EFN,iosb
 
 iosb:	ds	4

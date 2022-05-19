@@ -35,10 +35,10 @@ QTEST::	ld	sp,stack
 	SC	.EXIT		; exit
 
 qioatt:	QIOW$	IO.ATT,5,1,iosb,,<>
-qiord:	QIOW$	IO.RVB,5,1,iosb,,<buf,10,0,0,>
-qiowr:	QIOW$	IO.WVB,5,1,iosb,,<str,len,0,0,>
+qiord:	QIOW$	IO.RVB,5,1,iosb,,<buf,10,,0,0,>
+qiowr:	QIOW$	IO.WVB,5,1,iosb,,<str,len,'$'>
 
-str:	db	CR,LF,'Type something: '
+str:	db	'Type something: '
 len	equ	$-str
 
 	dseg

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Disk Format Utility for RSX180.                                    ;
-;   Copyright (C) 2020, Hector Peraza.                                 ;
+;   Copyright (C) 2022, Hector Peraza.                                 ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.00'
+	ident	'01.01'
 
 	include	SYSFN.INC
 	include	DCB.INC
@@ -553,7 +553,7 @@ it18:	db	 1, 10,  2, 11,  3, 12,  4, 13,  5  ; sector interlace
 	db	14,  6, 15,  7, 16,  8, 17,  9, 18  ;  table, skewed 2:1
 
 qio1:	QIOW$	IO.ATT,LUNFMT,9,iosb
-qio2:	QIOW$	IO.FMT,LUNFMT,9,iosb,,<trkbuf,4*18,,,>
+qio2:	QIOW$	IO.FMT,LUNFMT,9,iosb,,<trkbuf,4*18,,,,>
 qio3:	QIOW$	IO.DET,LUNFMT,9,iosb
 iosb:	ds	4
 

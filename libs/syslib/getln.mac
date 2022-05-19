@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This library is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU Library General Public        ;
@@ -23,6 +23,8 @@
 ;  Assumes console is assigned to LUN 5.
 
 	.Z80
+
+	ident	/SL1.2/
 
 	include	SYSFN.INC
 	include	ERRORS.INC
@@ -59,9 +61,14 @@ GETLNL:	push	ix
 	dec	e		; -trailing zero
 	ld	(ix+Q.LEN),e	; bytes to read
 	ld	(ix+Q.LEN+1),0
-	ld	(ix+Q.P3),c	; optional prompt
-	ld	(ix+Q.P3+1),b
+	ld	(ix+Q.PRB),c	; optional prompt
+	ld	(ix+Q.PRB+1),b
+	call	strlen
+	ld	(ix+Q.PRL),l
+	ld	(ix+Q.PRL+1),h
 	xor	a
+	ld	(ix+Q.PVF),a	; clear vfc
+	ld	(ix+Q.PVF+1),a
 	ld	(ix+Q.AST),a	; no AST
 	ld	(ix+Q.AST+1),a
 	ld	hl,QIOSB
@@ -99,5 +106,13 @@ gc1:	ld	bc,0
 	pop	hl
 	pop	ix
 	ret
+
+strlen:	ld	hl,0
+s1:	ld	a,(bc)
+	or	a
+	ret	z
+	inc	bc
+	inc	hl
+	jr	s1
 
 	end

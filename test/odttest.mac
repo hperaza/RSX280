@@ -219,7 +219,7 @@ TTQ:	ds	1		; TQ.IP
 
 BUF:	ds	16*2+2		; buffer to print MD5 hash
 
-MD5OUT:	QIOW$	IO.WVB,5,1,IOSB,,<BUF,16*2+2,,,,0>
+MD5OUT:	QIOW$	IO.WVB,5,1,IOSB,,<BUF,16*2+2,0>
 IOSB:	ds	4
 
 	ds	256

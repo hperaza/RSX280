@@ -27,7 +27,7 @@
 
 	.Z280
 
-	ident	'V6.14'
+	ident	'V6.15'
 
 	include	SYSCONF.INC
 	include	SYSFN.INC
@@ -464,7 +464,7 @@ TSKHDR:	ds	256		; buffer for task header
 IOBUF:	ds	512		; buffer for file I/O
 TBASE:	ds	2		; task base page
 
-QIOBLK:	QIOW$	IO.RLB,LUN,EFN,QIOSB,,<IOBUF,512,0,0,0>
+QIOBLK:	QIOW$	IO.RLB,LUN,EFN,QIOSB,,<IOBUF,512,,0,0,0>
 QIOSB:	ds	4
 
 RCVBUF:	ds	2		; receive buffer

@@ -683,7 +683,7 @@ dirfdb:	ds	FINFSZ
 
 qio1:	QIOW$	IO.ACC,lun,9,iosb,,<srcfdb>
 qio2:	QIOW$	IO.RAT,lun,9,iosb,,<srcfdb,FINFSZ>
-qio3:	QIOW$	IO.RVB,lun,9,iosb,,<iobuf,128,0,0,0>
+qio3:	QIOW$	IO.RVB,lun,9,iosb,,<iobuf,128,,0,0,0>
 qio4:	QIOW$	SF.SMC,5,9,iosb,,<ttchr,2>
 ttchr:	db	TC.BIN,1
 iosb:	ds	4

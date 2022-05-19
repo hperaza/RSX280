@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   File Structure Verification Utility for RSX180.                    ;
-;   Copyright (C) 2020, Hector Peraza.                                 ;
+;   Copyright (C) 2022, Hector Peraza.                                 ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.03'
+	ident	'01.04'
 
 	include	SYSFN.INC
 	include	TCB.INC
@@ -1676,8 +1676,8 @@ lnptr:	ds	2		; command line pointer
 dev:	ds	3		; device to check
 optsw:	ds	1		; option bits
 
-qio1:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<iobuf,512,,,>
-qio2:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<inobuf,512,,,>
+qio1:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<iobuf,512,,,,>
+qio2:	QIOW$	IO.RLB,LUNDSK,EFN,iosb,,<inobuf,512,,,,>
 iosb:	ds	4
 
 fvers:	ds	2		; filesystem version

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command INI - initialize RSX180 Disk Volumes.         ;
-;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;   Copyright (C) 2016-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.03'
+	ident	'03.04'
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -1883,11 +1883,11 @@ GDAT:	GCML$	CMDBUF,80,'INI',LUNCML,2
 
 qio1:	QIOW$	<<IO.ACC OR (SF.ACR OR SF.SHR) SHL 8>>,LUNFIL,9,iosb,,<sysfdb>
 qio2:	QIOW$	IO.RAT,LUNFIL,9,iosb,,<finfo,FINFSZ>
-qio3:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<BUF,64,0,0,>
+qio3:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<BUF,64,,0,0,>
 qio4:	QIOW$	IO.DEA,LUNFIL,9,iosb
 qio5:	QIOW$	IO.SEC,LUNDSK,9,iosb,,<BUF,4>
-qio6:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<BUF,512,0,0,>
-qio7:	QIOW$	IO.WLB,LUNDSK,9,iosb,,<BUF,512,0,0,>
+qio6:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<BUF,512,,0,0,>
+qio7:	QIOW$	IO.WLB,LUNDSK,9,iosb,,<BUF,512,,0,0,>
 iosb:	ds	4
 
 sysfdb:	dw	0

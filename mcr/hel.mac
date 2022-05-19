@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command HELLO/HELP for RSX180/RSX280.                 ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.08'
+	ident	'03.09'
 
 	cseg
 
@@ -938,7 +938,7 @@ lgn10:	push	af
 	sbc	hl,de		; compute length
 	ld	(qio5+Q.LEN),hl
 	ld	hl,0
-	ld	(qio5+Q.LEN+2),hl
+	ld	(qio5+Q.VFC),hl
 	ld	hl,qio5
 	SC	.QIO		; send to system console
 
@@ -1193,9 +1193,17 @@ TGETLN:	push	hl
 	ld	d,0
 	dec	de		; -trailing zero
 	ld	(qio6+Q.LEN),de	; bytes to read
+	ld	(qio6+Q.PRB),bc	; optional prompt
+	ld	a,b
+	or	c
+	jr	z,gc0
+	ld	l,c
+	ld	h,b
+	call	STRLEN
+	ld	b,0
+gc0:	ld	(qio6+Q.PRL),bc	; prompt length
 	ld	hl,0
-	ld	(qio6+Q.LEN+2),hl
-	ld	(qio6+Q.P3),bc	; optional prompt
+	ld	(qio6+Q.PVF),hl	; no vertical format control
 	call	TTFLSH		; flush any pending output
 	ld	hl,20		; timeout = 20 seconds
 	ld	d,2
@@ -1511,11 +1519,11 @@ stopic:	ds	41
 afmode	equ	IO.ACC OR (SF.ACR OR SF.ACW OR SF.SHR) SHL 8
 
 qio1:	QIOW$	afmode,LUNFIL,EFN,iosb,,<fdb>
-qio2:	QIOW$	IO.RVB,LUNFIL,EFN,iosb,,<buf,512,0,0,>
-qio3:	QIOW$	IO.WVB,LUNFIL,EFN,iosb,,<buf,512,0,0,>
+qio2:	QIOW$	IO.RVB,LUNFIL,EFN,iosb,,<buf,512,,0,0,>
+qio3:	QIOW$	IO.WVB,LUNFIL,EFN,iosb,,<buf,512,,0,0,>
 qio4:	QIOW$	IO.DEA,LUNFIL,EFN,iosb
-qio5:	QIOW$	IO.WVB,LUNCO,EFN,iosb,,<lnbuf,,,,>
-qio6:	QIOW$	IO.RPR,LUNTI,EFN,iosb,,<,,,,>
+qio5:	QIOW$	IO.WVB,LUNCO,EFN,iosb,,<lnbuf,,,,,>
+qio6:	QIOW$	IO.RPR,LUNTI,EFN,iosb,,<,,,,,>
 qio7:	QIOW$	IO.KIL,LUNTI,EFN,iosb
 qtmod:	QIOW$	SF.GMC,LUNTI,EFN,iosb,,<ttchr,ttlen>
 iosb:	ds	4

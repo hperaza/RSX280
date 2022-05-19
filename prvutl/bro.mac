@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   BROadcast command for RSX180.                                      ;
-;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;   Copyright (C) 2016-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.03'
+	ident	'01.04'
 
 	include	SYSFN.INC
 	include	AST.INC
@@ -777,7 +777,7 @@ tmpbuf:	ds	80		; temp buffer
 
 IO.WBT	equ	IO.WLB OR ((TF.WBT OR TF.CCO) SHL 8)
 
-qsend:	QIOW$	IO.WBT,LUNDST,EFN,iosb,,<msgbuf,0>
+qsend:	QIOW$	IO.WBT,LUNDST,EFN,iosb,,<msgbuf,0,0>
 qkill:	QIOW$	IO.KIL,LUNDST,EFN,iosb
 iosb:	ds	4
 

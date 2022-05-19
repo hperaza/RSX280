@@ -20,8 +20,8 @@ HELLO::	ld	sp,stack
 	ld	hl,0
 	SC	.EXIT
 
-qio1:	QIOW$	IO.WVB,5,1,iosb,,<str,len,0,0,>
-str:	db	CR,LF,'Hello, world!',CR,LF
+qio1:	QIOW$	IO.WVB,5,1,iosb,,<str,len,' '>
+str:	db	'Hello, world!'
 len	equ	$-str
 
 	dseg

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command BYE for RSX180.                               ;
-;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;   Copyright (C) 2015-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.15'
+	ident	'01.16'
 
 	cseg
 
@@ -374,7 +374,7 @@ BYE:	ld	de,ASTBYE
 	sbc	hl,de		; compute length
 	ld	(qlog+Q.LEN),hl
 	ld	hl,0
-	ld	(qlog+Q.LEN+2),hl
+	ld	(qlog+Q.VFC),hl
 	ld	hl,qlog
 	SC	.QIO		; send to system console
 
@@ -587,7 +587,7 @@ gtkbuf:	ds	GTKSZ		; buffer for task info
 lcbbuf:	ds	LCBSZ
 dtbuf:	ds	8
 
-qlog:	QIOW$	IO.WVB,1,1,iosb,,<buf,,,,>
+qlog:	QIOW$	IO.WVB,1,1,iosb,,<buf,,,,,>
 qterm:	QIOW$	SF.SMC,5,1,iosb,,<ttchr,ttlen>
 ttchr:	db	TC.SLV,0	; unslave terminal
 	db	TC.NEC,0	; back to echo mode

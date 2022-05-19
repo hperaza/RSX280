@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This library is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU Library General Public        ;
@@ -26,6 +26,8 @@
 ;  indirect command file.
 
 	.Z80
+
+	ident	/SL1.2/
 
 	include	SYSFN.INC
 	include	GCML.INC
@@ -576,7 +578,7 @@ skpnam:	ld	a,(hl)
 	dseg
 
 qio1:	QIOW$	IO.ACC,0,9,iosb,,<0>
-qio2:	QIOW$	IO.RVB,0,9,iosb,,<iobuf,128,0,0,0>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<iobuf,128,0,0,0,0>
 iosb:	ds	4
 iobuf:	ds	128		; buffer for indirect file I/O
 bufptr:	ds	2		; pointer to current char in iobuf

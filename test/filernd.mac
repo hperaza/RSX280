@@ -209,7 +209,7 @@ d2:	ld	a,(de)
 fmode	equ	SF.ACR OR SF.ACW
 
 qio1:	QIOW$	<<IO.ACC OR (fmode SHL 8)>>,1,9,iosb,,<fdb,0>
-qio2:	QIOW$	IO.RVB,1,9,iosb,,<buf,512,0,0,>
+qio2:	QIOW$	IO.RVB,1,9,iosb,,<buf,512,,0,0,>
 iosb:	ds	4
 
 fdb:	ds	FDBSZ

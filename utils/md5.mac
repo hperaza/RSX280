@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MD5 - Compute the MD5 checksum of a file - RSX180 version.         ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	"V1.03"
+	ident	"V1.04"
 
 	include	SYSFN.INC
 	include	FCB.INC
@@ -622,10 +622,10 @@ rd1:	ld	hl,(blkno)
 	ld	a,(blkno+2)
 	ld	b,a
 	call	inc24
-	ld	(QIOBL2+Q.BLK),hl
+	ld	(QIOBL1+Q.BLK),hl
 	ld	l,b
 	ld	h,0
-	ld	(QIOBL2+Q.BLK+2),hl
+	ld	(QIOBL1+Q.BLK+2),hl
 	ld	hl,QIOBL1
 	SC	.QIO		; read next block, no wait
 	ret	c
@@ -806,11 +806,11 @@ SQIO:	QIOW$	IO.ACC,LUNSRC,11,res1,,<RFCB,0,0,0>
 
 	IF	DBLBUF
 
-QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,0,0,>
+QIOBL1:	QIO$	IO.RVB,LUNSRC,11,0,res1,,<buf1,512,,0,0,0>
 res1:	ds	2		; result
 nread1:	ds	2		; byte count
 
-QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,0,0,>
+QIOBL2:	QIO$	IO.RVB,LUNSRC,12,0,res2,,<buf2,512,,0,0,0>
 res2:	ds	2		; result
 nread2:	ds	2		; byte count
 
@@ -820,7 +820,7 @@ buf2:	ds	512		; I/O buffer 2
 
 	ELSE
 
-QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,0,0,>
+QIOBL1:	QIOW$	IO.RVB,LUNSRC,11,res1,,<buf,512,,0,0,0>
 res1:	ds	2		; result
 nread:	ds	2		; byte count
 buf:	ds	512		; I/O buffer

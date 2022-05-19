@@ -25,7 +25,7 @@
 
 	name	'OVLMGR'
 
-	ident	'1.01'
+	ident	'1.02'
 
 	include	QIO.INC
 	include	SYSFN.INC
@@ -328,7 +328,7 @@ OVLTBL:	REPT	MAXOVL		; overlay save area
 OVTESZ	equ	5		; size of an entry in the above table
 
 
-QIOB:	QIOW$	IO.LOV,LUNOVL,EFNOVL,IOSB,,<IOBUF,512,,,>
+QIOB:	QIOW$	IO.LOV,LUNOVL,EFNOVL,IOSB,,<IOBUF,512,0,,,>
 IOSB:	ds	4
 IOBUF:	ds	512		; disk buffer
 

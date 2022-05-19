@@ -1743,7 +1743,7 @@ NegOpt:	ds	1
 DevNam:	ds	3
 
 qio1:	QIOW$	IO.ACC,0,9,iosb,,<,,>
-qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,>
+qio2:	QIOW$	IO.RVB,0,9,iosb,,<,,,,,>
 iosb:	ds	4
 
 MainFCB:			; copy of main module FDB

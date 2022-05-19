@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Bi-directional File Browser with HEX mode - RSX180 version.        ;
-;   Copyright (C) 1991-2020, Hector Peraza.                            ;
+;   Copyright (C) 1991-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -26,7 +26,7 @@
 ;     - Auto-binary mode (for COM, TSK and such binary files)
 
 	title	'Bi-directional File Browser'
-	ident	'4.2'
+	ident	'4.3'
 	.z80
 
 	include	SYSFN.INC
@@ -1489,7 +1489,7 @@ cmdbuf:	ds	82
 fdb:	ds	FNSZ
 
 qio1:	QIOW$	IO.ACC,LUNFIL,9,iosb,,<fdb>
-qio2:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<,512,0,0,0>
+qio2:	QIOW$	IO.RVB,LUNFIL,9,iosb,,<,512,,0,0,0>
 iosb:	ds	4
 
 sheight:db	24	; screen height = screen rows - 1

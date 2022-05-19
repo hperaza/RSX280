@@ -1,5 +1,5 @@
 	TITLE	CAL -- DISPLAY CALENDAR PROGRAM
-	IDENT	'V1.00'
+	IDENT	'V1.01'
 
 	.z80
 
@@ -1068,7 +1068,7 @@ CPHLDE:	ld	a,d
 
 	DSEG
 
-QIOW:	QIOW$	IO.WVB,LUN.TI,EFN.TI,result,,<BUFF,,,,>
+QIOW:	QIOW$	IO.WVB,LUN.TI,EFN.TI,result,,<BUFF,,0,,,>
 QATT:	QIOW$	IO.ATT,LUN.TI,EFN.TI,result
 
 result:	ds	2		; result

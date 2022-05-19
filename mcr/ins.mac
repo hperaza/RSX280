@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.11'
+	ident	'01.12'
 
 	cseg
 
@@ -944,7 +944,7 @@ cmdbuf:	ds	256		; buffer for command line (CMD option)
 tskcml:	ds	130
 
 qio1:	QIOW$	IO.ACC,1,9,iosb,,<fdb,FINFSZ>	; for IO.ACC, IO.RAT & IO.DEA
-qio2:	QIOW$	IO.RVB,1,9,iosb,,<hdr,256,0,0,0>
+qio2:	QIOW$	IO.RVB,1,9,iosb,,<hdr,256,,0,0,0>
 iosb:	ds	4
 
 fdb:	ds	FINFSZ		; file descriptor for task image

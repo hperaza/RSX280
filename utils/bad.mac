@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Bad Block Locator Utility for RSX180.                              ;
-;   Copyright (C) 2020, Hector Peraza.                                 ;
+;   Copyright (C) 2022, Hector Peraza.                                 ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.00'
+	ident	'01.01'
 
 	include	SYSFN.INC
 	include	DCB.INC
@@ -581,7 +581,7 @@ nblks:	ds	4		; disk size in blocks
 
 qio1:	QIOW$	IO.ATT,LUNDSK,9,iosb
 qio2:	QIOW$	IO.SEC,LUNDSK,9,iosb,,<iobuf,4>
-qio3:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<iobuf,512,,,>
+qio3:	QIOW$	IO.RLB,LUNDSK,9,iosb,,<iobuf,512,,,,>
 qio4:	QIOW$	IO.DET,LUNDSK,9,iosb
 iosb:	ds	4
 

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ZAP - an hexadecimal file editor for RSX180.  ;
-;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;   Copyright (C) 2019-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -453,7 +453,7 @@ ttq:	ds	1	; ipos
 FDB:	ds	FINFSZ
 
 qio1:	QIOW$	IO.ACC,LUNFIL,EFIL,iosb,,<FDB>
-qio2:	QIOW$	IO.RVB,LUNFIL,EFIL,iosb,,<,,,,>
+qio2:	QIOW$	IO.RVB,LUNFIL,EFIL,iosb,,<,,,,,>
 qio3:	QIOW$	SF.SMC,LUNTI,TTEFN,iosb,,<ttc,2>
 ttc:	db	TC.BIN,1
 iosb:	ds	4

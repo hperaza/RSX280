@@ -1,6 +1,6 @@
 	.Z180
 
-	ident	'V1.0'
+	ident	'V1.1'
 
 	include	QIO.INC
 	include	SYSFN.INC
@@ -128,7 +128,7 @@ DSTMO:	db	'Timeout in response from DS1820 chip',0
 
 	dseg
 
-DSQIO:	QIOW$	IO.RLB,DSLUN,3,RESULT,,<IOBUF,9,0,,>
+DSQIO:	QIOW$	IO.RLB,DSLUN,3,RESULT,,<IOBUF,9,0,,,>
 
 RESULT:	ds	4
 

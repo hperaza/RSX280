@@ -36,7 +36,7 @@
 
 	.Z80
 
-	ident	'V1.13'
+	ident	'V1.14'
 
 	include	SYSFN.INC
 	include	FCB.INC
@@ -3175,7 +3175,7 @@ plrgst:	ds	2		; largest fragment size
 plimit:	ds	2		; pool top address
 
 qio1:	QIOW$	IO.ACC,LUNFIL,EIO,iosb,,<FDB,FINFSZ>	; for IO.ACC, IO.RAT & IO.DEA
-qio2:	QIOW$	IO.RVB,LUNFIL,EIO,iosb,,<IBUF,256,0,0,0>
+qio2:	QIOW$	IO.RVB,LUNFIL,EIO,iosb,,<IBUF,256,,0,0,0>
 iosb:	ds	4
 
 FDB:	ds	FINFSZ
