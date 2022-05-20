@@ -1606,6 +1606,7 @@ prompt:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
 prm1:	ld	hl,0
 	ldw	(iy+UX.VFC),hl	; no vfc for CLI prompt
 	call	cliprm		; get prompt from CLICB
+	ld	b,0		; prompt address in HL, length in BC
 	ex	de,hl
 	ldw	hl,(iy+U.DCB)
 	ldw	hl,(hl+D.BANK)	; $SBANK
@@ -2658,10 +2659,13 @@ cliprm:	ld	de,($CLIST)	; get head of CLI list
 	ld	a,d
 	or	e		; CLI set?
 	ld	hl,nulprm	; return null string if not
+	ld	c,a		; null length in C
 	ret	z
 	ld	hl,CL.DPL
 	add	hl,de
 	ld	c,(hl)		; get length of default prompt
+	inc	hl
+	ld	a,(hl)		; get length of ^C prompt
 	ld	hl,CL.DAT
 	add	hl,de		; point to start of strings
 	inc	b
@@ -2669,6 +2673,7 @@ cliprm:	ld	de,($CLIST)	; get head of CLI list
 	ret	z		; this is the one we want
 	ld	b,0
 	add	hl,bc		; else return the second string
+	ld	c,a		; length in C
 	ret
 
 nulprm:	db	0
