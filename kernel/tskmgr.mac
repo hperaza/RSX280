@@ -175,12 +175,17 @@ dsp2:	call	DOFORK		; else dispatch fork queue...
 dsp3:	IF	F$CHKP
 	bit	2,(hl)
 	jr	z,dsp1
+	IF	F$HALT
+	jr	z,dsp6		; no checkpoint, continue to halt check
+	ELSE
+	jr	z,dsp1		; no halt? just restart loop
+	ENDIF
 	res	2,(hl)
 	call	DECSWP		; time to decrement swap priorities
 	call	CHKPAR
 	ENDIF
 	IF	F$HALT
-	; We just checked these, but with interrupts enabled.
+dsp6:	; We just checked these, but with interrupts enabled.
 	; Now atomically check them with interrupts off, and if
 	; we still have nothing to do, halt.
 	di
