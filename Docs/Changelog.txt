@@ -7124,3 +7124,7 @@ BUGS:
   or no changes were required.)
 
 
+20/05/22
+
+- Applied new idle patch from Andy Valencia (see also 25/12/21 changes.)
+
