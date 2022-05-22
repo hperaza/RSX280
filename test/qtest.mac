@@ -5,9 +5,6 @@
 	include	QIO.INC
 	.list
 
-CR	equ	0Dh
-LF	equ	0Ah
-
 ; Program to test the typeahead feature of the terminal driver.
 
 	cseg
@@ -15,35 +12,39 @@ LF	equ	0Ah
 QTEST::	ld	sp,stack
 	ld	hl,qioatt
 	SC	.QIO		; attach terminal
-	ld	hl,qiowr
-	SC	.QIO		; display prompt
-	ld	hl,qiord
-	SC	.QIO		; get a line from terminal
-	ld	hl,3
+	ld	hl,qiord1
+	SC	.QIO		; display prompt and get a line from terminal
+	ld	hl,qiowr1
+	SC	.QIO		; display message
+	ld	hl,5
 	ld	d,2
 	call	SLEEP##		; sleep for a few seconds. During this time
 				;  anything you type should not get lost, but
 				;   kept in the typeahead buffer instead
-	ld	hl,qiowr
-	SC	.QIO		; display prompt again
-	ld	hl,qiord
-	SC	.QIO		; get another line from terminal. Anything
-				;  you typed while the task was paused should
-				;   appear here before any new characters are
-				;    typed.
+	ld	hl,qiord2
+	SC	.QIO		; display prompt and read typeahead buffer.
+				;  Characters typed while the task was paused
+				;   should be read and displayed here.
 	ld	hl,0
 	SC	.EXIT		; exit
 
 qioatt:	QIOW$	IO.ATT,5,1,iosb,,<>
-qiord:	QIOW$	IO.RVB,5,1,iosb,,<buf,10,,0,0,>
-qiowr:	QIOW$	IO.WVB,5,1,iosb,,<str,len,'$'>
+qiord1:	QIOW$	IO.RPR,5,1,iosb,,<buf,20,,str1,len1,'$'>
+qiowr1:	QIOW$	IO.WVB,5,1,iosb,,<str2,len2,' '>
+qiord2:	QIOW$	<<IO.RPR OR (TF.TMO SHL 8)>>,5,1,iosb,,<buf,20,0,str3,len3,'$'>
 
-str:	db	'Type something: '
-len	equ	$-str
+str1:	db	'Type something: '
+len1	equ	$-str1
+
+str2:	db	'Sleeping for 5 seconds, type some more...'
+len2	equ	$-str2
+
+str3:	db	'Typeahead buffer read: '
+len3	equ	$-str3
 
 	dseg
 
-buf:	ds	10
+buf:	ds	20
 iosb:	ds	4
 	ds	64		; stack space
 stack	equ	$
