@@ -7128,3 +7128,20 @@ BUGS:
 
 - Applied new idle patch from Andy Valencia (see also 25/12/21 changes.)
 
+
+22/05/22
+
+- DEVTT:
+  * return the line terminator (CR or ESC) in the high byte of the I/O
+    status word.
+  * ^C during input operation now ends the input and returns the ^C
+    character in the high byte of the I/O status word. This better matches
+    the RSX-11M behavior.
+  * implemented 'read with timeout' function, specified by adding the TF.TMO
+    subfunction bit to IO.RVB or IO.RPR; the Q.TMO QIO parameter specifies
+    the tiemout in seconds. The timeout may be zero, in which case the
+    function returns immediately after reading and data that may be waiting
+    in the typeahead buffer (in some cases that may be more efficient than
+    using unsolicited char ASTs).
+
+
