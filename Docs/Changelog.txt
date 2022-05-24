@@ -7140,7 +7140,7 @@ BUGS:
   * implemented 'read with timeout' function, specified by adding the TF.TMO
     subfunction bit to IO.RVB or IO.RPR; the Q.TMO QIO parameter specifies
     the tiemout in seconds. The timeout may be zero, in which case the
-    function returns immediately after reading and data that may be waiting
+    function returns immediately after reading any data that may be waiting
     in the typeahead buffer (in some cases that may be more efficient than
     using unsolicited char ASTs).
 
