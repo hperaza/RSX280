@@ -5,9 +5,6 @@
 	include	$QIO.INC
 	.list
 
-CR	equ	0Dh
-LF	equ	0Ah
-
 ;-----------------------------------------------------------------------
 
 ; "Hello world" example using direct QIO calls.
