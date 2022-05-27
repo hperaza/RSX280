@@ -177,12 +177,10 @@ TB.XOF	equ	5		; send XOFF
 
 UM.INP	equ	0		; set if processing input
 UM.OUT	equ	1		; set if processing output
-UM.SOP	equ	2		; saved value of UM.OUT during unsol. input
-UM.SBY	equ	3		; saved value of US.BSY during unsol. input
-UM.UNS	equ	4		; set if processing unsolicited input
-UM.OFP	equ	5		; set if output fork process is queued
-UM.IFP	equ	6		; set if input fork process is queued
-UM.TFP	equ	7		; set if timeout fork process is queued
+UM.UNS	equ	2		; set if processing unsolicited input
+UM.OFP	equ	3		; set if output fork process is queued
+UM.IFP	equ	4		; set if input fork process is queued
+UM.TFP	equ	5		; set if timeout fork process is queued
 
 U2.XOF	equ	0		; set if output stopped with ^S
 U2.OCC	equ	1		; set if ^C received while in output mode
@@ -205,11 +203,6 @@ TQ.BUF	equ	TQ.OP+1		; start of buffer
 ; Default terminal chacteristics
 
 DEFTC	equ	(1 SHL TC.SMR) OR (1 SHL TC.SCP) OR (1 SHL TC.ANS)
-
-CCA	equ	0		; set to true to enable ^C processing
-				;  *after* current output is done (else
-				;  output will be interrupted and then
-				;  restored)
 
 DBGTRP	equ	1		; set to true to enable ^T trap to system
 				;  debugger-monitor from system console
@@ -499,19 +492,13 @@ ini1:	ld	a,(iy+UX.BDR)	; get default baud rate
 
 ; I/O request handling, called by the kernel with IY = UCB address.
 
-ioreq:
-  IF CCA
-	bit	U2.OCC,(iy+UX.MOD+1) ; ^C processing pending?
+ioreq:	bit	U2.OCC,(iy+UX.MOD+1) ; ^C processing pending?
 	jr	z,ioreq1	     ; branch if not
 	res	U2.OCC,(iy+UX.MOD+1) ; else clear flag
 	call	ctlc0		; and start unsolicited input to MCR
-	di
-	call	c,kick
-	ei
-	ret
-ioreq1:
-  ENDIF
-	call	GETPKT		; dequeue I/O packet, return address in IX
+	jp	proc6
+
+ioreq1:	call	GETPKT		; dequeue I/O packet, return address in IX
 	ret	c		; return if unit busy or no work to do
 	ldw	bc,(ix+I.TCB)	; get TCB address of requesting task
 	ld	hl,T.PCB
@@ -1247,42 +1234,28 @@ ucase:	ld	a,c
 	ret
 
 ctlc0:	set	U2.CTC,(iy+UX.MOD+1) ; set ^C flag
-	bit	UM.UNS,(iy+UX.MOD) ; already processing unsolicited input?
-	jr	nz,ccnew	   ; jump if yes, restart operation
+	res	U2.XOF,(iy+UX.MOD+1) ; clear ^S state
+	bit	UM.UNS,(iy+UX.MOD)   ; already processing unsolicited input?
+	jr	nz,ccnew	     ; jump if yes, restart operation
 
-	res	UM.SOP,(iy+UX.MOD)
-	res	UM.SBY,(iy+UX.MOD)
-	bit	US.BSY,(iy+U.ST) ; terminal busy?
-	jr	z,ccnew		 ; jump if not, start unsolicited input
+	bit	US.BSY,(iy+U.ST)     ; terminal busy?
+	jr	z,ccnew		     ; jump if not, start unsolicited input
 
-	set	UM.SBY,(iy+UX.MOD)
+	set	U2.OCC,(iy+UX.MOD+1) ; set ^C pending flag
 
-	bit	UM.INP,(iy+UX.MOD) ; input mode?
-	jr	nz,ccinp	   ; jump if yes
-
-	bit	UM.OUT,(iy+UX.MOD) ; output mode?
-	jr	z,cc1		   ; jump if not
-
-	set	UM.SOP,(iy+UX.MOD) ; else remember previous state
-cc1:
-  IF CCA
-	set	U2.OCC,(iy+UX.MOD+1) ; else set ^C pending flag
-	or	a		; and wait for the output operation to finish
+	bit	UM.INP,(iy+UX.MOD)   ; input mode?
+	ld	c,03h
+	call	nz,escape	     ; end input operation if yes
+	scf			     ; wait for I/O operation to finish
 	ret
-  ELSE
-	jr	ccnew
-  ENDIF
-
-ccinp:	ld	c,03h
-	call	escape		; end current input operation
 
 ccnew:	res	U2.XOF,(iy+UX.MOD+1) ; clear ^S state
 	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
-	call	unsol		; start unsolicited input
+	call	unsol		     ; start unsolicited input
 	ccf
 	ret	nc		; return if terminal slaved
 	call	prompt		; display MCR prompt
-	scf			; kick transmitter upon return
+	scf			; restart transmitter upon return
 	ret
 
 unsol:	bit	TC.SLV,(iy+U.CW+1)
@@ -1538,11 +1511,21 @@ ueol:	ldw	hl,(iy+UX.UBF)	; get address of unsolicited input buffer
 	xor	a
 	ld	(iy+UX.UBF),a
 	ld	(iy+UX.UBF+1),a
+	res	UM.UNS,(iy+UX.MOD)   ; clear unsolicited input flag
+	res	U2.CTC,(iy+UX.MOD+1) ; clear ^C flag
+	res	U2.TMO,(iy+UX.MOD+1) ; clear timeout flag
+	res	UM.INP,(iy+UX.MOD)   ; clear input mode flag
+	res	US.BSY,(iy+U.ST)     ; clear busy flag
+	ld	hl,0
+	ldw	(iy+UX.TMO),hl	; clear timeout counter
+	ldw	de,(iy+U.SCB)	; get SCB address into DE
+	ld	hl,S.ST
+	add	hl,de
+	ld	(hl),0		; clear status byte in SCB
 
 	call	ioreq		;;; in case we interrupted something
 				;;; (needed since ueol does not call IODONE!)
 
-	call	uend		; clear unsol. input flag, restore prev mode
 	scf			; restart transmitter
 	ret
 
@@ -1601,36 +1584,6 @@ stoubf:	ldw	hl,(iy+UX.UBF)
 	ld	(iy+UX.UCC),a
 	ld	b,1
 	ret
-
-; clear unsolicited input flag and restore any previous input mode.
-
-uend:	res	UM.UNS,(iy+UX.MOD)
-	res	U2.CTC,(iy+UX.MOD+1)
-	res	U2.TMO,(iy+UX.MOD+1)
-	res	UM.INP,(iy+UX.MOD)
-	res	US.BSY,(iy+U.ST)
-	ld	hl,0
-	ldw	(iy+UX.TMO),hl	; clear timeout counter
-	ldw	de,(iy+U.SCB)	; get SCB address into DE
-	ld	hl,S.CPKT
-	add	hl,de
-	ld	a,(hl)		; check for packet still present
-	inc	hl
-	or	(hl)
-	jr	nz,ucl0		; jump if set, need to restore state
-	ld	hl,S.ST
-	add	hl,de
-	ld	(hl),0		; else clear status byte in SCB
-ucl0:	bit	UM.SBY,(iy+UX.MOD) ; do we have to restore previous state?
-	ret	z		   ; return if not
-	set	US.BSY,(iy+U.ST)
-	res	UM.SBY,(iy+UX.MOD)
-	bit	UM.SOP,(iy+UX.MOD) ; previous state was output?
-	ret	z		   ; return if not
-	res	UM.SOP,(iy+UX.MOD)
-	set	UM.OUT,(iy+UX.MOD)
-	ldw	hl,(iy+UX.TXK)
-	jp	(hl)		; restart the transmitter
 
 ; setup display of prompt
 
@@ -1695,8 +1648,6 @@ iend1:	push	bc
 	di
 	res	UM.INP,(iy+UX.MOD) ; clear input mode bit
 	res	UM.OUT,(iy+UX.MOD) ; clear output mode bit
-	res	UM.SOP,(iy+UX.MOD)	;???  in
-	res	UM.SBY,(iy+UX.MOD)	;??? case
 	res	US.BSY,(iy+U.ST)   ; clear busy bit
 	res	U2.TMO,(iy+UX.MOD+1)
 
@@ -1731,7 +1682,10 @@ nxch3:	or	a
   ENDIF
 	ret
 
-nextc:	ldw	ix,(iy+UX.OQ)	; handle pending chars in output queue first
+nextc:	bit	U2.XOF,(iy+UX.MOD+1) ; return with CY set if output stopped
+	scf
+	ret	nz
+	ldw	ix,(iy+UX.OQ)	; handle pending chars in output queue first
 	call	qget
 	ret	nc
 	bit	U2.PRM,(iy+UX.MOD+1) ; displaying prompt?
