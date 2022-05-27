@@ -242,7 +242,7 @@ The RUN command two variations:
 
 * Run at a time increment from now (privileged):
 
-    RUN taskname dtime[/RSI=rsi]
+    RUN taskname dtime[/RSI=rsi][/UIC=[grp,usr]]
 
   The dtime parameter is specified as a decimal magnitude followed by a
   letter representing the time unit: T (ticks), S (seconds), M (minutes)
@@ -251,6 +251,9 @@ The RUN command two variations:
   The RSI option, if specified, determines the reschedule interval (i.e.
   how often the task will be re-run.) The format of the rsi parameter is
   the same as for dtime.
+
+  The UIC option, if specified, determines the protection UIC for the
+  task.
 
 * Install, run and remove on exit:
 
@@ -331,6 +334,7 @@ where option can be any of the following:
   /UIC=[gid,uid]  Set or display the protection UIC
   /PUB=ddn:       Establish the specified device as public device
   /HOST=hostname  Displays or sets the host name
+  /PAR[...]       Create partition or display partition parameters
   /RNDC=nn        Displays or sets the length of the round-robin interval
   /RNDH=nn        Displays or sets the highest priority to be considered
                   for round-robin scheduling
