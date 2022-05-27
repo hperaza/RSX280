@@ -1,5 +1,6 @@
 # Path to Linux utilities
 ZXCC = zxcc
+ECHO = /bin/echo	# builtin 'echo' does not like the -e option in Debian Buster
 
 # Path to CP/M utilities
 ZSM4 = ../Tools/cpm/zsm4.com
@@ -77,8 +78,8 @@ shutup.tsk: shutup.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=shutup/of=tsk,syslib/lb/task=SHUTUP/pri=100/priv"
 
 sys.tsk: $(SYSOBJS) syslib.lib
-	@echo -e "$@,sys,sys/q=sys/of:tsk,syslib/lb&\r" > build.cmd
-	@echo -e "(sysov1)(sysov2)(sysov3)/task=...MCR/pri=160/priv" >> build.cmd
+	@$(ECHO) -e "$@,sys,sys/q=sys/of:tsk,syslib/lb&\r" > build.cmd
+	@$(ECHO) -e "(sysov1)(sysov2)(sysov3)/task=...MCR/pri=160/priv" >> build.cmd
 	$(ZXCC) $(TKB) -"@build"
 	@rm -f build.cmd
 
