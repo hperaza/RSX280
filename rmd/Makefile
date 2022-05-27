@@ -1,5 +1,6 @@
 # Path to Linux utilities
 ZXCC   = zxcc
+ECHO   = /bin/echo	# some systems don't recognize the echo -e option
 VOL180 = ../Tools/linux/vol180/vol180
 
 # Path to CP/M utilities
@@ -33,8 +34,8 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 $(PROG): $(OBJS) syslib.lib
-	@echo -e "$@/ofmt:tsk,rmd,rmd/q=main,date,uptime,help,command,misc,vbuf,syslib/lb&\r" > link.cmd
-	@echo -e "(atd)(mem,disk,pool)(tskhdr)(devact)/task=...RMD/pri=225/priv\r" >> link.cmd
+	@$(ECHO) -e "$@/ofmt:tsk,rmd,rmd/q=main,date,uptime,help,command,misc,vbuf,syslib/lb&\r" > link.cmd
+	@$(ECHO) -e "(atd)(mem,disk,pool)(tskhdr)(devact)/task=...RMD/pri=225/priv\r" >> link.cmd
 	$(ZXCC) $(TKB) -"@link"
 	@rm -f link.cmd
 #	$(ZXCC) $(TKB) -"$@,rmd,rmd=main/ofmt=tsk,date,uptime,atd,mem,tskhdr,disk,pool,help,command,misc,vbuf,syslib/lb/task=...RMD/pri=225/priv"
