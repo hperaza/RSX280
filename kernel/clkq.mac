@@ -189,8 +189,7 @@ m2:	djnz	m1
 
 CMKT:	ld	ix,($CTCB)
 	ld	d,CT.MKT	; type = mark time requests
-	call	CLNCLQ		; purge clock queue
-	ret
+	jp	CLNCLQ		; purge clock queue and return
 
 ;-----------------------------------------------------------------------
 
@@ -201,20 +200,27 @@ CMKT:	ld	ix,($CTCB)
 ;        the reschedule interval, both in the form 'magnitude + unit'
 ;        (4 words in total).
 ;   DE = valid TCB address of requested task.
+;   BC = address of user-supplied TDB.
 ; Returns:
 ;   CY flag set on error and error code in A
 
 SRQST:	push	hl
 	push	de
+	push	bc
 	ld	bc,CLQSZ	; BC = packet size
 	call	$ALLOC		; allocate clock queue packet
 	push	hl
 	pop	ix		; IX = packet address
+	pop	iy		; IY = TDB address
 	pop	de
 	pop	hl
 	ret	c		; on error return
 	ld	(ix+C.TYPE),CT.RUN ; set request type
 	ldw	(ix+C.TCB),de	; set TCB address of requesting task
+	ld	a,(iy+TD.USR)
+	ld	(ix+C.USR),a	; set task UIC
+	ld	a,(iy+TD.GRP)
+	ld	(ix+C.GRP),a
 	ldw	de,(hl)		; get magnitude of time interval
 	inc	hl
 	inc	hl
@@ -435,7 +441,9 @@ ACTRUN:	ld	iy,TMPTDB
 	ld	(iy+TD.TI+2),c
 	xor	a
 	ld	(iy+TD.ATTR),a	; clear TA.MCR bit
-	ld	(iy+TD.USR),a	; TODO: set UIC to 1,1?
+	ld	a,(ix+C.USR)
+	ld	(iy+TD.USR),a	; set UIC
+	ld	a,(ix+C.GRP)
 	ld	(iy+TD.GRP),a
 	ld	bc,0
 	ldw	(iy+TD.CMD),bc	; no command line

@@ -23,7 +23,7 @@
 
 	cseg
 
-	ident	'02.25'
+	ident	'02.26'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -110,6 +110,7 @@ STPEOL:	push	hl
 	ld	a,(hl)
 	call	iseol
 	jr	nz,stpe1
+	ld	(cmdtrm),a
 	ld	(hl),0
 stpe1:	pop	hl
 	ret
@@ -612,7 +613,7 @@ altpri:	call	CHKPRV
 	jp	c,SYSERR
 	xor	a
 	ld	(OPTSW),a
-	call	gettn		; get task name, return buf addr in HL
+	call	GETTN		; get task name, return buf addr in HL
 	ld	de,tskn1
 	ld	bc,6
 	ldir
@@ -829,23 +830,23 @@ clq3:	ld	a,(ix+C.RSI)
 	call	cvtdt
 	ld	hl,rsimsg
 	call	PUTSTR
-	ld	hl,buf+1
-	ld	b,3
+	ld	hl,buf+3
 	ld	a,(hl)
 	call	ADEC2		; output reschedule interval
 	ld	c,':'
 	call	PUTCH
-	inc	hl
+	dec	hl
 	ld	a,(hl)
 	call	ADEC2
 	ld	c,':'
 	call	PUTCH
-	inc	hl
+	dec	hl
 	ld	a,(hl)
 	call	ADEC2
 	ld	c,'.'
 	call	PUTCH
-	ld	a,(buf)
+	dec	hl
+	ld	a,(hl)
 	call	ADEC2
 clq4:	ld	c,CR
 	call	PUTCH
@@ -988,9 +989,12 @@ dd2:	djnz	dd1
 
 ; RUN taskname[/PRI=pri][/TERM=ddn:][/INC=inc][/TASK=name][/CMD=cmd]...
 ;  -or-
-; RUN taskname dtime[/RSI=rsi]
+; RUN taskname dtime[/RSI=rsi][/UIC=[grp,usr]]
 
 cmdrun:	call	GETFN		; get task file name into FNAME
+	ld	de,FNAME
+	call	setnam		; set task name in TDB
+	call	initdb		; set terminal name in TDB, clear other fields
 	ld	de,(LNPTR)
 	call	GETNS		; get next non-blank char
 	or	a
@@ -1001,59 +1005,101 @@ cmdrun:	call	GETFN		; get task file name into FNAME
 	call	CHKPRV		; else is a time-scheduled request
 	jp	c,SYSERR	; user must be privileged
 
-	ld	hl,FNAME
-	ld	de,newtsk+TD.NAME
-	ld	bc,6
-	ldir				; set task name in TDB
-	xor	a
-	ld	(newtsk+TD.ATTR),a	; clear all attributes
-	ld	(newtsk+TD.USR),a	; default user number
-	ld	(newtsk+TD.GRP),a	; default user group
-	ld	de,(TTDEV)		; default terminal
-	ld	(newtsk+TD.TI),de	;  is user's terminal
-	ld	a,(TTDEV+2)
-	ld	(newtsk+TD.TI+2),a
-	ld	hl,0
-	ld	(newtsk+TD.SDAT),hl	; no data to send
-	ld	(newtsk+TD.SLEN),hl
-
 	call	tmval		; get relative time and units
 	jp	c,CMDERR
 
-	ld	(dtime),hl	; store magnitude
-	ld	(dtime+2),de	; store units
-	ld	de,(LNPTR)
-	call	GETNS
+	ld	(dtime),hl	; store dtime magnitude
+	ld	(dtime+2),de	; store dtime units
 	ld	hl,0
-	ld	de,1
-	or	a
-	jr	z,rs1
-	cp	'/'
-	jp	nz,CMDERR
-	ld	hl,(LNPTR)
+	ld	(rsi),hl	; default rsi magnitude
 	inc	hl
-	ld	(LNPTR),hl
-	call	GETCMD		; get command name
+	ld	(rsi+2),hl	; default rsi units
+
+rs0:	ld	de,(LNPTR)
+	call	GETNS
+	or	a		; any (more) options?
+	jr	z,rs2		; no, schedule task
+	cp	'/'		; valid option switch?
+	jp	nz,CMDERR
+	inc	de
+	ld	(LNPTR),de
+	call	GETCMD		; else get option name
 	ld	hl,rsiopt
 	call	FNDCMD
-	dec	a		; RSI?
+	ld	c,a
+	call	CHKEQ		; '=' required for all switches
 	jp	nz,CMDERR
-	call	CHKEQ
+	dec	c		; RSI?
+	jr	z,rs1
+	dec	c		; UIC?
 	jp	nz,CMDERR
-	call	tmval		; get reschedule interval
+	call	getuic
 	jp	c,CMDERR
+	ld	(newtsk+TD.USR),bc ; set UIC
+	jr	rs0
 
-rs1:	ld	(rsi),hl	; store magnitude
-	ld	(rsi+2),de	; store units
+rs1:	call	tmval		; get reschedule interval
+	jp	c,CMDERR
+	ld	(rsi),hl	; store rsi magnitude
+	ld	(rsi+2),de	; store rsi units
+	jr	rs0
 
-	ld	hl,newtsk	; note: followed by dtime and rsi
+rs2:	ld	hl,newtsk	; note: followed by dtime and rsi
 	SC	.RUN		; schedule task
 	jp	c,SYSERR
 	ret
 
 run0:	; immediate RUN request
 
-	ld	hl,buf
+	ld	hl,newtsk+TD.NAME
+	ld	de,gtkbuf
+	SC	.GTSK		; task installed?
+	jr	c,run2		; no, try running from file
+	ld	a,(gtkbuf+GT.ST)
+	bit	TS.ACT,a	; task active?
+	ld	a,E.TACT
+	jp	nz,SYSERR	; yes, error
+
+	ld	de,(LNPTR)
+	call	GETNS
+	or	a		; option follows?
+	jr	z,run4		; no
+	cp	'/'		; valid option switch?
+	jp	nz,CMDERR
+	inc	de
+	ld	(LNPTR),de
+	call	GETCMD		; else get option name
+	ld	hl,uicopt
+	call	FNDCMD
+	dec	a		; UIC?
+	jp	nz,CMDERR	; no, error
+	call	CHKPRV
+	jp	c,SYSERR	; option is privileged
+	call	CHKEQ		; '=' required
+	call	getuic
+	jp	c,CMDERR
+	ld	(newtsk+TD.USR),bc ; set task UIC
+run4:	ld	hl,newtsk
+	ld	a,(cmdtrm)	; check command terminator
+	cp	ESC		; ESC?
+	jr	z,run3		; yes, user wants exit notification
+	ld	bc,0
+	SC	.RQST		; else request the task and exit
+	jp	c,SYSERR
+	ret
+
+run3:	ld	c,1
+	SC	.SUPER
+	jp	c,SYSERR
+	ld	ix,($CTCB)
+	set	TA.MCR,(ix+T.ATTR) ; set our TA.MCR bit to notify MCR...
+	ld	c,0
+	SC	.SUPER
+	SC	.RPOI		; request task and pass offspring information
+	jp	c,SYSERR
+	ret
+
+run2:	ld	hl,buf
 	ld	de,inscmd
 	call	cpstr		; copy INS command name
 	ld	(hl),' '
@@ -1094,6 +1140,7 @@ inscmd:	db	'INS',0
 runopt:	db	'/RUN=REM/TASK=',0
 
 rsiopt:	db	'RSI',0
+uicopt:	db	'UIC',0
 	db	0
 
 ; Get time interval specification, returns magnitude in HL and units in DE.
@@ -1130,6 +1177,51 @@ tmval:	ld	de,(LNPTR)
 	scf
 	ret			; else return error
 
+; Get UIC specification, returns user ID in C, group ID in B.
+
+getuic:	ld	de,(LNPTR)
+	call	GETNS
+	cp	'['		; check delimiter
+	scf
+	ret	nz
+	inc	de
+	ld	(LNPTR),de
+	call	getnid		; get group ID
+	ret	c
+	ld	b,a
+	ld	de,(LNPTR)
+	call	GETNS
+	cp	','		; check delimiter
+	scf
+	ret	nz
+	inc	de
+	ld	(LNPTR),de
+	call	getnid		; get user ID
+	ret	c
+	ld	c,a
+	ld	de,(LNPTR)
+	call	GETNS
+	cp	']'		; check delimiter
+	scf
+	ret	nz
+	inc	de
+	ld	(LNPTR),de
+	xor	a
+	ret
+
+getnid:	push	bc
+	call	GETDEC		; get decimal value
+	pop	bc
+	ld	a,h
+	or	a
+	scf
+	ret	nz		; error if > 255
+	ld	a,l
+	or	a
+	ret	nz		; return if > 0
+	scf
+	ret			; error if 0
+
 ;-----------------------------------------------------------------------
 
 ; Run installed task given as command.
@@ -1146,36 +1238,22 @@ runtsk:	call	runpgm
 	jp	SYSERR
 
 runpgm:	ld	(cmdptr),hl
-	ld	de,newtsk+TD.NAME
+	ex	de,hl
+	ld	hl,newtsk+TD.NAME
 	ld	a,'.'
 	ld	b,3
-rpgm0:	ld	(de),a
-	inc	de
+rpgm0:	ld	(hl),a
+	inc	hl
 	djnz	rpgm0
 	ld	b,3
-rpgm7:	ld	a,(hl)
-	or	a
-	jp	z,rcmder
-	cp	' '
-	jp	z,rcmder
-	cp	9
+rpgm7:	call	GETFS
 	jp	z,rcmder
 	call	UCASE
-	ld	(de),a
-	inc	de
+	ld	(hl),a
 	inc	hl
+	inc	de
 	djnz	rpgm7
-	xor	a
-	ld	(newtsk+TD.ATTR),a	; clear all attributes
-	ld	(newtsk+TD.USR),a	; default user number
-	ld	(newtsk+TD.GRP),a	; default user group
-	ld	de,(TTDEV)		; default terminal
-	ld	(newtsk+TD.TI),de	;  is user's terminal
-	ld	a,(TTDEV+2)
-	ld	(newtsk+TD.TI+2),a
-	ld	hl,0
-	ld	(newtsk+TD.SDAT),hl	; no data to send
-	ld	(newtsk+TD.SLEN),hl
+	call	initdb		; init TDB and set terminal name
 	ld	hl,(cmdptr)
 	call	setcml		; setup command line for task
 	ld	hl,newtsk
@@ -1282,17 +1360,7 @@ rpgm6:	push	af
 	pop	af
 	ret	c
 
-	xor	a
-	ld	(newtsk+TD.ATTR),a	; clear all attributes
-	ld	(newtsk+TD.USR),a	; default user number
-	ld	(newtsk+TD.GRP),a	; default user group
-	ld	de,(TTDEV)		; default terminal
-	ld	(newtsk+TD.TI),de	;  is user's terminal
-	ld	a,(TTDEV+2)
-	ld	(newtsk+TD.TI+2),a
-	ld	hl,0
-	ld	(newtsk+TD.SDAT),hl	; no data to send
-	ld	(newtsk+TD.SLEN),hl
+	call	initdb		; reset TDB and set terminal name
 	ld	hl,(cmdptr)
 	call	setcml		; setup command line for task
 	ld	hl,newtsk
@@ -1301,6 +1369,35 @@ rpgm6:	push	af
 
 rcmder:	xor	a		; syntax error
 	scf
+	ret
+
+; Set terminal name in TDB to TTDEV and clear all other fields, except
+; task name field.
+
+initdb:	xor	a
+	ld	(newtsk+TD.ATTR),a	; clear all attributes
+	ld	(newtsk+TD.USR),a	; default user number
+	ld	(newtsk+TD.GRP),a	; default user group
+	ld	hl,TTDEV		; default terminal
+	ld	de,newtsk+TD.TI		;  is user's terminal
+	ld	bc,3
+	ldir
+	ld	hl,0
+	ld	(newtsk+TD.SDAT),hl	; no data to send
+	ld	(newtsk+TD.SLEN),hl
+	ret
+
+; Set task name in TDB
+
+setnam:	ld	hl,newtsk+TD.NAME
+	ld	b,6		; 6 chars
+setn1:	ld	a,(de)
+	or	a
+	jp	z,PADBL		; pad with blanks if necessary
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	setn1
 	ret
 
 ; Setup task command line. HL = address of command tail
@@ -2090,7 +2187,7 @@ pri:	ds	1
 rpri:	ds	1
 
 LNPTR:	ds	2
-CMDNAM:	ds	9
+CMDNAM:	ds	10
 tskn1:	ds	6
 FNAME:	ds	FNSZ
 
@@ -2110,6 +2207,7 @@ newtsk:	ds	TDBSZ		; ! do not ! task descriptor for RUN command
 dtime:	ds	4		; ! change ! dtime for RUN command
 rsi:	ds	4		; ! order  ! reschedule interval
 cmdptr:	ds	2		; ptr to command args (RUN command)
+cmdtrm:	ds	1
 
 	public	?MEMRY
 ?MEMRY:	ds	2

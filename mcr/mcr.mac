@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.12'
+	ident	'02.17'
 
 	cseg
 
@@ -106,6 +106,8 @@ rd:	ld	e,CMDEFN
 
 ok:	ld	a,1		; set display prompt flag
 	ld	(pflag),a	; external commands will clear it
+	ld	a,CR
+	ld	(exttrm),a
 	ld	a,ESC
 	ld	(cmdtrm),a
 	ldw	bc,(hl)		; get received data length into BC
@@ -358,6 +360,8 @@ trysys:	call	CHKLOG		; user must be logged in
 	ret	z
 	cp	0FFh
 	jr	z,tryext
+	ld	a,(cmdtrm)
+	ld	(exttrm),a	; pass command terminator to ...MCR
 	ld	hl,buf
 	ld	de,systsk
 	call	cpstr
@@ -975,7 +979,7 @@ setcml:	push	hl
 	ld	de,cmlbuf
 	ld	(newtsk+TD.CMD),de
 	ldir
-	ld	a,CR
+	ld	a,(exttrm)
 	ld	(de),a
 	ret
 
@@ -1166,6 +1170,7 @@ PROMPT:	ds	MAXPRM
 
 pflag:	ds	1		; prompt flag
 cmdtrm:	ds	1		; original command terminator
+exttrm:	ds	1		; command terminator for external task
 
 rcvlen:	ds	2		;!   do   !
 TTDEV:	ds	3		;!  not   !
