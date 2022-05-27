@@ -36,7 +36,7 @@
 	include	SYSCONF.INC
 	include	ERRORS.INC
 
-	extrn	GETPKT,IODONE,$ERSEQ,$UPUTW,$MCOPY,$SBANK
+	extrn	GETPKT,IODONE,$ERSEQ,$UPUTW,$MCOPY,$SBANK,LNKFQB
 
 ; This driver assumes that the hard disk has been partitioned using the
 ; FDISK utility. The initialization routine validates the partition table
@@ -82,52 +82,8 @@ UX.CNT	equ	UX.BNK + 2	; byte count (2 bytes)
 UX.PBAS	equ	UX.CNT + 2	; partition base (2 bytes)
 UX.PSIZ	equ	UX.PBAS + 2	; partition size (2 bytes)
 
-DSBLWR	equ	0	; disable write function (used during debug)
-
 ; TODO:
 ; - retry up to 5 times on error?
-
-; Macro: wait for ready (Non-Busy) signal active with timeout
-
-WaitRdy	macro	onerr
-	local	wait,w1
-	ld	de,0
-	ld	hl,dcnt
-	ld	(hl),HDTMO
-wait:	ld	a,(hl)
-	or	a
-	jr	z,onerr
-	inc	de
-	in	a,(IdeCmd)
-	rla
-	jr	c,wait
-	ld	hl,($$R$$)
-	cpw	hl,de
-	jr	nc,w1
-	ld	($$R$$),de
-w1:
-	endm
-
-; Macro: wait for DRQ signal with timeout
-
-WaitDrq	macro	onerr
-	local	wait,w1
-	ld	de,0
-	ld	hl,dcnt
-	ld	(hl),HDTMO
-wait:	ld	a,(hl)
-	or	a
-	jr	z,onerr
-	inc	de
-	in	a,(IdeCmd)
-	bit	3,a
-	jr	z,wait
-	ld	hl,($$D$$)
-	cpw	hl,de
-	jr	nc,w1
-	ld	($$D$$),de
-w1:
-	endm
 
 ;-----------------------------------------------------------------------
 
@@ -283,6 +239,10 @@ UCBDU7:	dw	0		; link to next UCB
 SCB:	db	0		; status byte
 	dw	0		; head of I/O packet list
 	dw	0		; address of current I/O packet
+fblk:	dw	0
+	db	0
+	dw	fbcont
+	dw	0
 
 	CSEG
 
@@ -297,11 +257,6 @@ ini1:	call	uinit		; initialize unit
 	jr	nz,ini1
 	xor	a
 	ld	(dcnt),a
-	ld	hl,(DUDCB)
-	ld	de,D.TCNT
-	add	hl,de
-	ld	de,1		; arrange for the timeout entry to be
-	ldw	(hl),de		;  called each clock tick
 	call	GINIT		; read partition table and setup device units
 	ld	a,(ERFLAG)	; return with GINIT error/success code
 	or	a
@@ -565,16 +520,21 @@ L2PBN:	ldw	hl,(iy+UX.PBAS)	; get track offset for this logical unit
 ;   ERFLAG = Operation status. Zero means success.
 ; Modifies A, HL and BC
 
-DSKRD:	call	HDPREP		; prepare task file registers
-	ret	c
-	WaitRdy	rderr
+DSKRD:	iopage	IdePage
+	call	WTRDY
+	jr	c,rderr
+	call	HDPREP		; prepare task file registers
+	call	WTRDY
+	jr	c,rderr
 	ld	a,CmdRd
 	out	(IdeCmd),a	; command: read sector data
-	WaitDrq	rderr		; wait for DRQ to become active
+	call	WTDRQ		; wait for DRQ to become active
+	jr	c,rderr
 	ld	hl,hdbuf	; get address of local buffer
 	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
 	inirw			; read 512 data bytes (256 words)
-	WaitRdy	rderr
+	call	WTRDY
+	jr	c,rderr
 	in	a,(IdeCmd)	; check final drive status
 	and	10001001b	; Busy, DRQ, or Error?
 	jp	SETERR
@@ -593,25 +553,28 @@ rderr:	ld	a,1
 ;   ERFLAG = Operation status. Zero means success.
 ; Modifies A, HL, BC and DE.
 
-DSKWR:
-  IF NOT DSBLWR
+DSKWR:	iopage	IdePage
+	call	WTRDY
+	jr	c,wrerr
 	call	HDPREP		; prepare task file registers
-	ret	c
-	WaitRdy	wrerr
+	call	WTRDY
+	jr	c,wrerr
 	ld	a,CmdWr
 	out	(IdeCmd),a	; command: write sector data
-	WaitDrq	wrerr		; wait for data requested
+	call	WTDRQ		; wait for data requested
+	jr	c,wrerr
 	ld	hl,hdbuf	; get destination address
 	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
 	otirw			; write 512 data bytes (256 words)
-	WaitRdy	wrerr
+	call	WTRDY
+	jr	c,wrerr
    if 1
-	WaitRdy	wrerr
+	call	WTRDY
+	jr	c,wrerr
    endif
 	in	a,(IdeCmd)	; check final drive status
 	and	10001001b	; Busy, DRQ, or Error?
 	jp	SETERR
-  ENDIF
 
 wrerr:	ld	a,1
 	jp	SETERR
@@ -619,13 +582,10 @@ wrerr:	ld	a,1
 ;-----------------------------------------------------------------------
 
 ; Prepare hard disk for data transfer. The physical sector address
-; is written to the appropriate IDE registers.
+; is written to the appropriate IDE registers. Assumes the drive is
+; ready to accept the command.
 
-HDPREP:	iopage	IdePage
-
-	WaitRdy	prerr
-
-	ld	hl,PBN		; point to physical block number (0-based)
+HDPREP:	ld	hl,PBN		; point to physical block number (0-based)
 	ld	a,40h
 	out	(IdeLA4),a	; set LBA mode
 	ld	a,(hl)
@@ -640,10 +600,6 @@ HDPREP:	iopage	IdePage
 	out	(IdeErr),a	; activate retries w/pattern in GIDE error reg
 	ld	a,1		; one sector to read or write
 	out	(IdeSCnt),a	; set sector count
-	or	a		; return with CY clear
-	ret
-
-prerr:	scf
 	ret
 
 ;-----------------------------------------------------------------------
@@ -668,17 +624,77 @@ SETERR:	or	a
 ; This routine is called at each clock interrupt to implement various
 ; timeout functions.
 
-TMOUT:	ld	hl,(DUDCB)
-	ld	de,D.TCNT
-	add	hl,de
-	ld	de,1		; re-arm the timeout process
-	ldw	(hl),de
-	ld	hl,dcnt		; check GIDE access timeout counter
+TMOUT:	iopage	IdePage
+	ld	hl,(tmopc)
+	call	(hl)		; call the timeout processing routine
+	ld	a,0
+	jr	nc,tm1		; return success to caller via fork process
+	ld	hl,dcnt		; else check timeout counter
 	ld	a,(hl)
 	or	a		; timed out?
-	ret	z		; return if yes
+	ld	a,-1
+	jr	z,tm1		; yes, return error to caller
 	dec	(hl)		; else count down
+tmarm:	push	ix
+	ld	ix,(DUDCB)
+	ld	de,1
+	ldw	(ix+D.TCNT),de	; (re)arm the timeout process
+	pop	ix
 	ret
+
+tm1:	di
+	push	ix
+	ld	(result),a	; save result
+	ld	hl,(savucb)
+	ld	(fblk+5),hl	; save context
+	ld	ix,fblk
+	call	LNKFQB		; queue fork block
+	pop	ix
+	ei
+	ret
+
+; Wait for Ready (Non-Busy) signal active with timeout (clock-tick
+; driven, exits driver and returns to caller as fork process.)
+
+WTRDY:	ld	hl,CHKRDY
+	jr	wait		; continue via common code
+
+; Wait for DRQ signal with timeout
+
+WTDRQ:	ld	hl,CHKDRQ
+wait:	ld	b,32
+wt1:	call	(hl)		; drive ready?
+	ret	nc		; yes, return immediately
+	djnz	wt1
+	ld	(tmopc),hl	; else set timeout processing routine address
+	pop	hl		; pop return (continue address)
+	ld	(savpc),hl	; save it
+	pop	hl
+	ld	(savpc+2),hl
+	ld	(savucb),iy	; save context
+	ld	a,HDTMO
+	ld	(dcnt),a	; set timeout count
+	jp	tmarm		; arm the timeout process and return
+				;  one leve higher
+
+CHKRDY:	in	a,(IdeCmd)
+	rla			; get busy bit into CY
+	ret
+
+CHKDRQ:	in	a,(IdeCmd)
+	bit	3,a
+	scf
+	ret	z
+	or	a
+	ret
+
+fbcont:	iopage	IdePage
+	ld	hl,(savpc+2)
+	push	hl
+	ld	hl,(savpc)
+	ld	a,(result)
+	rra			; get result into CY flag
+	jp	(hl)		; continue execution after call to WTRDY/WTDRQ
 
 ;-----------------------------------------------------------------------
 
@@ -750,14 +766,17 @@ HDINIT:	; rely on ZZmon initialization for now...
 ; Read ID from Hard Disk
 
 IDENT:	iopage	IdePage
-	WaitRdy	iderr
+	call	WTRDY
+	jr	c,iderr
 	ld	a,CmdId
 	out	(IdeCmd),a	; command: read sector data
-	WaitDrq	iderr		; wait for DRQ to become active
+	call	WTDRQ		; wait for DRQ to become active
+	jr	c,iderr
 	ld	hl,hdbuf	; get target address
 	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
 	inirw			; read 512 data bytes (256 words)
-	WaitRdy	iderr
+	call	WTRDY
+	jr	c,iderr
 	in	a,(IdeCmd)	; check final drive status
 	and	10001001b	; Busy, DRQ, or Error?
 	jr	nz,iderr	; no: everything is ok
@@ -788,7 +807,8 @@ iderr:	ld	a,1		; return with A=1 and CY set on error
 RDPTBL:
   IF 0
 	iopage	IdePage
-	WaitRdy	pterr
+	call	WTRDY
+	jr	c,pterr
 	ld	a,40h
 	out	(IdeLA4),a	; set LBA mode
 	xor	a
@@ -799,14 +819,17 @@ RDPTBL:
 	out	(IdeErr),a	; activate retries w/pattern in GIDE error reg
 	ld	a,1		; one sector to read or write
 	out	(IdeSCnt),a	; set sector count
-	WaitRdy	pterr
+	call	WTRDY
+	jr	c,pterr
 	ld	a,CmdRd
 	out	(IdeCmd),a	; command: read sector data
-	WaitDrq	pterr		; wait for DRQ to become active
+	call	WTDRQ		; wait for DRQ to become active
+	jr	c,pterr
 	ld	hl,hdbuf	; get target address
 	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
 	inirw			; read 512 data bytes (256 words)
-	WaitRdy	pterr
+	call	WTRDY
+	jr	c,pterr
 	in	a,(IdeCmd)	; check final drive status
 	and	10001001b	; Busy, DRQ, or Error?
 	jp	SETERR		; set error bits an return
@@ -852,15 +875,18 @@ pt:	; "Fake" partition table reflecting the disk layout of the
 
 	DSEG
 
-$$R$$::	dw	0
-$$D$$::	dw	0
-
 DUDCB:	ds	2		; address of our DCB
 
 LBN:	ds	4		; number of logical block to read
 PBN:	ds	4		; number of physical block to read
 ERFLAG:	ds	1		; error flags
 
+tmopc:	ds	2		; address of timeout procesing routine
+savpc:	ds	4		; saved PC of timeout routine caller
+				;  (note: the timeout routine is called
+				;   with stack level of 2 relative to IOREQ)
+savucb:	ds	2		; saved UCB address of timeout routine caller
+result:	ds	1		; timeout result to return to caller
 dcnt:	ds	1		; GIDE I/O timeout counter
 
 hdbuf:	ds	512		; local buffer for disk I/O transfer
