@@ -6924,7 +6924,7 @@ BUGS:
 - TKB:
   * request ?OVLAY on second pass *before* loading any modules, else SYSLIB
     will miss it.
-  * the CP/M version now accepts @command files, with suport for continuation
+  * the CP/M version now accepts @command files, with support for continuation
     lines, but nested command files are not allowed. This makes it easier to
     pass long command lines to the linker without having to redirect zxcc's
     standard input; fixing the problem of zxcc losing the first characters
@@ -6955,7 +6955,7 @@ BUGS:
   * report undefined symbols only after the current overlay *branch* is
     closed and not after the overlay is linked; this is to avoid reporting
     those overlay call vectors that will be defined by the next overlay.
-    Undefined root symbols are reported at the very end whan all overlays
+    Undefined root symbols are reported at the very end when all overlays
     have been linked.
   * allow options to be specified after the last overlay group.
 
@@ -6965,7 +6965,7 @@ BUGS:
 - RMD: each display page is now in a separate overlay. Memory footprint
   reduced by about 600 bytes: not that much, but that will allow to add
   extra pages or new functionality to existing ones while keeping the task
-  top below 16K as requered for accessing the kernel database.
+  top below 16K as required for accessing the kernel database.
 
 
 11/02/22
@@ -7078,7 +7078,7 @@ BUGS:
 26/02/22
 
 - TTDRV: if high byte of Q.VFC is nonzero, then Q.VFC is interpreted as
-  cursor control: low byte = column number, high byte = row humber; the
+  cursor control: low byte = column number, high byte = row number; the
   upper-left corner of the screen has coordinates 1,1.
 
 
@@ -7144,4 +7144,34 @@ BUGS:
     in the typeahead buffer (in some cases that may be more efficient than
     using unsolicited char ASTs).
 
+
+25/05/22
+
+- MCR:
+  * RUN command: if the argument matches the exact name of an installed
+    task, request the task. If user ended the command with CR, return
+    immediately; if the command was ended with ESC, then notify MCR when
+    task terminates.
+  * Time-Scheduled Task form of the RUN command: implemented the /UIC=[...]
+    option.
+  * fixed the reported Reschedule Interval value of the CLQ command.
+
+- DEVTT: ^C now allows for current output operation to finish instead of
+  saving/restoring state (simplifies code, produces better display, and
+  avoids possible race conditions.)
+
+
+27/05/22
+
+- DEVDU:
+  * don't keep the timeout timer running continuously, enable it only
+    when needed.
+  * I/O is now non-blocking: if the drive is not ready within a few usecs,
+    enable the timer and finish operation via timer interrupt/fork process
+    to prevent blocking other tasks. Measured access times in timer ticks:
+
+                             RDY    DRQ
+                            -----  -----
+       128M Trascend CF:    4..5    <= 1
+       4GB Hitachi uDrive:  <= 1   4..40
 
