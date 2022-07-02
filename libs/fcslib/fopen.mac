@@ -31,6 +31,8 @@
 
 	.Z80
 
+	ident	/FCS1.3/
+
 	include	SYSFN.INC
 	include	FCB.INC
 	include	DCB.INC
@@ -168,14 +170,18 @@ fopn3:	call	fmode		; get sufbunction code according to mode bits
 	scf
 	ret	nz
 
+	ld	e,(ix+FC.FDB)
+	ld	d,(ix+FC.FDB+1)
+	ld	hl,F.ATTR
+	add	hl,de
+	ld	(hl),FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+
 	bit	FM.WA,(ix+FC.MODE) ; file open for append?
 	jr	z,fopn4		   ; reset file pointers and return if not
 
 	bit	FM.TT,(ix+FC.MODE) ; device mode?
 	jr	nz,fopn4	   ; skip seek operation if yes
 
-	ld	e,(ix+FC.FDB)
-	ld	d,(ix+FC.FDB+1)
 	ld	hl,F.NUSED
 	add	hl,de
 	ld	a,(hl)
