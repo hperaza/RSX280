@@ -1,0 +1,1485 @@
+; KCOM.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains some of the main loop commands, all SET xxx and
+;       status routines.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 17, 4-Dec-2021 by H. Peraza: display error message if SET PORT could
+;       not attach unit. Also display a message on Local/Remote mode change.
+;
+; edit 16, 29-Mar-2021 by H. Peraza: CHDIR routine moved to the system-
+;       dependent module.
+;
+; edit 15, 21-Mar-2021 by H. Peraza: use PRTERR to output error messages.
+;
+; edit 14, 6-Jan-2021 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Null now marks the end of strings, so we can use SYSLIB routines.
+;       Replaced SET USER and SET DEFAULT-DISK commands by a single SET
+;       DEFAULT command that changes the current device and directory.
+;       Added SET LINE as synonym for SET PORT, for compatibilty with
+;       Kermit-11. Changed the SET COLLISION command: removed the BACKUP
+;       option, since it does not make much sense under RSX180/280, and
+;       changed RENAME to NEW-VERSION. Changed SET DIRECTORY-FILE-SIZE ON/OFF
+;       command to SET DIRECTORY-LISTING LONG/BRIEF.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 13, 25-Mar-1991 by MF. Require confirmation if a STAY command
+;	(code at "noexit") is given and a question-mark is entered.
+;
+; edit 12, 21-Mar-1991 by MF.  Change SET COLLISSION REPLACE to
+;	SET COLLISION OVERWRITE to conform with C-Kermit. Modify SET COLLISION
+;	help text slightly.
+;
+; edit 11, 27-Feb-1991 by MF. Show Kermit version in VERSION command
+;	("shover").
+;
+; edit 10, 12-Feb-1991 by MF. Modified OUTPUT command to get a "confirm"
+;	after accepting the string to be output so that the OUTPUT command
+;	doesn't immediately execute if a terminator other than <cr> is typed
+;	(immediate execution confuses some users new to Kermit). This
+;	situation should seldom, if ever, occur, as the OUTPUT command
+;	is most likely to be executed in a TAKE-file but one should
+;	protect oneself, shouldn't one?
+;	Also commented out case-sensivity code as it is unlikely to be used.
+;
+; edit 9, 4-Dec-1990 by MF. Add "stautr" routine to display Autoreceive
+;	status in SHOW/STATUS/<ESC>S commands.
+;
+; edit 8, 30-Nov-1990 by MF. Modify routine "statvt" (terminal status) to
+;	display setting of "quiet" switch. Although I presume that Mr.
+;	Schou thought the code would accommodate display of QUIET or
+;	REGULAR, the code does not in fact allow this since the emulation
+;	flag is not involved in the "quiet" setting.
+;	Also fix SET TERMINAL's help text a bit.
+;
+; edit 7, 8-Nov-1990 by MF.  In SET {RECEIVE/SEND} PACKET-LENGTH routines,
+;	call utility routine subbc from CPSUTL.ASM to do 16-bit subtraction
+;	rather than doing it in-line to save a few bytes.  Eliminate
+;	commented-out instructions.
+;
+; edit 6, 1-Nov-1990 by MF.  Changed SET BAUD-RATE to SET SPEED in the quest
+;	for uniformity of nomenclature (per request of FDC).
+;
+; edit 5, 17-Oct-1990 by MF.  Change SET {RECEIVE SEND} PACKET-SIZE to
+;	SET {RECEIVE SEND} PACKET-LENGTH to conform with the nomenclature
+;	suggested in Chapter 10 of the 6th edition of the Kermit Protocol
+;	Manual.
+;
+; edit 4, 14-Sep-1990 by MF.  Implemented SET FILE-COLLISION (SET COLLISION)
+;	command (except for SET COLLISION ASK and SET COLLISION APPEND).
+;	How one APPENDs to a CP/M file depends upon whether it's ASCII or
+;	BINARY -- something we may not know.
+;	Also implemented SET INCOMPLETE-FILE command.
+;	Let's also restore SET FILE-MODE DEFAULT:  I never use it but if
+;	we leave the DEFAULT code, as Version 4.09 does, the user is entitled
+;	to be able to select it if he/she wishes (I'd favor getting rid
+;	of it altogether but as soon as I did that, someone'd come out
+;	of the woodwork and complain vehemently that he/she **likes** 
+;	SET FILE-MODE DEFAULT and would the so-and-so who took it out
+;	please put it back in.  Such is life.  In any case, the user can
+;	always set the file-mode from a take-file.
+;
+; edit 3, 9-Sep-1990 by MF.  Implemented setting of packet sizes for
+;	packets up thru length 94 characters for SEND and RECEIVE.  Even
+;	for standard-length packets, variable sizes are useful.
+;	Correct 16-bit subtraction in stspks/strpks to set carry if needed
+;	Also corrected bug in routine getnp wherein a JMP KERMIT
+;	instruction was left out after trying to parse a confirm, thus
+;	skipping loading of number into HL.
+;	Fixed bug in PRTSTR wherein BC/HL were not saved under certain
+;	conditions, thus causing garbage to appear when PRTSTR was
+;	called with QUIETD set.
+;
+; edit 2, September 10, 1987, by OBSchou.  Changed SET IBM to reset the 
+;	flow control flag.  IBMs use 13h as a turnaround character (so they
+;	say) so no flow control.  Anybody willing to add comments etsc, as I 
+;	have NO IDEA what IBMs do or need.
+;	Also removed the SET FILE-MODE DEFAULT option, as it always causes
+;	so much trouble.  Assume the default mode to be ASCII.  Moved a test
+;	for key pressed from the status routine to the CPSUTL file.
+;
+; edit 1, April 8th, 1987.
+;	Hived off the SET command etc from CPSMIT.ASM to 
+;	make a more manageable file
+
+	.Z80
+
+	ident	/17/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	FCB.INC
+	include	DCB.INC
+
+	public	COMVER,SETCOM,SHOVER,SHOW,STRING,STATUS,NOEXIT
+	public	CHKKEY,BLKTAB,BLKHLP,STAT01,SETCWD,NOTIMP,CDMSG
+	public	ERMS32
+
+	extrn	KEYCMD,COMND,KERMIT,PRTSTR,SELCON,OUTCON,ESCPR
+	extrn	SETPAR,CFMCMD,NOUT,PRCRLF,SYSSPD,SYSPRT,CLRTOP
+	extrn	SELMDM,OUTMDM,GETCT,DEVSTR,DIRSTR,FCBSTR,ALUN
+	extrn	CHDIR,PRTERR
+
+	extrn	AUTORC,CHKTYP,NUMBER,MAXBSC,BUFSEC,STBUFF,DBGFLG
+	extrn	TACFLG,STRCNT,SNDSOP,SPSIZ,SDCKT,RCVSOP,RPSIZ
+	extrn	NEXITF,LOGFLG,ESCCHR,ECOFLG,PRNFLG,TIMFLG,FLWFLG
+	extrn	FLOCTL,HIDEFS,IBMFLG,PARITY,FMFLG,INCFLG,RDCKT
+	extrn	QUIETD,VTFLG,SPDTAB,SPEED,TEMP1,FILEIO,TACCHR
+	extrn	EXTERN,SPDHLP,PORT,FNBUF,LOGFCB,FCB,PAUSIT,BUFLEN
+	extrn	CURDEV,CURDIR,OPMODE
+
+	extrn	MITVER,PKTVER,REMVER,SRVVER,TTVER,SYSVER,CMDVER
+	extrn	UTLVER,DATVER,VERSION
+
+	cseg
+
+COMVER:	defb	'KCOM (17)  4-Dec-2021',0	; name, edit no. and date
+
+; This is the SET command.
+
+SETCOM:	ld	de,SETTAB	; parse a keyword from the set table
+	ld	hl,SETHLP
+	call	KEYCMD
+	ex	de,hl		; get result (dispatch address) into HL
+	jp	(hl)		; dispatch
+
+SETTAB:	defb	26	; number of entries
+	defb	11,	'AUTORECEIVE',0
+	defw	SETAUT
+	defb	16,	'BLOCK-CHECK-TYPE',0
+	defw	BLKSET
+	defb	11,	'BUFFER-SIZE',0
+	defw	SETBUF
+;       defb    14,	'CASE-SENSITIVE',0
+;       defw	SETCASE
+	defb	9,	'COLLISION',0
+	defw	SETCOL
+	defb	5,	'DEBUG',0
+	defw	SETDBG
+	defb	7,	'DEFAULT',0
+	defw	SETCWD
+	defb	17,	'DIRECTORY-LISTING',0
+	defw	HIDEF
+	defb	6,	'ESCAPE',0
+	defw	ESCAPE
+	defb	9,	'FILE-MODE',0
+	defw	SETFM
+	defb	12,	'FLOW-CONTROL',0
+	defw	SETFLO
+	defb	3,	'IBM',0
+	defw	IBMSET
+	defb	16,	'INCOMPLETE-FILES',0
+	defw	SETINC
+	defb	4,	'LINE',0
+	defw	PRTSET
+	defb	10,	'LOCAL-ECHO',0
+	defw	LOCALL
+	defb	7,	'LOGGING',0
+	defw	SETLOG
+	defb	7,	'NO-EXIT',0
+	defw	NOEXIT
+	defb	6,	'PARITY',0
+	defw	PARSET
+	defb	4,	'PORT',0
+	defw	PRTSET
+	defb	7,	'PRINTER',0
+	defw	SETPRN
+	defb	7,	'RECEIVE',0
+	defw	SETREC
+	defb	4,	'SEND',0
+	defw	SETSND
+	defb	5,	'SPEED',0
+	defw	BAUD
+	defb	7,	'TACTRAP',0
+	defw	SETTAC
+	defb	8,	'TERMINAL',0
+	defw	VT52EM
+	defb	5,	'TIMER',0
+	defw	SETTIM
+	defb	7,	'WARNING',0
+	defw	FILWAR
+
+; Help message for SET command. Caps indicate keywords
+
+SETHLP:	defb	CR,LF,'AUTORECEIVE to automatically re-receive files'
+	defb	CR,LF,'BLOCK-CHECK-TYPE for error detection'
+	defb	CR,LF,'BUFFER-SIZE for multi-sector buffering'
+;       defb	CR,LF,'CASE-SENSITIVE to equate lower and upper case'
+	defb	CR,LF,'COLLISION to specify action for filename conflicts'
+	defb	CR,LF,'DEBUG message control'
+	defb	CR,LF,'DEFAULT device and directory to receive data'
+	defb	CR,LF,'DIRECTORY-LISTING long or brief'
+	defb	CR,LF,'ESCAPE character during CONNECT'
+	defb	CR,LF,'FILE-MODE for outgoing files'
+	defb	CR,LF,'FLOW-CONTROL to set XON/XOFF flow control'
+	defb	CR,LF,'IBM mode: parity and turn around handling'
+	defb	CR,LF,'INCOMPLETE-FILE disposition'
+	defb	CR,LF,'LINE to communicate on (same as SET PORT)'
+	defb	CR,LF,'LOCAL-ECHO (half-duplex)'
+	defb	CR,LF,'LOGGING of terminal sessions'
+	defb	CR,LF,'NO-EXIT to prevent exit to system after a command tail'
+	defb	CR,LF,'PARITY for communication line'
+	defb	CR,LF,'PORT to communicate on'
+	defb	CR,LF,'PRINTER copy control'
+	defb	CR,LF,'RECEIVE parameters'	; not all currently implemented
+	defb	CR,LF,'SEND parameters'		; ditto
+	defb	CR,LF,'SPEED of communication line'
+	defb	CR,LF,'TAC interface support'
+	defb	CR,LF,'TERMINAL to set a terminal type'
+	defb	CR,LF,'TIMER control'
+	defb	CR,LF,'WARNING for filename conflicts'
+	defb	0
+
+; SET AUTORECEIVE on/off command
+
+SETAUT:	call	ONOFF		; set it either on or off
+	ld	(AUTORC),a	; and save the flag
+	jp	KERMIT		; and do next command
+
+; SET BLOCK-CHECK-TYPE command.
+
+BLKSET:	ld	de,BLKTAB	; get the address of the block-check table
+	ld	hl,BLKHLP	; and the address of the help text
+	call	CHKKEY		; go check input (val returns in A)
+	ld	(CHKTYP),a	; save desired checksum type
+	jp	KERMIT		; go get another command
+
+BLKTAB:	defb	3		; three entries
+	defb	20,'1-CHARACTER-CHECKSUM',0,	'1','1'
+	defb	20,'2-CHARACTER-CHECKSUM',0,	'2','2'
+	defb	21,'3-CHARACTER-CRC-CCITT',0,	'3','3'
+
+BLKHLP:	defb	CR,LF,'1-CHARACTER-CHECKSUM'
+	defb	CR,LF,'2-CHARACTER-CHECKSUM'
+	defb	CR,LF,'3-CHARACTER-CRC-CCITT',0
+
+; SET BUFFER-SIZE command
+;       Sets to maximum number of sectors to use for multiple sector 
+;       buffering. Sorts a lot of problems on some slow disc-access machines.
+
+SETBUF:	ld	a,CMNUM		; get a number from the user 
+	call	COMND
+	jp	KERMIT		; error if nothing
+	ld	hl,(NUMBER)	; get the value
+	ld	a,h
+	or	a
+	jr	nz,SETBU1	; if number greater than 255 then error
+	or	l
+	jr	z,SETBU1	; can't be zero either
+	ld	a,(MAXBSC)	; get maximum # of sectors allowed by system
+	cp	l		; compare with value
+	jr	c,SETBU1	; if value > max then error
+	ld	a,l		; only ls bits used
+	ld	(BUFSEC),a
+	ld	b,a
+	ld	hl,0
+	ld	de,BUFSIZ
+SBF1:	add	hl,de		; compute buffer size in bytes
+	djnz	SBF1
+	ld	(BUFLEN),hl
+	jp	KERMIT
+
+SETBU1:	ld	de,ERMS25
+	call	PRTERR
+	jp	KERMIT
+
+ERMS25:	db	'?Invalid BUFFER-SIZE parameter',0
+
+; SET DEFAULT and CD commands
+
+SETCWD:	ld	de,FCB
+	ld	a,CMIFIN	; get "file-spec" silently
+	call	COMND
+	jp	SETDI1
+SETDI1:	call	CHDIR		; change directory
+	jp	nc,KERMIT	; success
+	ld	de,ERMS32	; "operation failed"
+	call	PRTERR		; print error message
+	jp	KERMIT		; and die
+
+ERMS32:	db	'?Operation failed',0
+
+; SET SEND command.  Sort of supported
+
+SETSND:	ld	de,STSNTB	; parse a keyword from the set send table.
+	ld	hl,STSHLP
+	call	KEYCMD
+	ex	de,hl		; get dispatch address into HL
+	jp	(hl)		; go for it
+
+STSNTB:	defb	4		; Four entries
+	defb	8, 'PAD-CHAR',0
+	defw	STSPAC
+	defb	7, 'PADDING',0
+	defw	STSPAD
+	defb	15,'START-OF-PACKET',0
+	defw	STSSOP
+	defb	13,'PACKET-LENGTH',0
+	defw	STSPKS
+;	defb	9, 'CHECKTYPE',0
+;	defw	STSCKT
+
+STSHLP:	defb	CR,LF,'PAD-CHAR to define the pad character to use'
+	defb	CR,LF,'PADDING to define the number of PAD-CHAR to use'
+	defb	CR,LF,'START-OF-PACKET to define the start of packet character'
+	defb	CR,LF,'PACKET-LENGTH for the length of transmitted packet'
+;	defb	CR,LF,'CHECKTYPE to define the check-type to use'
+	defb	0
+
+; SET SEND START-OF-PACKET
+
+STSSOP:	call	CFMCMD		; get a "confirm" in case here via STAY
+	ld	de,SOPMES	; ask the user to enter a character
+	call	PRTSTR
+	call	GETCT		; get character
+	ld	(SNDSOP),a	; set new send start-of-packet character
+	jp	KERMIT
+
+SOPMES:	db	CR,LF,'Give the start-of-packet character: ',0
+
+; SET SEND PADDING command. Does nothing.  Gets value to DSPAD.
+
+STSPAD:	call	GETNP		; get the number of padding characters
+	ld	(DSPAD),a	; save ad default send no. pad characters
+	jp	KERMIT
+
+; SET SEND PAD-CHAR command. Does nothing.  Gets char to DSPADC.
+
+STSPAC:	call	GETPAD		; get the character to use
+	ld	(DSPADC),a	; save as default send pad character
+	jp	KERMIT
+
+; SET SEND PACKET-LENGTH command.  Max 95, but could be more for long pkts...
+
+STSPKS:	call	GETNP		; get number into HL
+	ld	bc,MAXPKT-1	; one below upper limit of packet-size
+	push	hl		; save number
+	or	a
+	sbc	hl,bc		; do 16-bit subtraction, even though
+				;  GETNP puts low-order bits in A,
+				;   in case long packets are implemented
+	pop	hl		; restore number
+	jp	nc,STSPK1
+	ld	a,l
+	ld	(SPSIZ),a	; save as default send packet length
+	jp	KERMIT
+STSPK1:	ld	de,ERMS26	; packet length too long error
+	call	PRTERR
+	jp	KERMIT		; error exit
+
+ERMS26:	db	'?Packet too long',0
+
+; SET SEND CHECKTYPE command. Accepts 1,2 or 3
+
+STSCKT:	call	GETNP		; get a number
+	cp	4		; if more than 3 then error
+	jp	nz,STSCK1
+STSCK2:	ld	de,ERMS27	; checktype wrong
+	call	PRTERR
+	jp	KERMIT
+STSCK1:	cp	0		; error also for null
+	jp	z,STSCK2
+	add	a,'0'		; make it printable
+	ld	(SDCKT),a	; save as default send checktype
+	jp	KERMIT
+
+ERMS27:	db	'?Invalid Checktype',0
+
+; SET RECEIVE command
+
+SETREC:	ld	de,STRCTB	; parse a keyword from the set rec table
+	ld	hl,STSHLP	; use same help for send and receive
+	call	KEYCMD
+	ex	de,hl		; get dispatch address into HL
+	jp	(hl)		; go for it
+
+STRCTB:	defb	4		; four entries
+	defb	8, 'PAD-CHAR',0
+	defw	STRPAC		; use dummy entry of set send
+	defb	7, 'PADDING',0
+	defw	STRPAD		; use dummy entry of set send
+	defb	15,'START-OF-PACKET',0
+	defw	STRSOP
+	defb	13,'PACKET-LENGTH',0
+	defw	STRPKS
+;	defb	9, 'CHECKTYPE',0
+;	defw	STRCKT
+
+; SET RECEIVE START-OF-PACKET  
+
+STRSOP:	call	CFMCMD		; get a "confirm" in case here via STAY
+	ld	de,SOPMES	; ask the user to enter a character
+	call	PRTSTR
+	call	GETCT		; get the character
+	ld	(RCVSOP),a	; set new receive start-of-packet char
+	jp	KERMIT
+
+; SET RECEIVE PADDING
+
+STRPAD:	ld	a,CMNUM		; go parse a number
+	call	COMND		; get it
+	jp	KERMIT		; duff entry, so die
+	ld	a,CMCFM		; ask to confirm
+	call	COMND
+	ld	hl,(NUMBER)	; get the number of padding charaters
+	ld	a,l		; assume 255 or less
+	ld	(DSPAD),a	; save ad default send no. pad characters
+
+; SET SEND RECEIVE routines
+
+GETPAD:	call	CFMCMD
+	ld	de,PADCMS	; tell user we want the pad character
+	call	PRTSTR
+	jp	GETCT		; get it verbatum
+
+PADCMS:	db	CR,LF,'Type the new padding character: ',0
+
+; SET RECEIVE PAD-CHAR routine
+
+STRPAC:	call	GETPAD		; get the character to use
+	ld	(DRPADC),a	; save it
+	jp	KERMIT
+
+; SET RECEIVE PACKET-LENGTH.  Max 95, but could be more for long pkts...
+
+STRPKS:	call	GETNP		; get number into HL
+	ld	bc,MAXPKT-1	; one below upper limit of packet-size
+	push	hl		; save number
+	or	a
+	sbc	hl,bc		; do 16-bit subtraction, even though
+				;  GETNP puts low-order bits in A,
+				;   in case long packets are implemented
+	pop	hl		; restore number
+	ld	de,ERMS26	; packet length too long error
+	jp	nc,STRPK1
+	ld	a,l
+	ld	(RPSIZ),a	; save as default receive packet-length
+	jp	KERMIT
+STRPK1:	call	PRTSTR
+	jp	KERMIT		; error exit
+
+; SET RECEIVE CHECKTYPE
+
+STRCKT:	call	GETNP		; get a number
+	cp	4		; if more than 3 then error
+	jp	nz,STRCK1
+STRCK2:	ld	de,ERMS27	; checktype wrong
+	call	PRTERR
+	jp	KERMIT
+STRCK1:	cp	0		; error also for null
+	jp	z,STRCK2
+	add	a,'0'		; make it printable
+	ld	(RDCKT),a	; save as default receive checktype
+	jp	KERMIT
+
+GETNP:	ld	a,CMNUM		; go parse a number
+	call	COMND		; get it
+	jp	KERMIT		; duff entry, so die
+	ld	a,CMCFM		; ask to confirm
+	call	COMND
+	jp	KERMIT		; duff entry, so die
+	ld	hl,(NUMBER)	; get the number of padding charaters
+	ld	a,l		; assume 255 or less
+	ret			; return to caller
+
+; SET NO-EXIT on/off.  Sets a flag to prevent automatically dropping 
+;  back to system after a command tail has been "done".  No other use.
+
+NOEXIT:	call	CFMCMD		; get a "confirm" in case here via STAY
+	xor	a
+	ld	(NEXITF),a	; no exit to system
+	jp	KERMIT
+
+; SET LOGGING ON/OFF subcommand
+
+SETLOG:	call	ONOFF		; get on/off
+	ld	(LOGFLG),a	; store flag
+	jp	KERMIT
+
+; SET ESCAPE character subcommand
+
+ESCAPE:	call	CFMCMD
+	ld	de,ESCMES	; get the address of the escape message
+	call	PRTSTR
+	call	GETCT		; get the char
+	ld	(ESCCHR),a	; store the new escape character
+	jp	KERMIT
+
+ESCMES:	db	CR,LF,'Type the new escape character: ',0
+
+; SET LOCAL-ECHO subcommand
+
+LOCALL:	call	ONOFF		; get on/off setting
+	ld	(ECOFLG),a	; store local echo flag
+	jp	KERMIT
+
+; SET PRINTER ON/OFF subcommand
+
+SETPRN:	call	ONOFF		; get on/off setting
+	ld	(PRNFLG),a	; store printer flag
+	jp	KERMIT
+
+; SET DEBUG ON/OFF subcommand
+
+SETDBG:	call	ONOFF		; get on/off setting
+	ld	(DBGFLG),a	; store debug flag
+	jp	KERMIT
+
+; SET TIMER subcommand
+
+SETTIM:	call	ONOFF		; get on/off setting
+	ld	(TIMFLG),a	; store timer flag value
+	jp	KERMIT
+
+; SET FILE-WARNING subcommand
+
+FILWAR:	call	ONOFF		; get on/off setting
+	ld	(FLWFLG),a	; store file-warning flag
+	jp	KERMIT
+
+; SET COLLISION subcommand
+
+SETCOL:	ld	de,COLTAB	; table address
+	ld	hl,COLHLP	; help address
+	call	CHKKEY		; get user's answer
+	ld	(FLWFLG),a	;  and remember it
+	jp	KERMIT		; back to main loop
+
+COLTAB:	defb	3		; 3 entries
+	defb	7, 'DISCARD',0,		02h,02h
+	defb	9, 'OVERWRITE',0,	00h,00h
+	defb	11,'NEW-VERSION',0,	01h,01h
+
+COLHLP:	defb	CR,LF,'DISCARD incoming files'
+	defb	CR,LF,'OVERWRITE existing files'
+	defb	CR,LF,'NEW-VERSION of incoming files'
+	defb	0
+
+; SET FLOW-CONTROL subcommand
+
+SETFLO:	call	ONOFF		; is it on or off
+	ld	(FLOCTL),a	; store flow contol flag
+	jp	KERMIT
+
+; SET CASE-SENSITIVE on or off
+
+;SETCASE:	
+;	call	ONOFF		; set it on or off
+;	ld	(CASENS),a	; save it
+;	jp	KERMIT
+
+; SET DIRECTORY-LISTING long or brief.
+
+HIDEF:	ld	de,DLTAB	; table address
+	ld	hl,DLHLP	; help address
+	call	CHKKEY		; get user's answer
+	ld	(HIDEFS),a	;  and remember it
+	jp	KERMIT		; back to main loop
+
+DLTAB:	defb	2		; 4 entries
+	defb	4,'LONG',0,	01h,01h
+	defb	5,'BRIEF',0,	00h,00h
+
+DLHLP:	defb	CR,LF,'LONG includes file size and attributes'
+	defb	CR,LF,'BRIEF displays only the file name'
+	defb	0
+
+; SET IBM command
+;
+; If SET IBM ON, we should do
+;    1)  Flow Control = off
+;    2)  Parity = mark
+;    3)  Local echo = on
+;    4)  Timer = on
+;
+; If SET IBM OFF, we should assume (& do)
+;    1)  Flow control = off (default)
+;    2)  Parity = none
+;    3)  Local Echo = off
+;    4)  Timer = off
+
+IBMSET:	call	ONOFF		; get on/off setting
+	ld	(IBMFLG),a	; store IBM flag
+	or	a		; is it turned on?
+	jp	z,IBMST1	; if not, set parity to the default
+
+	; SET IBM ON code
+
+	ld	a,IBMPAR	; get the IBM parity
+	ld	(PARITY),a
+	ld	a,1		; set local echo on
+	ld	(ECOFLG),a
+	ld	(TIMFLG),a	; also set timer on
+	xor	a		; no flow control
+	ld	(FLOCTL),a
+	jp	KERMIT		; exit
+
+	; SET IBM OFF code
+
+IBMST1:	ld	a,DEFPAR	; set default parity (none)
+	ld	(PARITY),a
+	xor	a		; set local echo off
+	ld	(ECOFLG),a
+	ld	(TIMFLG),a	; timer is same as local echo
+	ld	(FLOCTL),a	; set flow control off
+	jp	KERMIT		; exit from here
+
+; SET FILE-MODE command
+
+SETFM:	ld	de,TYPTAB
+	ld	hl,TYPHLP
+	call	CHKKEY		; get and confirm keyword, or die trying
+	ld	(FMFLG),a	; set the file mode flag
+	jp	KERMIT
+
+TYPTAB:	defb	3		; three entries
+	defb	5,'ASCII',0,	01h,01h
+	defb	6,'BINARY',0,	02h,02h
+	defb	7,'DEFAULT',0,	00h,00h	; Default
+
+TYPHLP:	defb	CR,LF,'ASCII	BINARY	DEFAULT'
+	defb	0
+
+; SET INCOMPLETE-FILE
+
+SETINC:	ld	de,INCTAB	; point to tables
+	ld	hl,INCHLP
+	call	CHKKEY		; get user's answer or croak
+	ld	(INCFLG),a	; remember the answer
+	jp	KERMIT		; we are done
+
+INCTAB:	defb	2		; two entries
+	defb	7,'DISCARD',0,	00h,00h	; discard incomplete files
+	defb	4,'KEEP',0,	01h,01h	; keep incomplete files
+
+INCHLP:	defb	CR,LF,'DISCARD	KEEP'
+	defb	0
+
+; SET PARITY subcommand
+
+PARSET:	ld	de,PARTAB
+	ld	hl,PARHLP
+	call	CHKKEY		; get and confirm keyword, or die trying
+	ld	(PARITY),a	; set the parity flag
+	jp	KERMIT
+
+PARTAB:	defb	5		; five entries.
+	defb	4,'EVEN',0,	PAREVN,PAREVN
+	defb	4,'MARK',0,	PARMRK,PARMRK
+	defb	4,'NONE',0,	PARNON,PARNON
+	defb	3,'ODD',0,	PARODD,PARODD
+	defb	5,'SPACE',0,	PARSPC,PARSPC
+
+PARHLP:	defb	CR,LF,'EVEN	MARK	NONE	ODD	SPACE',0
+
+; SET TACTRAP subcommand
+;       Options are ON, OFF, or CHARACTER (for CHARACTER we request the
+;       new TAC Intercept character, and turn the TACtrap on)
+
+SETTAC:	ld	de,TACTAB
+	ld	hl,TACHLP
+	call	CHKKEY		; get and confirm keyword
+	or	a		; was it "OFF" (zero)?
+	jp	z,SETTC2	; if so, go disable TACtrap
+	cp	1		; was it "ON"?
+	jp	z,SETTC1	; if so, go enable TACtrap
+	ld	de,TACMES	; "CHARACTER", request new TAC Intercept char
+	call	PRTSTR
+	call	GETCT		; get the char
+	ld	(TACCHR),a	; store the new TAC Intercept character
+SETTC1:	ld	a,(TACCHR)	; copy TACCHR to TACFLG to enable TACtrap
+SETTC2:	ld	(TACFLG),a	; enable/disable TACtrap
+	jp	KERMIT
+
+TACTAB:	defb	3		; three entries.
+	defb	9,'CHARACTER',0,	02h,02h
+	defb	3,'OFF',0,		00h,00h
+	defb	2,'ON',0,		01h,01h
+
+TACHLP:	defb	CR,LF,'ON to enable TAC trap'
+	defb	CR,LF,'OFF to disable TAC trap'
+	defb	CR,LF,'CHARACTER to enable TAC trap and'
+	defb	' specify intercept character',0
+
+TACMES:	db	CR,LF,'Type the new TAC intercept character: ',0
+
+; SET VT52-EMULATION subcommand
+
+; Now SET TERMINAL xxx
+;vt52em:
+;	ld	a,(VTFLG)	; get the flag value
+;	cp	0FFh		; 0FFh means not allowed -
+;	jp	z,NOTIMP	;  say it's not implemented
+;	call	ONOFF		; get keyword (ON or OFF)
+;	ld	(VTFLG),a	; set the VT52 emulation flag
+;	jp	KERMIT
+VT52EM:	ld	de,STTERT	; set terminal type
+	ld	hl,STTERH	; help table
+	call	CHKKEY		; get it
+	ld	a,d		; value returned in DE
+	cp	VTDEFE		; was it selecting an external terminal?
+	jp	nz,VT52E1	; no, so save new value
+	ld	hl,(EXTERN+1)	; if external, lets see if one is in place
+	ld	a,h
+	or	l
+	ld	a,VTDEFE	; restore external flag
+	jp	nz,VT52E1	; we have one, so we can save value
+	call	PRCRLF
+	ld	de,INMS11	; load up sorry message
+	call	PRTSTR
+	jp	KERMIT
+
+VT52E1:	cp	40h		; are we to have a quiet display?
+	jp	nz,VT52E2
+	ld	(QUIETD),a	; store it
+	jp	KERMIT
+
+VT52E2:	cp	80h		; are we to be a noisy display?
+	jp	nz,VT52E3
+	xor	a
+	ld	(QUIETD),a
+	jp	KERMIT
+
+VT52E3:	ld	(VTFLG),a	; else save new set parameter..
+	jp	KERMIT		; and exit
+
+; Table with string entry, and the returned value as two identical bytes.
+
+STTERT:	defb	6		; six types
+	defb	4,'DUMB',0,	VTDEFD,VTDEFD	; assume our terminal is thick
+	defb	8,'EXTERNAL',0,	VTDEFE,VTDEFE	; assume off, but terminal is in dep. code
+	defb	5,'QUIET',0,	40h,40h		; display quiet
+	defb	7,'REGULAR',0,	80h,80h		; display loud
+	defb	3,'OFF',0,	VTDEFO,VTDEFO	; assume our terminal does everything
+	defb	4,'VT52',0,	VTDEFV,VTDEFV	; VT52 as before
+
+STTERH:	defb	CR,LF,'DUMB - only printable characters passed to terminal'
+	defb	CR,LF,'EXTERNAL - with emulation code system-specific'
+	defb	CR,LF,'OFF - all characters passed to terminal'
+	defb	CR,LF,'QUIET - display nothing during transfers'
+	defb	CR,LF,'REGULAR - normal display for transfers'
+	defb	CR,LF,'VT52 - assume Kermit can emulate a VT52'
+	defb	0
+
+; SET BAUD command
+
+BAUD:	ld	hl,(SPDTAB)	; get pointer to speed table
+	ld	a,h
+	or	l		; test for NULL (zero)
+	jp	z,NOTIMP	; if so, say it's not implemented
+	ex	de,hl		; move speed table address to DE
+	ld	hl,(SPDHLP)	; get pointer to speed help text
+	call	KEYCMD
+	push	de		; save selected speed
+	call	CFMCMD		; confirm...
+	pop	hl		; restore speed to HL
+	ld	(SPEED),hl	; save all 16 bits of speed value
+	ex	de,hl		; move speed to DE
+	call	SYSSPD		; do system-dependent speed setting.
+	;TODO: handle errors
+	jp	KERMIT		; return to command level
+
+; SET PORT and SET LINE commands
+
+PRTSET:	ld	de,FCB
+	ld	a,CMIFIN	; get "file-spec" silently [TODO: CMDEV]
+	call	COMND
+	jp	PRTS1
+PRTS1:	ld	a,(FCB+F.ATTR)
+;;	cp	FN.DEV		; device (and only a device) specified?
+	and	FN.DEV		; device name specified?
+	jr	z,PRTS2		; no, error
+	ld	hl,FCB+F.DEV
+	ld	b,LUNTMP
+	call	ALUN		; assign LUN
+	jr	c,PRTS2		; branch on error
+	push	hl
+	pop	ix
+	bit	DV.TTY,(ix+4)	; terminal device?
+	jr	z,PRTS2		; no, error
+	ld	hl,FCB+F.DEV
+	ld	de,PORT
+	ld	bc,3
+	ldir			; yes, set new comm line name
+	ld	a,(OPMODE)
+	push	af		; save old Local/Remote flag
+	call	SYSPRT		; go do port stuff (set terminal slave)
+	pop	bc		; pop old Local/Remote flag into B
+	ld	de,ERMS34
+	jp	c,PRTS4		; handle errors
+	ld	a,(OPMODE)
+	cp	b		; same as before?
+	jp	z,KERMIT	; yes, return
+	ld	c,a
+	ld	de,INMS16
+	call	PRTSTR		; "Kermit is "
+	push	de
+	ld	de,INMS20	; "now"
+	ld	a,c
+	or	a
+	jr	nz,PRTS3
+	ld	de,INMS21	; "no longer"
+PRTS3:	call	PRTSTR
+	pop	de
+	inc	de
+	call	PRTSTR		; " in local mode"
+	jp	KERMIT		; return
+
+PRTS2:	ld	de,ERMS33	; "invalid device"
+PRTS4:	call	PRTERR		; print error message
+	jp	KERMIT		; and die
+
+ERMS33:	defb	'?Invalid device',0
+ERMS34:	defb	'?Failed to setup port',0
+INMS16:	defb	CR,LF,'Kermit is ',0,' in LOCAL mode.',0
+INMS20:	defb	'now',0
+INMS21:	defb	'no longer',0
+
+; Subroutines for SET subcommands
+
+; ONTAB - Command table for onoff.
+; ONHLP - Help text for onoff.
+; ONOFF - Accept "ON" or "OFF" keyword.
+; Returns:
+;   success: value in A (non-zero = ON)
+;   error: no return to caller. print error message and return to main loop.
+
+ONTAB:	defb	2		; two entries.
+	defb	3,'OFF',0,	00h,00h
+	defb	2,'ON',0,	01h,01h
+
+ONHLP:	defb	CR,LF,'OFF	ON',0
+
+ONOFF:	ld	de,ONTAB
+	ld	hl,ONHLP
+	; fall through to check input
+
+; Parse and confirm keyword.
+; Called with:
+;   DE = address of keyword table
+;   HL = address of help text
+; Returns:
+;   success: low byte of keyword value (from table) in A.
+;   error: no return to caller.  print error message and return to main loop.
+;          (Since the main loop reloads the stack pointer, we don't have to
+;          attempt to clean up the stack here)
+
+CHKKEY:	call	KEYCMD		; parse a keyword (might not return)
+	ld	(TEMP1),a	; save the parsed value
+	call	CFMCMD		; request confirmation (might not return)
+	ld	a,(TEMP1)	; get saved value
+	ret			; return
+
+; Find a keyword string from a table using its associated value
+; Called with:
+;   HL = address of keyword table
+;   A  = value associated with keyword string
+; Returns:
+;   success: HL points to first byte of keyword string
+;            CY flag is cleared
+;   error:   HL points to error string (?Not found)
+;            CY flag is set
+
+FNDKYW:	ld	b,(hl)		; get count of entries
+	inc	hl		; advance over count value
+	ld	d,0		; prepare for 16-bit addition below
+FNDKW1:	ld	e,(hl)		; get string length
+	inc	e		; account for trailing null
+	inc	hl		; advance over length value
+	ld	(TEMP1),hl	; save string pointer
+	add	hl,de		; skip over string
+	ld	c,(hl)		; get keyword value from table
+	cp	c		; do they match?
+	jr	z,FNDKW3	; yup
+	inc	hl		; bump to next keyword
+	inc	hl
+	djnz	FNDKW1		; loop to check the remaining keywords
+	ld	hl,KYWDNF	; point to not found message
+	scf			; give calling routine a not found flag
+	ret	
+FNDKW3:	or	a		; clear CY to tell caller we succeeded
+	ld	hl,(TEMP1)	; restore the saved string pointer
+	ret	
+
+KYWDNF:	defb	CR,LF,'?Not found',0
+
+; SHOW command.
+
+SHOW:	call	CFMCMD
+	;* Reconcile this and status.
+	call	STAT01		; for now just cop out
+	jp	KERMIT
+
+; STATUS command.
+
+STATUS:	call	CFMCMD
+	call	STAT01
+	jp	KERMIT
+
+; Processor for SHOW, STATUS and <escape>S commands
+; Called by: SHOW, STATUS, INTCHR
+
+STAT01:	ld	a,(FILEIO)	; are we in transmit?
+	or	a
+	ld	de,XMTST	; yes, say so
+	call	nz,PRTSTR
+
+	; The following block of code - down to RET - re-ordered by
+	; DJR January 1987 to get SHOW/STATUS output in the same
+	; (alphabetical) order as SET's HELP.
+
+	call	STAUTR		; show AUTORECEIVE state
+	call	STABCC		; tell current block check type
+	call	STABSZ		; tell user about multi-sector buffers
+	call	STACOL		; COLLISION state
+	call	STADBG		; debug mode
+	call	STACWD		; current disk and directory
+	call	STAHFS		; tell about directory listing
+	call	STAESC		; tell current escape character
+	call	STAFIL		; tell about file type
+	call	STAFLO		; tell about flow control
+	call	STAIBM		; tell about IBM flag
+	call	STAINC		; tell about incomplete file disposition
+	call	STAECO		; tell about local echo flag
+	call	STALOG		; tell about log file status
+	call	STAPAR		; tell about parity
+	call	STAPOR		; tell which port we're using
+	call	STALPT		; tell about printer copy flag
+	call	STARPS		; show receive packet length
+	call	STARSP		; tell receive start-of-pkt char
+
+	; ask user to press a key before continuing
+
+	call	PAUSIT		; wait for a while till user presses a key
+
+	call	STASPS		; show send packet length
+	call	STASSP		; tell send start-of-pkt char
+	ld	hl,(SPDTAB)	; got a speed table? (is pointer nonzero?)
+	ld	a,h
+	or	l
+	call	nz,STASPD	; if so, tell what speed we're running
+	call	STATAC		; tell about TAC flag/intercept character
+	call	STATIM		; tell about timer flag
+	call	STATVT		; tell about what emulation we are doing
+	call	STAWRN		; tell about file-warning flag
+	ret	
+
+XMTST:	db	CR,LF,'Transmitting a file',0
+
+; STAUTR - Show Autoreceive setting
+
+STAUTR:	ld	de,AUTRST	; point to "Autoreceive" string
+	call	PRTSTR		; and print it
+	ld	a,(AUTORC)	; get Autoreceive flag
+	jp	STATON		; say "on" or "off" and return
+
+AUTRST:	db	CR,LF,'Autoreceive is',0
+
+; Show the value of the LOCAL-ECHO flag (ON or OFF).
+
+STAECO:	ld	de,LOCST	; get the address of the local echo string
+	call	PRTSTR
+	ld	a,(ECOFLG)	; get the local echo flag
+	jp	STATON		; say ON or OFF, and return
+
+LOCST:	db	CR,LF,'Local echo',0
+
+; Show the value of the VT52-EMULATION flag (ON, OFF, or Not Supported).
+; Also show terminal display mode (regular, quiet)
+
+STATVT:	ld	de,VTDPST	; get address of terminal display string
+	call	PRTSTR		; print it
+	ld	de,VTDPSR	; assume a regular (loud) display
+	ld	a,(QUIETD)	; get "quiet" flag
+	or	a		; a quiet display?
+	jp	z,STATVA	; no, print "regular" message
+	ld	de,VTDPSQ	; yes, point to "quiet" string
+STATVA:	call	PRTSTR		; and print it
+	ld	de,VTEMST	; get the address of the VT52 emulation string
+	call	PRTSTR
+	ld	a,(VTFLG)	; get the VT52 emulation flag
+	cp	0FFh		; is terminal emulation possible?
+	jp	nz,STATV0	; yes, maybe
+	ld	hl,INMS11	; no, load up not implemented message...
+	jp	PRTSTR		; so tell user and return
+
+STATV0:	ld	c,a		; save it to C
+	ld	hl,STTERT	; get table listing what we can do
+	ld	b,(hl)		; get number of terminal types to B
+STATV1:	inc	hl		; point to first entry
+	ld	e,(hl)		; get length of entry
+	ld	d,0
+	inc	hl		; point to text part of entry
+	ex	de,hl		; save address in de
+	add	hl,de		; start + length
+	inc	hl		;  + 1 for the dollar...
+	inc	hl		; plus point to seconcd copy of ter. type value
+	cp	(hl)		; is it the one we want?
+	jp	z,PRTSTR	; yes, print the terminal type value and ret.
+	djnz	STATV1		; else loop to try next
+	ret			; nothing found, just exit back to status
+
+VTDPST:	db	CR,LF,'Terminal display is ',0
+VTDPSR:	db	'REGULAR',0
+VTDPSQ:	db	'QUIET',0
+
+VTEMST:	db	CR,LF,'Terminal emulation is ',0
+INMS11:	db	' Not implemented.',0
+
+; Show the value of the FILE-MODE flag (ASCII, Binary, or Default).
+
+STAFIL:	ld	de,FMODST	; get the address of the file mode message
+	call	PRTSTR
+	ld	a,(FMFLG)	; get the file mode flag
+	ld	de,DEFSTR	; assume Default (0)
+	or	a		; is it?
+	jp	z,PRTSTR	; if so, say so, and return
+	ld	de,ASCSTR	; not default, assume ASCII
+	cp	1		; is it ASCII?
+	jp	z,PRTSTR	; say ASCII, and return
+	ld	de,BINSTR	; not default or ASCII, must be binary
+	jp	PRTSTR		; print type, and return
+
+FMODST:	db	CR,LF,'File Mode',0
+DEFSTR:	db	' default',0
+ASCSTR:	db	' ASCII',0
+BINSTR:	db	' binary',0
+
+; Show current disposition for incomplete files.
+
+STAINC:	ld	de,INCST	; announce what's to be shown
+	call	PRTSTR
+	ld	de,DSCSTR	; assume "discard"
+	ld	a,(INCFLG)	; get flag
+	or	a		; really discarding incomplete files?
+	jp	z,PRTSTR	; yes, say so and return
+	ld	de,KEPSTR	; no, say we're keeping incomplete files
+	jp	PRTSTR		; and return
+
+INCST:	db	CR,LF,'Disposition for incomplete files is',0
+DSCSTR:	db	' discard',0
+KEPSTR:	db	' keep',0
+
+; Show directory listing format.
+
+STAHFS:	ld	de,HFSOD	; directory listing format string
+	call	PRTSTR
+	ld	a,(HIDEFS)	; get the format flag
+	ld	de,HFSODB	; assume brief
+	or	a		; is it?
+	jp	z,PRTSTR	; yes, say so
+	ld	de,HFSODL	; no, is long
+	jp	PRTSTR		; say it
+
+HFSOD:	db	CR,LF,'DIRECTORY listing format is',0
+HFSODB:	db	' brief',0
+HFSODL:	db	' long',0
+
+; Show the value of the IBM-MODE flag (ON or OFF).
+
+STAIBM:	ld	de,IBMST	; IBM string
+	call	PRTSTR
+	ld	a,(IBMFLG)	; get IBM flag
+	jp	STATON		; print its value and return
+
+IBMST:	db	CR,LF,'IBM flag',0
+
+; Show the value of the FILE-WARNING flag (ON or OFF).
+
+STAWRN:	ld	de,FILST	; file warning string
+	call	PRTSTR
+	ld	a,(FLWFLG)	; file warning flag
+	jp	STATON		; say ON or OFF
+
+FILST:	db	CR,LF,'File warning',0
+
+; Show the value of the PRINTER flag (ON or OFF).
+
+STALPT:	ld	de,PRST		; printer copy string
+	call	PRTSTR
+	ld	a,(PRNFLG)	; printer ON/OFF flag
+	jp	STATON		; say ON or OFF
+
+PRST:	db	CR,LF,'Printer copy',0
+
+; Show status of log file
+
+STALOG:	ld	de,LOGST	; logging lead-in message
+	call	PRTSTR
+
+	; name of logging file
+
+	push	de
+	ld	ix,LOGFCB	; source of filespec
+	ld	hl,FNBUF	; point to destination
+	push	hl		; save string address
+	call	FCBSTR		; convert to string
+	pop	de		; restore string address
+	call	PRTSTR		; print the file name
+	pop	de
+	inc	de		; second part of message
+	call	PRTSTR
+
+	; show status of logging
+
+	ld	a,(LOGFLG)	; get the flag
+	and	7Fh		; ignore open flag
+	cp	2		; is it suspended?
+	jp	nz,STATON	; no, must be on or off
+	ld	de,SUSSTR	; suspended
+	jp	PRTSTR		; print and return
+
+LOGST:	db	CR,LF,'Logging to ',0,' is',0
+SUSSTR:	db	' suspended',0
+
+; Show the value of the PARITY flag (Odd, Even, Mark, Space, or None).
+
+STAPAR:	ld	de,PARST	; parity string
+	call	PRTSTR
+	ld	a,(PARITY)	; get the parity setting
+	ld	de,PNONST	; assume parity is NONE
+	cp	PARNON		; were we right?
+	jp	z,PRTSTR	; yep, go say None, and return
+	ld	de,PMRKST	; get ready to say Mark
+	cp	PARMRK		; is it mark?
+	jp	z,PRTSTR	; yep, go say Mark, and return
+	ld	de,PSPCST	; get ready to say Space
+	cp	PARSPC		; is it space?
+	jp	z,PRTSTR	; yep, go say Space, and return
+	ld	de,PODDST	; get ready to say Odd
+	cp	PARODD		; is it odd?
+	jp	z,PRTSTR	; yep, go say Odd, and return
+	ld	de,PEVNST	; must be Even
+	jp	PRTSTR		; say Even, and return
+
+PARST:	db	CR,LF,'Parity ',0
+PNONST:	db	'none',0
+PMRKST:	db	'mark',0
+PSPCST:	db	'space',0
+PODDST:	db	'odd',0
+PEVNST:	db	'even',0
+
+; Show start of packet characters
+
+STASSP:	ld	de,SSPMSG	; message of send s-o-p
+	call	PRTSTR
+	ld	a,(SNDSOP)
+	add	a,'A'-1		; convert to printable character
+	ld	e,a
+	jp	OUTCON		; and print it
+
+SSPMSG:	db	CR,LF,'SEND start-of-pkt char ^',0
+
+STARSP:	ld	de,RSPMSG	; rec. s-o-p message
+	call	PRTSTR
+	ld	a,(RCVSOP)
+	add	a,'A'-1		; convert to printable character
+	ld	e,a
+	jp	OUTCON		; and print it
+
+RSPMSG:	db	CR,LF,'RECEIVE start-of-pkt char ^',0
+
+; Show receive packet length
+
+STARPS:	ld	de,RPSMSG	; point to message
+	call	PRTSTR		; and print it
+	ld	a,(RPSIZ)	; get receive packet length
+	ld	l,a		; put in HL
+	ld	h,0
+	jp	NOUT		; print receive packet length in decimal
+
+RPSMSG:	db	CR,LF,'RECEIVE packet length ',0
+
+; Print send packet length
+
+STASPS:	ld	de,SPSMSG	; point to message
+	call	PRTSTR		; and print it
+	ld	a,(SPSIZ)	; get send packet length
+	ld	l,a		; into HL
+	ld	h,0
+	jp	NOUT		; and print in decimal
+
+SPSMSG:	db	CR,LF,'SEND packet length ',0
+
+; Show the current port (if known).
+
+STAPOR:	ld	de,PORTST
+	call	PRTSTR
+	ld	de,PORT		; get current port value
+	ld	a,(de)
+	ld	hl,SPDUST	; assume undefined (this error msg is fine)
+	or	a		; is it?
+	jp	z,STAT73	; yup, say so
+	ld	hl,FNBUF
+	push	hl
+	call	DEVSTR		; convert device name st string
+	pop	de
+	jp	PRTSTR		; output it
+
+PORTST:	db	CR,LF,'Communications port is ',0
+
+; Show the current line speed (if known).
+
+STASPD:	ld	de,SPDST
+	call	PRTSTR		; display first part of message
+	ld	a,(SPEED)	; get current speed
+	ld	hl,SPDUST	; assume undefined
+	cp	0FFh		; is it?
+	jr	z,STAT73	; yes
+	push	de		; save message pointer
+	ld	hl,(SPDTAB)	; start scanning keyword table
+	ld	b,(hl)		; get count of entries
+	inc	hl		;  advance over it
+	ld	d,0		; prepare for 16-bit addition below
+STAT70:	ld	e,(hl)		; get string length
+	inc	e		; account for trailing null
+	inc	hl
+	ld	(TEMP1),hl	; save string pointer
+	add	hl,de		; skip over string
+	ld	c,(hl)		; get speed value
+	cp	c		; match?
+	jr	z,STAT72	; yes
+	inc	hl		; bump to next keyword
+	inc	hl
+	djnz	STAT70		; if more left, check them
+	pop	de		; discard old message pointer
+	ld	hl,SPDUST	; can't find it, say it's undefined
+	jp	STAT73		; print the message
+
+STAT72:	ld	de,(TEMP1)	; restore saved string pointer
+	call	PRTSTR		; print speed
+	pop	hl		; restore message pointer
+	inc	hl		; point to "bps" message
+STAT73:	ex	de,hl		; set into DE for display
+	jp	PRTSTR		; print it, and return
+
+SPDST:	db	CR,LF,'Current speed is ',0,' bps',0
+SPDUST:	db	'indeterminate (not SET)',0
+
+; Show the current BLOCK-CHECK-TYPE (1-, 2-, or 3-character).
+
+STABCC:	ld	de,BCKST	; get the string
+	call	PRTSTR		; print "Block check type: "
+	push	de
+	ld	a,(CHKTYP)	; get the type (character 1, 2, or 3)
+	ld	e,a		; put into E
+	call	OUTCON		; print it
+	pop	de
+	inc	de		; get rest of text ("-character")
+	jp	PRTSTR		; print it and return
+
+BCKST:	db	CR,LF,'Block check type: ',0,'-character',0
+
+; Print "SET COLLISION" state
+
+STACOL:	ld	de,COLLST	; get message
+	call	PRTSTR		; print it
+	ld	hl,COLTAB	; point to COLLISION keywords
+	ld	a,(FLWFLG)	; get COLLISION state
+	call	FNDKYW		; get COLLISION state
+				;  (since user doesn't control FLWFLG
+				;   directly, no need to check for errors)
+	ex	de,hl		; prepare for printing
+	jp	PRTSTR		; print COLLISION state and return
+
+COLLST:	db	CR,LF,'File COLLISION: ',0
+
+; Print the current escape character
+
+STAESC:	ld	de,ESCST	; escape string
+	call	PRTSTR
+	jp	ESCPR		; print the escape char
+
+ESCST:	db	CR,LF,'Escape char: ',0
+
+; Show number proportion of buffers used in multiple sector buffering
+
+STABSZ:	ld	de,BUFSZ1
+	call	PRTSTR		; do first bit of string
+	push	de
+	ld	hl,0
+	ld	a,(BUFSEC)
+	ld	l,a		; get size used...
+	call	NOUT		; ...to screen
+	pop	de
+	inc	de		; and then say max value
+	call	PRTSTR
+	ld	hl,0
+	ld	a,(MAXBSC)	; get max for this system
+	ld	l,a
+	jp	NOUT		; ...thence to screen
+
+BUFSZ1:	db	CR,LF,'Multi-sector buffering at ',0,' of a maximum of ',0
+
+; Show the value of the TIMER flag
+
+STATIM:	ld	de,TIMMSG
+	call	PRTSTR 
+	ld	a,(TIMFLG)
+	jp	STATON		; tell whether it's on or off
+
+TIMMSG:	db	CR,LF,'Timer',0
+
+; Show internal versions (edit strings)
+
+SHOVER:	call	CFMCMD
+	call	PRCRLF
+	ld	de,VERSION	; point to Kermit version
+	call	PRTSTR		; and show it
+	ld	de,MODMSG	; continue the message
+	call	PRTSTR		; ...
+	call	PRCRLF		; end the line
+	ld	hl,VERTAB	; get address of version list
+SHOVR1:	ld	e,(hl)		; get next word from list
+	inc	hl
+	ld	d,(hl)		; next version string is in DE
+	inc	hl
+	ld	a,d		; test for zero (end of list)
+	or	e
+	jp	z,KERMIT	; done with list if zero, return to main loop
+	push	hl		; save position in list
+	call	PRTSTR		; not zero, print it
+	call	PRCRLF		; follow with crlf
+	pop	hl		; restore position in list
+	jp	SHOVR1		;  and go see if there are any more
+
+MODMSG:	db	'has been built from the following modules:',0
+
+; Table of pointers to version strings.
+
+VERTAB:	defw	MITVER		; KMIT
+	defw	COMVER		; KCOM
+	defw	PKTVER		; KPKT
+	defw	REMVER		; KREM
+	defw	SRVVER		; KSER
+	defw	TTVER		; KTT
+	defw	SYSVER		; KSYS
+	defw	CMDVER		; KCMD
+	defw	UTLVER		; KUTL
+	defw	DATVER		; KDAT
+	defw	0		; end of list
+
+; Show TACTrap status (ON or OFF, and intercept character)
+
+STATAC:	ld	de,TACST	; "Current TACTrap status/char: "
+	call	PRTSTR
+	ld	de,OFFSTR+1	; assume set off (skip leading blank)
+	ld	a,(TACFLG)	; get the TACTrap char/flag
+	or	a		; is it off?
+	jp	z,PRTSTR	; yep, go print OFF...
+	ld	e,a		; display...
+	jp	OUTCON		; ...the current intercept char and return
+
+TACST:	db	CR,LF,'Current TACTrap Status/Intercept Character: ',0
+
+; Show if flow control is set on or off
+
+STAFLO:	ld	de,FLOST	; flow control string
+	call	PRTSTR
+	ld	a,(FLOCTL)	; get the flag
+	jp	STATON
+
+FLOST:	db	CR,LF,'Flow control',0
+
+; Show if Case sensitvity is on or off
+
+;STASENS:
+;	ld	de,SENST	; case sensitivity string
+;	call	PRTSTR		;
+;	ld	a,(CASENS)
+;	jp	STATON		; say if its on or off
+;
+;SENST:	db	CR,LF,'Case sensitivity',0
+
+; Show debug mode
+
+STADBG:	ld	de,DBGST	; display string
+	call	PRTSTR
+	ld	a,(DBGFLG)	; load flag
+	jp	STATON
+
+DBGST:	db	CR,LF,'Debugging',0
+
+; Show default device and directory
+
+STACWD:	ld	de,CURDST	; display header string
+	call	PRTSTR
+	ld	hl,FNBUF
+	push	hl
+	ld	de,CURDEV
+	call	DEVSTR		; convert device name to string
+	ld	de,CURDIR
+	call	DIRSTR		; followed by directory name
+	pop	de
+	jp	PRTSTR		; output current device and directory
+
+CURDST:	db	CR,LF
+CDMSG:	db	'Current device and directory is ',0
+
+; Display current state of a boolean flag.
+; Called with A/ value (zero = OFF, non-zero = ON)
+
+STATON:	ld	de,ONSTR	; assume it's on
+	or	a		; is it on?
+	jp	nz,PRTSTR	; if so, say so, then return
+	ld	de,OFFSTR	; no, say off
+	jp	PRTSTR		; print the string, then return
+
+ONSTR:	db	' on',0
+OFFSTR:	db	' off',0
+
+; STRING command
+; Get a string from the user and send it to the host.
+
+STRING:	ld	a,CMTXT		; get the text
+	ld	de,STBUFF	; where to put it
+	call	COMND
+	jp	KERMIT		; if we cannot do it, then back to command level
+	ld	(STRCNT),a	; save the string count
+	and	a		; if it is zero, then do nowt
+	jp	z,KERMIT
+	call	CFMCMD		; otherwise, get a "confirm"
+	call	SELMDM		; then select the modem
+	ld	de,STBUFF	; where to get the string
+STLOP:	ld	a,(de)		; get byte
+	inc	de		; pointer plus one
+	push	de		; update pointer, and save DE, and the character
+	call	SETPAR		; set whatever parity
+	ld	e,a		; OUTMDM wants character in E
+	call	OUTMDM		; send character in A to line
+	pop	de
+	ld	a,(STRCNT)	; get the count
+	dec	a
+	ld	(STRCNT),a	; less one
+	jr	nz,STLOP	; else still looping
+	call	SELCON		; re-select the console
+	jp	KERMIT
+
+; Print "(not implemented)".
+; Here from VT52EM, BAUD, PRTSET, STAVT
+
+NOTIMP:	ld	de,INMS12	; say it's not implemented.
+	call	PRTSTR
+	jp	KERMIT		; return to main loop.
+
+INMS12:	db	' (Not implemented)',CR,LF,0
+
+	end

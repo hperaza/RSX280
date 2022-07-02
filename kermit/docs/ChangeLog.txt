@@ -1,0 +1,270 @@
+Changelog
+---------
+
+Using Kermit-80 4.11 as the base version.
+
+
+27/12/20
+
+- Code converted to Z80.
+
+- Replaced call to MOVER routine by Z80 LDIR instruction.
+
+- Null char now marks the end of strings, so we can use SYSLIB routines.
+
+
+28/12/20
+
+- Kermit modules are now assembled separately, with split code and data
+  segments and no longer as a monolithic block in an absolute segment
+  (easier to link/test different versions of the modules).
+
+
+30/12/20
+
+- Added '@' command as synonym for 'TAKE', for consistency with RSX180/280
+  command files and for compatibility with Kermit-11.
+
+- Using SYSLIB for terminal I/O.
+
+- Main loop already working: prompt is displayed, commands can be entered,
+  '?' help works, but remote connections are not yet implemented.
+
+- Faster STASPD and FNDKYW routines.
+
+- Replaced STACURD (show current disk) and STUSR (show current user)
+  routines by a single STACWD (show current device and directory).
+
+- SHOW command now working, almost all settings are correct.
+
+- Display host name on startup banner, and also when transferring a file.
+
+
+31/12/20
+
+- Rewriting file I/O routines.
+
+- Directory display is already working.
+
+
+01/01/21
+
+- Added 'CD' command to change current device and dir (not yet implemented)
+
+- Changed 'SET DEFAULT-DISK' to 'SET DEFAULT', does the same as the 'CD'
+  command.
+
+- Removed the 'SET USER' command.
+
+- Added 'SET LINE' as synonym for 'SET PORT' for compatibility with Kermit-11.
+
+- Fixed handling of control chars in command line (entering/deleting control
+  chars screwed up the display)
+
+- Filename parsing with the original TOPS-20-like filename completion almost
+  done (a few bugs still remaining).
+
+
+02/01/21
+
+- CHRCNT is now a 16-bit variable that contains the cumulative number of
+  chars stored in the big file I/O buffer, SECCNT and NXTBUF are no longer
+  necessary.
+
+- TYPE command now works.
+
+- ERASE and RENAME commands now working.
+
+- Added DELETE command as synonym for ERASE.
+
+- Changed the SET COLLISION command (does not make much sense for RSX180
+  anyway): removed the BACKUP option, and changed RENAME to NEW-VERSION.
+
+
+03/01/21
+
+- CD command: validate device before setting it as default. Allow specifying
+  directory as '[dir]' as well as just 'dir'.
+
+- More work on file I/O: code to open a file in append mode. COPY command
+  now working.
+
+- Writing to log file now works.
+
+- Log the characters entered at the terminal when LOCAL-ECHO is ON.
+
+- The SET LINE command now sets the comm device, and ensures it is a TTY.
+
+- Added simple, unbuffered comm line (modem) I/O routines. Linux Kermit
+  can already connect to the RSX180 Kermit, but file transfers fail.
+
+
+04/01/21
+
+- Buffering modem I/O improves reliability and performance a lot.
+
+- Disable TAC character by default.
+
+- First successful Kermit file transfer!!!
+
+- Remote server commands also working (e.g. REMOTE DIR, FINISH, etc.)
+
+
+05/01/21
+
+- Reading commands from a TAKE file is now working.
+
+- Command tail processing done.
+
+- CMKEYW routine: added a workaround for the '@' command so the space after
+  it is no longer required. This makes the syntax consistent with RSX180
+  conventions.
+
+- Compute number of file buffers from amount of available memory, but
+  limit initially the size to 8K.
+
+- Tested under RSX280, 19200 baud: works OK if the PC Kermit keeps packet
+  size is kept below 64. Increasing the read buffer to 128 bytes solved the
+  problem.
+
+- Implemented long directory display, borrowing code from good'ol PIP :)
+
+
+06/01/21
+
+- DIR command: display summary (number of files and free space) at the
+  end of the listing.
+
+- SET DIRECTORY-FILE-SIZE ON/OFF command changed to SET DIRECTORY-LISTING
+  LONG/BRIEF.
+
+- The PAUSE command now uses the .MRKT system call for precise delays.
+
+
+08/01/21
+
+- Small SDATA routine optimizations (keep pointers in regs, not in memory
+  variables)
+
+- Removed unused variables.
+
+- For auto-completion, lowercase the keyword if the user typed the first
+  part in lowercase.
+
+- When typing a command, treat the TAB key as ESC (auto-complete keyword).
+  When reading the command from a TAKE file, treat the TAB as a blank.
+
+- Use the TC.ANS terminal characteristics byte to select between VT100
+  and VT52 screen control sequences.
+
+- Name changed to Kermit-180 to avoid confusion with the CP/M version.
+
+
+09/01/21
+
+- More precise timeout control for the INPUT command.
+
+- The receive packet routine now times out after the given RTIME seconds.
+
+- Purge modem input on timeout.
+
+
+17/01/21
+
+- Bug fix: the original terminal settings were not restored at exit.
+
+- The SET SPEED command now uses TC.SPD to set the communication line speed.
+
+
+06/03/21
+
+- Restore terminal mode (disable binary mode) on exit.
+
+
+19/03/21
+
+- Started implementing Server mode in Kermit-180.
+
+
+20/03/21
+
+- Server 'finish' command now exits Server mode.
+
+- The basic server 'send' and 'receive' operations are now working, but
+  things like error reporting still need to be implemented and/or tested.
+
+
+21/03/21
+
+- Server mode, get command: send correct error message to remote machine
+  if file was not found.
+
+- New screen layout for file transfer operations.
+
+- Fixed SET COLLISION OVERWRITE for files with explicit version number.
+
+- Display received file name only after it is created and the version number
+  is known.
+
+
+22/03/21
+
+- Flush modem output in TELNET routine after sending every char.
+
+
+28/03/21
+
+- Got the Server DIRECTORY command working: the output of the DIR routine
+  is captured and sent to the remote client in a series of D packets.
+
+
+29/03/21
+
+- Implemented the Server CD and SPACE commands.
+
+
+30/03/21
+
+- Decode packet data before attempting to decode Server Generic command,
+  as RPACK returns the raw packet data and some characters may be still
+  "quoted".
+
+- Allow changing default device in Server CD command.
+
+- Server CD command response is now more verbose, showing default device
+  and directory.
+
+
+22/05/21
+
+- Initialize the SPEED variable with the TC.SPD value obtained from the
+  device characteristics.
+
+
+04/12/21
+
+- Remote mode (PORT set to TI:) is now working. In Remote mode status
+  transfer display is suppressed to avoid conflicting with the Local
+  (PC-side) Kermit, and a message is displayed after GET, RECEIVE, SEND
+  and SERVER commands reminding the user to exit back to the Local Kermit.
+
+- Bug fix: entering a '?' in commands that require an arbitrary text
+  argument (OUTPUT, RECEIVE, etc.) caused corruption of the command line.
+
+- Bug fix: character count was not correctly kept after command autocomplete
+  operations, which resulted in prompt erasing when deleting command line
+  chars and potential buffer corruption.
+
+- Typing ^Z at the command prompt now exits Kermit-180.
+
+- Display an error message if the SET PORT command failed to attach the
+  comm port.
+
+- The SET PORT command now also reminds about Local/Remote mode changes.
+
+
+05/12/21
+
+- Kermit no longer built by default as privileged task.
+
+

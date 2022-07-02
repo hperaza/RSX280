@@ -1,0 +1,745 @@
+; KMIT.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains the system-independent initialization, the main
+;       loop, and the commands that don't have any place better to go.
+;	All the SET xxx and status routines now in KCOM.MAC.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 32, 19-Mar-2021 by H. Peraza: added SERVER command.
+;
+; edit 31, 12-Jan-2021 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Added '@' command as synonym for TAKE for consustency with RSX180/280
+;       command files. Added CD command to change the current device and
+;       directory. The PAUSE command now uses system timer services for
+;       accurate delays. Ported the initialization code, and moved all
+;       system-dependent functions to the KSYS.MAC module (the only two
+;       system calls remaining here are .GCML and .EXIT, which will be
+;       eventually moved to KSYS.MAC as well). The prompt now displays the
+;       current device and directory.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 30, 29-Mar-1991 by MF. When looking up a TAKE-file in a TAKE command
+;	and the file is not found, complain if it's not the first TAKE of
+;	the current program execution (the automatic TAKE of KERMIT.INI)
+;
+; edit 29, 25-Mar-1991 by MF. Add STAY command as a synonym for SET NO-EXIT
+;	command per Martin J. Carter of Nottingham University in the U.K.
+;
+; edit 28, 21-Mar-1991 by MF. Modify code after "inp2a" in INPUT command
+;	so a ^C will halt TAKE-file processing.
+;
+; edit 27, 27-Feb-1991 by MF. Add QUIT as a synonym for EXIT per code of
+;	Dr. Martin J. Carter of Nottingham University, U.K. Recognizing QUIT
+;	helps those who forget they're not in MS-Kermit, C-Kermit,
+;	Kermit-32 etc. Also add commands so that CONNECT, RECEIVE and SEND may
+;	be abbreviated to C, R and S, respectively.
+;
+; edit 26, 5-Nov-1990 by MF.  Cosmetic changes to main HELP messages for
+;	COPY and RENAME commands.
+;
+; edit 25, 1-Nov-1990 by MF.  Made the following command-name changes in the
+;	interest of uniformity of nomenclature (per suggestions of FDC):
+;	FCOPY to COPY, FRENAME to RENAME and STRING to OUTPUT.
+;	This means we'll have to type "CO" for CONNECT and "REC" for 
+;	RECEIVE but with REMOTE now with us we have to do the latter anyway.
+;
+; edit 24, 18-Sep-1990 by MF.  Implemented FRENAME command to rename a
+;	CP/M file.
+;
+; edit 23, 9-Sep-1990 by MF.  Implemented commands to be sent to a
+;	remote Kermit Server (Remote commands).
+;	Implemented setting of packet sizes for RECEIVE and SEND.
+;	Put DIRECTORY/STRING help texts in proper alphabetical position.
+;
+; edit 22, July 6th, 1987 by OBSchou.  Added a dummy Commandline to be
+;	loaded for debugging purposes as DDT destroys any command line at 80H
+;	Also fixed a bug or two...
+;
+; edit 21, April 8th, 1987.
+;	Various bits, including more SET SENDRECEIVE options, and make 
+;	PADDING and PADCHAR valid options.  Have I wasted my time, or 
+;	there still systems that use padding??  Fixed a bug in the INPUT
+;	command so we know how many characters there are to check for. Also
+;	hived off the SET commands to make a new file, CPSCOM.ASM thereby
+;	reducing the size of CPSMIT.ASM.  Also rename COPY command to FCOPY
+;	hence retaining a single C to imply connect.
+;
+; edit 20, March 30, 1987 by OBSchou.  
+;	added code for no exit to CPM if a command tail is done (optional)
+;	by the SET NO-EXIT command.  Added bits for SET AUTORECEIVE to enable 
+;	or inhibit automatic receive of several files (if something is coming 
+;	along from the remote side, do a receive. Toss first packet away.)  
+;	This is first step to SERVER???
+;	Also added back the INPUT command.
+;
+; edit 19, March 16, 1987.  Moved the code to check for and execute 
+;	command tails (See Richard Russells submission below).  
+;	Added flags to exit to CP/M after executing a command tail.  
+;	The KERMIT.INI file is taken before the command tail is issued.
+;
+; edit 18, March 11, 1987 by OBSchou.
+;	Added in code for TYPE <file> and PRINT <file>.  Hope to add COPY 
+;	later on.  Also added in code submitted by Richard Russel, to accept
+;	a command tail on entry to kermit (eg KERMIT CONNECT).  This facility
+;	if used, will replace the automatic TAKE function on loading Kermit.
+;	Unfortunately, you will not be dropped back to CP/M after the command
+;	In the future, it may be possible to either accept several commands
+;	on the command tail, and possibly accept the automatic TAKE facility
+;	as well.  Low on my list of things to do.
+;
+; edit 17, January 28, 1987 by OBSchou for DJ Roberts of Leicester
+;	Also added a couple of fixes [obs]
+;
+; 	DJR  January 1987  David J. Roberts.
+;          USER made a SET option
+;          STATUS output placed in alphabetical order
+;          Report DEBUG mode and default disk 
+;          Name of LOG file on SHOW/STATUS display
+;
+; edit 16 December 1st, OBSchou.  Fixed bug in that if the overlay is not in
+;	place or correct then prtstr is not called to print the error message
+;	(As prtstr has been moved out of the system independent code)
+;
+; edit 15 November 10, 1986 by OBSchou.  Re-inserted Pause and Break 
+;       commands for release.
+;
+; edit 14 August 29, 1986.  Removed PAUSE,BREAK,INPUT and SET CASE as 
+;       these have not been fully coded or debugged.  (For next 
+;       version of Kermit-80...). Also tidied up a bit.
+;
+; 13 by OBSchou for Godfrey Nix.  He writes:
+;       edit August 11,1986      Godfrey Nix, Nottingham University [gnn]
+;       To insert code for setting the packet start character on
+;       both send and receive packets (default is still 01H)
+;       and make GET and RECEIVE to be separate;
+;       use with edits to CP4PKT, CP4UTL
+;
+; edit 12: 19 June, 1986 by OBSchou.  Added PAUSE and BREAK facility.
+;       Breaks simulate a call to sysint which tests for a B being passed.
+;       Note this is only useful if the system dependent code supports breaks,
+;       and an appropriate message is returned if breaks are not possible.
+;       Also added is the command entry for INPUT, which waits for a string
+;       from the host for a given time.  The time is a very variable counter
+;       incremented every BDOS call.  Trial and error will give a reasonable
+;       value.  STRING acceps a string from the use and then sends it on 
+;       to the host.  These new commands allow a user to (almost) set up auto
+;       log on files, where BREAKS/INPUT/STRING/STRING partially emulate a user
+;       (AI LURES OK and all that).  Still could do with a test, eg if not a
+;       correctly returned string go back n steps.  This would make a fairly 
+;       simple TAKE command a lot more complicated.
+;
+; edit 11: 30 May, 1986 OBSchou.  Added in a couple of more routines and such
+;
+; edit 10: 27 May, 1986 OBSchou.  Added in support for USER function
+;       removed XMIT test and routine, but also added SET FLOW-CONTROL
+;       (set for XON/XOFF flow control in both directions) and a 
+;       SET CASE-SENSITIVE ON/OFF (if on => a # A, if ON => a=A)
+;
+; edit 9: 13 May, 1986 OBSchou, Loughborough University, UK
+;       Added in code for SET XMIT character to allow setting of the
+;       character to wait for from the host during TRANSMIT.  It is
+;       a line feed by default.  Also added a TAKE command, to take: commands
+;       from a named disk file.  If a file is TAKEn, then all BDOS calls 
+;       are trapped and tested for console input.  If so, we substitute a 
+;       character (or buffer) from the TAKE file specified.
+;       This may also be used in the future for a CPKERMIT.INI 
+;       to be evaluated during Kermit initialsation.
+;
+; edit 8: February 6, 1895
+;       Add a PORT status/show routine for those machines that have more
+;       than one they can talk to. It also required a port storage variable
+;       a la SPEED and the necessary code to handle it in the SET routine.
+;       [Hal Hostetler]
+;
+; edit 7: 13-Jan-85 by Vanya J.Cooper Pima Commun. College Tel: 602-884-6809
+;
+; pcc003-pcc005  2-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       These edits must all be installed together and change the way
+;       logging is handled.  The log file spec is moved to a separate
+;       fcb, and not opened until an actual CONNECT command is given.
+;       This takes care of a NASTY bug that if you used any other file
+;       command between the LOG and CONNECT, the log file would get
+;       written over the last file used.  This also allows logging to
+;       be "permanently" enabled until an CLOSE (new command) for all
+;       CONNECT sessions, like most other kermits do.  If a log file
+;       already exists, it will be appended to.  Also add two new
+;       CONNECT mode commands <esc>Q to suspend logging and <esc>R to
+;       resume.  <esc>R means something else during TRANSMIT, but
+;       logging is never on then, so there shouldn't be any conflict.
+;       I also changed the write code, so that it can handle one more
+;       character after the XOFF is send to stop the host.  This allows
+;       a little "slop" for systems that don't stop immediately (such
+;       as TOPS10), but it didn't help much.
+;
+; pcc012 4-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       Use the big buffer for the log file.  Move the log file back
+;       into the common fcb and only save the drive, name, and
+;       extension between connects.  Add new routines to cp4utl to
+;       create or append to an existing file, and to conditionally
+;       advance buffers only if in memory.  Remove edit pcc003 that
+;       allows one more character after the xoff, since it didn't
+;       really work very well and does not fit in well with the way
+;       the buffer advancing routines are set up.  If someone still
+;       thinks this would be useful, it could be put back in with a
+;       little more work.
+;       
+;       While testing this edit, I also noticed another bug that
+;       the command parsing routines do not limit or check the
+;       length of command lines or file specs, trashing what ever
+;       comes after them.  Currently because of where the fcb and
+;       command buffer are located, this does not usually cause a
+;       problem, but could if an extremely long line was typed in,
+;       or in the future multiple fcbs defined elsewhere in memory
+;       were used.  Maybe this should be put on the bug list
+;       somewhere.
+;
+; pcc013 8-Jan-85        vjc     modules:cp4mit,cp4utl,cp4typ
+;       Replace CLOSE command to cancel session logging to SET
+;       LOGGING ON/OFF.  This seems to fit in with the command
+;       structure better.  Default the log file to KERMIT.LOG
+;       incase no previous LOG command.  Logging is also enabled
+;       by LOG command, as before.
+;
+; edit 6: September 8, 1984
+;       Add VERSION command, to display the internal version strings.
+;       Move command tables here from CP4UTL, and translate string
+;       lengths in them to decimal (how many fingers do YOU got?).
+;       Replace some jump tables with dispatch addresses in tables.
+;       Make help text for SET command consistent with top level help text.
+;
+; edit 5: August 21, 1984
+;       Add word at 0100H to allow us to exit cleanly from DDT (shifting
+;       entry section by two bytes).
+;
+; edit 4: August 3, 1984 (CJC)
+;       Remove "mover" from entry section, as it now lives in CP4SYS.
+;
+; edit 3: July 27, 1984 (CJC)
+;       Merge LASM support from Toad Hall: most of CP4MIT is now in CP4UTL.
+;       When assembling with LASM, CP4MIT is linked by CP4DEF; it links to
+;       CP4PKT.  Add SET TACTRAP command.  Separate out display routines so
+;       we can eventually do "SHOW <parameter>".  Save both bytes of baud
+;       rate in speed, and check both bytes when displaying baud rate.  Move
+;       header info to CP4KER.ASM.  Add onoff and chkkey routines to simplify
+;       SET command (Toad Hall)
+;
+; edit 2: June 8, 1984
+;       formatting and documentation; delete unreferenced variables and some
+;       unnecessary labels; move setpar here from cp4pkt; add module version
+;       string; make this version 4.01.
+;
+; edit 1: May, 1984
+;       extracted from CPMBASE.M80 version 3.9; modifications are described
+;       in the accompanying .UPD file.
+
+	.Z80
+
+	ident	/4.22/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	FCB.INC
+	include	ERRORS.INC
+
+	public	MITVER,KERMIT,KERMT3,EXIT
+
+	extrn	PRTSTR,SYSINIT,SELCON,DEVSTR,DIRSTR,PROMPT,KEYCMD
+	extrn	TELNET,COPY,DIR,ERA,FINISH,READTK,READ,LOGOUT,STRING
+	extrn	READ0,REMOTE,RENAME,SEND,SETCOM,SHOW,STATUS,NOEXIT
+	extrn	XMIT,TYPE,SHOVER,CFMCMD,SYSINT,LOGO,SYSBYE,SYSEXIT
+	extrn	COMND,RD1CHL,CKCHR,SELMDM,OPENTK,CLSETK,PRCRLF,P20LN
+	extrn	DELAY,SETCWD,INPCON,SKPNAM,ADDHLA,NOTIMP,SERVER,INIT
+	extrn	PRTERR
+
+	extrn	BANNER,VTFLG,TAKFLG,BUFSEC,PRNFL,LOGNAM,LOGFCB,GTRXFL
+	extrn	CMBFLG,CMQFLG,CBUFF,CBPTR,NEXITF,INITAK,REMTXT,CURDEV
+	extrn	CURDIR,NUMBER,STBUFF,STRCNT,REPCNT,ERRORC,LOGFLG,FCB
+	extrn	TAKNAM,TAKFCB,TAKCNT,TAKPTR,TTYTYP,SRVFLG,SRVTXT
+	extrn	OUTCON,OPROC
+
+	extrn	ERMS15
+
+	extrn	PFN
+
+	cseg
+
+MITVER:	defb	'KMIT (32) 21-Mar-2021',0	; name, edit number, date
+
+; Initialization
+
+START:	ld	SP,STACK	; setup stack
+	call	SYSINIT		; do system-dependent initialization
+	call	PRCRLF
+	ld	de,BANNER
+	call	PRTSTR		; output banner
+	ld	de,TERMSG	; " with "
+	call	PRTSTR
+	push	de
+	ld	de,TTYTYP	; terminal type
+	call	PRTSTR
+	pop	de
+	inc	de
+	call	PRTSTR		; " terminal"
+	ld	a,(VTFLG)	; hangover from VT52 ems not possible...
+	cp	0FFh		; ...if 0FFh stored, assume terminal = off
+	ld	a,VTDEFO
+	jr	nz,START0
+	ld	(VTFLG),a	; if 0FFh make it VT52 off
+START0:	ld	de,INMS26	; offer some advice on getting help
+	call	PRTSTR
+	ld	ix,LOGFCB
+	ld	hl,LOGNAM
+	call	PFN		; setup default log file FCB
+	ld	ix,TAKFCB
+	ld	hl,TAKNAM
+	call	PFN		; setup default take file FCB
+	ld	hl,CBUFF	; get any potential command tail across
+	ld	e,126
+	SC	.GTCMD
+	jr	c,STARTZ	; carry means no command line available
+	ld	a,(hl)		; get length
+	inc	hl		; skip length field
+	push	hl
+	call	ADDHLA		; point past end of string
+	ld	(hl),0		; add a trailing null
+	pop	hl
+	call	SKPNAM		; see if there is a command tail
+	jr	z,STARTZ	; no
+	ld	(CBPTR),hl	; yes, set pointer to start of it
+	ld	a,(TAKFLG)
+	or	10h		; and set bit 4 to say we have tail
+	ld	(TAKFLG),a
+	ld	(NEXITF),a	; exit back to system after command line
+STARTZ:	call	TAKE1		; take a KERMIT.INI file
+	xor	a		; say we've done it
+	ld	(INITAK),a
+
+	;...fall thru main loop.
+
+; This is the main KERMIT loop. It prompts for and gets the users commands.
+
+KERMIT:	ld	SP,STACK	; get new stack pointer, old one might be bad
+	call	SELCON		; make sure console is selected
+	xor	a
+	ld	(GTRXFL),a	; clear the get/receive flag
+				;  0 => receive, non 0 => get
+	ld	(CMBFLG),a	; initial keyword must not be blank
+	ld	(CMQFLG),a	; allow character-echoing during commands
+	ld	(REMTXT),a	; clear remote-text-to-screen flag
+	ld	(SRVTXT),a	; clear send-server-text flag
+	ld	hl,OUTCON
+	ld	(OPROC),hl	; set default output to console
+	ld	a,(SRVFLG)
+	or	a		; are we in server mode?
+	jp	nz,SERVER	; yes
+	ld	hl,KERM1
+	ld	de,CURDEV
+	call	DEVSTR
+	ld	de,CURDIR
+	call	DIRSTR		; update the prompt
+	ld	(hl),'>'
+	inc	hl
+	ld	(hl),0
+	ld	a,(TAKFLG)	; are we in TAKE or command line??
+	and	11h		; strip out both bits
+	jr	nz,KERM5	; still in either or both...
+	ld	a,(NEXITF)	; if neither, and no-exit-flag set, we quit
+	and	a
+	jp	nz,EXIT		; back to system, else as you were...
+
+KERM5:	ld	de,KERM
+	call	PROMPT		; prompt the user
+
+KERM7:	ld	de,COMTAB
+	ld	hl,TOPHLP
+	call	KEYCMD		; get a keyword
+	ex	de,hl		; get result (dispatch address) into HL
+	jp	(hl)		; dispatch
+
+TERMSG:	db	' with ',0,' terminal',CR,LF,0
+INMS26:	db	CR,LF,'For help, type ? at any point in a command',0
+
+; Here from: LOG, SETCOM, READ, CFMCMD
+
+KERMT3:	ld	de,ERMES3	; "Not confirmed"
+	call	PRTERR
+	jp	KERMIT		; do it again
+
+ERMES3:	db	'?Not confirmed',0
+
+; Structure of command table:
+;
+;   1) Number of entries.
+;   2) Each entry is arranged as follows:
+;      a) length of command in bytes.
+;      b) 'name of command' and null terminator
+;      c) address of routine to process command
+;
+;   Note: this command table is in alphabetic order.
+
+COMTAB:	defb	36		; number of commands
+	defb	1, '@',0	; synonym for TAKE
+	defw	TAKE
+	defb	5, 'BREAK',0
+	defw	BREAK
+	defb	3, 'BYE',0
+	defw	BYE
+	defb	1, 'C',0	; abbreviation for CONNECT
+	defw	TELNET
+	defb	2, 'CD',0
+	defw	SETCWD
+	defb	7, 'CONNECT',0
+	defw	TELNET
+	defb	4, 'COPY',0
+	defw	COPY
+	defb	6, 'DELETE',0	; synonym for ERASE
+	defw	ERA
+	defb	9, 'DIRECTORY',0
+	defw	DIR
+	defb	5, 'ERASE',0
+	defw	ERA
+	defb	4, 'EXIT',0
+	defw	EXIT
+	defb	6, 'FINISH',0
+	defw	FINISH
+	defb	3, 'GET',0
+	defw	READ		; entry for GET
+	defb	4, 'HELP',0
+	defw	HELP
+	defb	5, 'INPUT',0
+	defw	INPUT
+	defb	3, 'LOG',0
+	defw	LOG
+	defb	6, 'LOGOUT',0
+	defw	LOGOUT
+	defb	6, 'OUTPUT',0
+	defw	STRING
+	defb	5, 'PAUSE',0
+	defw	PAUSE
+	defb	5, 'PRINT',0	; print a file
+	defw	PRINTF
+	defb	4, 'QUIT',0	; synonym for EXIT
+	defw	EXIT
+	defb	1, 'R',0	; abbreviation for RECEIVE
+	defw	READ0
+	defb	7, 'RECEIVE',0	; not same as GET now
+	defw	READ0
+	defb	6, 'REMOTE',0
+	defw	REMOTE
+	defb	6, 'RENAME',0
+	defw	RENAME
+	defb	1, 'S',0	; abbreviation for SEND
+	defw	SEND
+	defb	4, 'SEND',0
+	defw	SEND
+	defb	6, 'SERVER',0
+	defw	SERV
+	defb	3, 'SET',0
+	defw	SETCOM
+	defb	4, 'SHOW',0
+	defw	SHOW
+	defb	6, 'STATUS',0
+	defw	STATUS
+	defb	4, 'STAY',0	; STAY (SET NO-EXIT)
+	defw	NOEXIT
+	defb	4, 'TAKE',0
+	defw	TAKE
+	defb	8, 'TRANSMIT',0
+	defw	XMIT
+	defb	4, 'TYPE',0
+	defw	TYPE		; type a file
+	defb	7, 'VERSION',0
+	defw	SHOVER
+
+; Top-level help message. Caps indicate keywords.
+; This text is also printed by the HELP command.
+
+TOPHLP:	defb	CR,LF,'@ takes commands from a file (same as TAKE)'
+	defb	CR,LF,'BREAK to send a break to the host'
+	defb	CR,LF,'BYE to host (LOGOUT) and exit to system'
+	defb	CR,LF,'CD to change current device and/or directory'
+	defb	CR,LF,'CONNECT to host on selected port'
+	defb	CR,LF,'COPY to copy a local file'
+	defb	CR,LF,'DELETE a local file'
+	defb	CR,LF,'DIRECTORY of current local user'
+	defb	CR,LF,'ERASE a local file'
+	defb	CR,LF,'EXIT to system'
+	defb	CR,LF,'FINISH running Kermit on the host'
+	defb	CR,LF,'GET a file from the host'
+	defb	CR,LF,'HELP by giving this message'
+	defb	CR,LF,'INPUT to make the micro wait for a string from the host'
+	defb	CR,LF,'LOG the terminal sessions to a file'
+	defb	CR,LF,'LOGOUT the host'
+	defb	CR,LF,'OUTPUT to send a specified string to the host'
+	defb	CR,LF,'PAUSE to wait for a little time'
+	defb	CR,LF,'PRINT a file to the printer'
+	defb	CR,LF,'QUIT to system'
+	defb	CR,LF,'RECEIVE file from host'
+	defb	CR,LF,'REMOTE to send commands to a remote server'
+	defb	CR,LF,'RENAME to rename a local file'
+	defb	CR,LF,'SEND file to host'
+	defb	CR,LF,'SERVER mode'
+	defb	CR,LF,'SET a parameter'
+	defb	CR,LF,'SHOW the parameters'
+	defb	CR,LF,'STATUS of Kermit'
+	defb	CR,LF,'STAY at Kermit command-level after a command tail'
+	defb	CR,LF,'TAKE commands from a file'
+	defb	CR,LF,'TRANSMIT file to host (in connect state)'
+	defb	CR,LF,'TYPE a file to the console'
+	defb	CR,LF,'VERSION of Kermit running'
+	defb	0
+
+; This is the BREAK command.  It sends a 'B' to the system dependent
+; interrupt routines (test for escape-cokebottle xxx) and do a break
+; if the overlay can.  Else, we tell user not to be so silly.
+
+BREAK:	call	CFMCMD		; get return
+	ld	a,'B'		; we're gonna do a Break if the modem can
+	call	SYSINT		; try doing it..
+	jp	KERMIT		; if we can do it, else
+	call	NOTIMP		;  say not implemented
+	jp	KERMIT
+
+; This is the BYE command.  It tells the remote KERSRV to logout, then exits.
+
+BYE:	call	CFMCMD		; confirm...
+	call	LOGO		; tell the mainframe to logout
+	jp	KERMIT		; if it fails, don't exit
+	call	SYSBYE		; success, do system-dependent cleanup
+	jp	EXIT1		; exit Kermit
+
+; This is the EXIT command.  It leaves KERMIT and returns to the system.
+; Alternate entry: EXIT1, from BYE command;
+
+EXIT:	call	CFMCMD		; confirm...
+EXIT1:	call	SYSEXIT		; do system-dependent termination
+	ld	hl,EX.SUC
+	SC	.EXIT
+
+; Input command.  Syntax:
+;       INPUT [Wait period] [string]
+; where
+;       Wait period is a time period to wait for
+;       string is a string to expect back from the host.  Control
+;       characters are entered as \ and an octal number.
+
+INPUT:	ld	a,CMNUM		; first get the number
+	call	COMND		; get it
+	jp	KERMIT		; if we don't understand it...
+	ld	hl,(NUMBER)
+	ld	(WAITP),hl	; and save as the wait period
+	ld	de,STBUFF	; where to put the string
+	ld	a,CMTXT		; get text
+	call	COMND
+	jp	KERMIT		; not quite correct...
+	ld	(STRCNT),a	; string count returned in a
+	call	CFMCMD		; get a confirm
+
+	ld	hl,(WAITP)	; multiply the number by 10 (since INPMDM
+	add	hl,hl		;  timeout is hardwired to 100ms)
+	ld	e,l
+	ld	d,h
+	add	hl,hl		; *4
+	add	hl,hl		; *8
+	add	hl,de		; +2 = *10
+	inc	hl		; make sure it is at least 1
+	ld	(WAITP),hl	; and save it away again
+	ld	(WAITP1),hl	; save in case we need to reset counter
+
+	; now wait for characters comming from the line, within the
+	; time allowed. Compare with STRING buffer
+
+INP1:	xor	a
+	ld	(REPCNT),a	; clear the host prompt chars counter
+INP2:	ld	hl,(WAITP)	; have we waited long enough
+	dec	hl
+	ld	(WAITP),hl	; count less one
+	ld	a,h		; test to see if both zero
+	or	l
+	jp	nz,INP20	; nope
+	ld	a,3		; error is three, i.e. total failure
+	ld	(ERRORC),a
+	jp	INP5		; take error exit
+
+INP20:	call	RD1CHL		; read a character from the line
+	and	7Fh		; set flags
+	jp	nz,INP4		; Not zero => we have a character from host
+	call	CKCHR		; see if *WE* have a character from console
+	push	af		; restore to modem
+	call	SELMDM		; reselect the modem port
+	pop	af
+	and	7Fh		; strip parity (should not be there)
+	jp	nz,INP2A	; if a null, try again
+	ld	a,(STRCNT)	; if the string length is zero, don't wait.
+	and	a
+	jp	nz,INP2		; so loop back again
+	jp	KERMIT		; else drop out
+
+INP2A:	cp	CTRLC		; do we want to abort?
+	jp	nz,INP2B	; no
+	ld	a,(TAKFLG)	; yes, are we TAKEing
+	and	1		;  commands from a file?
+	call	nz,CLSETK	; yes, close and reset to get
+				;  commands from the command-line
+	jp	KERMIT		;   and exit back to command loop
+
+INP2B:	cp	CTRLZ		; if control-Z exit back to command loop
+	jp	z,KERMIT	; else try for other characters
+	jp	INP2
+
+INP4:	ld	e,a		; save it for a while
+	ld	a,(REPCNT)	; see if this character matches with one in buffer
+	ld	hl,STBUFF	; point to string buffer
+	call	ADDHLA		; add character count
+	ld	a,e		; get the character back again
+	cp	(hl)		; is it = to what we expect?
+	jp	nz,INP1		; no, clear counter and try again
+	ld	a,(REPCNT)	; yes, then update the pointer,
+	inc	a		;  and see if we have received
+	ld	(REPCNT),a	;   all we should have received
+	ld	hl,(WAITP1)	; get original counter
+	ld	(WAITP),hl	; and reset the loop (timer) counter
+	ld	e,a		; save length into E again
+	ld	a,(STRCNT)	; get the length to compare
+	sub	e		; if E > string length, we have it
+	jp	nz,INP2		; else wait for a little longer
+
+	xor	a		; no errors
+	ld	(ERRORC),a
+	jp	KERMIT		; so say nothing
+
+INP5:	; else if error...
+
+	ld	de,ERMS30	; say message not received in time
+	call	PRTERR
+	jp	KERMIT		; have string, so exit
+
+ERMS30:	db	'?Failed to receive input string in alloted time',0
+
+; This is the HELP command.  It gives a list of the commands.
+
+HELP:	call	CFMCMD		; confirm...
+	ld	de,TOPHLP	; address of the help message
+	call	P20LN		; print at most 20 lines, then pause
+	jp	KERMIT
+
+; This is the LOG command.  It logs a session to a file.
+
+LOG:	ld	a,CMOFI		; parse an output filespec
+	ld	de,FCB		; where to put it
+	call	COMND
+	jp	KERMT3		; on error, exit
+	call	CFMCMD		; confirm...
+	ld	hl,FCB		; copy file name and ext
+	ld	de,LOGFCB	; to a safe place
+	ld	bc,FINFSZ
+	ldir
+	ld	a,1		; set flag for logging
+	ld	(LOGFLG),a
+	jp	KERMIT
+
+; PAUSE [Wait period]. Just wait for a couple of seconds...
+
+PAUSE:	ld	a,CMNUM		; get the number of the wait period
+	call	COMND		; get it
+	jp	PSERR		; we canna do it
+	ld	hl,(NUMBER)	; get period into HL
+	call	DELAY		; sleep until timeout expires or a key is pressed
+	jp	KERMIT		; otherwise we are done.
+PSERR:	ld	de,ERMS24
+	call	PRTERR
+	jp	KERMIT
+
+ERMS24:	db	'?Invalid Pause parameter',0
+
+; PRINT - Print a file to the console and printer.
+;	This command is active only from the command level, and not 
+;	from the connect state.  Unfortunately, the print command is 
+;	not going to be a background utility.
+
+PRINTF:	ld	a,0FFh		; set the print flag on
+TYPENT:	ld	(PRNFL),a	; type file entry, common for PRINT and TYPE
+	call	TYPE		; and do the rest of the print via TYPE
+	xor	a
+	ld	(PRNFL),a	; next clear the print flag
+	jp	KERMIT
+
+; SERV - Enter SERVER mode
+
+SERV:	call	CFMCMD		; confirm...
+	ld	a,0FFh
+	ld	(SRVFLG),a	; set SERVER mode flag
+	call	INIT		; set up screen
+	jp	KERMIT		; enter Server via main loop
+
+; TYPE - Type a file to the console.
+;	This command is really the same as the PRINT command, but the output
+;	is not copied to the printer.
+
+TYPEF:	xor	a		; we want to clear the printer on flag
+	jp	TYPENT		; go to the type entry in printfile above
+
+; TAKE  - Takes input from a file.
+; TAKE1 is the entry for automatically TAKE-ing KERMIT.INI (or whatever
+; the file name at TAKNAM is)
+
+TAKE:	ld	a,CMIFI		; get filename from user
+	ld	de,TAKFCB	; take file FCB space
+	call	COMND		; get the file spec
+	jp	KERMIT		; user failed to specify a good file spec
+	call	TAKE2		; now TAKE the file
+	jp	KERMIT		; go back to main Kermit command loop
+
+TAKE1:	ld	hl,TAKNAM
+	ld	ix,TAKFCB
+	call	PFN		; set default take file name
+
+TAKE2:	ld	a,(TAKFLG)	; check to see we have not tak-take
+	and	1		; if set, we are in a take already
+	call	nz,CLSETK	; so close current take file
+	call	OPENTK		; open the file
+	jp	c,NTAKE		; say file not found
+				;  unless the initial TAKE (KERMIT.INI)
+	ld	hl,0
+	ld	(TAKCNT),hl	; clear character count to force a read
+	ld	a,(TAKFLG)	; get current flag
+	or	1		; and set flag to tell Kermit we're taking
+	ld	(TAKFLG),a
+	ret
+
+NTAKE:	ld	a,(INITAK)	; is this the initial TAKE (KERMIT.INI)?
+	or	a
+	ret	nz		; yes, don't complain
+	ld	de,ERMS15	; say file not found
+	jp	PRTERR		; output message and return
+
+	dseg
+
+KERM:	db	'Kermit-180 '	; prompt string
+KERM1:	db	'ddnnn:[dirdirdir]>',0
+
+WAITP: 	ds	2		; wait command timer
+WAITP1:	ds	2		; wait/input timer (copy of WAITP)
+
+	ds	128		; room for 64 levels of calls
+STACK	equ	$
+
+	end	START

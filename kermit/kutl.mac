@@ -1,0 +1,1115 @@
+; KUTL.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       Utility routines.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 34, 28-Mar-2021 by H. Peraza: new OUTCHR and OUTSTR routines allow
+;       directing text output to the packet send routine in server module.
+;
+; edit 33, 21-Mar-2021 by H. Peraza: added PRTERR routine to output error
+;       messages preceded by a newline.
+;
+; edit 32, 27-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Low-level file I/O routines are now in the KSYS.MAC module. Rewritten
+;       the INBUF and OUTBUF routines, CHRCNT is now 16-bit wide and holds
+;       the number of valid bytes in the "big buffer". SECCNT and NXTBUF
+;       became superfluous and therefore removed. The new code also fixes
+;       the CHRCNT problem being decremented before a character was actually
+;       fetched from the buffer (see edit 29). Added a number of common
+;       utility routines e.g. to convert RSX180 device names, directory
+;       names and FCB filespecs to string, to copy strings, etc.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 31, 21-Mar-1991 by MF. Implement edit 30 without checking takflg after
+;	"r1tch1" as we are **always** TAKEing from a file if we get to that
+;	point in the code. Makes for simplicity.
+;
+; edit 30, 27-Feb-1991 by MF. When TAKEing characters from a TAKE-file,
+;	view semicolons as normal characters (not command separators).
+;	This will allow such commands as REMOTE DELETE *.*;* to work
+;	properly from TAKE-files without having to revert to old code in
+;	cpsrem.asm at "remcl0" to decode Remote command arguments. TAKE-files
+;	ought not (in my opinion) to have multiple commands per line anyway.
+;
+; edit 29, 30-Jan-1991 by MF. Fix bug in IN1CHR which decremented "chrcnt"
+;	once too often after a call to INBUF (which predecrements it
+;	already). This, along with a fix in CPSTT.ASM, fixes a bug in the
+;	TRANSMIT command wherein certain characters in the file were not
+;	being transmitted. This bug was reported to me by Lance Tagliapietra
+;	of the University of Wisconsin at Platteville, WI (Email:
+;	<TAGLANCE@ucs.UWPLATT.EDU>).
+;	(he suggested not predecrementing "chrcnt" in INBUF" but this
+;	breaks code in routine "GTCHR" from CPSPK1.ASM so it's better
+;	to modify IN1CHR in this module and XMIT in CPSTT.ASM).
+;
+; edit 28, 30-Nov-1990 by MF. Modify routine "p20ln" to use "pausit" routine
+;	rather than explicitly checking for Console input to eliminate
+;	redundant code. Also fix spelling in "p20ln"'s comments.
+;
+; edit 27, 9-Sep-90 by MF.  Put RET in routine PAUSIT per CPKERM.BWR.
+;
+; edit 26, September, 1987.  Added pause-it routine to wait for a user keysroke
+;
+; edit 25, August 19, 1987 by OBSchou.  Fixed a few bugs here and there.
+;
+; edit 24, April 8, 1987 by OBSchou.  Added routine to return one character
+;	from a section of several sectors worth of file.  This routine needed
+;	for TRANSMIT.
+;
+; edit 23, March 11, 1986 by OBSchou for Richard Russell
+;	Bug in the TAKE code, such that a new sector was read in after 256
+;	bytes, and not the CPM value.  A jnz is now jp in the test to see if 
+;	the file buffer has bben exhausted.  Many thanks for finding this 
+;	bug.  I have never used TAKE files more than 128 bytes long.
+;
+; edit 22, January 28, 1986 by OBSchou.
+;	split off the data areas from CPSUTL to CPSDAT.ASM  (All in line
+;	with keeping individual files relatively small)
+;
+; edit 21 August, 1986 by OBSchou.  Sorted a few more bugs in printer buffer
+;       etc.  Have yet to try this with a real printer  The code, apart from 
+;       actually printing works OK.
+;
+; edit 26  20 August, 1986 by OBSchou for Godfrey Nix:
+;       edit 8-Aug-86  by Godfrey N. Nix   [gnn]  Nottingham University
+;       Added two extra bytes for storage of the send and receive
+;       start-of-packet characters. Used by CP4PKT, and altered
+;       by SET option in CP4MIT. Also added message strings for 
+;       use by show routines. Added remote filename buffer and length byte.
+;
+; edit 11: June 20, 1986 by OBSchou.  Added multi-fcbs for the DIR command
+;       together with some bug clearing and new routines.  Had to move
+;       the overlay to 5000h as we ran out of space...
+;
+; edit 10: June 16, 1986 OBSchou.  Added a pseudo clock and check for printer
+;       ready whenever one enters BDOS...  This may slow things down a little
+;       but adds in (hopefully) pseudo background printing...
+;
+; edit 9 30-May-86 OBSchou.  Added XON/XOFF routines here for the world 
+;       at large to use.  Also added two new entries in the overlay tables.  
+;       One to give the address of the family of machines using the overlay, 
+;       the other to the routine for giving printer status.
+;
+; edit 8: 27-May-86 OBSchou.  Added code to check BDOS calls for info from
+;       the console.  If so, and the take flag (takflg) is set then we 
+;       substitute our own characters.  Simple, a little tatty...
+;       Also added bits for SET CASE-SENSITIVE and SET FLOW=CONTROL, and 
+;       removed the XMIT rubbish.  This is a prelude to better TRANSMIT
+;
+; edit 7: 22 April, 1986 by OBSchou Lohghborough University
+;       Prlude to more changee, this time make overlay address to 4000h
+;       May revert back to ($+0ffh) AND 0ff00h as address for overlay.
+;       This gives us space to make quite a few modifications to the system
+;       dependent part without much fear of having to change this overlay
+;       address.  Should also fix the Osborne problem of having to have io 
+;       routines ii memory above 16k.  I know I should not be introducing
+;       such system dependent rot here, but it wont be too difficult to fill
+;       memory to 4000h.
+;
+; edit 6: February 6, 1985
+;       Added a storage location for the port value (PORT, just below
+;       SPEED) which is used by the port status routine, and moved the
+;       printer copy flag (PRNFLG:) into the communications area so
+;       that the machine dependant overlay can toggle it. [Hal Hostetler]
+;       Added ffussy flag for filename checking.  Generate the version
+;       string from 'verno', which is set in CP4KER, because CP4KER has the
+;       list of modules and their edit numbers. [Charles Carvalho]
+;
+; edit 5: 13-Jan-85 by Vanya J.Cooper Pima Commun. College Tel: 602-884-6809
+;
+; pcc002 28-Dec-84       modules:cp4tt,cp4utl
+;       Add connect mode <esc>P command to toggle printer on
+;       and off.  Conflicts with "official" recommended commands
+;       in protocol manual, but I don't think CP/M will ever get
+;       a PUSH command.
+;
+; pcc003-pcc005  2-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       These edits must all be installed together and change the way
+;       logging is handled.  The log file spec is moved to a separate
+;       fcb, and not opened until an actual CONNECT command is given.
+;       This takes care of a NASTY bug that if you used any other file
+;       command between the LOG and CONNECT, the log file would get
+;       written over the last file used.  This also allows logging to
+;       be "permanently" enabled until an CLOSE (new command) for all
+;       CONNECT sessions, like most other kermits do.  If a log file
+;       already exists, it will be appended to.  Also add two new
+;       CONNECT mode commands <esc>Q to suspend logging and <esc>R to
+;       resume.  <esc>R means something else during TRANSMIT, but
+;       logging is never on then, so there shouldn't be any conflict.
+;       I also changed the write code, so that it can handle one more
+;       character after the XOFF is send to stop the host.  This allows
+;       a little "slop" for systems that don't stop immediately (such
+;       as TOPS10), but it didn't help much.
+;
+; pcc006 2-jan-85        VJC     modules:cp4cmd,cp4utl
+;       Problems with "?" in filespecs.  On reparse, may cause action
+;       flag to be reset at wrong point, requiring multiple <CR>'s
+;       to terminate the line or other weird stuff.  Also need to
+;       check flag and complain if wild-cards illegal.
+;
+; pcc008 2-Jan-85        vjc     modules:cp4def,cp4tt,cp4utl
+;       Keyboard input during CONNECT mode can get locked out if
+;       there is enough input from the modem port to keep prtchr
+;       busy.  This can happen for example, if the printer is running
+;       at the same speed as the modem line, leaving you helpless to
+;       turn it off or abort the host.  Add a fairness count, so that
+;       at least every prfair characters we look at console input.
+;
+; pcc012 4-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       Use the big buffer for the log file.  Move the log file back
+;       into the common fcb and only save the drive, name, and
+;       extension between connects.  Add new routines to cp4utl to
+;       create or append to an existing file, and to conditionally
+;       advance buffers only if in memory.  Remove edit pcc003 that
+;       allows one more character after the xoff, since it didn't
+;       really work very well and does not fit in well with the way
+;       the buffer advancing routines are set up.  If someone still
+;       thinks this would be useful, it could be put back in with a
+;       little more work.
+;       
+;       While testing this edit, I also noticed another bug that
+;       the command parsing routines do not limit or check the
+;       length of command lines or file specs, trashing what ever
+;       comes after them.  Currently because of where the fcb and
+;       command buffer are located, this does not usually cause a
+;       problem, but could if an extremely long line was typed in,
+;       or in the future multiple fcbs defined elsewhere in memory
+;       were used.  Maybe this should be put on the bug list
+;       somewhere.
+;
+; pcc013 8-Jan-85        vjc     modules:cp4mit,cp4utl,cp4typ
+;       Replace CLOSE command to cancel session logging to SET
+;       LOGGING ON/OFF.  This seems to fit in with the command
+;       structure better.  Default the log file to KERMIT.LOG
+;       incase no previous LOG command.  Logging is also enabled
+;       by LOG command, as before.
+;
+; edit 4: September 9, 1984
+;       Move command tables and associated help text to CP4MIT.  Add
+;       makfil/clofil routines and modify outbuf to write files in big
+;       chunks.  Update Kermit's version to 4.03.
+;
+; edit 3: August 21, 1984
+;       Make inbuf read files in big chunks to minimize disk start/stop
+;       delays.  Buffer size and address is specified by system-dependent
+;       overlay.
+;
+; edit 2: August 3, 1984
+;       move "mover" to CP4SYS to allow use of Z80 block move instruction.
+;
+; edit 1: July 27, 1984
+;       extracted from CP4MIT.M80 edit 2, as part of LASM support.  This is
+;       the last file linked for the system-independent code.
+
+	.Z80
+
+	ident	/34/
+
+	include	KDEF.INC
+	include	FCB.INC
+	include	ERRORS.INC
+
+	public	UTLVER,SETPAR,ESCPR,KEYCMD,CFMCMD,NOUT,PRCRLF
+	public	PAUSIT,INPCT,P20LN,DEVSTR,DIRSTR,CLOFIL,INBUF
+	public	OUTBUF,OUTPRN,GETFIL,MAKFIL,APPFIL,SKPNAM,FCBS2
+	public	SNDXON,SNDXOFF,IN1CHR,ADDHLA,FCBSTR,STRLEN,GETCT
+	public	MAKFI1,PRTERR,STRCPY,CPYNAM,OUTCHR,OUTSTR,R,RSKP
+
+	extrn	PRTSTR,OUTCON,COMND,KERMIT,KERMT3,OUTLPT,LPTSTAT
+	extrn	OUTMDM,OPENR,OPENRW,CREATF,READF,READF2,WRITEF
+	extrn	SEEK2,CLOSE2,READTK,CLSETK,INPCON,GETCON
+
+	extrn	HLDEC,CVTBD,CVTWD,CPHLDE
+
+	extrn	PARITY,ESCCHR,TEMP1,NQUIET,FLOCTL,CHRCNT,EOFLAG
+	extrn	BUFADR,BUFPNT,BUFSEC,CMDBUF,TAKFLG,TAKBUF,TAKPTR
+	extrn	CBPTR,PRNBUF,HOSTHS,CURDEV,CURDIR,TAKCNT,FCB2,FNBUF
+	extrn	OPROC
+
+	cseg
+
+UTLVER:	defb	'KUTL (34) 28-Mar-2021',0
+
+; Set the parity for a character in A.
+; Called by: SPACK, REXMIT, LOGIT, VT52, CONCHR, INTCHR
+
+SETPAR:	push	hl		; save HL
+	push	bc
+	ld	hl,PARITY
+	ld	c,(hl)		; get the parity routine
+	ld	b,0
+	ld	hl,PARJMP	; get the jump table address
+	add	hl,bc		; index into table
+	jp	(hl)		; exec routine
+
+PARJMP:	jp	EVEN
+	jp	MARK
+	jp	NONE
+	jp	ODD
+	jp	SPACEP
+
+NONE:	jp	PARRET		; don't touch the parity bit
+
+EVEN:	and	7Fh		; strip parity
+	jp	pe,PARRET	; already even, leave it
+	or	80h		; make it even parity
+	jp	PARRET
+
+MARK:	or	80h		; turn on the parity bit
+	jp	PARRET
+
+ODD:	and	7Fh		; strip parity
+	jp	po,PARRET	; already odd, leave it
+	or	80h		; make it odd parity
+	jp	PARRET
+
+SPACEP:	and	7Fh		; turn off the parity bit
+	jp	PARRET
+
+PARRET:	pop	bc
+	pop	hl		; restore HL
+	ret	
+
+; Print the escape char.
+; Called by: STAT01, TELNET, INTCHR
+
+ESCPR:	ld	a,(ESCCHR)	; get the escape char
+ESCPR1:	cp	' '		; is it a control char?
+	jp	p,ESCPR2
+	push	af		; save the character
+	ld	de,INMS10	; Output "Control-"
+	call	PRTSTR
+	pop	af		; restore the character
+	or	100o		; de-controlify
+ESCPR2:	ld	e,a		; output the char
+	jp	OUTCON
+
+INMS10:	db	'Control-',0
+
+; Fetch keyword; if unsuccessful, return to command level.
+; Called by: KERMIT, SETCOM
+
+KEYCMD:	ld	a,CMKEY
+	call	COMND
+	jp	KEYCM2		; no match
+	ret	
+KEYCM2:	ld	de,ERMES1	; "Unrecognized Command"
+	call	PRTERR
+	jp	KERMIT		; do it again.
+
+ERMES1:	db	'?Unrecognized command',0
+
+; Request confirmation; if unsuccessful, return to command level.
+; Called by: BYE, EXIT, HELP, LOG, SETCOM, SHOW, STATUS, SEND,
+;            FINISH, LOGOUT, TELNET
+
+CFMCMD:	ld	a,CMCFM
+	call	COMND
+	jp	KERMT3		; "Not confirmed"
+	ret	
+
+; This routine prints the number in HL on the screen in decimal.
+; Uses all ACs.
+; Called by: CP4SYS, READ, SEND, UPDRTR, DIR
+
+NOUT:	ld	a,(NQUIET)	; are we to be quiet?
+	or	a
+	ret	nz		; yup, so return here
+	jp	HLDEC		; output number (note filler cleared above)
+
+; Print a CR/LF.  (Saves no registers.)
+; Called by: lots of places.
+
+PRCRLF:	ld	de,CRLF		; point to the CR/LF
+	jp	PRTSTR		; use the one in the overlay
+
+CRLF:	db	CR,LF,0
+
+; Jumping to this location is like retskp.  It assumes the instruction
+; after the call is a jmp addr.
+; Here from: many places.
+
+RSKP:	pop	hl		; get the return address
+	inc	hl		; increment by three
+	inc	hl
+	inc	hl
+	jp	(hl)
+
+; Jumping here is the same as a ret.  'jmp R' is used after routines
+; that have skip returns, where the non-skip instruction must be 3 bytes.
+; Here from: many places.
+
+R:	ret	
+
+; Pause-it routine.  Informs the user to press any key to continue
+; and then waits for a key input.  Called by the any routine 
+; with more than, say, 20 lines of output.
+
+PAUSIT:	ld	de,ANYMES	; ask user to press any key to continue
+	call	PRTSTR
+	call	GETCON		; wait until a key has been pressed
+	ret	
+
+ANYMES:	db	CR,LF,LF,' * * * Press any key to continue * * * '
+	db	CR,LF,LF,0
+
+; Open a file for reading (with INBUF).  The filename is already
+; in FCB; upon return, the end of file flag is cleared and CHRCNT
+; is set to zero, so INBUF will be called to get a buffer when we
+; next attempt to get a character.
+; Called by: SINIT, SEOF, TYPE
+
+GETFIL:	xor	a
+	ld	(EOFLAG),a	; not the end of file
+	ld	(ENDSTS),a	; no EOF/error pending
+	ld	hl,0
+	ld	(CHRCNT),hl	; buffer is empty
+	call	OPENR		; open the file
+	ret	
+
+; Fill the big file I/O buffer with the next chunk of data.
+; Preserves BC, DE, HL
+; Returns nonskip if EOF or error;
+; Returns skip with CHRCNT and BUFPNT updated if success.
+; Called by: GTCHR, GET1XC (from xmt/transmit)
+
+INBUF:	ld	a,(EOFLAG)	; have we reached the end?
+	or	a
+	ret	nz		; return if so
+	push	bc
+	push	de
+	push	hl
+INBUF1:	ld	hl,(CHRCNT)	; safety check: any data left in buffer?
+	ld	a,h
+	or	l
+	jr	z,INBUF3	; no, go get some more
+INBUF2:	pop	hl
+	pop	de
+	pop	bc
+	jp	RSKP		; return success
+
+INBUF3:	; if we've already hit an error or EOF, return that status
+	; to the user.
+
+	ld	a,(ENDSTS)	; check status from previous read
+	or	a
+	jr	z,INBUF4	; it was OK, get some more sectors
+	ld	a,CTRLZ
+	ld	(EOFLAG),a	; end of file or error, set the flag
+	ld	hl,0
+	ld	(CHRCNT),hl	; say no characters in buffer
+	pop	hl
+	pop	de
+	pop	bc
+	ret			; return failure
+
+INBUF4:	; read sectors until we fill the buffer or get an error or EOF.
+
+	ld	hl,0
+	ld	(CHRCNT),hl	; reset character count
+	ld	hl,(BUFADR)	; get address of big buffer
+	ld	(BUFPNT),hl	; reset buffer pointer
+	ld	a,(BUFSEC)
+	ld	b,a		; max number of sectors to read
+INBUF5:	push	hl		; remember buffer address
+	push	bc		; remember sector count
+	call	READF		; read next block to address in HL
+	ld	hl,(CHRCNT)
+	add	hl,de		; add bytes read to total character count
+	ld	(CHRCNT),hl
+	or	a		; 00h => read OK
+	jr	nz,INBUF6	; EOF/error: stop reading
+	ld	hl,BUFSIZ
+	call	CPHLDE		; full buffer read?
+	ld	a,E.EOF
+	jr	c,INBUF6	; no, end of file
+	pop	bc		; pop sector count
+	pop	de		; pop buffer address
+	add	hl,de		; bump buffer address to start of next sector
+	djnz	INBUF5		; go read another sector
+	jp	INBUF2		; buffer is full, return success
+
+INBUF6:	; we hit EOF or got an error, return the user what we have or
+	; return error if the buffer is empty
+
+	ld	(ENDSTS),a	; save ending status
+	pop	bc		; restore stack
+	pop	de
+	jp	INBUF1		; go see if we have some data to return
+
+; Get a single character from the file. Taken code from old TRANSMIT routine.
+
+IN1CHR:	ld	a,(EOFLAG)	; EOF encountered?
+	or	a
+	ret	nz		; yes, finish
+	ld	de,CMDBUF	; use comnd buffer as line buffer
+	ld	bc,(CHRCNT)	; get current byte count in BC
+IN1CH1:	ld	a,b
+	or	c		; any characters in buffer?
+	jr	nz,IN1CH2	; yes, proceed
+	call	INBUF		; there wasn't, try for another buffer
+	jp	IN1CHE		; end of file
+	ld	bc,(CHRCNT)	; get new byte count in BC
+IN1CH2:	dec	bc		; decrement character count
+	ld	(CHRCNT),bc	; save new count
+	ld	hl,(BUFPNT)	; get buffer pointer in HL
+	ld	a,(hl)		; get a character from disk buffer
+	inc	hl
+	ld	(BUFPNT),hl	; save new pointer
+	and	7Fh		; mask 7 bits
+	jr	z,IN1CH1	; skip nulls
+	ret			; character in A
+
+IN1CHE:	ld	a,CTRLZ		; return end-of-file to the caller
+	ret
+
+; Create or append to an existing file, file name is in FCB2.
+; Non-skip return if could not be done.
+; Skip return with file open and BUFPNT pointing to end of file.
+; Called by LOGOPN
+
+APPFIL:	call	OPENRW		; try to open file in R/W mode
+	jr	nc,APPF1	; success
+	cp	E.FNF		; file not found?
+	ret	nz		; no, return non-skip (error)
+	jp	MAKFIL		; else create file
+
+APPF1:	ld	hl,(FCB2+F.NUSED) ; get number of file blocks
+	ld	de,(FCB2+F.NUSED+2)
+	ld	d,0		; 24-bit value
+	ld	a,h
+	or	l
+	or	e		; file empty?
+	jr	z,MAKFI2	; yes, setup ptrs and counters, return success
+	call	DEC32		; decrement value to get last block number
+	call	SEEK2		; seek to block number
+	ld	hl,(BUFADR)
+	call	READF2		; load last block into big buffer
+	jr	c,APPF2
+	ld	(CHRCNT),de	; store number of bytes read
+	ld	hl,(BUFADR)
+	add	hl,de
+	ld	(BUFPNT),hl	; set buffer pointer
+	jp	RSKP		; return success
+
+APPF2:	call	CLOSE2		; read error, close file
+	ret			; and return non-skip
+
+; Decrement 32-bit value in DEHL
+
+DEC32:	ld	a,l
+	dec	l
+	or	a
+	ret	nz
+	ld	a,h
+	dec	h
+	or	a
+	ret	nz
+	ld	a,e
+	dec	e
+	or	a
+	ret	nz
+	dec	d
+	ret
+
+; Create a file, superseding any existing version. The filename is in FCB2.
+; Returns nonskip if file could not be created.
+; If successful, takes skip return with BUFPNT and CHRCNT initialized
+; for output; buffers should be output via OUTBUF.
+; Called by: GOFIL
+
+MAKFIL:	ld	hl,0
+	ld	(FCB2+F.VER),hl	; ensure version number is zero
+MAKFI1:	call	CREATF		; create file
+	ret	c		; error return
+
+; Success, set up pointers and counters for multisector buffering.
+; Also here from APPFIL if found zero length file.
+
+MAKFI2:	ld	hl,(BUFADR)	; find beginning of buffer space
+	ld	(BUFPNT),hl	; make it current buffer
+	ld	hl,0
+	ld	(CHRCNT),hl	; no chars written yet
+	jp	RSKP		; take success return
+
+; Flush in-core output buffers.
+; Returns nonskip if disk full.
+; If successful, returns skip with BUFPNT reset to start of buffer.
+; Destroys all ac's.
+; Called by: OUTBUF, CLOFIL.
+
+OUTBUF:	ld	hl,(BUFADR)	; get start of buffer
+	ld	(BUFPNT),hl	;  into buffer pointer
+	ld	hl,(CHRCNT)	; get number of valid bytes in buffer
+	ld	a,h
+	or	l
+	jp	z,RSKP		; nothing to flush, return success
+OUTBF2:	ld	de,BUFSIZ
+	call	CPHLDE		; more than a full sector?
+	jr	c,OUTBF3	; yes, write BUFSIZ bytes
+	ex	de,hl		; no, write remaining bytes
+OUTBF3:	ld	hl,(BUFPNT)	; pick up buffer pointer
+	call	WRITEF		; write sector
+	ret	c		; write error, return nonskip
+	ld	hl,(BUFPNT)
+	ld	de,BUFSIZ
+	add	hl,de		; advance buffer pointer to next sector
+	ld	(BUFPNT),hl
+	ld	hl,(CHRCNT)
+	or	a
+	sbc	hl,de		; decrement character count
+	jr	c,OUTBF4	; last write was a partial one, exit loop
+	ld	(CHRCNT),hl	; else save remaining char count
+	jr	nz,OUTBF2	; and loop to write next sector
+OUTBF4:	ld	hl,(BUFADR)	; success
+	ld	(BUFPNT),hl	; reset buffer pointer
+	ld	hl,0
+	ld	(CHRCNT),hl	; and character count
+	jp	RSKP		; return success
+
+; Flush in-core buffers, and close output file.
+; Returns nonskip if disk full; skip if successful.
+; Called by: RDATA
+
+CLOFIL:	call	OUTBUF		; flush in-core buffers
+	jp	CLOF1		; give up on write error
+	call	CLOSE2		; close the file
+	ret	c		; close error, return non-skip
+	jp	RSKP		; return success
+CLOF1:	call	CLOSE2		; write error, close the file
+	ret			; and return non-skip
+
+; Get input from console (blocking) or TAKE file.
+; When reading from console, waits until a character is ready.
+
+GETCT:	ld	a,(TAKFLG)	; are we taking from a file
+	and	a		;  or command line tail?
+	jp	z,GETCON	; from terminal: read character and return
+	call	R1TCHR		; from take file or command tail: read a single
+	or	a		;  character and return. We don't expand tabs,
+	jr	z,GETCT		;   check for xon/off or backspaces. 
+	ret			;    make sure the take file is error free?
+
+; Get input from console (non-blocking) or TAKE file.
+; When reading from console, return 0 if no char is available, else
+; return the char.
+
+INPCT:	ld	a,(TAKFLG)	; are we taking from a file
+	and	a		;  or command line tail?
+	jp	z,INPCON	; no, from terminal: read character and return
+
+; Read a single character from the take file or command line
+
+R1TCHR:	push	hl
+	push	de		; save in case of return
+	ld	a,(TAKFLG)	; see if character is to come from file or line
+	and	1		; if bit zero set, from take file
+	jp	z,R1LCHR	; get character from the command line
+
+	; read a single character from the TAKE file
+
+	ld	hl,(TAKCNT)
+	ld	a,h
+	or	l		; time to read next block?
+	jr	nz,R1TCH0	; no
+	call	READTK		; yes, do it
+;;	call	c,CLSETK
+	ld	(TAKCNT),de	; store number of bytes read
+	ld	hl,TAKBUF
+	ld	(TAKPTR),hl	; reset buffer pointer
+	ld	a,d
+	or	e
+	ld	a,CTRLZ
+	jr	z,R1TCH1
+	ex	de,hl
+R1TCH0:	dec	hl
+	ld	(TAKCNT),hl
+	ld	hl,(TAKPTR)	; get next data byte
+	ld	a,(hl)
+	inc	hl
+	ld	(TAKPTR),hl	; update pointer
+R1TCH1:	pop	de		; restore registers
+	pop	hl
+	cp	LF		; line feed?
+	jr	z,R1TCHR	; loop if yes, ignore
+	cp	CTRLZ		; end of file?
+	ret	nz		; no, return
+	call	CLSETK		; else close file, then
+  IF 0
+	ld	a,CR		;  fake a carriage return char
+	ret			;   to clear kermit comnd line
+				;    and hope that editing etc not required.
+  ELSE
+	xor	a		; fake a null
+	ret
+  ENDIF
+
+R1LCHR:	; read a single character from the command line
+
+	ld	hl,(CBPTR)	; get pointer for next character
+	ld	a,(hl)		; get character
+	or	a		; null marks the end of command line
+	jr	z,R1LCH1
+	inc	hl
+	ld	(CBPTR),hl
+	jr	R1TCH1		; common exit
+
+R1LCH1:	ld	hl,TAKFLG	; no more, so reset command line bit (bit 4)
+	res	4,(hl)
+	ld	a,CTRLZ		; fudge an end of file
+	jr	R1TCH1
+
+; Print a character in accumulator to the console, saving regs.
+
+P1TCHR:	cp	LF		; if a LF ignore it
+	ret	z
+	cp	CR		; ditto carriage returns
+	ret	z
+	cp	ESC		; ditto escape
+	ret	z
+	cp	CTRLZ		; control-Z
+	ret	z		; then don't write it out
+	push	af		; we do not want to loose it, do we?
+	push	de
+	push	hl
+	call	OUTCON
+	pop	hl
+	pop	de
+	pop	af
+	ret
+
+; This routine sends charactes to the printer if the latter is ready,
+; or to a buffer if the printer is not ready.  If the buffer is nearly
+; full, an XOFF is sent to the host, asking it to be quiet.  The buffer
+; is emptied by a series of calls in the connect state only.   
+; If the buffer is made nearly empty, then an XON is sent to the host.
+
+OUTPRN:	ld	a,e		; get the character to send back to A
+	ld	(PRNTMP),a	; we need all registers
+	jp	OUTPRX		; -testing-testing-testing- avoid buffer
+
+OUTP0:	call	TSTFREE		; see how many spaces free
+	cp	2		; (free spaces in a on return)
+	jp	p,OUTP1		; enough free spaces, so keep going
+	call	PRINT		; else see if we can print summat
+	jp	OUTP0		; and try again
+
+OUTP1:	cp	4		; common test - if three or less then send xoff
+	call	m,SNDXOFF
+OUTPR2:	ld	a,b		; inc ptr and check for wrap around
+	call	WRAPT
+	ld	b,a		; input pointer to B
+	ld	(PRNBUF+1),a	; save the new pointer away
+	ld	hl,PRNBUF+2	; point to first real data entry in buffer
+	call	ADDHLA		; add offset in A to HL
+	ld	a,(PRNTMP)	; get th character to save away
+	ld	(hl),a		; save the data away
+	ret	
+
+; Send character in a to the printer. (We have checked to see if
+; the printer is ready)
+; Called by OUTPRN, PRINT
+
+OUTPRX:	ld	e,a		; character has to be in E register
+	call	OUTLPT		; send it to printer
+	ret			; assume we print it
+
+; See how many free spaces there are in the buffer
+; Returns with free space in A, ip pointer in B, op pointer in C
+
+SZECYC	equ	127		; 128 bytes in buffer (less for debugging)
+
+TSTFREE:
+	ld	a,(PRNBUF)	; get output pointer
+	ld	c,a		;  to C
+	ld	a,(PRNBUF+1)	; and input pointer
+	ld	b,a		;  to B
+
+; Now comes the tricky bit.  We must establish whether there is less than 
+;   three characters left in the buffer.  There are two conditions to test for
+;   1)  the input pointer is a higher value than the output pointer
+;   2)  the input pointer has been wrapped round and is less than the output po
+; ie
+;         +-------+-------+---------------------------------------------+
+; Buffer  |o/p ptr|i/p ptr|  Buffer proper filling --->                 |
+;         +-------+-------+------+-------------+-----------+------------+
+;                              i/p2          o/p         i/p1
+;
+;  If ip = ip1 then if 
+;                       (size of buffer - ip ptr + op ptr) < 3 send xoff
+;  If ip = ip2 then if 
+;                       (op ptr - input ptr ) < 3 send xoff
+;
+; First decide which one applies
+
+	ld	a,b		; get ip ptr 
+	sub	c		; see if op ptr > ip ptr (case 2)
+	jp	m,OUTP2		; yup, so do case two
+	ld	a,SZECYC	; else do buffer - ip + op
+	sub	b
+	add	a,c
+	jp	OUTPX		; do common test
+OUTP2:	ld	a,c		; get op pointer
+	sub	b		; less input pointer
+OUTPX:	ret			; with free space in A
+
+; Get a character from the buffer and print it if the printer 
+; is ready for it.  If the buffer clears more than 3 spare characters
+; and an xoff has been sent, then send an xon again.
+
+PRINT:	push	hl		; save for rainy days
+	push	de
+	push	bc
+	push	af		; .. as we may need flags, etc. 
+	call	CKPRTR		; check to see if printer is ready...
+	and	a		; not zero => OK
+	jr	z,PRINTX	; else skip it
+	ld	hl,PRNBUF
+	ld	a,(hl)		; get input pointer
+	inc	hl		; test against output pointer
+	cp	(hl)		; if = then buffer empty
+	jr	z,PRINTX	; so quit
+	dec	hl		; pointer to output pointer
+	call	WRAPT		; check for wrap around
+	ld	(PRNBUF),a	; save new pointer
+	inc	hl
+	inc	hl		;
+	call	ADDHLA		; add output pointer to HL
+	ld	c,(hl)		; get byte
+	ld	a,(HOSTHS)	; have we told host to be quiet?
+	cp	XOFF		; if = xoff then we have
+	jr	nz,PRINT1	; nope, so just print it.. 
+	push	bc		; save the character to print
+	call	TSTFREE		; see how many free bytes in buffer
+	pop	bc
+	cp	4		; 3 characters left?
+	jr	z,PRINTX
+	push	bc
+	call	SNDXON		; send an XON to host and wake it up
+	pop	bc
+PRINT1:	ld	a,c		; we are gonna print a character, so...
+	call	OUTPRX		; get it to A (as required by OUTPRX) and print it
+PRINTX:	pop	af
+	pop	bc
+	pop	de
+	pop	hl		; restore regs
+	ret	
+
+; Utilities for the cyclical buffer.  Returns a 0FFh if printer ready, 
+; else 0h.  Called by outprn, print
+
+CKPRTR:	call	LPTSTAT		; no registers saved
+;	ld	a,0		; FOR DEBUGGING PURPOSES
+;	nop
+	ret	
+
+; HL = HL + A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret	
+
+; Checks the offset in A with the limits of the buffer.
+; Returns next address or if wrap around then 0 (start of buffer)
+
+WRAPT:	push	bc
+	inc	a
+	ld	b,a		; save new A into B for now
+	ld	a,SZECYC	; test for size of buffer
+	sub	b
+	ld	a,b
+	pop	bc		; restore BC regs again
+	ret	nz
+	xor	a		; if wrap around, then reset pointer
+	ret			; return with next address pointer to in A
+
+; Send an XOFF to the host and save the XOFF character in HOSTHS.
+; Saves all regs.  Called by LOGWRT, OUTPRN
+
+SNDXOFF:
+	push	af
+	push	bc
+	push	de
+	push	hl		; some calling routines may be sensitive...
+	ld	a,(FLOCTL)	; are we doing flow control?
+	and	a
+	jp	z,SNDXF		; no, so don't bother
+	ld	a,XOFF		; ^S to stop the host while we write the buffer
+	ld	(HOSTHS),a	; save it so we know we have sent it
+	call	SETPAR		; set correct parity...
+	ld	e,a
+	call	OUTMDM		; output it
+	ld	de,OFSNT	; say we have sent an XOFF
+	call	PRTSTR
+SNDXF:	pop	hl
+	pop	de
+	pop	bc
+	pop	af		; some routines touchy
+	ret	
+
+OFSNT:	defb	CR,LF,'[XOFF sent to host]',CR,LF,0
+
+; Send an XON to the host and clear the HOSTHS flag.  Saves everything.
+; Called by LOGWRT, PRINT
+
+SNDXON:	push	af
+	push	bc
+	push	de
+	push	hl
+	ld	a,(FLOCTL)	; are we doing flow control?
+	and	a
+	jp	z,SNDXN
+	xor	a
+	ld	(HOSTHS),a	; no xoff to hos any more
+	ld	a,XON		; ^Q to restart the host
+	call	SETPAR		; set appropriate parity
+	ld	e,a
+	call	OUTMDM		; send it
+	ld	de,ONSNT
+	call	PRTSTR		; say XON sent to host...
+SNDXN:	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+ONSNT:	defb	CR,LF,'[XON sent to host]',CR,LF,0
+
+; Routine to print a string at (DE) and count the number of
+; line feeds. Pause after 20 lines printed.
+
+P20LN:	xor	a		; clear the line counter
+	ld	(LINCNT),a
+P20LN1:	ld	a,(de)		; get character to print
+	inc	de
+	or	a		; if null we are done
+	ret	z
+	push	de
+	push	af		; save pointer and character to print
+	ld	e,a
+	call	OUTCON		; send character
+	pop	af
+	pop	de		; restore pointers, etc.
+	cp	LF		; was that last character a line feed?
+	jp	nz,P20LN1	; no, so carry on
+	ld	a,(LINCNT)	; yup, so update counter
+	inc	a
+	ld	(LINCNT),a
+	cp	20		; 20 lines printed?
+	jp	nz,P20LN1	; not yet
+	push	de		; we need DE
+	call	PAUSIT		; pause until a key is pressed
+	pop	de
+	jp	P20LN		; and continue
+
+; Convert device name and unit to string.
+
+DEVSTR:	ld	a,(de)
+	ld	(hl),a		; store first character of device name
+	inc	de
+	inc	hl
+	ld	a,(de)
+	ld	(hl),a		; store second character of device name
+	inc	de
+	inc	hl
+	ld	a,(de)
+	call	CVTBD		; convert unit number to string
+	ld	(hl),':'	; append a seimicolon
+	inc	hl
+	ld	(hl),0		; end with a null
+	ret
+
+; Convert directory name to string.
+
+DIRSTR:	ld	(hl),'['	; store directory separator
+	inc	hl
+	ld	b,9		; max directory name length
+	call	CPYNAM		; convert to string
+	ld	(hl),']'	; close directory name
+	inc	hl
+	ld	(hl),0		; end with a null
+	ret
+
+; Convert FCB filespec to string.
+; Called with IX = FCB address, HL = destination string address
+
+FCBSTR:	ld	a,(ix+F.ATTR)
+	and	FN.DEV		; device name specified?
+	jr	z,FCBS1		; skip if not
+	ex	de,hl
+	push	ix
+	pop	hl
+	ld	bc,F.DEV
+	add	hl,bc		; point to device name field
+	ex	de,hl
+	call	DEVSTR		; convert device name to string
+FCBS1:	ld	a,(ix+F.ATTR)
+	and	FN.DIR		; directory specified?
+	jr	z,FCBS2		; skip if not
+	ex	de,hl
+	push	ix
+	pop	hl
+	ld	bc,F.DIR
+	add	hl,bc		; point to directory name field
+	ex	de,hl
+	call	DIRSTR		; convert to string
+FCBS2:	ex	de,hl
+	push	ix
+	pop	hl
+	ld	bc,F.NAME
+	add	hl,bc		; point to file name field
+	ex	de,hl
+	ld	b,9
+	call	CPYNAM		; convert to string
+	ld	(hl),'.'	; add dot separator
+	inc	hl
+	ex	de,hl
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc		; point to file extension field
+	ex	de,hl
+	ld	b,3
+	call	CPYNAM		; convert to string
+	ld	a,(ix+F.ATTR)
+	and	FN.VER		; version specified?
+	jr	z,FCBS3		; skip if not
+	ld	(hl),';'	; add semicolon separator
+	inc	hl
+	ex	de,hl
+	push	ix
+	pop	hl
+	ld	bc,F.VER
+	add	hl,bc		; point to version number field
+	ld	a,(hl)		; fetch version number
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl
+	xor	a
+	call	CVTWD		; convert to decimal, no leading zeros
+FCBS3:	ld	(hl),0		; end with a null
+	ret
+
+CPYNAM:	ld	a,(de)		; get char from name
+	and	7Fh
+	cp	' '+1		; space or control ends name
+	ret	c
+	ld	(hl),a		; store into string buffer
+	inc	hl		; advance pointers
+	inc	de
+	djnz	CPYNAM		; loop until done
+	ret
+
+; Copy null-terminated string, including the terminating null. Called with
+; pointer to source string in HL and dest buffer address in DE.
+
+STRCPY:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z
+	inc	hl
+	inc	de
+	jr	STRCPY
+
+; Compute string length. Called with pointer to null-terminated string in HL,
+; returns length in B.
+
+STRLEN:	ld	b,0		; zero character counter
+SL1:	ld	a,(hl)		; get character from the string
+	or	a		; null?
+	ret	z		; yes, return
+	inc	hl		; else advance pointer
+	inc	b		; increase char count
+	jr	SL1		; and loop
+
+; Skip word on a string. Called with HL = pointer to null-terminated string.
+
+SKPNAM:	ld	a,(hl)		; get a character
+	call	ISEOL		; end of the line?
+	ret	z		; yes, return
+	call	ISBLNK		; no, is it a blank (word delimiter)?
+	jr	z,SKP1		; yes, exit this loop
+	inc	hl		; no, move to next char
+	jr	SKPNAM		; and try again
+SKP1:	ld	a,(hl)		; get character
+	call	ISEOL		; end of line?
+	ret	z		; yes, return
+	call	ISBLNK		; blank?
+	ret	nz		; no, we're done (start of next word)
+	inc	hl		; else move to next char
+	jr	SKP1		; and tru again
+
+ISEOL:	or	a		; end of line are nulls
+	ret	z
+	cp	CR		; carriage returns
+	ret	z
+	cp	LF		; line feeds
+	ret	z
+	cp	ESC		; escapes
+	ret	z
+	cp	CTRLZ		; and ctrl-Z's
+	ret
+
+ISBLNK:	cp	' '		; blanks are spaces
+	ret	z
+	cp	TAB		; and tabs
+	ret
+
+; Output error message preceded by a newline. Called with message address
+; in DE.
+
+PRTERR:	push	de		; save pointer
+	call	PRCRLF		; output newline
+	pop	de		; restore pointer
+	jp	PRTSTR		; output message
+
+; Send character to the console or to remote server, depending on current
+; mode.
+
+OUTCHR:	push	hl		; save HL
+	ld	hl,(OPROC)	; get output routine address
+	ex	(sp),hl		; restore HL, push routine address
+	ret			; exec routine
+
+; Display string on console, or send it to remote server, depending on
+; current mode
+
+OUTSTR:	ld	a,(de)		; get character from string
+	or	a		; null?
+	ret	z		; yes, return
+	push	de		; save string pointer
+	ld	e,a		; get character into E
+	call	OUTCHR		; output character
+	pop	de		; restore string pointer
+	ret	c		; on error return
+	inc	de		; point to next char
+	jr	OUTSTR		; and loop
+
+	dseg
+
+PRNTMP:	ds	1		; temporary space to put the caracter to print
+LINCNT:	ds	1		; used for counting lines in P20LN
+ENDSTS:	ds	1		; status for last read into big buffer
+
+	end

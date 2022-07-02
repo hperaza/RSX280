@@ -1,0 +1,1153 @@
+; KCMD.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file provides a user oriented way of parsing commands.
+;       It is similar to that of the COMND JSYS in TOPS-20.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 16, 4-Dec-2021 by H. Peraza: Ctrl/Z on command input exits Kermit.
+;       Fixed the 'backspace key erasing the prompt' bug after command
+;       autocompletion.
+;
+; edit 15, 21-Mar-2021 by H. Peraza: use PRTERR to output error messages.
+;
+; edit 14, 27-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Fixed handling of control chars in command line, so they no longer
+;       screw up the display. Filename parsing now uses the PFN SYSLIB routine.
+;       When auto-completing, lowercase the keyword if the user typed the first
+;       part in lowercase. TAB now also auto-completes keyword, except when
+;       reading from a TAKE file.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 13, 17-Jan-1991 by MF. Modified "cmifil" routine to zero the entire
+;	fcb (not just the extent) to fix a bug in the COPY command which
+;	prevented successive COPY commands from working properly.
+;
+; edit 12, 16-Jan-1991 by MF. Modified routine "cmkeyw" to ignore leading
+;	spaces/tabs before a keyword. This apparently was the intent in
+;	"prompt" and "repars" (at least for command-lines) as the variable 
+;	"cmsflg "is set upon command parse and reparse. The intent was
+;	subverted, however, as "cmkeyw" did not reset the flag to ignore
+;	leading white space for each search thru the key tables (even though
+;	the buffer pointer to the keyword entered was reset). The fix was
+;	to reset the "spaces seen" flag (cmsflg) after "cmkey2" so that
+;	it is reset each time a new table entry is compared to the text
+;	the user has entered from the keyboard/TAKE-file etc. The upshot
+;	of all this is that the kluge code in "cminbf" at "cminb0" designed
+;	to force Kermit to ignore leading white space on command-lines in
+;	TAKE-files and on the CP/M command-line is no longer needed and,
+;	therefore, has been eliminated. Also modify "comnd" to expect leading
+;	spaces for functions other than "get keyword".
+;
+; edit 11, 26-Dec-1990 by MF. Modified routines to ignore leading white space
+;	in lines from TAKE-files as well as during input from the CP/M
+;	command-line  (form-feeds are now considered white space under these
+;	circumstances).
+;
+; edit 10, 8-Sep-1990 by Mike Freeman.  Modified routines to ignore leading
+;	spaces/tabs when processing Kermit commands from the CP/M
+;	command-line.
+;	Added flag CMBFLG to allow initial word on a command-line
+;	to be blank (useful for Remote commands such as Remote CWD etc).
+;	Added flag cmqflg to prevent character-echoing while entering
+;	commands so Remote CWD etc can have nonechoing password entry.
+;
+; edit 9, 15 June, 1987 by OBSchou.  Bug fixing to allow a second filename
+;	(quiet) be entered as d:<blank>.  Previous revision put the drive name 
+;	in first character of FCB, I put that character back to a space.
+;
+; edit 8, 12 June, 1987 by OBSchou.  Addedin code in cmkeyw to print
+;	20 lines of help, then pause for a key from the user befor
+;	proceeding with help.
+;
+; edit 7, 11 March, 1987 by OBSchou for Richard Russell, BBC.  He writes:
+;	Bug in cmtext which prevented use of octal characters (\nnn) fixed.
+;
+; edit 6, 18 June, 1986 by OBSchou, Loughborough University, Leics. UK
+;       added code to parse a number from user input.  Added check to make 
+;       sure the input command buffer does not overflow the limit.
+;
+; edit 5a: 7 March, 1986.  OBSchou. Added stuff rom MJ Carter.  He writes:
+;       7th May 85, MJ Carter [majoc], Nottingham University
+;       Code in cmifil() put one too many spaces in the FCB; this caused 
+;       the BDOS of the British Micro Mimi to search for exteny 32,
+;       rather than extent 0, so era() always said "can't find file"
+;       Puttig a null at the point in question ought to fix 9 it.
+;
+; edit 5: 6-Feb-85 by Charles Carvalho
+;       Make ffussy a runtime (rather than assembly-time) switch, to
+;       eliminate conditional assembly in system-independent module.
+;       Don't allow _%|()/\ in filenames if ffussy set; my CP/M manual
+;       disallows those, too.
+;
+; edit 4: 13-Jan-85 by Vanya J.Cooper Pima Commun. College Tel: 602-884-6809
+;
+; pcc006 2-jan-85        VJC     modules:cp4cmd,cp4utl
+;       Problems with "?" in filespecs.  On reparse, may cause action
+;       flag to be reset at wrong point, requiring multiple <CR>'s
+;       to terminate the line or other weird stuff.  Also need to
+;       check flag and complain if wild-cards illegal.
+;
+; pcc007 2-Jan-85        vjc     modules:cp4def,cp4cmd
+;       Cmifil is too fussy about what characters to accept in a
+;       filespec.  My CP/M manual says any printable character is ok
+;       except <>.,;:?*[], and lower case.  In practice, even those work
+;       sometimes.  Kermit itself uses '&' if file warning is on,
+;       and then won't let you reference the file.  Allow all
+;       printable characters except those above.  Add conditional
+;       ffussy, so that if not ffussy, all special characters will be
+;       allowed, just convert lower to upper-case.
+;
+; edit 3: July 8, 1984 (CJC)
+;       integrate Toad Hall changes for LASM compatibility: CP4CPM is linked
+;       by CP4WLD, and links CP4UTL.
+;       
+; edit 2: June 5, 1984 (CJC)
+;       formatting and documentation; delete unnecessary code at cminb7; add
+;       module version string.
+;
+; edit 1: May, 1984 (CJC)
+;       extracted from CPMBASE.M80 version 3.9; modifications are described in
+;       the accompanying .UPD file.
+
+	.Z80
+
+	ident	/16/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	FCB.INC
+
+	public	CMDVER,PROMPT,COMND,CMGTCH,CMBFLG,CMQFLG,CMAFLG
+
+	extrn	KERMIT,PRCRLF,PRTSTR,OUTCON,CLRTOP,CLRLIN,DELCHR
+	extrn	MFINIT,MFNAME,MFEND,P20LN,GETCT,PRTERR,R,RSKP
+	extrn	EXIT
+
+	extrn	CMDBUF,CMDPTR,NUMBER,CMHLP,TEMP1,TAKFLG,SFCB,FCB
+
+	extrn	UCASE,PFN
+
+	cseg
+
+CMDVER:	defb	'KCMD (16)  4-Dec-2021',0	; name, edit number, date
+
+; This routine prints the prompt in DE and specifies the reparse address.
+; Called by:  KERMIT
+
+PROMPT:	pop	hl		; get the return address
+	push	hl		; put it on the stack again
+	ld	(CMRPRS),hl	; save it as the address to go to on reparse
+	ld	(CMOSTP),sp	; save the present stack pointer for later restoral
+	ld	(CMPRMP),de	; save the pointer to the prompt
+	ld	hl,CMDBUF
+	ld	(CMCPTR),hl	; initialize the command pointer
+	ld	(CMDPTR),hl
+	xor	a
+	ld	(CMAFLG),a	; zero the flags
+	ld	(CMCCNT),a
+;	ld	a,0FFh		; try it this way (Daphne.)
+;	ld	(CMSFLG),a
+	call	PRCRLF		; print a CR/LF
+	jp	PRPRMP		; print the prompt
+
+; This address is jumped to on reparse.
+; Here from:  CMCFRM, CMKEYW, CMIFIL, CMINBF
+
+REPARS:	ld	sp,(CMOSTP)	; restore the old stack pointer
+	ld	hl,CMDBUF
+	ld	(CMDPTR),hl
+;	ld	a,0FFh		; try it this way (Daphne.)
+;	ld	(CMSFLG),a
+	ld	hl,(CMRPRS)	; get the reparse address
+	jp	(hl)		; go there
+
+; This address can be jumped to on a parsing error.
+; Here from:  CMKEYW, CMINBF
+
+PRSERR:	ld	sp,(CMOSTP)	; restore the old stack pointer
+	ld	hl,CMDBUF
+	ld	(CMCPTR),hl	; initialize the command pointer
+	ld	(CMDPTR),hl
+	xor	a
+	ld	(CMAFLG),a	; zero the flags
+	ld	(CMCCNT),a
+;	ld	a,0FFh		; try it this way (Daphne.)
+;	ld	(CMSFLG),a
+	call	PRCRLF		; print a CR/LF
+	call	PRPRMP		; print the prompt
+	ld	hl,(CMRPRS)	; return to before the prompt call
+	jp	(hl)
+
+; This routine parses the specified function in A.  Any additional
+; information is in DE and HL.
+; Returns nonskip on failure
+;         skip on success (assumes a JMP follows the call)
+; Called by:  LOG, SETCOM, READ, SEND, XMIT, DIR, ERA, KEYCMD, CFMCMD, CPSREM
+
+COMND:	ld	(CMSTAT),a	; save what we are presently parsing
+	call	CMINBF		; get chars until an action or a erase char
+	push	af		; save function
+	ld	a,0FFh		; expect leading spaces
+	ld	(CMSFLG),a
+	pop	af		; restore function
+	cp	CMCFM		; parse a confirm?
+	jp	z,CMCFRM	; go get one
+	cp	CMKEY		; parse a keyword?
+	jp	z,CMKEYW	; try and get one
+	cp	CMIFI		; parse an input file spec?
+	jp	z,CMIFIL	; go get one
+	cp	CMIFIN		; input file-spec silent?
+	jp	z,CMIFIL	; do as he wishes
+	cp	CMOFI		; output file spec?
+	jp	z,CMOFIL	; go get one
+	cp	CMTXT		; parse arbitrary text?
+	jp	z,CMTEXT	; go do it
+	cp	CMNUM		; parse a number?
+	jp	z,CMNUMB	; go do it
+	ret			; else return failure (nonskip)
+
+; This routine parses arbitrary text up to a CR.
+; Accepts DE:     address to put text
+; Returns in A:   number of chars in text (may be 0)
+;            DE:  updated pointer
+; Called by: COMND
+
+CMTEXT:	xor	a		; clear counters etc for slashes, etc
+	ld	(SLSHSN),a	; if we are in a slash sequence
+	ld	(SLASHN),a	; the octal number being entered
+	ld	(SLASHC),a	; number of characters entered
+
+	ex	de,hl		; put the pointer to the dest in HL
+	ld	(CMPTAB),hl	; save the pointer
+	ld	b,0		; init the char count
+CMTXT1:	call	CMGTCH		; get a char
+	or	a		; terminator?
+	jp	p,CMTX3		; no, put in user space
+	and	7Fh		; turn off sign bit
+	cp	ESC		; an escape?
+	jr	nz,CMTXT2	; no
+	ld	e,BELL		; get a bell
+	call	OUTCON
+	xor	a
+	ld	(CMAFLG),a	; turn off the action flag
+	ld	hl,(CMCPTR)	; move the pointer to before the escape
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	(CMDPTR),hl
+	ld	hl,CMCCNT	; get the char count
+	dec	(hl)		; decrement it by one
+	jr	CMTXT1		; try again
+
+CMTXT2:	cp	'?'		; is it a question mark?
+	jr	z,CMTXT4	; if so put it in the text
+	cp	FF		; is it a formfeed?
+	call	z,CLRTOP	; if so blank the screen
+	ld	a,b		; return the count
+	ld	hl,(CMPTAB)	; return updated pointer in HL
+	ex	de,hl
+	jp	RSKP		; return success
+
+CMTX3:	cp	'\'		; slash?
+	jr	nz,CMTX3A	; nope, so try something else
+	ld	a,(SLSHSN)	; a slash already entered?
+	and	a
+	cpl
+	jr	nz,CMTX3A	; yes, so assume its a valid slash to enter
+	ld	(SLSHSN),a	; make sure the flag is set for next time routnd
+	jr	CMTXT1		; get another character
+
+CMTX3A:
+;	ld	hl,CMAFLG	; point to the action flag
+;	ld	(hl),0		; set it to zero
+	ld	e,a		; save it in case we are interpreting a slash
+	ld	a,(SLSHSN)	; slash already entered?
+	and	a		; test flag
+	ld	a,e		; restore it in case...
+	jr	z,CMTX5		; not a slash seen, so enter as a normal character
+	cp	'\'
+	jr	nz,CMTX3B	; \\ not detected
+	ld	a,(SLASHN)	; else get number
+	jr	CMTX5B		; and enter it ( in the case of \n or \nn)
+
+	; here if an octal number of 1 or 2 digits entered instead of 3,
+	; followed by \ again
+
+CMTX3B:	sub	'0'		; else it should be an octal number
+	jp	m,CMTXT6	; if not a digit complain
+	cp	8		; ditto
+	jp	p,CMTXT6
+	ld	e,a		; else add it to the number already entered
+	ld	a,(SLASHN)
+	add	a,a
+	add	a,a
+	add	a,a		; multiply by 8
+	add	a,e
+	ld	(SLASHN),a
+	ld	a,(SLASHC)	; get the count
+	inc	a
+	ld	(SLASHC),a	; plus one. If three then a number entered
+	cp	3
+	ld	a,(SLASHN)	; get the number in case...
+	jr	z,CMTX5
+	jr	CMTXT1		; else loop
+
+CMTXT4:	ld	hl,(CMDPTR)	; get a pointer into the buffer
+	inc	hl		; bump past the '?'
+	ld	(CMDPTR),hl
+	ld	hl,CMAFLG
+	ld	(hl),0		; clear the action flag
+CMTX5:	call	CMTX5C
+	jp	CMTXT1		; put this into a subroutine
+
+CMTX5B:	call	CMTX5C		; here if we see \n\ or \nn\ rather than \nnn\
+	ld	a,'\'		; so send slash number to buffer, 
+	ld	(SLSHSN),a	; re-store a slash seen
+	jp	CMTXT1		; try next one
+
+CMTX5C:	inc	b		; increment the count
+	ld	hl,(CMPTAB)	; get the pointer
+	ld	(hl),a		; put the char in the array
+	inc	hl
+	ld	(CMPTAB),hl	; save the updated pointer
+	xor	a		; clear slash counters, etc.
+	ld	(SLASHC),a
+	ld	(SLASHN),a
+	ld	(SLSHSN),a
+	ret			; and return
+
+CMTXT6:	ld	de,CMER05	; complain - not a valid \ parameter
+	call	PRTERR
+	jp	KERMIT		; and try another command
+
+CMER05:	db	'?Invalid \ parameter',0
+
+; This routine gets a number from user input.
+; Called by: COMND
+
+CMNUMB:	ld	hl,0		; make sure the number is zero to start with
+	ld	(NUMBER),hl
+CMNUM0:	call	CMGTCH		; get another character
+	or	a		; if negative then its an action
+	jp	p,CMNUM1	; nope, so (possibly) valid input
+	and	7Fh		; else lets see what it is...
+;	cp	ESC		; do not know what to do with this one...
+	cp	' '		; if it is a space
+	jp	z,RSKP		;  then return OK (space is a delimiter)
+	cp	'?'		; user is curious
+	jr	z,GNUM2
+	cp	CR		; end of input?
+	jp	z,RSKP		; yes, return OK
+	jp	PRSERR		; did not understand this, so error
+
+GNUM2:	ld	hl,(NUMBER)	; get the number.. if at all entered
+	ld	a,l
+	or	h		; if HL = 0 then possibly no number entered
+	ld	de,CMIN02	; say confirm... or more on line
+	jr	nz,GNUM21	; else say enter a return
+	ld	de,CMIN01	; say enter a number
+GNUM21:	call	PRTSTR		; say it
+	call	PRCRLF		; do a LF
+	call	PRPRMP		; another reprompt
+	ld	hl,(CMDPTR)	; get pointer of string already entered
+	ld	(hl),0		; null byte sets end of line
+	ld	hl,(CMCPTR)
+	dec	hl		; decrement and save the buffer pointer
+	ld	(CMCPTR),hl
+	ld	hl,CMCCNT
+	dec	(hl)		; decrement character count
+	ld	hl,CMDBUF
+	call	PRTCMD		; print what has already been entered
+	xor	a
+	ld	(CMAFLG),a	; turn the action flag off
+	jp	REPARS		; and try again
+
+;	ld	a,CMCFM		; parse a confirm
+
+CMNUM1:	and	7Fh		; here for a (potentially) valid number
+	sub	'0'		; less ASCII bias
+	jr	c,GNUM3
+	cp	10		; if 10 or more its still bad
+	jr	nc,GNUM3
+	ccf	
+	ld	hl,(NUMBER)	; now multiply number by ten and add the new value
+	push	hl
+	pop	de
+	add	hl,hl		; HL = HL * 2
+	add	hl,hl		; * 4
+	add	hl,de		; * 5
+	add	hl,hl		; * 10
+	ld	d,0
+	ld	e,a
+	add	hl,de		; add the new digit
+	ld	(NUMBER),hl
+	jp	CMNUM0
+
+GNUM3:	ld	de,CMER04	; invalid number...
+	call	PRTERR
+	jp	RSKP
+
+CMIN01:	db	' Enter a number',0
+CMIN02:	db	' Confirm with carriage return or enter more',0
+
+CMER04:	db	'?Invalid number',0
+
+; This routine gets a confirm.
+; Called by: COMND
+
+CMCFRM:	call	CMGTCH		; get a char
+	or	a		; negative? (a terminator, a space or
+				;  a tab will not be returned here as they
+				;   will be seen as leading white space)
+	ret	p		; if not, return failure
+	and	7Fh		; turn off the sign bit
+	cp	ESC		; is it an escape?
+	jr	nz,CMCFR2
+	ld	e,BELL		; get a bell
+	call	OUTCON
+	xor	a
+	ld	(CMAFLG),a	; turn off the action flag
+	ld	hl,(CMCPTR)	; move the pointer to before the escape
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	(CMDPTR),hl
+	ld	hl,CMCCNT	; get the char count
+	dec	(hl)		; decrement it by one
+	jr	CMCFRM		; try again
+
+CMCFR2:	cp	'?'		; curious?
+	jr	nz,CMCFR3
+	ld	de,CMIN00	; print something useful
+	call	PRTSTR
+	call	PRCRLF		; print a CR/LF
+	call	PRPRMP		;  and reprint the prompt
+	ld	hl,(CMDPTR)	; get the pointer into the buffer
+	ld	(hl),0		; end with a null for printing
+	ld	hl,(CMCPTR)
+	dec	hl		; decrement and save the buffer pointer
+	ld	(CMCPTR),hl
+	ld	hl,CMCCNT
+	dec	(hl)		; decrement character count
+	ld	hl,CMDBUF
+	call	PRTCMD		; reprint command
+	xor	a		; turn off the action flag
+	ld	(CMAFLG),a
+	jp	REPARS		; reparse everything
+
+CMCFR3:	cp	FF		; is it a form feed?
+	call	z,CLRTOP	; if so blank the screen
+	jp	RSKP
+
+CMIN00:	db	' Confirm with carriage return',0
+
+; This routine parses a keyword from the table pointed to in DE.
+; The format of the table is as follows:
+;
+;       addr:   db      n       ; where n is the # of entries in the table
+;               db      m       ; m is the size of the keyword
+;               db      'string',0 ; where string is the keyword
+;               db      a,b     ; where a & b are pieces of data
+;                               ;  to be returned (must be two of them)
+;
+; The keywords must be in alphabetical order.
+;
+; **** Note:  The data value a is returned in registers A and E.  The
+; ****        data value b is returned in register D.  This allows the two
+;             data bytes to be stored as:
+;               dw      xxx
+;             and result in a correctly formatted 16-bit value in register
+;             pair DE.
+; Called by: COMND
+
+CMKEYW:	ld	(CMHLP),hl	; save the help
+	ex	de,hl		; get the address of the table
+	ld	(CMPTAB),hl	; save the beginning of keyword tab for '?'
+	ld	b,(hl)		; get the number of entries in the table
+	inc	hl
+	ld	(CMKPTR),hl
+	ld	hl,(CMDPTR)	; save the command pointer
+	ld	(CMSPTR),hl
+CMKEY2:	ld	a,b		; get the number of entries left
+	or	a		; any left?
+	ret	z		; if not, we failed
+	ld	a,0FFh		; make sure we ignore leading spaces
+	ld	(CMSFLG),a
+	ld	hl,(CMKPTR)
+	ld	e,(hl)		; get the length of the keyword
+	inc	hl
+CMKEY3:	dec	e		; decrement the number of chars left
+	ld	a,e
+	cp	0FFh		; have we passed the end
+	jp	m,CMKEY5	; if so go to the next
+	call	CMGTCH		; get a char
+	or	a		; is it a terminator?
+	jp	p,CMKEY4	; if positive, it is not
+	and	7Fh		; turn off the minus bit
+	cp	'?'		; user is curious?
+	jr	nz,CMKY31	; no
+	xor	a
+	ld	(CMAFLG),a	; turn off the action flag
+	ld	hl,CMCCNT	; decrement the char count
+	dec	(hl)
+
+	;* must go through the keyword table and print them
+
+	ld	hl,(CMHLP)	; for now print the help text
+	ex	de,hl
+	call	P20LN		; print at most 20 lines then pause
+	call	PRCRLF		; print a newline
+	call	PRPRMP		; and reprint the prompt
+	ld	hl,(CMDPTR)	; get the pointer into the buffer
+	ld	(hl),0		; end with a null for printing
+	ld	hl,(CMCPTR)
+	dec	hl		; decrement and save the buffer pointer
+	ld	(CMCPTR),hl
+	ld	hl,CMDBUF
+	call	PRTCMD		; reprint command
+	jp	REPARS		; reparse everything
+
+CMKY31:	cp	ESC		; is it an escape?
+	jp	nz,CMKY35	; no
+	xor	a
+	ld	(CMAFLG),a	; turn off the action flag
+	push	de
+	push	bc
+	push	hl
+	call	CMAMBG		; test for ambiguity
+	jp	CMKY32		; not ambiguous
+	ld	e,BELL
+	call	OUTCON		; ring the bell
+	ld	hl,(CMCPTR)	; move the pointer to before the escape
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	(CMDPTR),hl
+	ld	hl,CMCCNT	; get the char count
+	dec	(hl)		; decrement it by one
+	pop	hl
+	pop	bc
+	pop	de
+	inc	e		; increment the left to parse char count
+	jp	CMKEY3
+
+CMKY32:	ld	hl,(CMCPTR)	; pointer into buffer
+	dec	hl		; backup to the escape
+	dec	hl		; ...one before it
+	ld	c,(hl)		; fetch char for upper/lowercase reference
+	inc	hl		; back to the escape position
+	ex	de,hl
+	pop	hl
+	push	hl
+CMKY33:	ld	a,(hl)		; get the next char
+	or	a		; finished?
+	jp	z,CMKY34	; yes
+	inc	hl
+	ex	de,hl
+	call	CMKY38		; upper/lowercase it accordingly
+	ld	(hl),a		; move it into the buffer
+	inc	hl
+	ex	de,hl
+	ld	a,(CMCCNT)	; increment the char count
+	inc	a
+	ld	(CMCCNT),a
+	jp	CMKY33		; loop
+
+CMKY34:	ex	de,hl		; put the command buffer pointer in HL
+	ld	(hl),' '	; put a blank in the command buffer
+	inc	hl		; increment the pointer
+	ld	(hl),0
+	ld	de,(CMCPTR)	; get the old pointer
+	dec	de		; backup to where we started inserting chars
+	ld	(CMCPTR),hl	; save the updated pointer
+	ld	(CMDPTR),hl
+	call	PRTSTR		; print the rest of the keyword
+	pop	hl
+	pop	bc
+	pop	de
+	jp	CMKY37
+
+CMKY35:	cp	CTRLZ		; Ctrl/Z?
+	jp	z,EXIT		; yes, exit
+	push	hl
+	push	de
+	call	CMAMBG		; test for ambiguity
+	jp	CMKY36		; not ambiguous
+	ld	de,CMER01
+	call	PRTERR		; say it is ambiguous
+	jp	PRSERR		; give up
+
+CMKY36:	pop	de
+	pop	hl
+CMKY37:	inc	e		; add one in case it is negative
+	ld	d,0
+	add	hl,de		; increment past the keyword
+	inc	hl		; past the null byte
+	ld	e,(hl)		; get the data
+	inc	hl
+	ld	d,(hl)
+	ld	a,e
+	jp	RSKP
+
+CMKY38:	ld	b,a
+	ld	a,c
+	call	ISLC		; user typed in lowercase?
+	ld	a,b
+	ret	c		; no, return
+	or	20h		; yes, lowercase the keyword char
+	ret
+
+ISLC:	cp	'a'		; lowercase?
+	ret	c		; no
+	cp	'z'+1
+	ccf
+	ret
+
+CMKEY4:	call	UCASE		; capitalize char
+	ld	d,(hl)		; get the next char of the keyword
+	inc	hl
+	cp	d		; match?
+	jr	nz,CMKEY5	; no
+	cp	'@'		; test for special case of '@'
+	jp	nz,CMKEY3	; nope, continue with keyword
+	dec	e
+	jp	CMKY37
+CMKEY5:	ld	d,0
+	ld	a,e		; get the number of chars left
+	or	a		; is it negative?
+	jp	p,CMKY51
+	ld	d,0FFh		; if so, sign extend
+CMKY51:	add	hl,de		; increment past the keyword
+	ld	de,3		; plus the null byte and data
+	add	hl,de
+	ld	(CMKPTR),hl
+	dec	b		; decrement the number of entries left
+	ld	hl,(CMSPTR)	; get the old CMDPTR
+	ld	(CMDPTR),hl	; restore it
+
+	;* check so we don't pass it.
+
+	jp	CMKEY2		; go check the next keyword
+
+CMER01:	db	'?Ambiguous',0
+
+; Test keyword for ambiguity.
+; Returns: nonskip if OK, skip if ambiguous.
+; Called by: CMKEYW
+
+CMAMBG:	dec	b		; decrement the number of entries left
+	ret	m		; if none left then it is not ambiguous
+	inc	e		; this is off by one, adjust
+	ld	c,e		; save the char count
+	ld	a,e
+	or	a		; any chars left?
+	ret	z		; no, it can't be ambiguous
+	ld	d,0
+	add	hl,de		; increment past the keyword
+	ld	e,3		; plus the null byte and data
+	add	hl,de
+	ld	b,(hl)		; get the length of the keyword
+	inc	hl
+	ex	de,hl
+	ld	hl,(CMKPTR)	; get pointer to keyword entry
+	ld	a,(hl)		; get the length of the keyword
+	sub	c		; subtract how many left
+	ld	c,a		; save the count
+	cp	b
+	jr	z,CMAMB0
+	ret	p		; if larger than the new word then not amb.
+CMAMB0:	ld	hl,(CMSPTR)	; get the pointer to what parsed
+CMAMB1:	dec	c		; decrement the count
+	jp	m,RSKP		; if we are done then it is ambiguous
+	ex	de,hl		; exchange the pointers
+	ld	b,(hl)		; get the next char of the keyword
+	inc	hl
+	ex	de,hl		; exchange the pointers
+	ld	a,(hl)		; get the next parsed char
+	inc	hl
+	call	UCASE		; capitalize it
+	cp	b		; are they equal?
+	ret	nz		; if not then its not ambiguous
+	jp	CMAMB1		; check the next char
+
+; CMOFIL - parse output filespec
+; CMIFIL - parse input filespec
+; Here from: COMND
+
+CMOFIL:	ld	a,0		; don't allow wildcards
+;	jp	cmifil		; for now, the same as CMIFI
+
+CMIFIL:	ld	(CMFWLD),a	; set wildcard flag
+	ex	de,hl		; get the FCB address
+	ld	(CMFCB),hl	; save it
+
+	call	CMGTCH		; skip blanks and get first char
+	ld	hl,(CMDPTR)
+	and	7Fh
+	cp	'?'
+	jr	z,CMIFI0
+	cp	CR
+	jr	z,CMIFI0
+	cp	LF
+	jr	z,CMIFI0
+	cp	FF
+	jr	z,CMIFI0
+	dec	hl		; backup to first char
+	ld	(CMDPTR),hl
+CMIFI0:	ld	(CMDPTF),hl	; remember start of file name
+
+	xor	a		; initialize char count
+	ld	(TEMP1),a
+
+CMIFI1:	call	CMGTCH		; get another char
+	or	a		; is it an action character?
+	jp	p,CMIFI2	; no
+
+	and	7Fh		; turn off the action bit
+	cp	'?'		; a question mark?
+	jr	nz,CMIF12	; no
+
+	ld	a,(CMFWLD)	; wildcards allowed?
+	or	a
+	jp	z,CMIF11	; complain if not
+	ld	hl,(CMDPTR)	; increment buffer pointer
+	inc	hl		; that was decremented in CMGTCH
+	ld	(CMDPTR),hl	; since we want this char
+	ld	a,(CMCPTR)	; get lsb of real input pointer
+	cp	l		; is this the last char input?
+	jr	nz,CMIF1A	; no, don't reset action flag
+	xor	a		; yes, reset action flag
+	ld	(CMAFLG),a
+CMIF1A:	ld	a,'?'		; get it back in A
+	jp	CMIFI8		; treat like any other character
+
+CMIF12:	cp	ESC		; an escape?
+	jp	nz,CMIF13	; no
+
+	; try to recognize filespec a'la TOPS-20
+
+	xor	a
+	ld	(CMAFLG),a	; turn off the action flag
+	ld	hl,(CMCPTR)	; move the pointer to before the escape
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	(CMDPTR),hl
+	ld	hl,CMCCNT	; get the char count
+	dec	(hl)		; decrement it by one
+
+	ld	ix,SFCB		; using search FCB
+	ld	hl,(CMDPTF)
+	call	PFN		; parse what we have
+	ld	a,(hl)
+	cp	ESC		; stopped at ESC?
+	jp	nz,CMFRC9	; no, ring BELL and reparse
+
+;*TODO: append '*' to any contents of *unset* F.DIR, F.NAME, F.EXT and
+; F.VER fields (or to last set field?)
+
+	ld	hl,SFCB+F.NAME
+	ld	b,9
+	call	CMIF20		; append '*' to name
+	ld	hl,SFCB+F.EXT
+	ld	b,3
+	call	CMIF20		; append '*' to extension
+	ld	a,(ix+F.ATTR)
+	or	FN.NAME OR FN.EXT
+	ld	(ix+F.ATTR),a
+
+	call	MFINIT		; initialize directory search
+	jp	c,CMFRC9	; on error, ring BELL and reparse
+	call	MFNAME		; get first matching file
+	jp	c,CMFRC8	; nothing found, lose
+	ld	hl,FCB
+	ld	de,FCBBLK
+	ld	bc,FINFSZ
+	push	hl
+	push	bc
+	ldir			; copy first filespec
+	pop	bc
+	pop	hl
+	ldir			; get another copy (in case not ambiguous)
+	call	MFNAME		; more matching specs?
+	jp	z,CMFRC3	; only one
+	ld	hl,FCB
+	ld	de,FCBBLK+FINFSZ
+	ld	bc,FINFSZ
+	ldir			; copy second file spec
+
+;*TODO: need to distinguish '[dir<ESC>' from 'name<ESC>'?, as in both cases
+; FN.DIR bit is unset; one possibility is to scan for a '[' from initial
+; CMDPTR up to the position returned by FPN.
+
+CMFRC3:	call	MFEND		; close directory
+	ld	de,FCBBLK+F.NAME; start comparing file names
+	ld	hl,FINFSZ
+	add	hl,de
+	ld	a,(TEMP1)	; bypass characters typed
+	cp	9+1		; past '.'?
+	jr	c,CMFRC4	; no
+	dec	a		; yes, don't count point
+CMFRC4:	ld	c,0
+CMFRL1:	cp	c		; bypassed?
+	jr	z,CMFRL2	; yes
+	inc	de
+	inc	hl
+	inc	c
+	jr	CMFRL1		; repeat
+
+CMFRL2:	ld	a,c		; get file name characters processed
+	cp	9+3		; all done?
+	jr	z,CMFRC5	; yes
+	cp	9		; end of file name?
+	jr	nz,CMFRL3	; no
+	ld	a,(TEMP1)	; exactly at point?
+	cp	10
+	jr	z,CMFRL3	; yes, don't output a second point
+	ld	a,'.'		; output separator
+	call	CMFPUT
+CMFRL3:	ld	a,(de)		; get a character from first file spec
+	inc	de
+	ld	b,(hl)		; get from second file spec
+	inc	hl
+	cp	b		; compare
+	jr	nz,CMFRC5	; ambiguous
+	inc	c		; same, count
+	cp	' '		; blank?
+	jr	z,CMFRL2	; yes, don't output
+	call	CMFPUT		; put character into buffer
+	jr	CMFRL2		; repeat
+
+CMFRC5:	ld	a,c		; get count of characters processed
+	ld	(TEMP1),a	; save it
+	xor	a		; get terminator
+	call	CMFPUT		; put it into buffer
+	ld	hl,(CMDPTR)	; output recognized characters
+	call	PRTCMD
+	ld	hl,(CMCPTR)	; remove terminator from buffer
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	hl,CMCCNT
+	dec	(hl)
+	ld	a,(TEMP1)	; characters processed
+	cp	9+3		; complete file name?
+	jp	z,REPARS	; yes, don't beep
+	jr	CMFRC9
+
+CMFRC8:	call	MFEND		; close directory
+CMFRC9:	ld	e,BELL
+	call	OUTCON		; ring the bell
+	jp	REPARS
+
+CMIF13:	; continue file spec parsing
+
+CMIFI2:
+CMIFI8:
+  IF 0
+	cp	CR		; end of string?
+	jr	z,CMIF14	; yes, exit loop
+	cp	ESC
+	jr	z,CMIF14
+	cp	LF
+	jr	z,CMIF14
+  ELSE
+	cp	' '+1		; end of string? (space, CR, LF, ESC, etc.)
+	jr	c,CMIF14
+  ENDIF
+	ld	hl,TEMP1
+	inc	(hl)		; else increase char count
+	jp	CMIFI1		; and loop to process next char
+
+CMIF14:	ld	ix,(CMFCB)
+	ld	hl,(CMDPTF)
+	call	PFN		; full valid filename?
+;;;	jp	c,R		; no, return error
+;*TODO: check if wildcards are allowed
+;*	jp	z,CMIFI9 or CMIF11?
+
+	jp	RSKP		; otherwise we have succeeded
+
+CMIFI9:	ld	a,(CMSTAT)
+	cp	CMIFIN		; "silent"?
+	jp	z,R		; yes, let him go w/o check
+	ld	de,CMER02
+	jp	PRTERR
+
+CMIF11:	ld	de,CMER03	; complain about wildcards
+	jp	PRTERR
+
+	; append '*' to name or extension
+
+CMIF20:	ld	a,(hl)
+	cp	' '
+	jr	z,CMIF21
+	inc	hl
+	djnz	CMIF20
+	ret
+CMIF21:	ld	(hl),'*'
+	ret
+
+CMER02:	db	'?Illegal file specification',0
+CMER03:	db	'?Wildcards not allowed in file specification',0
+
+; Append character in A to command buffer
+; Called by: CMIFIL
+
+CMFPUT:	push	hl
+	ld	hl,(CMCPTR)	; get buffer pointer
+	ld	(hl),a		; store char in buffer
+	inc	hl
+	ld	(CMCPTR),hl
+	ld	hl,CMCCNT	; count it
+	inc	(hl)
+	pop	hl
+	ret	
+
+; Read characters from the command buffer.
+; Called by:  CMTEXT, CMCFRM, CMKEYW, CMIFIL
+
+CMGTCH:	push	hl
+	push	bc
+CMGTC1:	ld	a,(CMAFLG)
+	or	a		; action flag set?
+	call	z,CMINBF	; if not, get more
+	ld	hl,(CMDPTR)	; get a pointer into the buffer
+	ld	a,(hl)		; get the next char
+	inc	hl
+	ld	(CMDPTR),hl
+	cp	' '		; is it a space?
+	jr	z,CMGTC2
+	cp	TAB		; or a tab?
+	jr	nz,CMGTC3
+CMGTC2:	ld	a,(CMSFLG)	; get the space flag
+	or	a		; was the last char a space?
+	jr	nz,CMGTC1	; yes, get another char
+	ld	a,0FFh		; set the space flag
+	ld	(CMSFLG),a
+	ld	a,' '
+	pop	bc
+	pop	hl
+	jr	CMGTC5
+
+CMGTC3:	push	af
+	xor	a
+	ld	(CMSFLG),a	; zero the space flag
+	pop	af
+	pop	bc
+	pop	hl
+	cp	ESC
+	jr	z,CMGTC5
+	cp	'?'		; is the user curious?
+	jr	z,CMGTC4
+	cp	CR
+	jr	z,CMGTC4
+	cp	LF
+	jr	z,CMGTC4
+	cp	CTRLZ
+	jr	z,CMGTC4
+	cp	FF
+	ret	nz		; not an action char, just return
+CMGTC4:	push	hl
+	ld	hl,(CMDPTR)
+	dec	hl		; backup to last CR, LF, ^Z, FF or '?'
+	ld	(CMDPTR),hl
+	pop	hl
+CMGTC5:	or	80h		; make the char negative to indicate it is
+	ret			;  a terminator
+
+; Read characters from console into command buffer, processing
+; editing characters (^H, ^M, ^J, ^L, ^U, ^X, ?, DEL).
+; Called by: COMND, CMGTCH
+
+CMINBF:	push	af
+	push	de
+	push	hl
+	ld	a,(CMAFLG)	; is the action char flag set?
+	or	a
+	jp	nz,CMINB9	; if so get no more chars
+CMINB1:	ld	hl,CMCCNT	; increment the char count
+	inc	(hl)
+	call	GETCT		; get char from terminal or take file
+	ld	e,a		; save char
+	ld	a,(TAKFLG)
+	or	a		; reading from a TAKE file?
+	jr	nz,CMNB11	; yes
+	ld	a,e
+	cp	TAB		; did the user type a TAB?
+	jr	nz,CMNB11	; no
+	ld	e,ESC		; else fake an ESC (autocomplete)
+CMNB11:	ld	a,(CMQFLG)	; do we want it echoed?
+	or	a
+	call	z,CMOUTC	; yes, output it if printable
+	ld	a,e		; restore char
+	ld	hl,(CMCPTR)	; get the pointer into the buffer
+	ld	(hl),a		; put it in the buffer
+	inc	hl
+	ld	(CMCPTR),hl
+	cp	CTRLU		; is it a ^U?
+	jr	z,CMNB12	; yes
+	cp	CTRLX		; is it a ^X?
+	jr	nz,CMINB2	; no
+CMNB12:	call	CLRLIN		; clear the line
+	call	PRPRMP		; reprint the prompt
+	ld	hl,CMDBUF
+	ld	(CMCPTR),hl	; reset the point to the start
+	ld	hl,CMCCNT	; zero the count
+	ld	(hl),0
+	jp	REPARS		; go start over
+
+CMINB2:	cp	BS		; Backspace?
+	jr	z,CMINB3
+	cp	DEL		; or Delete?
+	jr	nz,CMINB4
+CMINB3:	ld	a,(CMCCNT)	; decrement the char count by two
+	dec	a
+	dec	a		; have we gone too far?
+	jp	p,CMNB32	; no, proceed
+	ld	e,BELL		; else ring the bell
+	call	OUTCON
+	jp	CMNB12		; go reprint prompt and reparse
+
+CMNB32:	ld	hl,(CMCPTR)	; get the pointer into the buffer
+	dec	hl		; back up in the buffer
+	dec	hl
+	ld	(CMCPTR),hl
+	ld	(CMCCNT),a	; save the new char count
+	ld	a,(CMQFLG)	; echoing characters?
+	or	a		; if we are, then
+	call	z,CMDELC	;  erase the character
+	jp	REPARS		; go reparse everything
+
+CMINB4:	cp	'?'		; is it a question mark?
+	jr	z,CMINB6
+	cp	ESC		; is it an escape?
+	jr	z,CMINB6
+	cp	CTRLZ		; is it Ctrl/Z?
+	jr	z,CMINB6
+	cp	CR		; is it a carriage return?
+	jr	z,CMINB5
+	cp	LF		; is it a line feed?
+	jr	z,CMINB5
+	cp	FF		; is it a formfeed?
+	jr	nz,CMINB8	; no, just store it and test if buffer
+				;  is overflowing, else get another char
+	call	CLRTOP
+CMINB5:	ld	a,(CMBFLG)	; allowing initial blank word (<CR>)?
+	or	a
+	jr	nz,CMINB6	; yes
+	ld	a,(CMCCNT)	; have we parsed any chars yet?
+	cp	1
+	jp	z,PRSERR	; if not, just start over
+CMINB6:	ld	a,0FFh		; set the action flag
+	ld	(CMAFLG),a
+CMINB9:	pop	hl
+	pop	de
+	pop	af
+	ret
+
+CMINB8:	ld	a,(CMCCNT)	; get the command character count
+	cp	CMBUFL		; check for comand buffer length
+	jp	m,CMINB1	; if less, then all OK
+	ld	e,BELL		; else beep at user
+	call	OUTCON		; send it to the console
+	ld	a,(CMCCNT)	; back up one character
+	dec	a
+	ld	(CMCCNT),a
+	ld	hl,(CMCPTR)	; ditto pointer
+	dec	hl
+	ld	(CMCPTR),hl	; save it again
+	jp	CMINB1		; and try again
+
+CMOUTC:	ld	a,e
+	cp	DEL		; Delete?
+	ret	z		; don't output it
+	cp	' '
+	jp	nc,OUTCON	; output printable char
+	cp	ESC
+	ret	z		; don't output ESC
+	cp	CR
+	jp	z,OUTCON	; CR is printable
+	cp	LF
+	ld	d,a		; save original char in D
+	ld	e,CR
+	jr	z,CMO1		; output LF as CR
+	cp	TAB
+	ld	e,' '
+	jr	z,CMO1		; output TAB as single space
+	ld	e,'^'
+	call	OUTCON		; output any other control char as ^x
+	ld	a,d
+	add	a,40h
+	ld	e,a
+CMO1:	call	OUTCON
+	ld	e,d		; restore original char
+	ret
+
+CMDELC:	call	DELCHR		; delete char from the screen
+	ld	hl,(CMCPTR)
+	ld	a,(hl)
+	cp	' '		; was it printable?
+	ret	nc		; yes, return
+	cp	TAB		; TAB?
+	ret	z		; yes, already erased
+	jp	DELCHR		; else erase control char
+
+PRTCMD:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	e,a
+	call	CMOUTC
+	inc	hl
+	jr	PRTCMD
+
+; Little utility to print the prompt (we do a LOT of these.)  [Toad Hall]
+; Enters with nothing.
+; Destroys HL (and I suppose B and DE and A).
+
+PRPRMP:	ld	e,CR		; do a CR first
+	call	OUTCON
+	ld	de,(CMPRMP)	; get the prompt.
+	jp	PRTSTR
+
+	dseg
+
+CMBFLG:	ds	1		; non-zero to allow a blank initial keyword
+CMQFLG:	ds	1		; non-zero to disable character echoing
+				;  when entering commands
+CMPTAB:	ds	2		; address of present keyword table
+CMSTAT:	ds	1		; what is presently being parsed
+CMRPRS:	ds	2		; address to go to on reparse
+CMOSTP:	ds	2		; old stack pointer for reparse
+CMFWLD:	ds	1		; wildcard flag
+CMPRMP:	ds	2		; address of prompt
+CMCPTR:	ds	2		; pointer for next char input
+CMAFLG:	ds	1		; non-zero when an action char has been found
+CMCCNT:	ds	1		; non-zero if a significant char is found
+CMSFLG:	ds	1		; non-zero when the last char was a space
+CMSPTR:	ds	2		; saved command pointer
+CMKPTR:	ds	2		; pointer to keyword
+SLSHSN:	db	0		; slash seen in command line
+SLASHC:	db	0		; count for number of characters in slash sequence
+SLASHN:	db	0		; number to be built for \xxx
+
+CMDPTF:	ds	2		; pointer to start of file name in command buf
+CMFCB:	ds	2		; pointer to FCB
+
+MAXFIL	EQU	2		; currently, only two names used.
+FCBBLK:	ds	MAXFIL*FINFSZ	; used for a list of FCB's
+
+	end

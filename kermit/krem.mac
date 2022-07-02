@@ -1,0 +1,1104 @@
+; KREM.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains the (system-independent) routines that implement
+;       the REMOTE commands of the KERMIT protocol.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 15, 21-Mar-2021 by H. Peraza: use PRTERR to output error messages.
+;
+; edit 14, 31-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Output a newline before displaying the output to prevent overwriting
+;       the prompt.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 13, 21-Mar-1991 by MF. Renamed REMOTE SET FILE COLLISION REPLACE to
+;	REMOTE SET FILE COLLISION OVERWRITE and modified the corresponding
+;	help text slightly.
+;
+; edit 12, 13-Feb-1991 by MF. Simplified code at "remcl0" to get REMOTE
+;	command arguments by calling "cmgtch" in order to get command-line
+;	characters directly. This means that command-line characters are
+;	passed literally (except for prefixing and space-compression) to the
+;	remote Kermit and that one need not send "?" or <esc> as "\"-prefixed
+;	octal numbers in order to avoid immediate action by CP/M Kermit.
+;
+; edit 11, 30-Jan-1991 by MF. Corrected code to always require entry of at least
+;	one argument in the REMOTE COPY, REMOTE DELETE (REMOTE ERASE),
+;	REMOTE MESSAGE, REMOTE RENAME and REMOTE TYPE commands. This is
+;	done by branching to KERMT3 (the "not confirmed" code) if the
+;	first argument isn't given. This should correct a bug which occurred
+;	in numerous places in which the character immediately following
+;	that specifying the flavor of a Generic command was not defined if
+;	the first of multiple (at least two) arguments was left blank but
+;	subsequent arguments were not. This should correct a problem
+;	encountered by Russell Lang of Monash University In Australia when
+;	he did a REMOTE MESSAGE command with a blank first argument (the
+;	user id) and a nonblank second argument (the message text) from
+;	CP/M Kermit to Ms-Kermit in Server mode.
+;
+; edit 10, 14-Dec-1990 by MF.  Put "<<>>" around "x" or "F" packet replies
+;	to REMOTE commands as in VMS Bliss Kermit and eliminate unnecessary
+;	instruction before label remc2d.
+;
+; edit 9, 1-Nov-1990 by MF.  Changed REMOTE CWD to REMOTE CD in the quest for
+;	uniformity of nomenclature (per request of FDC).
+;
+; edit 8, 29-Oct-1990 by MF.  Corrected Remote command code to properly
+;	prefix control characters (repeat prefix (~) isn't done in CP/M
+;	yet).
+;
+; edit 7, 17-Oct-1990 by MF.  Changed verb "REMOTE SEND-MESSAGE" to
+;	"REMOTE MESSAGE" to conform with the nomenclature suggested in
+;	Chapter 10 of the 6th edition of the Kermit Protocol Manual.
+;
+; edit 6, 10-Oct-1990 by MF.  Corrected Remote command code to
+;	properly prefix the control-character prefix character and the
+;	eighth-bit quotation prefix character.  Remote Set commands
+;	now function correctly.
+;	Also change the REMOTE SET FILE COLLISION ASK value to 5 per
+;	Kermit Digest V12 #6 (though I still have no idea how the local
+;	Kermit is supposed to answer).
+;
+; edit 5, 5-Oct-1990 by MF.  Coded many Remote Set commands.
+;	The commands I have omitted deal with Attribute packets which
+;	don't make much sense on a CP/M system.
+;	Note also that for those Remote Set commands which take a
+;	numeric argument, no range-checking is done here.
+;	Also note that, for now, REMOTE SET FILE-COLLISION ASK is
+;	equivalent to REMOTE SET FILE-COLLISION DISCARD because
+;	(a) that's what the Kermit Digest indicated and (b) no mechanism
+;	has been proposed for the Remote Kermit to query the Local Kermit.
+;
+; edit 4, 29-Sep-1990 by MF.  Corrected code to ignore error packets in
+;	response to sending an "I" packet, per KPROTO.DOC
+;
+; edit 3, 9-Sep-1990 by MF.  Extensively revised this file to implement
+;	Remote commands except for the following:
+;	REMOTE JOURNAL, REMOTE MAIL, REMOTE PRINT, REMOTE PROGRAM,
+;	REMOTE SET, REMOTE VARIABLE.
+;
+; edit 2 ... MF Dunno where edit 2 went (shown in Version string).
+;
+; edit 1: September 8th, 1987.  Created this file from bits of the two packet f
+;	The commands supported by this system are all the REMOTE commands,
+;	to allow users to acces remote host systems via Kermit.  Added REMOTE
+;	command table and REMOTE DIR command.
+
+; Note: assemble with ZSM4
+
+	.Z80
+
+	ident	/15/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+
+	public	REMVER,REMOTE
+
+	extrn	SELMDM,PURMDM,SELCON,KEYCMD,FINISH,LOGOUT,KERMT3
+	extrn	PROMPT,COMND,CFMCMD,CHKKEY,SINIT,KERMIT,OUTCON
+	extrn	COUNTP,READ2,CMGTCH,SPACK,RPACK,NAK0,ACKP,PRCRLF
+	extrn	PRTERR,ERROR0,RINI2A
+
+	extrn	REMDAT,RPRMPT,RDL,RCL,RCOM,RPTR,CMBFLG,NUMTRY
+	extrn	CZSEEN,PKTNUM,NUMPKT,NUMRTR,CURCHK,STATE,TEMP1
+	extrn	TEMP2,SPSIZ,DATA,ARGBLK,QBCHR,SQUOTE,CMQFLG,CMDPTR
+	extrn	CMAFLG,BLKTAB,BLKHLP,REMTXT,QUOT8
+
+	cseg
+
+REMVER:	defb	'KREM (15) 21-Mar-2021',0	; name, edit number, date
+
+;  REMOTE command - quite similar to the SET command
+
+REMOTE:	call	SELMDM		; select modem
+	call	PURMDM		; purge input buffer
+	call	SELCON		; back to keyboard
+	ld	de,REMTAB	; remote commands table
+	ld	hl,REMHLP	; remote help table
+	call	KEYCMD		; get result
+	ex	de,hl
+	jp	(hl)		; and do it
+
+; REMOTE command table.  Works the same way as every other table etc.
+
+REMTAB:	defb	19		; nineteen commands so far
+	defb	2,'CD',0
+	defw	REMCD		; remote Cd command
+	defb	4,'COPY',0
+	defw	REMCPY		; remote Copy command
+	defb	6,'DELETE',0
+	defw	REMDEL		; remote Delete command
+	defb	9,'DIRECTORY',0
+	defw	REMDIR		; remote Directory command
+	defb	10,'DISK-USAGE',0
+	defw	REMDSK		; remote Disk-usage command
+	defb	5,'ERASE',0
+	defw	REMDEL		; remote Erase command (same as Delete)
+	defb	6,'FINISH',0
+	defw	FINISH		; same as Finish
+	defb	4,'HELP',0
+	defw	REMHEP		; remote Help command
+	defb	4,'HOST',0
+	defw	REMHOS		; remote Host command
+	defb	6,'KERMIT',0
+	defw	REMKER		; remote Kermit command
+	defb	5,'LOGIN',0
+	defw	REMLGI		; remote Login
+	defb	6,'LOGOUT',0
+	defw	LOGOUT		; same as Logout
+	defb	7,'MESSAGE',0
+	defw	REMMSG		; remote Message command
+	defb	6,'RENAME',0
+	defw	REMREN		; remote Rename
+	defb	3,'SET',0
+	defw	REMSET		; remote Set command
+	defb	5,'SPACE',0
+	defw	REMDSK		; remote Space command (same as Disk-usage)
+	defb	6,'STATUS',0
+	defw	REMSTA		; remote Status (of server) command
+	defb	4,'TYPE',0
+	defw	REMTYP		; remote Type command
+	defb	3,'WHO',0
+	defw	REMWHO		; remote Who command
+
+REMHLP:	defb	CR,LF,'CD - change default directory for remote server'
+	defb	' operations'
+	defb	CR,LF,'COPY - copy files on a remote system'
+	defb	CR,LF,'DELETE - delete files on a remote system'
+	defb	CR,LF,'DIRECTORY - list a directory on a remote system'
+	defb	CR,LF,'DISK-USAGE - show disk usage on a remote system'
+	defb	CR,LF,'FINISH - stop a remote server'
+	defb	CR,LF,'HELP - get help from a remote server'
+	defb	CR,LF,'HOST - execute a command on a remote system'
+	defb	CR,LF,'KERMIT - tell a remote server to execute a Kermit '
+	defb	'command'
+	defb	CR,LF,'LOGIN - send user-identification to a remote server'
+	defb	CR,LF,'LOGOUT -  stop and logout a remote server'
+	defb	CR,LF,'MESSAGE - send a message to a remote system user'
+	defb	CR,LF,'RENAME - rename files on a remote system'
+	defb	CR,LF,'SET - set remote server parameters'
+	defb	CR,LF,'SPACE - show disk-usage on a remote system'
+	defb	CR,LF,'STATUS - Get status of a remote server'
+	defb	CR,LF,'TYPE - type files on a remote system'
+	defb	CR,LF,'WHO - show current users on a remote system'
+	defb	0
+
+; Description of remote commands
+
+; Packets start with an I packet in place of S/R packet. An X packet is
+; the same as an F (filename) packet except the 'file' is not applicable.
+; Copy X packet data field to display. Set options so that no data is
+; written to disk during D packets. (REMTXT <> 0)
+;
+; Packets:
+;	we	we	comments
+;	send	receive
+;
+;	I
+;		ACK
+;	Command
+;	packet
+;		Ack or
+;		Init
+;	ACK
+;		X	Dummy header.
+;	ACK
+;		D	listing from remote end
+;	ACK		We got it
+;	....
+;	ACK		last packet received ok
+;		Z
+;	ACK
+;		B
+;	ACK		end of transaction.
+;
+; **Note** If the Remote system gives a simple ack to the command packet,
+; that is, a "short reply" is given, the data, if any, in the packet
+; is displayed and the transaction ends.  The outline shown above is for a
+; "long reply".
+
+; Remote commands
+
+; Remote Copy - Copy file(s) on remote system
+
+REMCPY:	ld	hl,NEWFMS	; second argument prompt
+	ld	(RPRMPT),hl
+	ld	a,'K'		; generic type
+REMCP0:	ld	(REMDAT),a	; into packet
+	ld	a,2		; packet has at least two characters
+	ld	(RDL),a
+	ld	a,'G'		; Generic command
+	ld	(RCOM),a
+	ld	de,REMDAT+2	; point to data buffer
+	call	REMCLI		; get filespec (if any) from command line
+	or	a		; anything typed?
+	jp	z,KERMT3	; no, we must have an argument
+	ld	b,a		; save length
+	add	a,SPACE		; yes, make encoded field length
+	ld	(REMDAT+1),a	; and store in packet data area
+	ld	a,(RDL)		; get packet length so far
+	add	a,b		; count answer length
+	ld	(RDL),a		; and remember new packet size
+	ld	hl,(RPRMPT)	; point to "new file" prompt
+	ex	de,hl
+	ld	(RPTR),hl	; save data pointer
+	call	PROMPT		; prompt the user
+	ld	hl,(RPTR)	; get data pointer again
+	inc	hl		; skip encoded field-length
+	ex	de,hl
+	call	REMCLI		; get user's answer
+	ld	hl,(RPTR)	; restore pointer
+	ld	c,a		; save answer length
+	add	a,SPACE		; convert to encoded field length
+	ld	(hl),a		; put length in packet
+	ld	a,(RDL)		; get accumulated data length
+	add	a,c		; plus data length
+	inc	a		; plus field length character
+	ld	(RDL),a		; and remember it
+	jp	REMCOM		; and branch to common code
+
+; Remote CD - Change Directory
+
+REMCD:	ld	hl,PSWDMS	; second argument prompt
+	ld	(RPRMPT),hl
+	ld	a,'C'		; generic Cd
+REMCD0:	ld	(REMDAT),a	; into packet
+	ld	a,1		; packet is at least one character long
+	ld	(RDL),a
+	ld	a,'G'		; Generic command
+	ld	(RCOM),a
+	ld	de,REMDAT+2	; point to data buffer
+	call	REMCLI		; get filespec (if any) from command line
+	ld	b,a		; save answer length (may be zero)
+	add	a,SPACE		; make encoded field length
+	ld	(REMDAT+1),a	; and store in packet data area
+	ld	a,(RDL)		; get length so far
+	add	a,b		; count answer length
+	inc	a		; and field length character
+	ld	(RDL),a		; and remember current packet-size
+	ld	a,(REMDAT)	; get generic packet flavor
+	cp	'C'		; remote CD?
+	jr	nz,REMCD1	; no
+	ld	a,b		; get length of possible directory spec
+	or	a		; did the user give a directory spec?
+	jp	z,REMCOM	; no, we can process the command immediately
+	ld	a,0FFh		; yes, password follows, make it not echo
+	ld	(CMQFLG),a
+REMCD1:	ld	hl,(RPRMPT)	; point to "password" prompt
+	ex	de,hl
+	ld	(RPTR),hl	; save data pointer
+	ld	a,0FFh		; allow blank password
+	ld	(CMBFLG),a
+	call	PROMPT		; prompt the user
+	ld	hl,(RPTR)	; restore data pointer
+	ex	de,hl
+	inc	de		; and increment it
+	call	REMCLI		; get user's answer
+	or	a		; password given?
+	jp	z,REMCOM	; no, proceed with command
+	ld	c,a		; yes, save answer length
+	add	a,SPACE		; convert to encoded field length
+	ld	hl,(RPTR)	; get data pointer
+	ld	(hl),a		; put length in packet
+	ld	a,(RDL)		; get accumulated data length
+	inc	a		; count encoded field length
+	add	a,c		; plus data length
+	ld	(RDL),a		; and remember packet-size
+	jp	REMCOM		; branch to common code
+
+PSWDMS:	db	CR,LF,'Password: ',0
+
+; Remote Delete (Erase) command
+
+REMDEL:	ld	a,'E'		; Delete (Erase) command
+REMDL0:	ld	(REMDAT),a
+	ld	a,1		; at least one character in packet
+	ld	(RDL),a
+	ld	a,'G'		; Generic command
+	ld	(RCOM),a
+	ld	de,REMDAT+2	; point to data field
+	call	REMCLI		; get filespec
+	ld	b,a		; save length
+	ld	a,(REMDAT)	; get packet type
+	cp	'E'		; if Generic Delete
+	jr	z,REMDL1	;  we must have an argument
+	cp	'T'		; ditto for Generic Type
+	jr	z,REMDL1
+	ld	a,b		; else get back character count
+	or	a		; answer typed?
+	jp	z,REMCOM	; no, process packet as is
+REMDL1:	ld	a,b		; get character count again
+	or	a		; anything typed?
+	jp	z,KERMT3	; no, we must have an argument (Delete/Type)
+	add	a,SPACE		; yes, encode field length
+	ld	(REMDAT+1),a	; and put in packet
+	ld	a,(RDL)		; get packet length so far
+	add	a,b		; count length of filespec
+	inc	a		; count field length character
+	ld	(RDL),a		; and store packet length
+	jp	REMCOM		; and do our stuff
+
+; Remote Directory command
+
+REMDIR:	ld	a,'D'		; Generic Directory command
+	jp	REMDL0		; do common code
+
+; Remote Disk-usage (Space) command
+
+REMDSK:	ld	a,'U'		; Disk-usage Generic command
+	jp	REMDL0		; do common code
+
+; Remote Help command
+
+REMHEP:	ld	a,'H'		; Generic Help command
+	jp	REMDL0		; do common code
+
+; Remote Host command
+
+REMHOS:	ld	a,'C'		; Remote Host command
+REMHO0:	ld	(RCOM),a
+	xor	a		; zero packet length
+	ld	(RDL),a
+	ld	de,REMDAT	; point to packet data buffer
+	call	REMCLI		; get host command
+	or	a		; anything typed?
+	jp	z,KERMT3	; no, don't let the user get away with this
+	ld	(RDL),a		; yes, store packet length
+	jp	REMCOM		; and do the command
+
+; Remote Kermit command
+
+REMKER:	ld	a,'K'		; Remote Kermit command
+	jp	REMHO0		; do common code
+
+; Remote Login command
+
+REMLGI:	ld	a,'G'		; Generic command
+	ld	(RCOM),a
+	ld	a,'I'		; generic type
+	ld	(REMDAT),a	; into packet
+	ld	a,1		; at least one character in packet
+	ld	(RDL),a
+	ld	de,REMDAT+2	; point to data buffer
+	call	REMCLI		; get userid (if any) from command line
+	or	a		; userid typed?
+	jp	z,REMCOM	; no, nothing more to do
+	ld	b,a		; yes, save length
+	add	a,SPACE		; make encoded field length
+	ld	(REMDAT+1),a	; and store in packet data area
+	ld	a,(RDL)		; get packet length
+	add	a,b		; count id length
+	inc	a		; and field length character
+	ld	(RDL),a		; and remember accumulated length
+	ex	de,hl		; save data pointer
+	ld	(RPTR),hl
+	ld	a,0FFh		; allow blank answers
+	ld	(CMBFLG),a
+	ld	(CMQFLG),a	; passwords don't echo
+	ld	de,PSWDMS	; point to "password" prompt
+	call	PROMPT		; prompt the user
+	ld	hl,(RPTR)	; get data pointer
+	ex	de,hl		; put in DE
+	inc	de		; skip encoded field-length
+	call	REMCLI		; get password, if any
+	or	a		; anything typed?
+	jp	z,REMCOM	; no, do command immediately
+	ld	c,a		; yes, save answer length
+	add	a,SPACE		; convert to encoded field length
+	ld	hl,(RPTR)	; get pointer
+	ld	(hl),a		; put length in packet
+	ld	a,(RDL)		; get accumulated data length
+	inc	a		; count encoded field length
+	add	a,c		; count "password" field length
+	ld	(RDL),a		; and remember new packet length
+	ex	de,hl		; save data pointer
+	ld	(RPTR),hl
+	xor	a		; allow echoing again for "account" field
+	ld	(CMQFLG),a
+	ld	de,ACCTMS	; point to "account" prompt
+	call	PROMPT		; prompt the user
+	ld	hl,(RPTR)	; get data pointer
+	ex	de,hl		; into DE
+	inc	de		; skip encoded field length
+	call	REMCLI		; get "account" field, if any
+	or	a		; anything typed?
+	jp	z,REMCOM	; no, do the command now
+	ld	c,a		; yes, save length of answer
+	add	a,SPACE		; convert to encoded field length
+	ld	hl,(RPTR)	; get data pointer
+	ld	(hl),a		; put length in packet
+	ld	a,(RDL)		; get accumulated data length
+	inc	a		; count encoded field length
+	add	a,c		; plus "account" length
+	ld	(RDL),a		; and remember it
+	jp	REMCOM		; branch to common code
+
+NEWFMS:	db	CR,LF,'New file: ',0
+ACCTMS:	db	CR,LF,'Account: ',0
+
+; Remote Rename command
+
+REMREN:	ld	hl,NEWNMS	; second argument prompt
+	ld	(RPRMPT),hl
+	ld	a,'R'		; generic Rename
+	jp	REMCP0		; do common code
+
+NEWNMS:	db	CR,LF,'New name: ',0
+
+; Remote Message command
+
+REMMSG:	ld	hl,MSGMS	; second argument prompt
+	ld	(RPRMPT),hl
+	ld	a,'M'		; generic Message
+	jp	REMCP0		; do common code
+
+MSGMS:	db	CR,LF,'Message: ',0
+
+; Remote Set command
+
+REMSET:	ld	a,6		; packet data area has at least six chars
+	ld	(RDL),a
+	ld	a,'S'		; Remote Set command
+	ld	(REMDAT),a
+	ld	a,'G'		; it's a generic command
+	ld	(RCOM),a
+	ld	a,'#'		; encoded field-length for SET type
+	ld	(REMDAT+1),a	; which is three chars long
+	ld	de,RMSTAB	; point to Set command table
+	ld	hl,RMSHLP	; and the help table
+	call	KEYCMD		; find out which command is to be executed
+	ex	de,hl		; put dispatch address in HL
+	jp	(hl)		; go do the command
+
+; Common code for Remote Set commands that take an argument
+
+REMSCM:	ld	de,REMDAT+6	; we get an argument from the user
+	ld	a,CMTXT
+	call	COMND
+	jp	KERMT3		; couldn't get one
+	or	a		; did the user give one?
+	jp	z,KERMT3	; a blank answer isn't acceptable
+	ld	c,a		; save length of answer
+	add	a,SPACE		; convert to encoded field-length
+	ld	(REMDAT+5),a	;  and put in packet data area
+	ld	a,(RDL)		; get current data length
+	add	a,c		; count length of answer
+	ld	(RDL),a		;  and store new data length
+	call	CFMCMD		; get a "confirm"
+	jp	REMCOM		; do common Remote command code
+
+; Common code for Remote Set commands requiring another table lookup
+
+REMSC1:	call	CHKKEY		; get user's selection
+	ld	(REMDAT+6),a	;  and put into the packet data area
+	ld	a,1+' '		; encoded field length for 1 char
+	ld	(REMDAT+5),a	; put in packet
+	ld	a,(RDL)		; get accumulated packet data length
+	inc	a		; count length of answer (1 char)
+	ld	(RDL),a		;  and store as new packet data length
+	jp	REMCOM		; go do common Remote command processing
+
+; Remote Status (of server) command
+
+REMSTA:	call	CFMCMD		; get return
+	ld	a,'Q'		; command type (Server Status)
+	ld	(REMDAT),a
+	ld	a,'G'		; generic Kermit command
+	ld	(RCOM),a
+	ld	a,1		; 1 character in packet
+	ld	(RDL),a
+	jp	REMCOM		; do common code
+
+; Remote Type command
+
+REMTYP:	ld	a,'T'		; generic Type command
+	jp	REMDL0		; do common code
+
+; Remote Who command
+
+REMWHO:	ld	hl,OPTMS	; second argument prompt
+	ld	(RPRMPT),hl
+	ld	a,'W'		; generic Who
+	jp	REMCD0		; do common code
+
+OPTMS:	db	CR,LF,'Options: ',0
+
+; Common code for Remote commands
+
+REMCOM:	ld	a,0FFh		; make sure returned info is sent
+	ld	(REMTXT),a	;  to the user's screen rather than to a file
+	ld	a,(RCOM)	; get packet-type
+	cp	'G'		; is it a generic command?
+	jp	nz,REMC0E	; no, go clear the screen
+	ld	a,(REMDAT)	; yes, get generic command type
+	cp	'S'		; is it a Remote Set command?
+	jp	z,REMC0F	; yes, don't clear the screen
+REMC0E:	call	PRCRLF		; prevent overwriting prompt
+REMC0F:	xor	a
+	ld	(NUMTRY),a	; reset retries
+	ld	(CZSEEN),a
+	ld	(PKTNUM),a
+	ld	hl,0
+	ld	(NUMPKT),hl
+	ld	(NUMRTR),hl	; clear some variables
+
+	ld	a,'1'		; reset block check type
+	ld	(CURCHK),a
+REMCM0:	ld	a,'I'		; init state
+	ld	(STATE),a
+	call	SINIT		; do Send-Init with I packet (??)
+	ld	a,(STATE)	; now see if we are in the 'X' state
+	cp	'X'
+	jp	z,REMCO0	; yup, all is in order
+	cp	'A'		; no, in abort state?
+	jp	nz,REMCM0	; no, try I-packet again
+	jp	KERMIT		; yes, like Danny Boy, we must die.
+
+	; If we get this far, either the "I" packet was understood
+	; or the Server couldn't handle it and we ignored the error.
+	; In either case, we can proceed.
+
+REMCO0:	xor	a
+	ld	(NUMTRY),a	; reset retries
+	ld	(CZSEEN),a
+	ld	(PKTNUM),a
+	ld	hl,0
+	ld	(NUMPKT),hl
+	ld	(NUMRTR),hl	; clear some variables
+	ld	a,'1'		; make sure we use
+	ld	(CURCHK),a	; 1-character checksum
+	ld	a,(RDL)		; get packet-length (number of bytes to copy)
+	or	a		; anything to copy?
+	jp	z,REMCM1	; no
+	ld	(TEMP1),a	; yes, save loop counter
+	ld	a,(SPSIZ)	; get max packet size
+	sub	5		; less overhead
+	ld	(TEMP2),a	; gives max chars we can send
+	ld	de,REMDAT	; copy from private buffer
+	ld	hl,DATA		; to packet data area
+	ld	a,(QBCHR)	; get eightgh-bit quoting prefix char
+	ld	b,a		; save it
+	ld	a,(SQUOTE)	; get control-char quoting char
+	ld	c,a		;  and save it
+REMC0A:	ld	a,(TEMP2)	; get characters to go in packet
+	dec	a		;  and decrement it
+	ld	(TEMP2),a
+	jp	m,REMC0X	; we can't copy any more
+	ld	a,(de)		; get a packet data character
+	cp	SPACE		; is it a control char?
+	jp	m,REMC0B	; yes, quote it
+	cp	c		; is it the control-char prefix?
+	jp	z,REMC0B	; yes, quote it
+	ld	a,(QUOT8)	; no, is eighth-bit quoting in effect?
+	or	a
+	jp	z,REMC0C	; no, just copy the character
+	ld	a,(de)		; get character again
+	cp	b		; is it the eighth-bit quote char?
+	jp	nz,REMC0D	; no, just copy it
+REMC0B:	ld	(hl),c		; yes, quote the character
+	inc	hl		; increment the dest. pointer
+	ld	a,(TEMP2)	; get chars to go
+	dec	a		; decrement
+	ld	(TEMP2),a
+	jp	m,REMC0X	; can't copy any more
+	ld	a,(RDL)		; count quote prefix
+	inc	a
+	ld	(RDL),a
+REMC0C:	ld	a,(de)		; get character again
+	cp	SPACE		; if not a control char,
+	jp	p,REMC0D	;  just copy the character, else
+	add	a,40h		;   convert to printing character
+	and	7Fh		;    modulo 128
+REMC0D:	ld	(hl),a		; copy the character
+	inc	hl		; increment the pointers
+	inc	de
+REMC0X:	ld	a,(TEMP1)	; get loop counter
+	dec	a		; and decrement it
+	ld	(TEMP1),a
+	jp	nz,REMC0A	; copy entire packet data area
+
+REMCM1:	xor	a
+	ld	(ARGBLK),a	; set packet number to zero
+	ld	a,(RDL)		; number of bytes in packet
+	ld	(ARGBLK+1),a	; into argument block
+	ld	a,(RCOM)	; remote command
+	call	SPACK		; send the packet
+	jp	KERMT3		; nogo, die!
+	jp	REMCO2		; try to get an answer
+
+REMCO1:	call	NAK0		; NAK packet
+
+REMCO2:	ld	a,(NUMTRY)	; get number of retries
+	inc	a		; update retries
+	cp	MAXTRY		; too many retries?
+	jp	m,REMC2A	; no
+	ld	de,ERMS28	; yes, complain
+	call	PRTERR
+	jp	KERMIT		; and abort
+
+REMC2A:	ld	(NUMTRY),a
+	call	RPACK		; get a packet
+	jp	REMCO1		; couldn't get one
+	cp	'E'		; Error packet?
+	jp	nz,REMC2B	; no
+  IF 1
+	ld	a,(RCOM)	; what kind of packet did we send?
+	cp	'G'		; if it wasn't Generic,
+	jp	nz,REMC2F	;  there is no need to start a new message line
+	ld	a,(REMDAT)	; packet was generic
+	cp	'S'		; was it a Remote Set?
+	call	z,PRCRLF	; yes, start a new line since the screen
+				;  isn't blank and we would clobber the
+				;   command line otherwise
+  ELSE
+	call	PRCRLF
+  ENDIF
+REMC2F:	call	ERROR0		; yes, inform the user
+	jp	KERMIT		; and abort to main command loop
+REMC2B:	cp	'S'		; Send-init?
+	jp	nz,REMC2C	; no
+	call	RINI2A		; initialize parameters
+	ld	a,(STATE)	; get state
+	cp	'A'		; if Abort,
+	jp	z,KERMIT	;  go back to main command loop
+	ld	a,'X'		; set state to Text-Display
+	ld	(STATE),a
+	jp	READ2		; get more packets
+REMC2C:	cp	'N'		; NACKed packet?
+	jp	z,REMCO2	; yes, try again
+	ld	(STATE),a	; save packet type
+	call	SELCON		; select Console
+	ld	hl,DATA		; point to data
+	ld	a,(ARGBLK+1)	; anything in packet data?
+	or	a
+	jp	z,REMCO6	; no
+	push	hl		; yes, save pointer
+	push	af		; and character count
+	ld	e,'<'		; type "<<" as in VMSKermit
+	call	OUTCON
+	call	OUTCON
+	pop	af		; restore character counter
+	pop	hl		; and data pointer
+REMC2D:	or	a
+	jp	z,REMC2E	; no more characters
+	dec	a		; decrement loop counter
+	ld	e,(hl)		; get character
+	inc	hl		; increment pointer
+	push	af		; save loop counter
+	push	hl		; save data pointer
+	call	OUTCON		; type on Console
+	pop	hl		; restore pointer
+	pop	af		; restore loop counter
+	jp	REMC2D		; type all packet data
+REMC2E:	ld	e,'>'		; type ">>" as in VMSKermit
+	call	OUTCON
+	call	OUTCON
+	call	PRCRLF		; end the line
+REMCO6:	ld	a,(STATE)	; get packet type again
+	cp	'Y'		; if simple ACK,
+	jp	z,KERMIT	;  done, else
+	call	ACKP		;   acknoledge the packet
+	call	COUNTP		; count the packet
+	ld	a,'D'		; set to data-receive
+	ld	(STATE),a
+	jp	READ2		; do the same as read a file, but echo
+				; to the screen.. Don't close non-open files.
+
+ERMS28:	db	'?Too many retries',0
+
+; REMCLI - Get command-line for Remote commands
+
+REMCLI:	xor	a		; zero accumulated length
+	ld	(RCL),a
+	ld	b,a		; [12]...
+;
+; [MF][12]Eliminate following code which calls "comnd" in favor of code which
+; [MF][12]calls "cmgtch" directly so that characters are sent without
+; [MF][12]alteration or inadvertent action ("?" or <esc>). The only thing
+; [MF][12]lost is the ability to produce any ASCII character via
+; [MF][12]octal numbers prefixed with "\" but this isn't used much in remote
+; [MF][12]commands anyway.
+;
+;remcl0:	ld	a,CMTXT		; we get arbitrary text
+;	call	COMND		;  from the command-line
+;	jp	KERMT3		; we couldn't get any
+;	oa	a		; anything given?
+;	jr	z,remcl1	; no, done
+;	push	bc		; save BC
+;	ld	c,a		; save length
+;	ld	a,(RCL)		; get accumulated length
+;	add	a,c		;  plus current word length
+;	inc	a		;   plus a space
+;	ld	(RCL),a		; and save accumulated length
+;	ld	a,SPACE		; put in a space separator
+;	ld	(de),a
+;	inc	de		; increment pointer
+;	pop	bc		; restore BC
+;	jp	remcl0		; get text to end-of-line
+;remcl1:	ld	a,(RCL)		; get accumulated length
+;	oa	a		; anything typed?
+;	ret	z		; no
+;	dec	a		; yes, don't count final space
+;	push	af		; save count
+;	dec	de		; point to final space
+;	xor	a		; zap it
+;	ld	(de),a
+;	pop	af		; restore count
+;
+; [MF][12]Simplified code follows
+
+REMCL0:	call	CMGTCH		; get a character from the user
+	and	7Fh		; turn off minus bit
+	cp	CR		; if end-of-line,
+	jr	z,REMCLX	;  we're done
+	cp	LF
+	jr	z,REMCLX
+	ld	(de),a		; else store the character
+	inc	b		;  and count it
+	inc	de		; increment character buffer pointer
+	cp	ESC		; is character an <ESC>?
+	jr	z,REMCL2	; yes
+	cp	FF		; an <FF>?
+	jr	z,REMCL1	; yes, diddle command buffer pointer
+	cp	'?'		; a "?"?
+	jr	nz,REMCL0	; no, just get more characters
+REMCL1:	push	hl		; protect HL
+	ld	hl,(CMDPTR)	; get CMGTCH's character pointer
+	inc	hl		;  and reverse the action at CMGTC4
+				;   since we don't need a "confirm" and
+				;    infinite loops are beaucoup bad news
+	ld	(CMDPTR),hl
+	pop	hl		; restore HL
+REMCL2:	push	af		; save the character
+	xor	a		; zero the action flag so we get input
+	ld	(CMAFLG),a	;  to end-of-line without special action
+	pop	af		; restore the character
+	jr	REMCL0		; get more characters
+REMCLX:	ld	a,b		; get accumulated text length
+	ld	(RCL),a		; and remember it
+	ret			; return
+
+; Remote set values:
+;
+;  REMOTE SET FILE TYPE                   300  0 = TEXT, 1 = BINARY
+;  REMOTE SET FILE NAMES                  301  0 = CONVERTED, 1 = LITERAL
+;  REMOTE SET FILE COLLISION              302  0 = RENAME,  1 = OVERWRITE,
+;                                              2 = BACKUP,  3 = APPEND,
+;                                              4 = DISCARD, 5 = ASK
+;  REMOTE SET FILE REPLACE                303  0 = PRESERVE, 1 = DEFAULT
+;  REMOTE SET FILE INCOMPLETE             310  0 = DISCARD, 1 = KEEP
+;  REMOTE SET INCOMPLETE (same as above)
+;  REMOTE SET BLOCK-CHECK                 400  number (1, 2, or 3)
+;  REMOTE SET RECEIVE PACKET-LENGTH       401  number (10-9024)
+;  REMOTE SET RECEIVE TIMEOUT             402  number (any, 0 = no timeout)
+;  REMOTE SET RETRY                       403  number (any, 0 = no limit)
+;  REMOTE SET SERVER TIMEOUT              404  number (any, 0 = no timeout)
+;  REMOTE SET FILE BLOCKSIZE              311  number
+;  REMOTE SET FILE RECORD-LENGTH          312  number
+;  REMOTE SET FILE RECORD-FORMAT          313  F (fixed), V (variable), etc...
+;
+; This is just for the record, to assign these numbers to these commands
+; for somebody who needed them.  Details to be filled in later.
+
+; Remote Set command table
+
+RMSTAB:	defb	7		; seven entries
+	defb	16,'BLOCK-CHECK-TYPE',0
+	defw	REMSBC		; Remote Set Block Check
+	defb	4, 'FILE',0
+	defw	REMSFL		; Remote Set File
+	defb	10,'INCOMPLETE',0
+	defw	REMSFI		; Remote Set (file) Incomplete
+	defb	7, 'RECEIVE',0
+	defw	REMSRC		; Remote Set Receive
+	defb	7, 'REPLACE',0
+	defw	REMSFR		; Remote Set (file) Replace
+	defb	5, 'RETRY',0
+	defw	REMSRY		; Remote Set Retry
+	defb	14,'SERVER-TIMEOUT',0
+	defw	REMSST		; Remote Set Server Timeout
+;
+RMSHLP:	defb	CR,LF,'BLOCK-CHECK-TYPE for a remote server'
+	defb	CR,LF,'FILE parameters for a remote server'
+	defb	CR,LF,'INCOMPLETE file disposition for a remote server'
+	defb	CR,LF,'RECEIVE parameters for a remote server'
+	defb	CR,LF,'REPLACE file attribute handling for a remote server'
+	defb	CR,LF,'RETRY maximum for a remote server'
+	defb	CR,LF,'SERVER-TIMEOUT interval for a remote server'
+	defb	0
+
+; Remote Set File tables
+
+RSFTAB:	defb	8		; eight entries
+	defb	10,'BLOCK-SIZE',0
+	defw	REMSBS		; Remote Set File Block-size command
+	defb	9, 'COLLISION',0
+	defw	REMSFC		; Remote Set File Collision command
+	defb	10,'INCOMPLETE',0
+	defw	REMSFI		; Remote Set File Incomplete command
+	defb	5, 'NAMES',0
+	defw	REMSFN		; Remote Set File Names command
+	defb	13,'RECORD-FORMAT',0
+	defw	REMSRF		; Remote Set File Record-format
+	defb	13,'RECORD-LENGTH',0
+	defw	REMSRL		; Remote Set File Record-length
+	defb	7, 'REPLACE',0
+	defw	REMSFR		; Remote Set File Replace command
+	defb	4, 'TYPE',0
+	defw	REMSFT		; Remote Set File Type command
+
+RSFHLP:	defb	CR,LF,'BLOCK-SIZE of files for a remote server'
+	defb	CR,LF,'COLLISION action on filename conflicts for a remote'
+	defb	' server'
+	defb	CR,LF,'INCOMPLETE file disposition for a remote server'
+	defb	CR,LF,'NAMES translation of files for a remote server'
+	defb	CR,LF,'RECORD-FORMAT of files for a remote server'
+	defb	CR,LF,'RECORD-LENGTH for a remote server'
+	defb	CR,LF,'REPLACE file attribute handling for a remote server'
+	defb	CR,LF,'TYPE of files for a remote server'
+	defb	0
+
+; Remote Set File Record-format tables
+
+RCFTAB:	defb	2		; two entries
+	defb	5,'FIXED',0
+	defb	'F','F'		; Remote Set File Record-format Fixed command
+	defb	8,'VARIABLE',0
+	defb	'V','V'		; Remote Set File Record-format Variable cmd
+
+RCFHLP:	defb	CR,LF,'FIXED	VARIABLE'
+	defb	0
+
+; Remote Set Receive tables
+
+RRCTAB:	defb	2		; two entries
+	defb	13,'PACKET-LENGTH',0
+	defw	REMRPL		; Remote Set Receive Packet-length command
+	defb	7,'TIMEOUT',0
+	defw	REMSRT		; Remote Set Receive Timeout command
+
+RRCHLP:	defb	CR,LF,'PACKET-length	TIMEOUT'
+	defb	0
+
+; Remote Set File-collision table
+
+RFCTAB:	defb	6		; six entries
+	defb	6,'APPEND',0
+	defb	'3','3'		; Set Collision Append
+	defb	3,'ASK',0
+	defb	'5','5'		; Set Collision Ask
+	defb	6,'BACKUP',0
+	defb	'2','2'		; Set Collision Backup
+	defb	7,'DISCARD',0
+	defb	'4','4'		; Set Collision Discard
+	defb	9,'OVERWRITE',0
+	defb	'1','1'		; Set Collision Overwrite
+	defb	6,'RENAME',0
+	defb	'0','0'		; Set Collision Rename
+
+RFCHLP:	defb	CR,LF,'ASK about existing files on a remote system'
+	defb	CR,LF,'APPEND to existing files on a remote system'
+	defb	CR,LF,'BACKUP (rename) existing files on a remote system'
+	defb	CR,LF,'DISCARD new versions of existing files on a'
+	defb	' remote system'
+	defb	CR,LF,'OVERWRITE existing files on a remote system'
+	defb	CR,LF,'RENAME new versions of existing files on a'
+	defb	' remote system'
+	defb	0
+
+; Remote Set File-Incomplete tables
+
+RFITAB:	defb	2		; 2 entries
+	defb	7,'DISCARD',0
+	defb	'0','0'		; Remote Set File Incomplete Discard
+	defb	4,'KEEP',0
+	defb	'1','1'		; Remote Set File Incomplete Keep
+
+RFIHLP:	defb	CR,LF,'DISCARD	KEEP'
+	defb	0
+
+; Remote Set File-Names tables
+
+RFNTAB:	defb	2		; two entries
+	defb	9,'CONVERTED',0
+	defb	'0','0'		; Remote Set File Names Converted
+	defb	7,'LITERAL',0
+	defb	'1','1'		; Remote Set File Names Literal
+
+RFNHLP:	defb	CR,LF,'CONVERTED	LITERAL'
+	defb	0
+
+; Remote Set File Replace tables
+
+RFRTAB:	defb	2		; two entries
+	defb	8,'PRESERVE',0
+	defb	'0','0'		; Remote Set File Replace Preserve
+	defb	7,'DEFAULT',0
+	defb	'1','1'		; Remote Set File Replace Default
+
+RFRHLP:	defb	CR,LF,'PRESERVE	DEFAULT'
+	defb	0
+
+; Remote Set File Type tables
+
+RFTTAB:	defb	2		; two entries
+	defb	6,'BINARY',0
+	defb	'1','1'		; Remote Set File Type Binary
+	defb	4,'TEXT',0
+	defb	'0','0'		; Remote Set File Type Text
+
+RFTHLP:	defb	CR,LF,'BINARY	TEXT'
+	defb	0
+
+; Remote Set Block-check
+
+REMSBC:	ld	hl,'40'		; 1st 2 chars of "400"
+	ld	(REMDAT+2),hl	; store in correct order
+	ld	a,'0'		; put last char of type in buffer
+	ld	(REMDAT+4),a
+	ld	de,BLKTAB	; point to block-check table
+	ld	hl,BLKHLP	; and help table
+	jp	REMSC1		; do common code
+
+; Remote Set File command
+
+REMSFL:	ld	de,RSFTAB	; point to Remote Set File tables
+	ld	hl,RSFHLP
+REMSF0:	call	KEYCMD		; get user's selection
+	ex	de,hl		; put dispatch address in HL
+	jp	(hl)		; and obey the user's most fervent desires
+
+; Remote Set Receive command
+
+REMSRC:	ld	de,RRCTAB	; point to the appropriate tables
+	ld	hl,RRCHLP
+	jp	REMSF0		; and do command
+
+; Remote Set Block-size command
+
+REMSBS:	ld	hl,'31'		; 1st 2 chars of Set code
+	ld	(REMDAT+2),hl	; store chars in correct order
+	ld	a,'1'		; put last char in buffer
+	ld	(REMDAT+4),a
+	jp	REMSCM		; and do common Remote Set code
+
+; Remote Set File-collision command
+
+REMSFC:	ld	hl,'30'		; put set type code in buffer
+	ld	(REMDAT+2),hl
+	ld	a,'2'
+	ld	(REMDAT+4),a
+	ld	de,RFCTAB	; point to tables
+	ld	hl,RFCHLP
+	jp	REMSC1		; and do common code
+
+; Remote Set File Incomplete command
+
+REMSFI:	ld	hl,'31'		; establish command keyword code
+	ld	(REMDAT+2),hl
+	ld	a,'0'
+	ld	(REMDAT+4),a
+	ld	de,RFITAB	; point to tables
+	ld	hl,RFIHLP
+	jp	REMSC1		; and do common code
+
+; Remote Set File-Names command
+
+REMSFN:	ld	hl,'30'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'1'
+	ld	(REMDAT+4),a
+	ld	de,RFNTAB	; point to the appropriate tables
+	ld	hl,RFNHLP
+	jp	REMSC1		; and do common code
+
+; Remote Set File Record Format command
+
+REMSRF:	ld	hl,'31'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'3'
+	ld	(REMDAT+4),a
+	ld	de,RCFTAB	; point to proper tables
+	ld	hl,RCFHLP
+	jp	REMSC1		; and do common code
+
+; Remote Set File Record Length command
+
+REMSRL:	ld	hl,'31'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'2'
+	ld	(REMDAT+4),a
+	jp	REMSCM		; and do common code
+
+; Remote Set File Replace command
+
+REMSFR:	ld	hl,'30'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'3'
+	ld	(REMDAT+4),a
+	ld	de,RFRTAB	; point to tables
+	ld	hl,RFRHLP
+	jp	REMSC1		; and do common code
+
+; Remote Set File Type command
+
+REMSFT:	ld	hl,'30'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'0'
+	ld	(REMDAT+4),a
+	ld	de,RFTTAB	; point to tables
+	ld	hl,RFTHLP
+	jp	REMSC1		; and go to common code
+
+; Remote Set Receive Packet-length command
+
+REMRPL:	ld	hl,'40'		; set command code
+	ld	(REMDAT+2),hl
+	ld	a,'1'
+	ld	(REMDAT+4),a
+	jp	REMSCM		; and do common code
+
+; Remote Set Receive Timeout command
+
+REMSRT:	ld	hl,'40'		; set code
+	ld	(REMDAT+2),hl
+	ld	a,'2'
+	ld	(REMDAT+4),a
+	jp	REMSCM		; and do common code
+
+; Remote Set Retry command
+
+REMSRY:	ld	hl,'40'		; set code
+	ld	(REMDAT+2),hl
+	ld	a,'3'
+	ld	(REMDAT+4),a
+	jp	REMSCM		; go to common code
+
+; Remote Set Server Timeout command
+
+REMSST:	ld	hl,'40'		; set code
+	ld	(REMDAT+2),hl
+	ld	a,'4'
+	ld	(REMDAT+4),a
+	jp	REMSCM		; do common code
+
+	end

@@ -1,0 +1,916 @@
+; KTT.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains the code for the TRANSMIT and CONNECT commands,
+;       which communicate with a host which is not running KERMIT.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 16, 4-Dec-2021 by H. Peraza: ignore modem input in TELNET command
+;       if in Remote mode (i.e. when PORT is set to TI:), as we know that
+;       the characters will arrive only via console input. Otherwise the
+;       escape sequence to exit TELNET mode will not be recognized.
+;
+; edit 15, 22-Mar-2021 by H. Peraza: flush modem output buffer in CONCHR
+;       to ensure proper char-by-char TELNET operation.
+;
+; edit 14, 21-Mar-2021 by H. Peraza: use PRTERR to output error messages.
+;
+; edit 13, 27-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Low-level log file file I/O routines are now in the KSYS.MAC module.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 12, 31-Jan-1991 by MF. Delete call to "inbuf" after "xmit1" in
+;	the TRANSMIT command. "getfil" initializes various counters so that
+;	when "in1chr" is first called, "inbuf" will be called immediately
+;	and will read sectors of the file to be transmitted from disk.
+;	This, along with a fix to "in1chr" in CPSUTL.ASM, fixes a bug
+;	discovered by Lance Tagliapietra of the University of Wisconsin at
+;	Platteville wherein the TRANSMIT command was failing to transmit some
+;	characters in files over one sector in length. See CPSUTL.ASM,
+;	edit 29.
+;
+; edit 11, 10 September, a987, by OBSchou.  Modified TRANSMIT command
+;	to TRANSMIT <file> <string>
+;
+; edit 10, 27 August, 1987 by OBSchou.  Fixed bugs in Transmit, but I may
+;	be introducing problems for IBM/CMS or half duplex systems.  What
+;	does this combination do??
+;
+; edit 9 30 March, 1987 by OBSchou to replace the TRANSMIT routine.
+;	Syntax is now TRANSMIT file after a previous 
+;	INPUT <wait time> <string to wait for>
+;
+; edit 8 19 June, 1986 by OBSchou.  Modified the interupt testing routine
+;       to see if the command was a 'D' (Drop the line), in which case also
+;       do a 'C', ie disconnect.  This is really a little too much of a
+;       system dependent thing.
+;       For now, Ill leave it here, and possibly move it later.
+;
+; edit 7 30 May 1986 OBSchou.  Moved xon/xoff control (ie XON/OFF sent to host)
+;       out to CPSUTL so that ther printer routine can use it too.
+;
+; edit 6 30 April, 1986 by OBSchou.
+;       Fixed transmit bug, so as soon as the protocol character is 
+;       received from the host is received then another line is sent.
+;       added in a comchr (ds 1) to save the character read from the comm 
+;       line in prtchr, and is restored in a on return.
+;
+; edit 5 7 March, 1986 by OBSchou Loughborough University.  
+;       Need to save the E register before calling outmdm (in CPSSYS.ASM)
+;       if doing Half duplex.  Push/pop DE should sort this problem
+;
+; edit 4: 13-Jan-85 by Vanya J.Cooper Pima Commun. College Tel: 602-884-6809
+;
+; pcc002 28-Dec-84       modules:cp4tt,cp4utl
+;       Add connect mode <esc>P command to toggle printer on
+;       and off.  Conflicts with "official" recommended commands
+;       in protocol manual, but I don't think CP/M will ever get
+;       a PUSH command.
+;
+; pcc003-pcc005  2-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       These edits must all be installed together and change the way
+;       logging is handled.  The log file spec is moved to a separate
+;       fcb, and not opened until an actual CONNECT command is given.
+;       This takes care of a NASTY bug that if you used any other file
+;       command between the LOG and CONNECT, the log file would get
+;       written over the last file used.  This also allows logging to
+;       be "permanently" enabled until a CLOSE (new command) for all
+;       CONNECT sessions, like most other kermits do.  If a log file
+;       already exists, it will be appended to.  Also add two new
+;       CONNECT mode commands <esc>Q to suspend logging and <esc>R to
+;       resume.  <esc>R means something else during TRANSMIT, but
+;       logging is never on then, so there shouldn't be any conflict.
+;       I also changed the write code, so that it can handle one more
+;       character after the XOFF is send to stop the host.  This allows
+;       a little "slop" for systems that don't stop immediately (such
+;       as TOPS10), but it didn't help much.
+;
+; pcc008 2-Jan-85        vjc     modules:cp4def,cp4tt,cp4utl
+;       Keyboard input during CONNECT mode can get locked out if
+;       there is enough input from the modem port to keep prtchr
+;       busy.  This can happen for example, if the printer is running
+;       at the same speed as the modem line, leaving you helpless to
+;       turn it off or abort the host.  Add a fairness count, so that
+;       at least every prfair characters we look at console input.
+;
+; pcc012 4-Jan-85        vjc     modules:cp4mit,cp4tt,cp4utl
+;       Use the big buffer for the log file.  Move the log file back
+;       into the common fcb and only save the drive, name, and
+;       extension between connects.  Add new routines to cp4utl to
+;       create or append to an existing file, and to conditionally
+;       advance buffers only if in memory.  Remove edit pcc003 that
+;       allows one more character after the xoff, since it didn't
+;       really work very well and does not fit in well with the way
+;       the buffer advancing routines are set up.  If someone still
+;       thinks this would be useful, it could be put back in with a
+;       little more work.
+;       
+;       While testing this edit, I also noticed another bug that
+;       the command parsing routines do not limit or check the
+;       length of command lines or file specs, trashing what ever
+;       comes after them.  Currently because of where the fcb and
+;       command buffer are located, this does not usually cause a
+;       problem, but could if an extremely long line was typed in,
+;       or in the future multiple fcbs defined elsewhere in memory
+;       were used.  Maybe this should be put on the bug list
+;       somewhere.
+;
+; edit 3: July 27, 1984
+;       Allow assembly with LASM: to CP4TT is linked by CP4PKT, and links
+;       to CP4CPM; remove exclamation points so as not to confuse LASM.
+;       Add Toad Hall TACtrap to TRANSMIT command (TAC intercept character
+;       is only doubled if it's data; when typed by the user, they're not
+;       automatically doubled)
+;
+; edit 2: June 7, 1984
+;       formatting and documentation; add module version number; make sure
+;       console is selected when leaving intchr.
+;
+; edit 1: May, 1984
+;       extracted from CPMBASE.M80 version 3.9; modifications are described
+;       in the accompanying .UPD file.
+
+	.Z80
+
+	ident	/16/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	FCB.INC
+
+	public	TTVER,XMIT,TELNET,RD1CHL
+
+	extrn	COMND,KERMIT,GETFIL,PRTSTR,SELCON,OUTCON,APPFIL
+	extrn	PRCRLF,CFMCMD,CKCHR,SELMDM,OUTMDM,SETPAR,ESCPR
+	extrn	RSKP,SYSINT,CSRPOS,INPCT,GETCT,OUTBUF,CLOFIL,FLSMDM
+	extrn	CLOSEF,SNDXON,SNDXOFF,IN1CHR,INPMDM,SYSCON,SYSFLT
+	extrn	SYSINH,OUTLPT,EXTERN,ADDHLA,CLOSE2,PRTERR
+
+	extrn	STBUFF,STRCNT,REPCNT,STARC,REXBFL,REXCNT,EOFLAG
+	extrn	PRNFLG,ESCCHR,LOGFLG,SYSCLS,STAT01,ECOFLG,BUFPNT
+	extrn	BUFLEN,CHRCNT,TACFLG,TACCHR,VTFLG,REXBUF,PTTAB
+	extrn	LOGFCB,FCB,FCB2,OPMODE
+
+	extrn	ERMS15
+
+	extrn	UCASE,CPHLDE
+
+	cseg
+
+TTVER:	defb	'KTT  (16)  4-Dec-2021',0
+
+; This is the TRANSMIT command.  It attempts to send a file, even though
+; there is no KERMIT on the other side.
+; Here from: KERMIT
+
+; [OBS] I have replaced the routine, so that TRANSMIT <filename> <wait string>
+; will send a line at a time to the host in a manner similar to MSKERMIT
+
+XMIT:	ld	a,CMOFI		; parse an input file spec (non-wild)
+	ld	de,FCB		; give the address for the FCB
+	call	COMND
+	jp	KERMIT		; give up on bad parse
+	ld	de,STBUFF	; where to put the string
+	ld	a,CMTXT		; get text
+	call	COMND
+	jp	KERMIT		; not quite correct...
+	ld	(STRCNT),a	; string count returned in a
+	and	a		; if its zero, make it 1 character (CR)
+	jp	nz,XMIT0
+	ld	a,1
+	ld	(STRCNT),a
+	ld	a,CR
+	ld	(STBUFF),a
+XMIT0:	call	CFMCMD
+	call	GETFIL		; open file for read
+	cp	0FFh		; succeed?
+	jp	nz,XMIT1
+	ld	de,ERMS15
+	call	PRTERR		; display error msg
+	jp	KERMIT
+
+; New TRANSMIT routine - transmit a file, line by line, to a remote host
+; waiting each time for one or more characters to be returned as a remote
+; host prompt.  It could be as simple as a CR or LF character.  Repeat
+; until the complete file has been sent, then close the transmitted file,
+; and drop into the connect state so the user can tidy up at the host end.
+
+	; Get the file to send, open it up, and read first sector from disk
+
+XMIT1:	ld	de,INMS19	; say we are send a file to the host
+	call	PRTSTR
+
+	xor	a
+	ld	(REPCNT),a	; clear the host prompt chars. counter 
+	ld	(STARC),a	; clear star count
+
+XMT10:	xor	a		; clear retransmit flag and count etc
+	ld	(REXBFL),a	; retransmit flag (1=> retransmit)
+	ld	(REXCNT),a	; character counter
+
+XMT1:	call	XMT1CH		; send a character
+	and	7Fh		; strip any parity
+	cp	CR		; have we reached the end of the line
+	jp	nz,XMT1		; nope, loop around again
+
+	; Now wait for a string back from the host.
+	; Compare with STRING buffer.
+
+	xor	a		; clear the character count
+	ld	(REXCNT),a
+
+	call	SELCON		; sent a line, send a star to console
+	ld	e,'*'
+	call	OUTCON
+	ld	a,(STARC)	; update star count
+	inc	a
+	ld	(STARC),a
+	cp	60		; sent 60 stars?
+	jp	nz,XMT3		; nope...
+	xor	a
+	ld	(STARC),a
+	call	PRCRLF
+XMT3:	ld	a,(EOFLAG)	; have we hit end of file?
+	and	a
+	jp	nz,XMTEX	; yup, so quit
+	xor	a
+	ld	(REPCNT),a	; clear the host prompt chars counter
+XMT2:	call	RD1CHL		; read a character from the line
+	and	7Fh		; set flags
+	jp	nz,XMT4		; not zero => we have a character from host
+	call	CKCHR		; see if *WE* have a character from console
+	push	af		; restore to modem
+	call	SELMDM
+	pop	af
+	and	7Fh		; stip parity (should not be there)
+	jr	nz,XMT2A	; if a null, try again
+	ld	a,(STRCNT)	; if the string length is zero, don't wait
+	and	a
+	jp	z,XMT1		; so loop back again
+	jp	XMT4		; else test for xon/off and incomming string
+
+XMT2A:	cp	CTRLC		; do we want to abort?
+	jp	z,XMTEX		; in which case drop through to connect mode
+	cp	CTRLZ		; if control-Z exit back to command loop
+	jr	nz,XMT2B	; else try for other characters
+	call	CLOSEF		; close file before exiting to command loop
+	jp	KERMIT
+
+XMT2B:	cp	CR		; a CR => resend last line
+	jr	nz,XMT2		; nope, then ignore it
+	ld	a,1
+	ld	(REXBFL),a	; else we want to resend the line
+	jp	XMT1
+
+XMT4:	jp	XMT6		; skip XOFF test for now...*****************
+
+	cp	XOFF		; XOFF from host?
+	jp	nz,XMT6
+XMT5:	call	RD1CHL		; else see if XOFF comming
+	and	7Fh
+	jp	nz,XMT6		; assume an XOFF
+	call	CKCHR		; anything at console?
+	push	af
+	call	SELMDM
+	pop	af
+	and	7Fh
+	cp	CTRLC		; control-C == abort & play terminal
+	jp	z,XMTEX
+	and	a		; anything else?
+	jr	z,XMT5		; loop again
+
+XMT6:	ld	e,a		; save it for a while
+	ld	a,(REPCNT)	; see if this character matches with one in buffer
+	ld	hl,STBUFF	; point to string buffer
+	call	ADDHLA		; make HL = HL + A
+	ld	a,e		; get the character back again
+	cp	(hl)		; is it = to what we expect?
+	jp	nz,XMT3		; no, clear counter and try again
+	ld	a,(REPCNT)	; yes, then update the pointer,
+	inc	a		;  and see if we have received
+	ld	(REPCNT),a	;   all we should have received
+	ld	e,a		; save length into E again
+	ld	a,(STRCNT)	; get the length to compare
+	sub	e		; if E > string length, we have it
+	jp	z,XMT10		; so send next line (clear counters, etc)
+	jp	XMT2		; else wait for a little longer
+
+; Routine below sends a character to the line.  It sends up to a CR, and then
+; it waits for a reply.  This routine is called from XMT1, so if at 
+; end of file, return.  Then XMT1 will drop through to connect.
+
+XMT1CH:	call	SELMDM		; just in case it uses it
+	ld	a,(EOFLAG)	; have we hit end of file
+	and	a		; set flags
+	jp	nz,XMT1C1	; no, so don't...
+	ld	a,CR		; load up a carriage return
+XMT1C1:	call	GET1XC		; get the character to send
+	cp	LF		; don't send line feeds
+;	jr	z,XMT1C1
+	cp	CTRLZ		; if control-Z, then we are at end of the file
+	jp	z,XMTEX		; so close the file and drop into TELCON
+	cp	20h		; control character?
+	jp	p,XMT11		; no, so OK
+	cp	CR		; CR, and tabs OK to send
+	jr	z,XMT11
+	cp	TAB
+	jr	z,XMT11
+	jr	XMT1C1		; else try for another character
+
+XMT11:	call	SETPAR		; else set parity, etc
+	push	af		; we want to keep this for a while
+	ld	e,a		; we need character in E
+	call	OUTMDM
+	pop	af		; restore the character we sent
+	ld	e,a		; now, if a TAC is set on...
+	ld	a,(TACFLG)
+	and	a		
+	ld	a,e		; (return must have sent character in A)
+	ret	z
+	ld	a,(TACCHR)	; get the TAC character
+	cp	e		; do we send it again?
+	ret	nz
+	push	af		; save character for return (already set E)
+	call	OUTMDM
+	pop	af
+	ret	
+
+GET1XC:	; get a character from the sector or re-transmit buffer read 
+	; into A.  Read a new sector if we run out.
+
+	; First, see if we do a retransmit
+
+	ld	a,(REXBFL)
+	and	a		; if zero, a genuine line
+	jp	z,GET1X1
+
+	; have to retransmit a line
+
+	ld	hl,REXBUF
+	ld	a,(REXCNT)	; add counter to buffer base
+	ld	d,0
+	ld	e,a
+	add	hl,de
+	inc	a		; update pointer
+	ld	(REXCNT),a
+	ld	a,(hl)		; get next character to send
+	ret			; and exit
+
+GET1X1:	call	IN1CHR		; get a character from the file
+	ld	c,a		; save it to the retransmit buffer
+	ld	a,(REXCNT)
+	ld	e,a
+	ld	d,0
+	ld	hl,REXBUF
+	add	hl,de		; point to next position
+	inc	a
+	ld	(REXCNT),a	; update the character pointer
+	ld	a,c		; restore character to a
+	ld	(hl),c		; get character to c
+	ret	
+
+; Read a character from the line.
+
+RD1CHL:	call	SELMDM		; select the modem
+	call	INPMDM		; get input from the modem
+	and	7Fh		; strip parity
+	; may UPPERCASE-ify if case sensitivity off
+	ret			; return to caller
+
+; End of transmit routine.  Close input file name, and say we are dropping
+; throught to TELNET.  Note that if EOF not found, it is assumed that
+; this is the ABORT exit.
+
+XMTEX:	call	CLOSEF		; close the transmitted file
+	call	SELCON		; make sure we are talking to the console
+	ld	a,(EOFLAG)	; end of file or abort exit?
+	ld	de,INMS22	; assume EOF...
+	and	a
+	jp	z,XMTEX1
+	ld	de,INMS29	; we were wrong, its an abort
+XMTEX1:	jp	TELNT1		; and drop through to connect mode
+				; TELNET does the printing
+
+INMS19:	db	CR,LF,'[Transmitting file to host:'
+	db	CR,LF,' 1. Lines automatically sent, and wait for possible reply'
+	db	CR,LF,' 2. Control-C aborts transfer'
+	db	CR,LF,' 3. If transfer hangs, try a return to continue'
+	db	CR,LF,' 4. On exit, you will be placed in CONNECT state.]'
+	db	CR,LF,0
+
+INMS22:	db	CR,LF,'[Transmission done. Connected normally '
+	db	'to remote host,'
+	db	CR,LF,' type ',0
+INMS29:	db	CR,LF,'[Transmission Aborted. Connected normally '
+	db	'to remote host,'
+	db	CR,LF,' type ',0
+
+; TELNET - The CONNECT command.
+;          Here from: KERMIT
+; TELNT1 - Entry to connect mode from TRANSMIT command
+;          Here from: XEND
+
+TELNET:	call	CFMCMD
+	ld	de,INFMS7	; output start of message
+TELNT1:	call	PRTSTR
+	call	ESCPR		; print the escape char
+	ld	de,INFMS8	; output some more of the message
+	call	PRTSTR
+	call	ESCPR		; print the escape char again
+	ld	de,INMS8A	; print the remainder of the message
+	call	PRTSTR
+	call	SYSCON		; do system-dependent stuff
+	ld	a,(LOGFLG)	; want a log?
+	or	a
+	call	nz,LOGOPN	; open if so
+
+CHRLUP:	call	PRTCHR		; see if char at port (send to console)
+	call	CONCHR		; see if char at console (send to port)
+	jp	KERMIT		; requested to end session - go to command loop
+	jp	CHRLUP		; go do it again
+
+INFMS7:	db	CR,LF,'[Connected to remote host. Type ',0
+INFMS8:	db	' and C to return to command level,',CR,LF,' type ',0
+INMS8A:	db	' and ? for a list of available commands]',CR,LF,0
+
+; Copy characters from comm line to console
+; Returns: nonskip, console selected.
+; Called by: XNEXT, REXMIT, TELNET
+
+PRTCHR:	ld	a,(OPMODE)	; Remote operation?
+	or	a
+	jr	z,PRTCH0	; yes, return
+	call	SELMDM		; select modem port
+	call	INPMDM		; try to get a character from it
+	push	af		; restore to console
+	call	SELCON		; select console
+	pop	af		; restore the (possible character) read
+	or	a		; test character
+	jp	nz,PRTCH5	; if non-zero, process it.
+PRTCH0:	ld	(PRTCNT),a	; zero out prt fairness count
+	ret			; return
+
+PRTCH5:	and	7Fh		; drop parity bit
+	ld	(COMCHR),a	; save it in case we need it again
+	ld	a,(VTFLG)	; get the VT52 emulation flag
+	cp	VTDEFE		; are we doing external emulation?
+	ld	a,(COMCHR)	; collect character again
+	jp	z,EXTERN	; jup, go do it
+
+	and	a		; set flags.  it may be a null
+	jp	z,PRTCHR	; ignore null (filler)
+	cp	DEL		; ignore delete, too
+	jp	z,PRTCHR
+	cp	XON		; is it an XON?
+	jp	z,PRTXON	; yes
+	cp	XOFF		; is it an XOFF?
+	jp	z,PRTXOF	; yes
+	ld	e,a		; set the char aside
+	ld	a,(VTFLG)	; get the VT52 emulation flag
+	cp	VTDEFV		; is the flag set for VT52 (ie 1)?
+				;  0 = none
+				;  1 = VT52
+				;  2 = external
+				;  3 = dumb (traps non printing chars)
+				;  0FFh not possible by local code (will change)
+	jp	nz,PRTCH1	; if not, don't do this stuff
+	ld	a,(ESCFLG)	; get the escape flag
+	or	a		; are we working on an escape sequence?
+	jp	z,PRTCH2	; if not, continue
+	call	VT52EM		; if so, work on it some more
+	jp	PRTCHR		; try for more characters
+
+PRTCH2:	ld	a,e		; normal text
+	cp	ESC		; is the char an escape?
+	jp	nz,PRTCH1	; if not skip on
+	ld	a,1
+	ld	(ESCFLG),a	; set the escape flag: escape seen.
+	jp	PRTCHR		; get another char...
+
+PRTCH1:	cp	VTDEFE		; are we doing external emulation?
+	jp	nz,PRTCH3	; assume we continue on
+	ld	hl,(EXTERN+1)	; get address of external emulator
+	ld	a,h		; see if address = 0 (not implemented)
+	or	l
+	jp	z,PRTCH3	; not external, assume we just carry on
+	jp	(hl)		; go do external emulation, ret back to caller
+
+PRTCH3:	cp	VTDEFD		; are we trapping all non printing characters?
+	jp	nz,PRTCH4	; nope, something else
+	ld	a,(COMCHR)	; dumb terminal, lets test the character
+	cp	CR		; CR then OK
+	jp	z,PRTCH4
+	cp	LF		; LF then OK
+	jp	z,PRTCH4
+	cp	TAB
+	jp	z,PRTCH4	; assume tabs are expanded
+	cp	SPACE		; if less than 20h ignore it
+	ret	m		; return if a control character
+
+PRTCH4:	call	SYSFLT		; OK to print this character (in E)?
+	or	a
+	jp	z,PRTCHR	; no, skip it.
+	ld	a,(LOGFLG)	; get the log flag.
+	cp	81h		; are we logging?
+	call	z,LOGIT		; do so if needed
+	call	SELCON		; select console
+	ld	a,(PRNFLG)	; get Print parallel flag
+	or	a
+	call	nz,OUTLPT	; output to printer if flag set
+	call	OUTCON		; output to console (char still in E)
+	ld	hl,PRTCNT	; point to prt fairness count
+	inc	(hl)		; bump
+	ld	a,(hl)		; get it in A
+	cp	PRFAIR+1	; time to be fair?
+	jp	m,PRTCHR	; no, go around again.
+	ld	(hl),0		; reset count
+	ld	a,(COMCHR)	; restore that character read from comm line
+	ret			; and return
+
+; I don't think we want to print xon/xoff - this should be flow control only
+; across the link between us and the host (besides, IBM host xon's don't make
+; sense to most micros.)
+; Remember xon/xoff state in XOFFLG (zero = xon, non-zero = xoff)
+
+PRTXON:	xor	a		; yes, reset XOFF flag
+PRTXOF:	ld	(XOFFLG),a
+	jp	PRTCHR		; look for another character
+
+; Log file routines
+
+; Open the log file and append to it if it already exists, or create one
+; if not.
+
+LOGOPN:	ld	a,CTRLZ		; ignore control-Z in log files
+	cp	e		; well, was it?
+	ret	z		; yes, to ignore it
+	ld	hl,LOGFCB	; copy name
+	ld	de,FCB2		;  to FCB2
+	ld	bc,FINFSZ
+	ldir
+	call	APPFIL		; open file for appending
+	jp	LOGERR		; error
+	ld	hl,LOGFLG	; point to log flag
+	set	7,(hl)		; set file open flag
+	ld	de,INMS28	; assume logging is on
+	ld	a,(hl)
+	cp	81h		; check
+	jp	z,PRTSTR	; print msg if true
+	ld	de,INMS27	; no, must be suspended
+	jp	PRTSTR		; print and return
+
+INMS27:	db	CR,LF,'[Logging suspended]',CR,LF,0
+INMS28:	db	CR,LF,'[Logging resumed]',CR,LF,0
+
+; Output character in E to log file.
+; We assume the host recognizes xon/xoff (we probably shouldn't.)
+; Modem port is selected.
+; Preserves DE
+; Called by: PRTCHR
+
+LOGIT:	push	de		; save DE
+	ld	hl,(BUFLEN)	; get buffer size
+	ld	de,(CHRCNT)	; get buffer count
+	call	CPHLDE		; still space?
+	jr	c,LOGIT1	; yes
+	call	LOGWRT		; sigh, time to write to disk
+	ld	a,(LOGFLG)	; get logging flag
+	or	a		; did we quit because of an error?
+	ret	z		; return now if so
+LOGIT1:	pop	de		; restore DE
+	ld	hl,(BUFPNT)	; get buffer pointer
+	ld	(hl),e		; store the char
+	inc	hl		; advance pointer
+	ld	(BUFPNT),hl
+	ld	hl,(CHRCNT)
+	inc	hl		; increase character count
+	ld	(CHRCNT),hl
+	ret			; and return
+
+; Write to log file with XON/XOFF since it may take a while.
+
+LOGWRT:	call	SNDXOFF		; send an XOFF to host
+	call	OUTBUF		; output the buffer and advance
+	call	LOGERR		; quit if error
+	call	SNDXON		; send an XON to host
+	ret
+
+; Close the log file and reset the flag
+
+LOGCLS:	ld	de,INFMS6	; tell user we are closing file
+	call	PRTSTR
+	call	CLOFIL		; and do it
+	jp	LOGERR		; jump if error
+	ld	hl,LOGFLG	; point to flag
+	res	7,(hl)		; clear the open bit
+	ret
+
+INFMS6:	db	CR,LF,'[Closing the log file]',0
+
+; Here on a variety of logging errors, just close the file and disable
+; logging.
+; Called from LOGOPN, LOGPTR, LOGCLS
+
+LOGERR:	ld	de,ERMS22	; error message
+	call	PRTSTR		; print it
+	call	CLOSE2		; close the file
+	xor	a		; clear LOGFLG
+	ld	(LOGFLG),a	; so don't try again
+	ret
+
+ERMS22:	db	CR,LF,'?Error writing to log file',CR,LF,0
+
+; VT52 emulation.
+; Called by: PRTCHR
+; A = contents of ESCFLG (guaranteed non-zero)
+; E = current character
+; Modem is selected.
+
+VT52EM:	cp	1		; first character after escape?
+	jp	nz,VT52Y	; no, must be doing cursor positioning
+
+; E contains the character that followed the escape.
+; valid characters are:
+;   A - cursor up
+;   B - cursor down
+;   C - cursor right
+;   D - cursor left
+;   F - enter graphics mode (hard to do on a non-VT52)
+;   G - exit graphics mode
+;   H - home
+;   I - reverse linefeed
+;   J - erase to end of screen
+;   K - erase to end of line
+;   Y - cursor positioning leadin
+;   Z - identify terminal as VT52
+;   [ - enter hold-screen mode (not supported)
+;   \ - exit hold-screen mode (not supported)
+;   > - enter alternate-keypad mode? (not supported)
+;   = - exit alternate-keypad mode? (not supported)
+;
+; Invalid sequences are handled as the VT52 does - the escape and
+; the following character are swallowed, never to be seen again.
+; For <esc>E, the translation table may contain just a null (no action),
+; or may be used as clear-and-home, as in the Heath/Zenith H19.
+
+	ld	a,e		; get the second character of the sequence
+	cp	'Y'		; if cursor lead-in handle it
+	jp	nz,VT52A	; if not, go on
+	ld	a,2		; state = 2: row follows
+	ld	(ESCFLG),a	; update the flag
+	ret			; back for another character
+
+VT52A:	cp	'Z'		; VT52 ID query?
+	jp	z,VT52ID	; yes. claim to be one
+	cp	'A'		; less than an 'A'?
+	jp	m,VTIG		; yes - ignore
+	cp	'K'+1		; greater than 'K'?
+	jp	p,VTIG		; yes - ignore
+	sub	'A'		; else make into index
+	rlca			; multiply by four
+	rlca			;  (shift left twice)
+	ld	hl,(PTTAB)	; load base addr of table
+	ld	e,a		; move a into de pair
+	ld	d,0		; zero out high byte
+	add	hl,de		; double add index+offset
+	ex	de,hl		; exchange de with HL
+	call	SELCON		; select console
+	call	PRTSTR		; and syscall
+
+; ignore escape sequence
+
+VTIG:	xor	a		; reset the ol' escape flag
+	ld	(ESCFLG),a
+	ret			; return home
+
+; here for <esc>Z.  Tell the host we're a VT52. (Sure we are...)
+
+VT52ID:	ld	a,ESC		; response is escape...
+	call	SETPAR		; (need correct parity)
+	ld	e,a
+	call	OUTMDM		; (console already selected)
+	ld	a,'/'		; ... slash ...
+	call	SETPAR		; (with parity)
+	ld	e,a
+	call	OUTMDM
+	ld	a,'K'		; ... K
+	call	SETPAR
+	ld	e,a
+	call	OUTMDM
+	jp	VTIG		; clear escape-sequence flag and return
+
+; here when ESCFLG isn't 0 or 1 - processing cursor positioning sequence.
+
+VT52Y:	cp	2		; looking for row? (y-coordinate)
+	jp	nz,VT52X	; no, must be column
+	ld	a,e		; yes. get coordinate
+	sub	' '-1		; convert from ascii (1 = top line)
+	ld	(VTYVAL),a	; store for later
+	ld	a,3		; advance to next state (x coord)
+	ld	(ESCFLG),a	; store it
+	ret			; try for another character
+
+; here when ESCFLG isn't 0, 1, or 2 - it must be 3 (right?)
+; E holds the last character of the cursor positioning sequence.
+
+VT52X:	xor	a		; end of escape sequence, reset state
+	ld	(ESCFLG),a
+	ld	a,e		; get column (' ' is left margin)
+	sub	' '-1		; make left margin be one
+	ld	c,a		; stash column in c
+	ld	a,(VTYVAL)	; get row number
+	ld	b,a		;  in b
+	call	SELCON		; select console
+	call	CSRPOS		; call system-dependent cursor positioner
+	ret			; all through.
+
+; Copy character from console to comm line, processing (kermit's) escape
+; sequences. Enter and exit with console selected.
+;  nonskip return: transparent mode terminated.
+;  skip return:    still in transparent mode.
+; Called by: REXMIT, TELNET
+
+CONCHR:	call	INPCT		; try to get a character from the console
+	and	7Fh		; keep only 7 bits
+	jp	z,RSKP		; null means nothing there
+	ld	e,a		; move the char for comparison
+	ld	(LSTCHR),a	; save it
+	ld	a,(ESCCHR)	; get the escape char
+	cp	e		; is it an escape char?
+	jp	z,INTCHR	; if so go process it
+	call	SELMDM		; select the modem
+	ld	a,e		; get the char
+	call	SETPAR		; set parity (if any)
+	ld	e,a		; restore it
+	push	de		; need to save E in case we are half dplx
+	call	OUTMDM		; output the char to the port.
+	call	FLSMDM		; make sure it was sent right away
+	pop	de		; just in case we are half dplx
+	call	SELCON		; reselect console
+	ld	a,(ECOFLG)	; get the echo flag
+	or	a		; is it turned on?
+	jp	z,RSKP		; if not we're done here
+	ld	a,e		; get the char
+	and	7Fh		; turn off the parity bit
+	ld	e,a
+	call	OUTCON		; echo the character
+	ld	a,(LOGFLG)	; get the log flag
+	cp	81h		; are we logging?
+	call	z,LOGIT		; do so if needed
+	jp	RSKP		; use skip return
+
+; Transparent escape character has been typed, dispatch on second
+; character (console is still selected)
+; Here from: CONCHR
+
+INTCHR:	call	GETCT		; get another char from console or take file
+	and	7Fh		; ignore nulls
+	jp	z,INTCHR	; loop until we get a valid char
+	ld	b,a		; save the actual char
+	cp	CTRLC		; is it Control-C?
+	jp	z,CONTC		; yes
+	call	UCASE		; convert to upper case
+	cp	'C'		; is it Close?
+	jp	nz,INTCH0	; if not, proceed
+CONTC:	ld	de,INFMS9	; say we are back
+	call	PRTSTR
+	call	SYSCLS		; call system-dependent close routine
+	ld	a,(LOGFLG)	; get the log flag
+	or	a		; check if open
+	call	m,LOGCLS	; close if needed
+	ret	
+
+INTCH0:	; here if not a 'C' or '^C'
+
+	cp	'S'		; is it status?
+	jp	nz,INCH03	; if not, proceed
+	call	STAT01		; print out the status stuff
+	call	PRCRLF		; add a newline
+	jp	RSKP		; return from CONCHR
+
+INCH03:	ld	a,b		; get the char
+	cp	'?'		; is it a help request?
+	jp	nz,INTCH1	; if not, go to the next check
+INCH3A:	ld	a,(LOGFLG)	; logging flag
+	or	a		; see if active
+	ld	de,LOGHLP
+	call	m,PRTSTR	; yes, tell about R AND Q
+	ld	de,INTHLP	; if so, get the address of the help message
+	call	PRTSTR
+	call	SYSINH		; print system-dependent help message
+	ld	de,INHLP1	; tell about doubling the escape character
+	call	PRTSTR
+	push	de
+	call	ESCPR		; print escape character
+	pop	de
+	inc	de		; print the rest
+	call	PRTSTR
+	jp	INTCHR		; get another char
+
+INTCH1:	ld	a,b		; get the character
+	cp	'0'		; is it '0', to send a null?
+	jp	nz,INTCH3	; no
+	xor	a		; yes, send an ASCII zero
+	call	SETPAR		;  with the correct parity
+	ld	e,a
+	call	SELMDM		; (to the modem...)
+	call	OUTMDM
+	call	SELCON		; return with console selected
+	jp	RSKP
+
+INTCH3:	ld	a,(ESCCHR)	; get the escape char
+	cp	b		; is it the escape char?
+	jp	nz,INTCH4	; jump if not
+	ld	a,b		; get the char
+	call	SETPAR
+	ld	e,a		; restore it
+	call	SELMDM
+	call	OUTMDM		; output it
+	call	SELCON		; we promised console would be selected...
+	jp	RSKP		; return, we are done here
+INTCH4:	ld	a,b		; get it again
+	call	UCASE		; in upper case
+	cp	'P'		; toggle Printer?
+	jp	nz,INTCH5	; nope
+	ld	a,(PRNFLG)	; get printer flag
+	xor	01h		; complement it
+	ld	(PRNFLG),a	; and put back
+	jp	RSKP
+
+INTCH5:	ld	a,(LOGFLG)	; get log flag
+	or	a		; see if open
+	jp	p,INTCH7	; no, skip R and Q
+	ld	a,b		; get back chr
+	call	UCASE		; make upper case
+	cp	'R'		; is it R?
+	jp	nz,INTCH6	; jump if not
+	ld	a,81h		; set flag for logging
+	ld	(LOGFLG),a	; put it back
+	ld	de,INMS28	; message
+	call	PRTSTR		;
+	jp	RSKP		; done
+INTCH6:	cp	'Q'		; Quit logging?
+	jp	nz,INTCH7	; no
+	ld	a,82h		; flag for open, but suspended
+	ld	(LOGFLG),a	; store away
+	ld	de,INMS27	; keep them informed
+	call	PRTSTR
+	jp	RSKP
+
+INTCH7:
+INTCHZ:	ld	a,b		; not recognized, get saved copy back
+	push	af		; save as we will want to test for 'D'
+	call	SYSINT		; interpret system-dependent sequences
+	jp	INTCHY		; done, now see if D. If so, do a C
+	pop	af		; tidy stack
+	ld	e,BELL		; otherwise send a beep
+	call	OUTCON		;  to the console
+	jp	RSKP
+
+INTCHY:	pop	af		; adjust stack
+	call	UCASE		; make it upper case
+	cp	'D'		; was it a D?
+	jp	z,CONTC		; yup, so to the equivalent of an escape-C
+	jp	RSKP
+
+INFMS9:	db	CR,LF,'[Connection closed, back to command level]',0
+
+LOGHLP:	db	CR,LF,'Q  Suspend logging'
+	db	CR,LF,'R  Resume logging',0
+
+INTHLP:	db	CR,LF,'?  This message'
+	db	CR,LF,'C  Close the connection'
+	db	CR,LF,'0  (zero) Transmit a NULL'
+	db	CR,LF,'P  Toggle printer on/off'
+	db	CR,LF,'S  Status of the connection',0
+INHLP1:	db	CR,LF,'Typing another ',0,' will send it to the host'
+	db	CR,LF,CR,LF,'Command>',0
+
+	dseg
+
+XOFFLG:	db	0		; X-OFF (^S) received from COMM-line
+       				; X-ON (^Q) received resets this
+PRTCNT:	db	0		; PRTCHR fairness count
+ESCFLG:	db	0		; escape flag (start off)
+VTYVAL:	ds	1		; holds row number for VT52 cursor positioning
+COMCHR:	ds	1		; received char from comm line
+LSTCHR: ds	1		; last console input character [not used???]
+
+	end

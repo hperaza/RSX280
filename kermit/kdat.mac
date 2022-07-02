@@ -1,0 +1,363 @@
+; KDAT.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       Pure and impure data areas.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 22, 4-Dec-2021 by H. Peraza: added Local/Remote operation flag.
+;
+; edit 21, 19-Mar-2021 by H. Peraza: added Server Mode flag.
+;
+; edit 20, 27-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Removed unused variables, added new ones for RSX180/280. Messages
+;       moved to the modules that use them to avoid public-external symbol
+;       nightmares (and other messages like help, keyword tables and system
+;       errors were already in local modules)
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 19, 29-Mar-1991 by MF. Add flag "initak" (nonzero) which is cleared
+;	after the initial automatic TAKE attempt of KERMIT.INI to allow
+;	"unable to find file" complaints if not doing that initial TAKE.
+;
+; edit 18, 21-Mar-1991 by MF. Renamed parameter vermin to revno (revision
+;	level) since verno is already known as the "minor version number".
+;
+; edit 17, 27-Feb-1991 by MF. Corrected type in "inms19" and commented out
+;	"typptr" pointer as the TYPE command now uses the big buffer.
+;	Also provided for a "minor version number" (1-26=A-Z) and message to
+;	facilitate display of Kermit version in VERSION command (modmsg)
+;
+; edit 16, 12-Feb-1991 by MF. Eliminated storage (message and variable)
+;	for case sensitivity by commenting it out.
+;
+; edit 15, 9-Dec-1990 by MF. Modified message for "directory file size"
+;	status report to make it clearer when spoken by a speech synthesizer.
+;
+; edit 14, 4-Dec-1990 by MF. Added message for Autoreceive status report.
+;
+; edit 13, 30-Nov-1990 by MF. Added messages to display regular/quiet status
+;	of terminal in SHOW and STATUS commands.
+;
+; edit 12, 8-Nov-1990 by MF.  Added a new message for Set Autoreceive.
+;
+; edit 11, 2-Nov-1990 by MF.  Moved overlay address to 7000H -- I didn't
+;	realize I was **that** close to the limit until I made a couple of
+;	cosmetic changes and REM CD bombed.  This is still ver. 4.10 as it
+;	hasn''t been released yet.
+;
+; edit 10, 1-Nov-1990 by MF.  Changed message at "spdst" to conform with
+;	the change of "SET BAUD-RATE" to "SET SPEED".
+;	Also added message "sdpst2" for speed status (staspd) routine
+;
+; edit 9, 17-Oct-1990 by MF.  Changed "packet-size" messages to use the
+;	word "length" to conform with the nomenclature suggested in the
+;	6th edition of the Kermit Protocol Manual.
+;
+; edit 8, 19-Sep-1990 by MF.  Added error message for FRENAME command.
+;
+; edit 7, 14-Sep-1990 by MF.  Added storage/strings for SET COLLISION command.
+;	Also added strings/storage for SET INCOMPLETE-FILE command.
+;
+; edit 6, 9-Sep-1990 by MF.  Added messages and storage for Remote commands.
+;	and display of packet sizes
+;	Moved overlay address to 06C00H for Version 4.10.
+;
+; edit 5, 8 April, 1987 by OBSchou.  Added new entry in jump table to call 
+;	code for an external terminal type.  Added some new error messages
+;	and added more to the packet space.
+;
+; edit 4, 30 March by OBSchou.  Added in space for autoreceive.
+;
+; edit 3, 19 March, 1987 by OBSchou.  Added some more strings etc, and 
+;	increased the stack space from 32 entries to 64.
+;
+; edit 2, 11 March, 1987 by OBSchou. 
+;	Added in some more data and strings and things.  Nothing special
+;
+; edit 1, 28 January, 1987 by OBSchou
+;	Following file the data section of CPSUTL.ASM.  This part of the 
+;	CPSUTL.ASM file now seperate as it ws getting too larg.  Link to here
+;	from CPSUTL.ASM (which now has only the utlity routines). 
+;	Also added in bits submitted by Dave Roberts of Leicester:
+;	 DJR  18th January 1987 - David J. Roberts.
+;           Support for cosmetic changes in CPSMIT:
+;              New strings DBGST and CURDST
+;              CRLF in front of TIMMSG
+;              LOGST changed, and new LOGST2
+
+	.Z80
+
+	ident	/22/
+
+	include	KDEF.INC
+	include	FCB.INC
+
+	public	VERSION,BANNER,DATVER,$MEMRY
+
+	public	CURDEV,CURDIR,LOGNAM,LOGFCB,VTFLG,TAKFLG,BUFSEC
+	public	MAXBSC,NEXITF,NUMBER,PRNFL,PRNFLG,GTRXFL,CBUFF
+	public	REMTXT,TAKNAM,TAKFCB,TAKPTR,STBUFF,NQUIET,CMDBUF
+	public	CMHLP,STRCNT,REPCNT,CHRCNT,BUFADR,BUFPNT,REMDAT
+	public	RSXVER,RCL,RDL,RCOM,RPTR,ERRORC,LOGFLG,SIZE,EOFLAG
+	public	INITAK,DBGFLG,CHKTYP,FLWFLG,TEMP4,RPAD,SPAD,REOL
+	public	SEOL,TEMP2,TEMP3,BYTES,DATA,STATE,CZSEEN,RDCKT
+	public	SDCKT,AUTORC,TACFLG,TACCHR,SNDSOP,SPSIZ,RCVSOP
+	public	RPSIZ,ESCCHR,ECOFLG,TIMFLG,FLOCTL,TEMP1,IBMFLG
+	public	PARITY,FMFLG,INCFLG,QUIETD,PTTAB,SPDTAB,SPDHLP
+	public	SPEED,FILEIO,PORT,TAKBUF,BUFLEN,FNBUF,NUMPKT,PKTNUM
+	public	NUMRTR,NUMTRY,CBPTR,PRNBUF,ARGBLK,INICHK,CURCHK
+	public	OLDTRY,RTIME,WRN8,DSCFLG,QUOT8,FILBUF,RPADCH,RQUOTE
+	public	SQUOTE,PACKET,SPADCH,SOHCHR,HOSTHS,HOSTNM,QBCHR
+	public	OUTPNT,RECPKT,RECPKX,TAKCNT,RPRMPT,CMDPTR,STARC
+	public	REXBUF,REXBFL,REXCNT,SRVFLG,SRVTXT,OPROC,OPMODE
+
+	extrn	TTAB,SPDTBL,SPHTBL
+
+	dseg
+
+DATVER:	defb	'KDAT (22)  4-Dec-2021',0
+
+	page
+
+VERSION:
+	defb	'Kermit-180 V4.'
+	defb	(VERNO/10) + '0'        ; tenth's digit of version number
+	defb	(VERNO MOD 10) + '0'    ; hundredth's digit
+	IF	REVNO			; if a revision level,
+	defb	REVNO+'@'		;  put it in (range 1-26 = A-Z)
+	ENDIF
+	defb	' ',0
+
+	page
+; Impure data
+
+; COMND storage
+
+FLOCTL:	defb	0	; flow control on/off flag
+CASENS:	defb	0	; upper/lower case sensitive
+CMHLP:	defs	2	; address of present help
+CMDBUF:	defs	CMBUFL+3; buffer for command parsing
+CMDPTR:	defs	2	; pointer into the command buffer
+
+EOFLAG:	defs	1	; EOF flag, non-zero on EOF
+
+CURDEV:	defb	'SY',0	; current user device
+CURDIR:	defs	9	; current user directory
+RSXVER:	defs	4	; system type and version
+HOSTNM:	defs	9	; host name
+
+RCVSOP:	defb	SOH	; receive start-of-packet
+SNDSOP:	defb	SOH	; send start-of-packet
+TIMFLG:	defb	0	; timer flag: 0 -> no timer
+WRN8:	defb	0	; non-zero if 8-bit-lost warning sent
+QBCHR:	defb	'&'	; binary quote character.
+QUOT8:	defb	0	; non-zero if doing 8-bit quoting
+
+LOGFLG:	defb	0	; flag for a log file:
+			;  00h = no log
+			;  x1h = logging on
+			;  x2h = suspended
+			;  8xh (bit 7) = file open
+LOGNAM:	defb	'SY0:KERMIT.LOG',0	; file to use for session logging
+LOGFCB:	defs	FINFSZ	; FCB space for log file
+
+NEXITF:	defb	0	; set to 1 for exit to system after command tail
+
+TAKFLG:	defb	0	; TAKE flag
+			;  bit 0 = 1 for take file in progress
+			;  bit 4 = 1 if command line present/in progress
+			; note: TAKE has priority over command line
+INITAK:	defb	0FFh	; cleared after initial TAKE
+TAKNAM:	defb	'SY0:KERMIT.INI',0	; initial file to TAKE (KERMIT.INI)
+TAKFCB:	defs	FINFSZ	; FCB space for take file
+TAKPTR:	defs	2	; pointer to position in TAKE file input
+TAKCNT:	defs	2	; number of bytes left in TAKE buffer
+TAKBUF:	defs	BUFSIZ	; space to read TAKE file
+
+PRNBUF:	defs	1	; printer buffer output pointer
+	defs	1	; input offset pointer
+	defs	256	; give a large buffer
+	defs	10	; and a little spare
+
+BANNER:	defs	60	; program banner
+
+; Transmit space
+
+REPCNT:	defb	0	; repeat counter
+STARC: 	defb	0	; star count
+REXBFL:	defb	0	; retransmit flag (1=> retransmit)
+REXCNT:	defb	0	; retransmit character count
+REXBUF:	defs	128	; max retransmit line length 128 characters
+
+; Assorted other space
+
+ERRORC:	defb	0	; error level set to xxx [set, but not used???]
+ERRORL:	defb	0	; error level to test against [not used???]
+
+REMTXT:	defb	0	; set <> 0 if D packets to screen
+SRVTXT:	defb	0	; set <> 0 if D packets from server command
+OPROC:	defs	2	; output routine address for DIR command, etc.
+
+HOSTHS:	defs	1	; have we told the host to xoff? (is this duplicated)
+STBUFF:	defs	128	; some space or the string buffer
+PRNFL: 	defb	0	; printer flag, used by TYPE/PRINT
+
+NQUIET:	defb	0	; if non zero print from NOUT to display
+
+FILEIO:	defb	0	; line-by-line from file (default off)
+NUMBER:	defs	2	; number in binary form from user input
+MAXBSC:	defs	1	; max number of buffers for multi-sector buffering
+CHRCNT:	defs	2	; number of chars in the file buffer
+
+OPMODE:	defb	0	; set to 0 for Remote operation, <> 0 for Local
+
+; Command tail data space, etc.
+
+CBPTR:	defb	2	; command tail pointer
+CBUFF:	defs	128	; temp. space for potential command tail
+
+STRCNT:	defb	0	; string count for string operations
+
+; Various packet variables, etc.
+
+BYTES:	defb	0,0,0,0	; 4 byte 'byte count' space [set but not used???]
+FILCNT:	defs	1	; number of chars left to fill
+OUTPNT:	defs	2	; position in packet
+BUFPNT:	defs	2	; position in file buffer
+SIZE:	defs	1	; size of data from GTCHR
+CURCHK:	defs	1	; current checksum type
+INICHK:	defs	1	; agreed upon checksum type
+CZSEEN:	defs	1	; flag that Control-Z was typed
+DSCFLG:	defs	1	; discard file if nonzero
+PKTNUM:	defs	1	; packet number
+NUMPKT:	defs	2	; total number of packets sent
+NUMRTR:	defs	2	; total number of retries
+NUMTRY:	defs	1	; number of tries on this packet
+OLDTRY:	defs	1	; number of tries on previous packet
+STATE:	defs	1	; present state of the automaton
+
+;*** start of new flags.
+;    Do not assume that just because these flags are present that the feature
+;    is available. I simply put them in 'for future use'
+
+RCAPAS:
+RCAP1:	defb	0	; receive capabilities byte 0
+RCAP2:	defb	0	; receive capabilities byte 1
+SCAPAS:
+SCAP1:	defb	0	; send capabilities byte 0
+SCAP2:	defb	0	; send capabilities byte 1
+RTIMEO:	defb	0	; receive timeout
+STIMEO:	defb	0	; send timeout
+RPADC:	defb	0	; receive pad character
+SPADC:	defb	0	; send pad character
+RREPT:	defb	0	; receive repeat prefix
+SREPT:	defb	0	; send repeat prefix
+RWINDO:	defb	0	; receive window size
+SWINDO:	defb	0	; send window size
+RDPKT:
+RLPKT:	defw	0	; receive long packet length
+SDPKT:
+SLPKT:	defw	0	; send long packet length
+SDCKT:	defb	0	; send default checktype
+RDCKT:	defb	0	; receive checktype (should be same as sdckt)
+
+;*** end  of new flags
+
+SOHCHR:	defb	1	; default Start-of-header char is ^A
+
+; Kermit packet starts here
+;	Byte 0 = start of packe character
+;	     1 = length of packet
+;	     2 = packet number
+;	     3 = packet type (S R I Z E B etc.)
+
+PACKET:	defs	4	; packet (DATA is part of it)
+
+; Data part of packet (variable length, includes checksum)
+
+DATA:	defs	90	; data and checksum field of packet
+RECPKT:	defs	101	; receive packet storage (use the following)
+RECPKX:	defb	CR,0	;    =      =       = buffer limit
+
+FILBUF:	defs	101	; character buffer
+FNBUF:	defs	40	; file name buffer
+AUTORC:	defb	0	; set to ON for autoreceive
+
+; Temporary data space.  Sometimes accesses as 16 bits (eg TEMP1/2)
+; ** TEMP1 & 2 must be in order
+
+TEMP1:	defs	1	; temporary storage
+TEMP2:	defs	1
+TEMP3:	defs	1
+TEMP4:	defs	1
+
+GTRXFL:	defs	1	; get/receive flag
+QUIETD:	defb	0	; loud display during file transfers
+ARGBLK:	defs	32	; used for subroutine arguments
+
+; Storage for Remote Command processing
+
+RDL:	defs	1	; holds accumulated length of remote data
+RCL:	defs	1	; holds length of Remote command line arg
+REMDAT:	defs	95	; packet data buffer (plenty big)
+RCOM:	defs	1	; Remote Command type
+RPRMPT:	defw	0	; address of prompt strings
+RPTR:	defw	0	; remote command packet data pointer
+RSCODE:	defs	3	; holds Remote Set command ASCII code
+
+PTTAB:	defw	TTAB	; points to local equivalents to VT52 escape sequences
+SPDTAB:	defw	SPDTBL	; address of baud rate command table, or zero
+SPDHLP:	defw	SPHTBL	; address of baud rate help table, or zero
+VTFLG:	defb	0	; VT52 emulation flag
+ESCCHR:	defb	DEFESC	; storage for the escape character
+SPEED:	defw	0FFFFh	; storage for the baud rate
+PORT:	defb	0,0,0	; storage for port (link device) value
+PRNFLG:	defb	0	; printer copy flag (overlay may need it)
+DBGFLG:	defb	0	; debugging flag
+ECOFLG:	defb	0	; local echo flag (default off).
+FLWFLG:	defb	1	; file warning flag (default on).
+IBMFLG:	defb	0	; IBM flag (default off).
+FMFLG:	defb	0	; file mode flag (ascii/binary/default)
+INCFLG:	defb	0	; incomplete flag (keep/discard), default = discard
+PARITY:	defb	DEFPAR	; current parity
+SPSIZ:	defb	DSPSIZ	; Send packet size
+RPSIZ:	defb	DRPSIZ	; Receive packet size
+STIME:	defb	DSTIME	; Send time out
+RTIME:	defb	DRTIME	; Receive time out
+SPAD:	defb	DSPAD 	; Send padding
+RPAD:	defb	DRPAD 	; Receive padding
+SPADCH:	defb	DSPADC	; Send padding char
+RPADCH:	defb	DRPADC	; Receive padding char
+SEOL:	defb	DSEOL 	; Send EOL char
+REOL:	defb	DREOL 	; Receive EOL char
+SQUOTE:	defb	DSQUOT	; Send quote char
+RQUOTE:	defb	DRQUOT	; Receive quote char
+CHKTYP:	defb	DSCHKT	; checksum type desired
+TACFLG:	defb	0	; TAC trap flag (zero=OFF, nonzero=ON; when non-zero,
+		      	;  contains current TAC intercept character)
+TACCHR:	defb	TACVAL	; TAC intercept character
+SRVFLG:	defb	0	; Server mode flag
+BUFADR:	defs	2  	; pointer to big buffer for multiple-sector I/O
+BUFLEN:	defs	2	; big buffer size in bytes, must be a multiple of BUFSIZ
+BUFSEC:	defb	1	; number of sectors big buffer can hold (0 means 256)
+
+$MEMRY:	defs	2	; first free address, set by linker
+
+	END

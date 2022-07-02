@@ -1,0 +1,3130 @@
+; KPKT.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains the (system-independent) routines that implement
+;       the KERMIT protocol, and the commands that use them:
+;       RECEIVE, SEND, FINISH, and LOGOUT.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 33, 4-Dec-2021 by H. Peraza: suppress output of status and (most)
+;       error messages during Remote operation.
+;
+; edit 32, 28-Mar-2021 by H. Peraza: packet character encoding was moved
+;       into a separate ENCODE routine that can be called from the server
+;       code. SDATA and SEOF were also slightly modified to support server
+;       operation.
+;
+; edit 31, 21-Mar-2021 by H. Peraza: display received file name only after
+;       version number is known. Fixed SET COLLISION OVERWRITE.
+;
+; edit 30, 20-Mar-2021 by H. Peraza: reset Server Mode flag in INCHR if
+;       the user entered Control-C at the console. Added SEND1 and READ1
+;       entry points for Server mode get and send commands. Close directory
+;       after sending last file in SEOF.
+;
+; edit 29, 9-Jan-2021 by H. Peraza: converted to Z80, targeting RSX180/280.
+;       Optimized a bit the SDATA routine (keep pointers in registers, not in
+;       memory variables). The receive packet routine now times out after the
+;       given RTIME seconds. Purge modem input on timeout.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 28, 21-Mar-1991 by MF. After "inchr7", close TAKE-file (if any) so
+;	^C will halt all processing (including commands from TAKE-files)
+;	and put the user back at Kermit command-level.
+;
+; edit 27, 16-Jan-1991 by MF. The bug of (22) was not fixed (although
+;	the error described needed to be corrected). Really fixed the bug this:
+;	time. changed "lda 'E'" after "ptch9b" to "mvi a,'E'" -- Zilog
+;	mnemonic thinking must've addled my brain!
+;
+; edit 26, 14-Jan-1991 by MF. Fix bug in the code which sends an "E" packet
+;	to the remote Kermit on encountering "disk full" so that
+;	uncontrollified <CR><LF> is not copied to the packet data area (and
+;	hence sent to the remote Kermit). This should fix a bug reported
+;	by Russell Lang of Monash University in Australia wherein a PC
+;	running Kermit in Server mode complained of invalid characters when
+;	receiving the "disk full" error packet from CP/M Kermit.
+;
+; edit 25 of 3-Jan-1991 by MF. Reverse part of edit 20 which flushes comm
+;	input at EOF send: the problem of multiple copies of packets being
+;	sent when a stream of files being sent is partially interrupted with
+;	^X has been fixed by modifying "inchr" in CPSPK2.ASM.
+;	Modify routine "inchr" after label "inchr5" to not take retry
+;	(nonskip) return if ^X/^Z seen on the Console. This will prevent
+;	multiple copies of packets being sent if user aborts some files
+;	in a stream being sent via ^X and is a better fix to this problem
+;	than flushing comm input before sending the "Z" packet requesting
+;	the remote Kermit to discard the current file being received (as
+;	implemented in edit 24 of 2-jan-1991).
+;
+; edit 24, 2-Jan-1991 by MF. Tightened up code just after "sdata1" and around
+;	"sdat14". Added code to flush comm input after user has typed ^X
+;	or ^Z to interrupt file sends so that duplicate packets are not
+;	sent after the interrupt character (especially ^X) has been typed.
+;
+; edit 23, 14-Dec-1990 by MF.  Place "<<>>" around "F" and "X" packets coming
+;	as replies to REMOTE commands a la VMS Bliss Kermit.
+;	Also type each character of "X" or "F" packet explicitly in case
+;	dollar-signs are part of the filename (as in VMS Bliss Kermit
+;	when a REMOTE TYPE is given and SET FILE NAMING FULL is in effect).
+;	Expanded code is at label rfil3f. Modified "gofil" routine to allow
+;	for specification of a drive in the local filespec for GET and
+;	RECEIVE commands. Thus commands such as
+;		GET HELLO.TXT B:GOODBYE.TXT
+;	and
+;		RECEIVE B:GOODBYE.TXT
+;	now work as expected.
+;
+; edit 22, 27-Nov-1990 by MF. Fix bug introduced with edit 17 which resulted
+;	in "E" packet being sent twice when receiving file(s) and disk-full
+;	occurred. Sorry about that, folks!
+;
+; edit 21, 27-Nov-1990 by MF. When receiving files, make the decision as to
+;	whether to delete a partially-received file on a "disk full"
+;	condition subject to the setting of the SET INCOMPLETE-FILES
+;	switch in conformity with the behavior of MSDOS Kermit.
+;	An "E" packet is still sent to the remote Kermit. Also try to close
+;	any incomplete file whether deleting it or not (labels rdat16 and
+;	rdat3a). If keeping incomplete files, try to write outstanding
+;	buffers to disk, giving an error if the disk is full.
+;
+; edit 20, 23-Nov-1990 by MF. When receiving, cause the file being written
+;	to disk to **always** be deleted and an "E" packet to be sent when a
+;	"disk full" condition is encountered (per suggestion of
+;	RJL@MONU1.CC.MONASH.EDU.AU).
+;
+; edit 19, 15-Nov-1990 by MF.  Changed code for the Receive Complete state
+;	to always go into RECEIVE if AUTORECEIVE is on.  This will happen
+;	most of the time anyway as most mainframe Kermits issue a prompt
+;	after a single SEND command (wild-carded or not), thus guaranteeing
+;	that the modem status check of Kermit-80 ver. 4.09 would **always**
+;	have characters ready for input (the mainframe Kermit's prompt),
+;	defeating the status check and the Console input check (originally
+;	intended to drop the user out of the loop if he/she typed a key with
+;	no comm input present).  Eliminate "any key" message there also.
+;	the user can drop out by hitting ^C.
+;	Of course, none of the foregoing applies if the Receive Complete
+;	state occurs as the result of a "Get" command where Autoreceive
+;	is meaningless and we just drop back to Kermit command-level.
+;
+; edit 18, 22-Oct-1990 by MF.  Fixed bug in completion-message routine
+;	"finmes" wherein the completion message was not printed if the
+;	terminal was set to QUIET because the message pointer was clobbered
+;	by prcrlf.
+;
+; edit 17, 1-Oct-1990 by MF.  Added code to send an "I" packet before an
+;	"R" packet in GET command.
+;	Modified routine "sinit" to ignore "E" packets when sending an
+;	"i" packet (per KPROTO.DOC).
+;
+; edit 16, 14-Sep-1990 by MF.  Added code to implement SET FILE COLLISION
+;	and SET INCOMPLETE commands. Add hooks for SET COLLISION command.
+;	Eliminate commented-out old file warning rename routine.
+;	Clear communication input buffers (call flsmdm) before
+;	BYE, FINISH and LOGOUT commands.
+;
+; edit 15, 9-Sep-1990 by MF.  Added code to prevent packet counts
+;	from being displayed during Remote commands.  Fixed AUTORECEIVE
+;	code, file colision Rename algorithm and eliminated multiple
+;	display of initial messages during GET/RECEIVE. Implemented fixes
+;	in CPKERM.BWR for garbage printout during quiet transfers and for
+;	file existence/rename algorithm. Also implemented hooks for Remote
+;	commands.
+;
+; edit 14, 18 June 1990 by Russell Lang [rjl@monu1.cc.monash.edu.au]
+;	When trying to generate a unique file name on receive, zero
+;	the attribute bits between file opening attempts.  This is
+;	to fix a bug which caused the unique file name to have the
+;	attributes of the already existing file.  If the attribute
+;	was R/O, a bdos error occured later when an attempt was made
+;	to write to the file.
+;
+; edit 13, 27 October, 1987 By OBSchou.  Changed the rename routine to 
+;	be more like the MSDOS issue.
+;
+; edit 12, 28 July, 1987 by OBSchou.  Commented out capas etc support
+;	(Long packets etc) as this is not worth the effort coding... but
+;	I have left what WAS done for any enthusiast.  Also set in a few
+;	to NOT write to screen if SET TERMINAL QUIET set.  Hopefully speeds
+;	up transfers on systems taking forever to update screens.
+;	Added traps to NOT print to screen during file transfers if quietd
+;	is non zero (ie we SET TERMINAL QUIET). This hopefully speeds up
+;	transfers in systems spending an age updating the screen.
+;
+; edit 11, 8 April, 1987 by OBSchou.  Tarted up all sorts of bits n bobs
+;	to cope with all the new aditions for Kermit-80 V 4.09
+;	Look for the [10] for most cahnges.  spar and rpar largely replaced.
+;       Minor edit to put drive and user number in the "filename" field on
+;	the transfer screen.  This means that the offset on the line for
+;	the file name proper has moved along 4 space. Also, it writes 15
+;	spaces AFER the xxd: string to clear the field of any prevous file.
+;	Needed for those terminals that cannot clear to end of line...
+;
+; edit 10, March 30th by OBSchou.  Set bits for automatically receiving
+;	another file if a remote sender sends files in separate sessions.
+;	The code simply checks the serial line, and if there is some
+;	activity, assume its another SEND INIT packet.  As there is no
+;	simple way to go to receive with the control-a, just ignore the
+;	packet.  Causes one retry on the sender, but so what.  Really 
+;	should make it a server gizzmo.
+;
+; edit 9: January 28, 1987 by OBSchou
+;	Some modifications to the GET routines to correctly print the file
+;	name instead of the fireworks.  Trouble was with GET <file> <file>
+;	and RECEIVE <file>.  However, new bugs discovered...
+;
+; edit 8: August 11, 1986    Godfrey N. Nix [gnn] Nottingham University
+;       To ignore echoed packets (ie send 'S' receive 'S' before 'A');
+;       To allow character other than SOH for packet header (see also
+;          updates to CP4MIT and CP4UTL for other code needed);
+;       To permit SEND and RECEIVE to specify a host filename which
+;          is of a different structure to that of CP/M.
+;
+; edit 7: [OBSchou] 7 March, 1985.
+;       Edited file with additions from MJ Carter.  He writes:
+;       25th September 1985, M J Carter [majoc], Nottingham University
+;       Code in gofil() amended, for exactly the same reasons to the 
+;       alteration to cmifil() in cpscmd.asm.  If there is any deep
+;       reason why gofil() has to be used instead of a call to comnd(cmofil), 
+;       I can't see it.  The bug (on a British Micro Mimi 803) caused 
+;       gofil() to overwrite existing files in GET and RECEIVE, even 
+;       with file warning SET ON.
+;
+; edit 6: November 22, 1984
+;       Change SEND's 'Unable to find file' error exit from calling
+;       error3 to calling prtstr instead.  I don't know about you, but
+;       I greatly dislike having messages dumped into pre-existing
+;       junk on the screen where I have to spend lots of time hunting
+;       for them.  [Hal Hostetler]
+;
+; edit 5: September 9, 1984
+;       Call flsmdm in init to flush old input when starting transfers.
+;       Select console before returning from inpkt.
+;       Replace inline code with calls to makfil/clofil to set up for
+;       multisector buffering on output.
+;       Remove superfluous call to clrlin in error3.
+;
+; edit 4: August 21, 1984 (CJC)
+;       Fix comment in inpkt: packet is terminated by NUL on return, not CR.
+;       If debugging, display the outgoing packet before putting the EOL
+;       character on, so the dumped packet doesn't get overwritten.
+;
+; edit 3: July 27, 1984
+;       add link directive for LASM.  CP4PKT is linked by CP4MIT, and links
+;       to CP4TT.  Add Toad Hall TACtrap to permit operations through a TAC.
+;
+; edit 2: June 8, 1984
+;       formatting and documentation; remove some unused labels; move setpar
+;       to cp4mit.m80; add module version string; make all arithmetic on
+;       'pktnum' modulo 64; apply defaults correctly for missing parameters
+;       in send-init packet (and corresponding ack).
+;
+; edit 1: May, 1984
+;       extracted from CPMBASE.M80 version 3.9; modifications are described
+;       in the accompanying .UPD file.
+
+	.Z80
+
+	ident	/33/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	FCB.INC
+
+	public	PKTVER,READ,READ0,READ2,SEND,LOGO,LOGOUT,FINISH
+	public	NAK,NAK0,ACKP,COUNTP,ERROR,ERROR0,RPACK,SPACK
+	public	INIT,SINIT,SEND1,READ1,RINI2A,SPAR,SNDERR,FINMES
+	public	ENCODE,ERROR3,CBFPTR,OUTPKN,SDATA,SEOF,SEOT,COMPP
+	public	OUTRTR,UPDRTR
+
+	extrn	KERMIT,KERMT3,COMND,PRTSTR,PRCRLF,SCRFLN,NOUT
+	extrn	SCRNP,SELCON,INPCON,OUTCON,SELMDM,INPMDM,OUTMDM
+	extrn	PURMDM,CLOFIL,MFINIT,MFNAME,INBUF,OUTBUF,OUTPRN
+	extrn	GETFIL,SCRST,RPPOS,SPPOS,SETPAR,CLRTOP,SCREND
+	extrn	MAKFIL,CFMCMD,SCRNRT,SCRERR,CLSETK,SYSSCR,FCBSTR
+	extrn	OPENRW,CLOSEF,CLOSE2,SETFCB,FCBS2,STRLEN,DELET2
+	extrn	MAKFI1,MFEND,CLREOL,FLSCON,PRTERR,R,RSKP,DELAY
+
+	extrn	GTRXFL,REMDAT,RDL,QUIETD,STATE,CZSEEN,NUMPKT
+	extrn	NUMRTR,PKTNUM,NUMTRY,REMTXT,AUTORC,DATA,ARGBLK
+	extrn	CURCHK,OLDTRY,INICHK,INCFLG,CHKTYP,RECPKX,WRN8
+	extrn	DSCFLG,BYTES,SIZE,QUOT8,PARITY,BUFLEN,REOL,FILBUF
+	extrn	RPSIZ,RTIME,RPAD,RPADCH,RQUOTE,SEOL,QBCHR,TEMP4
+	extrn	SQUOTE,SPSIZ,SPAD,SPADCH,TEMP1,OUTPNT,TEMP3
+	extrn	FLWFLG,CHRCNT,BUFPNT,FMFLG,TEMP2,SOHCHR,FNBUF
+	extrn	IBMFLG,PACKET,DBGFLG,RECPKT,TAKFLG,RCVSOP,PRNFLG
+	extrn	SNDSOP,TACFLG,TIMFLG,SFCB,FCB,FCB2,SRVFLG,SRVTXT
+	extrn	OPMODE
+
+	extrn	ERMS15
+
+	extrn	CPHLDE,PFN
+
+	cseg
+
+PKTVER:	defb	'KPKT (33)  4-Dec-2021',0	; name, edit number, date
+
+; GET command
+; Here from: KERMIT
+
+READ:	ld	a,0FFh		; we are doing a Get
+	ld	(GTRXFL),a	; so set flag
+	ld	de,REMDAT	; where to put the text (if any)
+	ld	a,CMTXT
+	call	COMND		; get either some text or a confirm
+	jp	KERMT3		; didn't get anything
+	or	a		; got any chars?
+	jp	z,KERMT3	; GET must have a filename
+	ld	(RDL),a		; store the number of chars
+	ex	de,hl		; get pointer into HL
+	ld	(hl),0		; put in a trailing null for printing
+	call	INIT		; clear the line and initialize the buffers
+	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	jp	z,READ0A	; yes
+	ld	a,(QUIETD)	; quiet display?
+	and	a
+	jr	z,READ01	; no, go ahead and position cursor
+	call	PRCRLF		; yes, keep from overwriting the prompt
+	jr	READ00		;  and write filename
+READ01:	call	SCRFLN		; position cursor and erase to end of line
+READ00:	ld	de,REMDAT	; print the file name, in either case
+	call	PRTSTR
+	jp	READ0A		; go get local name if any
+
+; Enter here from SERVER routine
+
+READ1:	xor	a		; we received a Server Send command
+	ld	(GTRXFL),a	; so set flag
+	ld	(REMTXT),a
+	inc	a
+	ld	(RDL),a
+	call	RINI2A		; ACK the Send-Init packet with params
+	ld	de,INMS24	; get "Receiving..." message
+	call	FINMES		; print it
+	jr	READ11
+
+; Enter here for RECEIVE command
+
+READ0:	xor	a
+	ld	(RDL),a		; flag entry as Receive, not Get
+	ld	(GTRXFL),a	; doing a Receive, so reset flag
+READ0A:	ld	de,REMNAM	; save local name here
+	ld	a,CMTXT
+	call	COMND		; read second filename if present
+	jp	KERMT3		; error exit
+	ld	(REMLEN),a	; save length of name, may be zero
+	ld	(GTRXFL),a	; may also be receive <fnam> so 
+				;  pretend get for printing filename
+	ld	a,(RDL)		; look at first name
+	or	a		; Receive or Get?
+	jr	nz,READ12	; Get
+	call	INIT		; clear line, initialise buffers
+	call	RMREAD		; output message if in Remote mode
+	jr	READ13
+READ12:	ld	a,'I'		; Get, set state to send "I" packet
+	ld	(STATE),a
+READ13:	xor	a
+	ld	(CZSEEN),a	; clear the ^X/^Z flag initially
+	ld	hl,0
+	ld	(NUMPKT),hl	; set the number of packets to zero
+	ld	(NUMRTR),hl	; set the number of retries to zero
+	ld	(PKTNUM),a	; set the packet number to zero
+	ld	(NUMTRY),a	; set the number of tries to zero
+READ11:	call	OUTRTR		; write the number of retries
+	ld	a,(RDL)		; Get or Receive?
+	or	a
+	jr	nz,READ2	; Get, don't reset state
+	ld	a,'R'
+	ld	(STATE),a	; set the state to Receive-Initiate
+	;...
+
+; RECEIVE state table switcher.
+
+READ2:	ld	a,(REMTXT)	; in Remote command?
+	or	a
+	call	z,OUTPKN	; no, write the current packet number
+READ21:	ld	a,(STATE)	; get the state
+	cp	'D'		; are we in the Data Receive state?
+	jr	nz,READ22
+	call	RDATA
+	jp	READ2
+
+READ22:	cp	'X'		; F packet but not an F packet?
+	jr	nz,READ3	; nope, so try next one
+	call	RFILE		; 'get' the filename (but don't open it)
+	jp	READ2
+
+READ3:	cp	'F'		; are we in the File Receive state?
+	jr	nz,READ4
+	call	RFILE		; call Receive File
+	jp	READ2
+
+READ4:	cp	'R'		; are we in the Receive-Initiate state?
+	jr	nz,READ5
+	call	RINIT
+	ld	a,(STATE)	; get new state
+	cp	'F'		; went into Receive state?
+	jp	nz,READ2	; no
+	ld	de,INMS24	; yes, get "Receiving..." message
+	call	FINMES		; go print it
+	jp	READ2
+
+READ5:	cp	'C'		; are we in the Receive-Complete state?
+	jr	nz,READ6
+	ld	de,INFMS3	; put in "Complete" message
+	ld	a,(CZSEEN)	; or was it interrupted?
+	or	a
+	jr	z,READ5A	; no.
+	xor	a		; yes, clear flag
+	ld	(CZSEEN),a
+	ld	de,INMS13	; issue "Interrupted" message
+READ5A:	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	call	z,FINMES	; print completion message in right place if not
+
+	ld	a,(RDL)		; Receive or Get?
+	or	a
+	jp	nz,KERMIT	; Get, Autoreceive means nothing
+	ld	a,(AUTORC)	; see if we want autoreceives
+	and	a
+	jp	z,KERMIT	; no autoreceives, so drop out
+	ld	de,AUTMES	; yes, tell the user what we're doing
+	call	PRTSTR
+	jp	READ12		; try another Receive (we get one
+				;  retry from the sender as the ^A is lost)
+
+READ6:	cp	'Y'		; simple ACK (from Remote command)?
+	jp	z,KERMIT	; yes
+
+	cp	'I'		; exchanging parameters via info packet?
+	jr	nz,READ7	; no
+	call	SINIT		; yes, send the packet
+	ld	a,(STATE)	; now see what happened
+	cp	'X'		; did we exchange parameters successfully?
+	jr	z,READ6A	; yes, go send the filespec
+	cp	'A'		; no, are we in Abort state?
+	jp	nz,READ2	; no, try again
+	jp	KERMIT		; yes, it's a real disaster, we must stop
+READ6A:	ld	a,(RDL)		; get length of filespec
+	ld	(ARGBLK+1),a	;  as length of packet
+	ld	c,a		; we must copy the filespec
+	ld	b,0
+	ld	hl,REMDAT	;  from the temporary buffer
+	ld	de,DATA		;   to the packet data area
+	ldir			; do it
+
+	; for GET we must send the name of the file we want
+
+	ld	a,'1'		; start with single character checksum
+	ld	(CURCHK),a	; save the type
+	xor	a		; start a packet zero
+	ld	(ARGBLK),a
+	ld	a,'R'		; Receive Init packet
+	call	SPACK		; send the packet
+	jp	KERMT3		; die!
+	xor	a
+	ld	(CZSEEN),a	; clear the ^X/^Z flag initially.
+	ld	hl,0
+	ld	(NUMPKT),hl	; set the number of packets to zero
+	ld	(PKTNUM),a	; set the packet number to zero
+	ld	(NUMTRY),a	; set the number of tries to zero
+	ld	a,'R'		; set state to Receive-Initiate
+	ld	(STATE),a
+	jp	READ21		; and go around again
+				;  without retyping packet-number
+
+READ7:	cp	'A'		; are we in the Receive-"Abort" state?
+	jp	nz,READ8
+READ8:	ld	de,INFMS4	; anything else is equivalent to "Abort"
+	call	FINMES
+	jp	KERMIT
+
+RMREAD:	ld	a,(OPMODE)	; Remote operation?
+	or	a
+	ret	nz		; no, return
+	ld	de,INFMS1
+	call	PRTSTR		; else output message
+	xor	a
+	ret
+
+INFMS1:	defb	CR,LF,'Return to your local Kermit and give a SEND command'
+	defb	CR,LF,0
+INFMS3:	defb	BELL,'Completed',0
+INFMS4:	defb	BELL,'Failed',0
+INMS13:	defb	BELL,'Interrupted',0
+INMS24:	defb	'Receiving...',0
+AUTMES:	defb	CR,LF,LF,'[Automatically receiving, type ^C to abort]'
+	defb	CR,LF,LF,0
+
+; Output current packet number to the screen
+
+OUTPKN:	ld	a,(OPMODE)	; Remote mode?
+	and	a
+	ret	z		; yes, so don't write
+	ld	a,(QUIETD)	; quiet display?
+	and	a
+	ret	nz		; yes, don't write either
+	call	SCRNP		; position cursor
+	ld	hl,(NUMPKT)
+	call	NOUT		; write the packet number
+	call	CLREOL		; erase to end of line
+	jp	FLSCON		; ensure immediate output
+
+; Receive routines
+
+; Receive Init
+; Called by: READ
+
+RINIT:	ld	a,(NUMTRY)	; get the number of tries
+	cp	IMXTRY		; have we reached the maximum number of tries?
+	jp	m,RINIT2
+	ld	de,ERMES4
+	call	ERROR3		; move cursor and print an error message
+	jp	ABORT		; change the state to Abort
+
+RINIT2:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	ld	a,'1'		; reset block check type to single character
+	ld	(CURCHK),a	; store as current type for initialization
+	call	RPACK		; get a packet
+	jp	NAK		; trashed packet: NAK, retry
+	cp	'S'		; is it a Send Initiate packet?
+	jp	nz,RINIT3	; if not, see if it's an Error
+RINI2A:	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	a,(ARGBLK)	; returned packet number (synchronize them)
+	call	COUNTP		; increment it
+	ld	a,(ARGBLK+1)	; get the number of arguments received
+	ld	hl,DATA		; get a pointer to the data
+	call	SPAR		; get the data into the proper variables
+	ld	hl,DATA		; get a pointer to our data block
+	call	RPAR		; set up the receive parameters
+	ld	(ARGBLK+1),a	; store the returned number of arguments
+	ld	a,'Y'		; acknowledge packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	ld	a,(INICHK)	; now switch to agreed upon check-type
+	ld	(CURCHK),a	;  for all future packets
+	ld	a,'F'		; set the state to File Send
+	ld	(STATE),a
+	ret	
+
+RINIT3:	cp	'E'		; is it an Error packet?
+	jp	nz,NAK0		; if not, NAK whatever it is
+	call	ERROR		; if yes, display the error info
+	jp	ABORT		; and Abort
+
+ERMES4:	defb	'?Unable to receive initiate',0
+
+; Receive File
+; Called by: READ
+
+RFILE:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,RFILE1
+	ld	de,ERMES5
+	call	ERROR3		; move cursor and print an error message
+	jp	ABORT		; change the state to Abort
+
+RFILE1:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	call	RPACK		; get a packet
+	jp	NAK		; trashed packet: NAK, retry
+	cp	'S'		; is it a Send Initiate packet?
+	jr	nz,RFILE2	; no, try next type
+	ld	a,(OLDTRY)	; get the number of tries
+	cp	IMXTRY		; have we reached the maximum number of tries?
+	jp	m,RFIL12	; if not, proceed
+	ld	de,ERMES4
+	call	ERROR3		; move cursor and print an error message
+	jp	ABORT		; change the state to Abort
+
+RFIL12:	inc	a		; increment it
+	ld	(OLDTRY),a	; save the updated number of tries
+	ld	a,(PKTNUM)	; get the present packet number
+	dec	a		; decrement
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one less than now?
+	jp	nz,NAK0		; no, NAK and try again
+	call	UPDRTR		; update the retry count
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	hl,DATA		; get a pointer to our data block
+	call	RPAR		; set up the parameter information
+	ld	(ARGBLK+1),a	; save the number of arguments
+	ld	a,'Y'		; acknowledge packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, Abort
+	ret
+
+RFILE2:	cp	'Z'		; is it an EOF packet?
+	jr	nz,RFILE3	; no, try next type
+	ld	a,(OLDTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,RFIL21	; if not, proceed
+	ld	de,ERMES6
+	call	ERROR3		; move cursor and print an error message
+	jp	ABORT		; change the state to Abort
+
+RFIL21:	call	TRYAGN
+	ret
+
+RFILE3:	cp	'F'		; start of file?
+	jr	nz,RFIL3B
+	ld	c,a		; save packet type
+	ld	a,(REMTXT)	; doing a Remote server command?
+	or	a
+	ld	a,c		; restore packet type
+	jr	nz,RFIL3D	; if yes, same as X packet
+	call	COMPP		; expected packet?
+	jp	nz,NAK0		; no, NAK it and try again
+	call	COUNTP		; increment packet number modulo 64
+	ld	c,a
+	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	ld	a,c
+	jr	nz,RFIL3A	; yes, don't open a file
+	call	GOFIL		; get a file to write to, and init output buffer
+	jp	ABORT		; on error, Abort
+	ld	a,(OPMODE)	; Remote mode?
+	or	a
+	jr	z,RFIL3A	; yes, don't output anything
+	ld	a,(QUIETD)	; quiet display?
+	or	a
+	call	z,SCRFLN	; no, position cursor and erase to end of line
+	ld	ix,FCB2		; point to FCB
+	ld	hl,FNBUF	; get address of string buffer
+	push	hl		; save string address
+	call	FCBS2		; convert FCB to string
+	pop	de		; restore string address
+	call	PRTSTR		; print the file name
+RFIL3A:	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	call	ACKP
+	ld	a,'D'		; set the state to Data Receive
+	ld	(STATE),a
+	ld	a,(CZSEEN)	; check if we punted a file
+	cp	'Z'		; and didn't want any more
+	ret	z		; if that was the request, keep telling other end
+	xor	a		; otherwise, clear flag (^X is only for one file)
+	ld	(CZSEEN),a	; and store the flag back
+	ret
+
+RFIL3B:	cp	'X'		; start of 'file?', but not a file?
+	jr	nz,RFILE4
+RFIL3D:	call	COMPP		; expected packet?
+	jp	nz,NAK0		; no, NAK it and try again
+	call	COUNTP		; increment packet number modulo 64
+
+	call	SELCON		; select Console
+	ld	a,(ARGBLK+1)	; get length
+	or	a		; anything to write?
+	jp	z,RFIL3E	; no
+	push	af		; yes, save character count
+	ld	e,'<'		; write "<<" as in VMSKermit
+	call	OUTCON
+	call	OUTCON
+	pop	af		; restore character count
+	ld	hl,DATA		; lets write the filename (?) to display
+RFIL3F:	push	af		; save loop counter
+	ld	e,(hl)		; get character to write
+	inc	hl		; and increment character pointer
+	push	hl		; save the pointer
+	call	OUTCON		; write character to display
+	pop	hl		; restore pointer
+	pop	af		; and loop counter
+	dec	a		; decrement the counter
+	jr	nz,RFIL3F	; display entire filename
+	ld	e,'>'		; put in ">>" as in VMSKermit
+	call	OUTCON
+	call	OUTCON
+	call	PRCRLF		; new line
+RFIL3E:	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	call	ACKP
+	ld	a,'D'		; expecting a D packet
+	ld	(STATE),a
+	ld	a,(CZSEEN)	; check if we punted a file
+	cp	'Z'		; and didn't want any more
+	ret	z		; if that was the request, keep telling other end
+	xor	a		; otherwise, clear flag (^X is only for one file)
+	ld	(CZSEEN),a	; and store the flag back
+	ret
+
+RFILE4:	cp	'B'		; end of transmission?
+	jr	nz,RFILE5
+	call	COMPP		; expected packet?
+	jp	nz,NAK0		; no, NAK it and try again
+	xor	a		; no data (packet number already in ARGBLK)
+	ld	(ARGBLK+1),a
+	ld	a,'Y'		; acknowledge packet
+	call	SPACK		; send the packet
+	jp	ABORT
+	ld	a,'C'		; set the state to Complete
+	ld	(STATE),a
+	ret
+
+RFILE5:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, send state to Abort
+	call	ERROR		; yes, display error info
+	jp	ABORT		; and Abort
+
+ERMES5:	defb	'?Unable to receive file name',0
+ERMES6:	defb	'?Unable to receive end of file',0
+
+; Receive data
+; Called by: READ
+
+RDATA:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,RDATA1
+	ld	de,ERMS10
+	call	ERROR3		; display error message
+RDAT16:	ld	a,(REMTXT)	; is a Remote command in progress?
+	or	a
+	jp	nz,ABORT	; yes, don't worry about file disposition
+	ld	a,(INCFLG)	; are we keeping incomplete files?
+	or	a
+	jr	nz,RDAT17	; yes
+	call	CLOSE2		; no, close the file, ignoring errors
+	call	DELET2		; now delete the file, ignoring errors
+	jp	ABORT		; change the state to Abort
+RDAT17:	call	CLOFIL		; try to close the file, writing
+				;  outstanding buffers to disk
+	jp	RDAT37		; we can't, the disk is full
+	jp	ABORT		; change the state to "Abort"
+
+RDATA1:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	call	RPACK		; get a packet
+	jp	NAK		; trashed packet: NAK, retry
+	cp	'D'		; is it a data packet?
+	jp	nz,RDATA2	; no, try next type
+	call	COMPP		; check for correct packet number (zero flag = OK)
+	jp	z,RDAT14	; it's correct
+	ld	a,(OLDTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,RDAT12	; if not, proceed
+	ld	de,ERMS10
+	call	ERROR3		; display error message
+	jp	RDAT16		; change the state to Abort
+
+RDAT12:	call	TRYAGN
+	ret
+
+RDAT14:	call	COUNTP		; increment packet number modulo 64
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	ld	a,(ARGBLK+1)	; get the length of the data
+	call	PTCHR
+	jp	RDAT3B		; unable to write out chars, abort
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	(ARGBLK+1),a	; no data (packet number still in ARGBLK)
+	ld	c,a		; assume no data
+	ld	a,(CZSEEN)	; check if control-X typed
+	or	a
+	jp	z,RDAT15	; zero if not typed
+	ld	c,a		; get the type of character typed
+	ld	a,1		; one data character
+	ld	(ARGBLK+1),a	; save the count
+	ld	a,c		; get the possible data character
+	ld	(DATA),a	; store in data area
+RDAT15:	ld	a,'Y'		; acknowledge packet
+	call	SPACK		; send the packet
+	jp	RDAT16
+	ret
+
+RDATA2:	cp	'F'		; start of file?
+	jr	nz,RDATA3	; no, try next type
+	ld	a,(OLDTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,RDAT21	; if not, proceed
+	ld	de,ERMES5
+	call	ERROR3		; display error message
+	jp	RDAT16		; change the state to Abort
+
+RDAT21:	call	TRYAGN
+	ret
+
+RDATA3:	cp	'Z'		; is it a EOF packet?
+	jp	nz,RDATA4	; try and see if it's an error
+	call	COMPP		; expected packet?
+	jp	nz,NAK0		; no, NAK it and try again
+	call	COUNTP		; increment packet number modulo 64
+	ld	a,(ARGBLK+1)	; get the data length
+	cp	1		; have one item?
+	jr	nz,RDAT33	; if not, ignore data
+	ld	a,(DATA)	; yes, get the character
+	cp	'D'		; is it a 'D' for discard?
+	jp	z,RDAT36	; if so, punt file
+RDAT33:	ld	a,(REMTXT)	; writing text to disk?
+	or	a
+	jr	nz,RDAT38	; no, don't close file
+	call	CLOFIL		; finish off the file
+	jp	RDAT37		; give up if the disk is full
+RDAT38:	xor	a		; since we kept the file,
+	ld	(CZSEEN),a	;  don't say it was discarded
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	call	ACKP
+	jp	RDAT39		; and get ready to get more files
+RDAT36:	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	call	ACKP
+	ld	a,(REMTXT)	; is a Remote command in progress?
+	or	a
+	jp	nz,RDAT39	; yes, don't worry about file disposition
+	ld	a,(DSCFLG)	; is the file being punted because
+	or	a		;  of a collision?
+	jp	nz,RDAT39	; yes, don't delete the existing file
+	ld	a,(INCFLG)	; no, are we keeping incomplete files?
+	or	a
+	jp	nz,RDAT3A	; yes
+	call	CLOSE2		; no, close the file, ignoring errors
+	call	DELET2		; now delete the file, ignoring errors
+	jp	RDAT39		; and continue
+
+RDAT3A:	call	CLOFIL		; try to close the file, writing
+				;  outstanding buffers to disk
+	jp	RDAT37		; can't, disk is full
+RDAT39:	ld	a,'F'
+	ld	(STATE),a
+	ret
+
+RDAT37:	call	PTCHR9		; send "?Disk full" on the error line
+				; and to the remote Kermit
+RDAT3B:	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	jp	nz,ABORT	; yes, just abort
+	call	CLOSE2		; close the file, ignoring errors
+	ld	a,(INCFLG)	; are we keeping incomplete files?
+	or	a
+	jp	nz,ABORT	; yes, just abort transfer
+	call	DELET2		; no, delete the file, ignoring errors
+	jp	ABORT		; abort transfer
+
+RDATA4:	cp	'E'		; is it an Error packet?
+	jp	nz,RDAT16	; no, close file and Abort
+	call	ERROR		; yes, display error info
+	jp	RDAT16		; close file and Abort
+
+ERMS10:	defb	'?Unable to receive data',0
+
+; SEND command
+; Here from: KERMIT
+
+SEND:	ld	a,CMIFI		; parse an input file spec
+	ld	de,SFCB		; give the address for the FCB
+	call	COMND
+	jp	KERMIT		; give up on bad parse
+
+	; section to get remote filename
+
+	ld	de,REMNAM	; where to put filename
+	ld	a,CMTXT
+	call	COMND		; get the text to end of the line
+	jp	KERMT3		; failure in reading buffer
+	ld	(REMLEN),a	; save length (may be zero)
+	xor	a
+	ld	(SRVTXT),a
+	jr	SEND11		; continue below
+
+; Enter here from SERVER routine.
+
+SEND1:	xor	a		; here from SERVER routine
+	ld	(REMLEN),a	;  so clear length (no local file name)
+	ld	(REMTXT),a
+SEND11:	call	MFINIT		; initialize file search
+	call	MFNAME		; handle (multi) files
+	jr	nc,SEND14	; got a valid file-name
+	ld	de,ERMS15
+	push	de
+	call	SEND12		; display error msg. (where it's visible)
+	pop	de
+	ld	a,(SRVFLG)
+	or	a		; are we in Server mode?
+	call	nz,SNDERR	; yes, send error to remote client
+	jp	KERMIT
+
+SEND12:	ld	a,(SRVFLG)
+	or	a		; Server mode?
+	jp	z,PRTERR	; no, output error message after newline
+	ld	a,(OPMODE)	; Remote mode?
+	or	a
+	ret	z		; yes, return
+	push	de
+	ld	a,(QUIETD)
+	or	a		; quiet display?
+	call	z,SCRERR	; no, position cursor
+	pop	de
+	call	PRTSTR		; output message
+	ld	a,(QUIETD)
+	or	a		; quiet display?
+	ret	nz		; yes, return
+	call	CLREOL		; else erase to end of line
+	jp	PRCRLF		; and output a newline
+
+SEND14:	call	INIT		; clear the line and initialize the buffers
+	ld	a,(OPMODE)	; Remote operation?
+	or	a
+	jr	nz,SEND15	; no
+	ld	a,(SRVFLG)	; Server mode?
+	or	a
+	jr	nz,SEND15	; yes
+	ld	de,INFMS2
+	call	PRTSTR		; else output message
+	ld	hl,5
+	call	DELAY		; and wait 5 seconds before start
+SEND15:	xor	a
+	ld	(PKTNUM),a	; set the packet number to zero
+	ld	(NUMTRY),a	; set the number of tries to zero
+	ld	(WRN8),a	; we haven't sent the 8-bit-lost warning
+	ld	hl,0
+	ld	(NUMPKT),hl	; set the number of packets to zero
+	ld	(NUMRTR),hl	; set the number of retries to zero
+	call	OUTRTR		; write the number of retries
+	ld	a,'1'		; reset to use single character checksum
+	ld	(CURCHK),a	; for startup
+	ld	a,'S'
+	ld	(STATE),a	; set the state to Send Initiate
+	; ...
+
+; SEND state table switcher
+
+SEND2:	call	OUTPKN		; write the packet number
+	ld	a,(STATE)	; get the state
+	cp	'D'		; are we in the Data Send state?
+	jr	nz,SEND3
+	call	SDATA
+	jp	SEND2
+
+SEND3:	cp	'F'		; are we in the File Send state?
+	jr	nz,SEND4
+	call	SFILE		; call Send File
+	jp	SEND2
+
+SEND4:	cp	'Z'		; are we in the EOF state?
+	jr	nz,SEND5
+	call	SEOF
+	jp	SEND2
+
+SEND5:	cp	'S'		; are we in the Send Initiate state?
+	jr	nz,SEND6
+	call	SINIT
+	ld	a,(STATE)	; get state back
+	cp	'F'		; into File Send state yet?
+	jp	nz,SEND2	; no
+	ld	de,INMS23	; yes, print "Sending..."
+	call	FINMES
+	jp	SEND2
+
+SEND6:	cp	'B'		; are we in the EOT state?
+	jr	nz,SEND7
+	call	SEOT
+	jp	SEND2
+
+SEND7:	cp	'C'		; are we in the Send Complete state?
+	jr	nz,SEND8	; no...
+	ld	de,INFMS3	; yes, write "Complete" message.
+	ld	a,(CZSEEN)	; or was it interrupted?
+	or	a
+	jr	z,SEND7A	; no
+	ld	de,INMS13	; yes, then say "Interrupted" instead
+SEND7A:	call	FINMES
+	jp	KERMIT
+
+SEND8:	cp	'A'		; are we in the Send "Abort" state?
+	jr	nz,SEND9
+	ld	de,INFMS4	; print message
+	call	FINMES
+	jp	KERMIT
+
+SEND9:	ld	de,INFMS4	; anything else is equivalent to "Abort"
+	call	FINMES
+	jp	KERMIT
+
+INFMS2:	defb	CR,LF,'Return to your local Kermit and give a RECEIVE command'
+	defb	CR,LF,0
+INMS23:	defb	'Sending...',0
+
+; Send routines
+
+; Send initiate
+; Called by: SEND
+
+SINIT:	ld	a,(NUMTRY)	; get the number of tries
+	cp	IMXTRY		; have we reached the maximum number of tries?
+	jp	m,SINIT2	; not yet
+	ld	de,ERMS14
+	call	ERROR3		; display eror message
+	jp	ABORT		; change the state to Abort
+
+SINIT2:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	ld	a,'1'		; reset to use single character checksum
+	ld	(CURCHK),a	;  for startup
+	ld	a,(CHKTYP)	; get our desired block check type
+	ld	(INICHK),a	; store so we tell other end
+	ld	hl,DATA		; get a pointer to our data block
+	call	RPAR		; set up the parameter information
+	ld	(ARGBLK+1),a	; save the number of arguments
+	ld	a,(NUMPKT)	; get the packet number
+	ld	(ARGBLK),a
+	ld	a,(STATE)	; load state (I or S)
+
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	call	RPACK		; get a packet
+	jp	R		; trashed packet don't change state, retry
+	cp	'Y'		; ACK?
+	jp	nz,SINIT3	; if not, try next
+	call	COMPP		; compare packets: if OK, zero flag set
+	ret	nz		; if not, try again
+	call	COUNTP		; increment packet number modulo 64
+	ld	a,(ARGBLK+1)	; get the number of pieces of data
+	ld	hl,DATA		; pointer to the data
+	call	SPAR		; read in the data (decode what they want)
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	a,(STATE)	; see if S or I state
+	cp	'I'		; I state, so set X as next state
+	jr	nz,SINITA
+SINITB:	ld	a,'X'
+	ld	(STATE),a
+	ret
+
+SINITA:	ld	a,(INICHK)	; get the agreed upon block check type
+	ld	(CURCHK),a	; store as type to use for packets now
+	ld	a,'F'		; set the state to File Send (assumed)
+	ld	(STATE),a
+	ld	a,(SRVTXT)
+	or	a		; called from a Server command?
+	ret	nz		; yes, return
+	call	GETFIL		; open the file
+	ret			; assume success; MFNAME thinks the file exists
+
+SINIT3:	cp	'N'		; NAK?
+	jp	nz,SINIT4	; if not, see if its an Error
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get the present packet number
+	inc	a		; increment
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one more than now?
+	ret	nz		; if not assume its for this packet, go again
+	xor	a
+	ld	(NUMTRY),a	; reset number of tries
+	ld	a,'F'		; set the state to File Send
+	ld	(STATE),a
+	ret
+
+SINIT4:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT
+	ld	a,(STATE)	; get state
+	cp	'I'		; if an "I" packet was sent,
+	jp	z,SINITB	;  ignore the error, pretend success
+	call	ERROR		; else display the error info
+	jp	ABORT		;  and abort
+
+ERMS14:	defb	'?Unable to receive an acknowledgement from the host',0
+
+; Send file header
+; Called by: SEND
+
+SFILE:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,SFILE1
+	ld	de,ERMS14
+	call	ERROR3
+	jp	ABORT		; change the state to Abort
+
+SFILE1:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	xor	a		; clear A
+	ld	(CZSEEN),a	; no control-Z or X seen
+	ld	hl,DATA		; get a pointer to our data block
+	ld	(DATPTR),hl	; save it
+
+	; use remote name if given, else use local name
+
+	ld	a,(REMLEN)	; anything given?
+	or	a
+	jr	nz,SFILE4	; use remote name
+
+	; copy local name into packet to send
+
+	ld	ix,FCB		; TODO: clear FN.VER bit?
+	call	FCBS2		; convert file name to null-terminated string
+	ld	(DATPTR),hl
+	ld	hl,DATA
+	call	STRLEN		; compute
+	ld	a,b
+	jp	SFIL13		; now go and send packet
+
+SFILE4:	; copy remote name into packet to send
+
+	ex	de,hl		; keep pointer to packet
+	ld	hl,REMNAM	; set pointer to name
+	ld	c,a		; get length into BC for ldir
+	ld	b,0
+	ldir			; copy to packet
+	ex	de,hl
+	ld	(DATPTR),hl
+	ld	(hl),0		; end with a null for printing
+
+SFIL13:	ld	(ARGBLK+1),a	; store number of chars in file name
+	ld	a,(OPMODE)	; Remote mode?
+	and	a
+	jr	z,SFIL15	; yes
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	call	z,SCRFLN	; no, position cursor and erase to end of line
+	ld	de,DATA		; print the file name though, in either case
+	call	PRTSTR
+SFIL15:	ld	a,(PKTNUM)	; get the packet number
+	ld	(ARGBLK),a
+	ld	a,'F'		; file header packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	call	RPACK		; get a packet
+	jp	R		; trashed packet don't change state, retry
+	cp	'Y'		; ACK?
+	jp	nz,SFILE2	; if not, try next
+	call	COMPP		; expected packet?
+	ret	nz		; if not, hold out for the right one
+SFIL14:	call	COUNTP		; count packet
+	;TODO: get remote filename here, if specified in ACK packet
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	(BYTES),a	; clear the "bytes transferred" counter
+	ld	(BYTES+1),a	;  [not used???]
+	ld	(BYTES+2),a
+	ld	(BYTES+3),a
+	call	GTCHR		; fill the first data packet
+	jp	SFIL16		; error, go see if its EOF
+                              	; got the chars, proceed
+	ld	(SIZE),a	; save the size of the data gotten
+	ld	a,'D'		; set the state to Data Send
+	ld	(STATE),a
+	ret	
+
+SFIL16:	cp	0FFh		; is it EOF?
+	jp	nz,ABORT	; if not, give up
+	ld	a,'Z'		; set the state to EOF
+	ld	(STATE),a
+	ret	
+
+SFILE2:	cp	'N'		; NAK?
+	jr	nz,SFILE3	; try if Error packet
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get the present packet number
+	inc	a		; increment
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one more than now?
+	ret	nz		; if not, go try again
+	jp	SFIL14		; just as good as a ACK, go to the ACK code
+
+SFILE3:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, set state to Abort
+	call	ERROR		; yes, display error info
+	jp	ABORT		; and Abort
+
+; Send data
+; Called by: SEND
+
+SDATA:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,SDATA1
+	ld	de,ERMS14
+	call	ERROR3
+	jp	ABORT		; change the state to Abort
+
+SDATA1:	inc	a		; increment tries
+	ld	(NUMTRY),a	; save the updated number of tries
+
+	ld	hl,FILBUF	; pointer to chars to be sent
+	ld	de,DATA		; get a pointer to our data block
+	ld	a,(SIZE)	; get number of chars
+	ld	b,a		;  in B
+SDAT11:	ld	a,(hl)		; get char
+	inc	hl
+	ld	c,a		; preserve character temporarily
+	ld	a,(QUOT8)	; doing eighth-bit quoting?
+	or	a
+	ld	a,c		; restore char
+	jr	nz,SDAT4	; using eighth-bit quoting, no warning
+	ld	a,(PARITY)	; get parity
+	cp	PARNON		; none?
+	ld	a,c		; restore character
+	jr	z,SDAT4		; no parity, leave char alone
+	ld	a,(WRN8)	; look at warning flag
+	or	a		; have we already given the warning?
+	jr	nz,SDAT5	; yes, skip this
+	ld	a,c		; restore character...
+	and	80h		; examine parity
+	jr	z,SDAT5		; no parity, no warning
+	call	PARWRN		; ...print warning - parity lost
+	ld	a,0FFh		; remember that we sent the message
+	ld	(WRN8),a
+SDAT5:	ld	a,c		; restore character again
+	and	7Fh		; strip parity so not checksummed
+SDAT4:	ld	(de),a		; put the char in the data packet
+	inc	de
+	djnz	SDAT11		; decrement char count and loop
+
+	ld	a,(SIZE)	; number of chars in char buffer
+	ld	(ARGBLK+1),a
+	ld	a,(PKTNUM)	; get the packet number
+	ld	(ARGBLK),a
+	ld	a,'D'		; Data packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	call	RPACK		; get a packet
+	jp	R		; trashed packet, don't change state, retry
+	cp	'Y'		; ACK?
+	jp	nz,SDATA2	; if not, try next
+	call	COMPP		; expected packet?
+	ret	nz		; if not, hold out for the right one
+	ld	a,(ARGBLK)	; get the packet number back
+	call	COUNTP		; increment it
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	a,(ARGBLK+1)	; get the data length
+	cp	1		; check if only 1 character?
+	jr	nz,SDAT15	; if not, just continue
+	ld	a,(DATA)	; got one character, get it from data
+	cp	'Z'		; want to abort entire stream?
+	jr	nz,SDAT14	; if not, check for just this file
+	ld	(CZSEEN),a	; yes, remember it
+	jr	SDAT16		;  and set EOF state
+SDAT14:	cp	'X'		; desire abort of current file?
+	jr	nz,SDAT15	; no, just continue
+	ld	(CZSEEN),a	; yes, remember that
+	jr	SDAT16		;  and set EOF
+SDAT15:	ld	a,(CZSEEN)	; also get control-Z flag
+	or	a		; check if either given
+	jr	z,SDAT12	; if neither given, continue
+SDAT16:	ld	a,'Z'		; change state to EOF
+	ld	(STATE),a
+	ret			; and return
+
+SDAT12:	ld	a,(SRVTXT)	; doing a Server Send Data command?
+	or	a
+	jr	z,SDAT17	; no
+	xor	a
+	ld	(SRVTXT),a	; else tell server command succeeded (no retry)
+	ret
+
+SDAT17:	call	GTCHR
+	jp	SDAT13		; error, go see if it is EOF
+	ld	(SIZE),a	; save the size of the data gotten
+	ret	
+
+SDAT13:	cp	0FFh		; is it EOF?
+	jp	nz,ABORT	; if not, give up
+	ld	a,'Z'		; set the state to EOF
+	ld	(STATE),a
+	ret	
+
+SDATA2:	cp	'N'		; NAK?
+	jr	nz,SDATA3	; see if is an Error packet
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get the present packet number
+	inc	a		; increment
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one more than now?
+	ret	nz		; if not, go try again
+	jp	SDAT12		; just as good as a ACK, go to the ACK code
+
+SDATA3:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, set state to Abort
+	call	ERROR		; yes, display error info
+	jp	ABORT		; and Abort
+
+; Send EOF
+; Called by: SEND
+
+SEOF:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,SEOF1
+	ld	de,ERMS14
+	call	ERROR3
+	jp	ABORT		; change the state to Abort
+
+SEOF1:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	ld	a,(PKTNUM)	; get the packet number
+	ld	(ARGBLK),a
+	xor	a
+	ld	(ARGBLK+1),a	; no data
+	ld	a,(CZSEEN)	; check if Control-Z or Control-X typed
+	or	a
+	jr	z,SEOF14	; if not aborted, just keep going
+	ld	a,'D'		; tell other end to discard packet
+	ld	(DATA),a	; store in data portion
+	ld	a,1		; one character
+	ld	(ARGBLK+1),a	; store the length
+SEOF14:	ld	a,'Z'		; EOF packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	call	RPACK		; get a packet
+	jp	R		; trashed packet don't change state, retry
+	cp	'Y'		; ACK?
+	jr	nz,SEOF2	; if not, try next
+	call	COMPP		; expected packet?
+	ret	nz		; if not, hold out for the right one
+SEOF12:	call	COUNTP		; increment packet number modulo 64
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	a,(SRVTXT)	; doing a Server EOF command?
+	or	a
+	jr	z,SEOF15	; no
+	xor	a
+	ld	(SRVTXT),a	; else tell server command succeeded (no retry)
+	ret
+
+SEOF15:	call	CLOSEF		; close the file
+
+	;* Check if successful
+
+	ld	a,(CZSEEN)	; desire abort of entire stream?
+	cp	'Z'
+	jr	z,SEOF13	; if so, just give up now
+	call	MFNAME		; get the next file
+	jr	c,SEOF13	; no more
+	call	GETFIL		; and open it (assume success)
+	xor	a		; clear A
+	ld	(CZSEEN),a	; since we have not aborted this file
+	ld	a,'F'		; set the state to File Send
+	ld	(STATE),a
+	ret
+
+SEOF13:	call	MFEND		; close directory
+	ld	a,'B'		; set the state to EOT
+	ld	(STATE),a
+	ret	
+
+SEOF2:	cp	'N'		; NAK?
+	jr	nz,SEOF3	; try and see if its an Error packet
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get the present packet number
+	inc	a		; increment
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one more than now?
+	ret	nz		; if not go try again
+	jp	SEOF12		; just as good as a ACK, go to the ACK code
+
+SEOF3:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, change state to Abort
+	call	ERROR		; yes, display error info
+	jp	ABORT		; and Abort
+
+; Send EOT
+; Called by: SEND
+
+SEOT:	ld	a,(NUMTRY)	; get the number of tries
+	cp	MAXTRY		; have we reached the maximum number of tries?
+	jp	m,SEOT1
+	ld	de,ERMS14
+	call	ERROR3
+	jp	ABORT		; change the state to Abort
+
+SEOT1:	inc	a		; increment it
+	ld	(NUMTRY),a	; save the updated number of tries
+	ld	a,(PKTNUM)	; get the packet number
+	ld	(ARGBLK),a
+	xor	a
+	ld	(ARGBLK+1),a	; no data
+	ld	a,'B'		; EOF packet
+	call	SPACK		; send the packet
+	jp	ABORT		; failed, abort
+	call	RPACK		; get a packet
+	jp	R		; trashed packet don't change state, retry
+	cp	'Y'		; ACK?
+	jr	nz,SEOT2	; if not, try next
+	call	COMPP		; expected packet?
+	ret	nz		; if not, hold out for the right one
+SEOT12:	call	COUNTP		; increment packet number modulo 64
+	ld	a,(NUMTRY)	; get the number of tries
+	ld	(OLDTRY),a	; save it
+	xor	a
+	ld	(NUMTRY),a	; reset the number of tries
+	ld	a,'C'		; set the state to Complete
+	ld	(STATE),a
+	ret
+
+SEOT2:	cp	'N'		; NAK?
+	jr	nz,SEOT3	; is it error?
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get the present packet number
+	inc	a		; increment
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one more than now?
+	ret	nz		; if not, go try again
+	jp	SEOT12		; just as good as a ACK, go to the ACK code
+
+SEOT3:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, change state to Abort
+	call	ERROR		; yes, display error info
+	jp	ABORT		; and Abort
+
+; This routine sets up the data for init packet (either the Send_init or
+; ACK packet).
+; Called by: RINIT, RFILE, SINIT. See what WE want from the other fella
+;
+; [11] by OBS - Stripped out all the new capas code etc and reverted
+;	to Good Ol' Basic Kermit again!
+;	Those keen should study the following code with care, and remove
+;	or add semicolons as indicated.
+;
+; See also SPAR which decodes what comes in.  It also decodes bits in 
+;	the "capability" fields.  (Two CAPAS files allowed from remote
+;	machines, but we will only send one at max.)  Note that not all,
+;	if any, of the capability bits will be used.
+;
+; Definitions - init packet (data section only.. rest of header assumed OK)
+;	Byte 0	Maximum length I want to send
+;	     1	The Timeout I want you to use
+;	     2	Number of PAD characters I want to use (May be null)
+;	     3	The PAD character I want to use (May be Null)
+;	     4	The End-of-Line character I will use (Carriage Return)
+;	     5	The control character Quote Character I will use (#)
+;	     6	The parity bit Quote Character I will use (&)
+;	     7	The Checktype I will use
+;	     8	The repeat prefix I will use (Null, as we cannot do repeats)
+;	     9	Capability Byte 0 (See SPAR for defs)
+;	    10	Capability byte 1 ( --- " --- but we will not send it.)
+;	    11	The number of packets I will send per window (not used)
+;	    12  MAXL1 - Long packet size, ms count
+;	    13	MAXL2 - Long packet size, ls count
+;
+; Enter with HL pointing to the "data" part of the packet.
+
+; older part of RPAR follows...
+
+RPAR:	ld	a,(RPSIZ)	; get the receive packet size
+	add	a,SPACE		; add a space to make it printable
+	ld	(hl),a		; put it in the packet
+	inc	hl		; point to the next char
+	ld	a,(RTIME)	; get the receive packet time out
+	add	a,SPACE		; add a space
+	ld	(hl),a		; put it in the packet
+	inc	hl
+	ld	a,(RPAD)	; get the number of padding chars
+	add	a,SPACE
+	ld	(hl),a
+	inc	hl
+	ld	a,(RPADCH)	; get the padding char
+	add	a,100o		; uncontrol it
+	and	7Fh
+	ld	(hl),a
+	inc	hl
+	ld	a,(REOL)	; get the EOL char
+	add	a,SPACE
+	ld	(hl),a
+	inc	hl
+	ld	a,(RQUOTE)	; get the quote char
+	ld	(hl),a
+	inc	hl
+	ld	(hl),'Y'	; we know how to do 8-bit quoting
+	ld	a,(PARITY)
+	cp	PARNON		; parity none?
+	jr	z,RPAR1		; yes, keep going
+	ld	a,(QBCHR)	; no, better request 8-bit quoting
+	ld	(hl),a
+
+RPAR1:	inc	hl		; advance to next
+	ld	a,(CHKTYP)	; get desired block check type
+	ld	(hl),a		; store it
+	inc	hl		; advance pointer
+
+	; Comment out the next two lines for capas, etc.
+	; WILL require debugging.
+
+	ld	a,8		; this is the older end for this routine,
+				;  may be useful
+	ret	
+
+  IF 0
+; [11] Rest not needed for now, commented out
+; [10] (to ret)
+; New additions to RPAR follows...
+
+	ld	a,(RCAP1)	; get the first capability byte
+	and	3Eh		; mask out bit 0, ie only one CAPAS byte
+	add	a,SPACE		; tochar it
+	ld	(hl),a
+	inc	hl
+	ld	(hl),SPACE	; no windows, i.e. space to packet
+	inc	hl
+	push	hl		; we need the HL regs for maths
+	ld	hl,(RDPKT)	; get receive packet length
+	ld	de,95		; we want HL div 95 and HL mod 95
+	call	DIVIDE		; return with quotient in HL, remainder in DE
+	ld	a,l		; two sets of bytes
+	pop	hl
+	add	a,SPACE		; tochar(maxl1)
+	ld	(hl),a
+	inc	hl
+	ld	a,l
+	add	a,SPACE		; tochar(maxl2)
+	ld	(hl),a
+
+	; done all, set databytes = 12 and return
+
+	ld	a,12		; 12 bits of data
+	ret
+;[11] End of commented out code for RPAR
+  ENDIF
+
+; This routine reads in all the send_init packet information.
+; Called by: RINIT, SINIT
+
+  IF 0
+; As for RPAR, restore the "old" kermit code for non-capas Kermit.
+; (to ret at end)
+;
+; SPAR - routine to decode parameters received from the remote end.
+; Called by RINIT, SINIT, SERVER
+;
+; Entry: A = number of databytes in packet
+;        HL = pointer to "data" part of packet
+
+SPAR:	ld	(TEMP4),a	; save for a while
+				; first clear some variables
+	ld	a,(DSPSIZ)	; get default "send" packet length
+	ld	(SPKTL),a
+	ld	a,(DSTIME)	; get default time-out
+	ld	(STIMEO),a
+	xor	a		; set no pad characters by default
+	ld	(SPAD),a
+	ld	a,(DSPADC)	; get the default padding character
+	ld	(SPADC),a
+	ld	a,CR		; default end of line character (CR)
+	ld	(SEOL),a
+	ld	a,DSQUOT	; default quote character
+	ld	(SQUOTE),a
+	ld	a,DSBQUT	; default binary quote character
+	ld	(QBCHR),a
+	ld	a,DSCHKT	; set checktype = 1 for inits
+	ld	(INICHK),a
+	ld	a,SPACE		; no repeat prefixing (otherwise ~)
+	ld	(SREPT),a
+
+; Now follows the "capabilities" bits... 5 bits per capas byte.
+;
+; Note: Before extracting any data bits, apply unchar() to get the 
+;	six ls bits.  If bit 0 = 1 the subsequent capas byte follows
+;
+;	Byte0:	Bit 0:	Set to 1 if there are subsequent CAPAS bytes
+;		    1:	(Cap. 5) Set to 1 for long packets.  Second byte
+;			AFTER the last capas byte has packet length DIV 95
+;			and Thire byte has length MOD 95
+;		    2:	(Cap. 4) Sliding Windows.  If used, first byte AFTER
+;			last capas byte has TOCHAR(no. of packets in window)
+;		    3:	(Cap. 3) Ability to accept "A" (attribute packets)
+;		    4:	(Cap. 2) Reserved
+;		    5:	(Cap. 1) Reserved
+;	Byte 2 onward: not used in this implementation. Any capas bytes sent 
+;		will be stored, however.
+
+	ld	a,(TEMP4)	; get the number of bytes to test
+	ld	c,a		; to a count register
+	ld	a,(hl)		; get first byte
+	call	DECC		; unchar it, and decrement C
+	ld	(SPSIZ),a	; save a send packet size
+	jp	z,SPARX		; if no more, exit
+
+	ld	a,(hl)		; get timout
+	call	DECC
+	ld	(STIME),a	; save timeout
+	jp	z,SPARX
+
+	ld	a,(hl)		; get pad characters
+	call	DECC	
+	ld	(SPADC),a	; save it
+	jp	z,SPARX
+
+	ld	a,(hl)		; get pad character count
+	call	DECC
+	ld	(SPAD),a
+	jp	z,SPARX
+
+	ld	a,(hl)		; get send EOL
+	call	DECC
+	ld	(SEOL),a
+	jp	z,SPARX
+
+	ld	a,(hl)		; get control quote character
+	call	DECC
+	ld	(SQUOTE),a
+	jp	z,SPARX
+
+	ld	a,(hl)		; get binary (parity) quote char
+	ld	b,a		; this time we actually WANT accumulator
+	cp	SPACE		; are we doing 8th bit quoting?
+	jp	z,SPAR1		; don't know, assume not
+	cp	'N'		; definitely not?
+	jp	z,SPAR1
+	cp	'Y'		; definitely - use &
+	jp	z,SPAR2
+	ld	(SQUOTE),a	; else save the new character
+SPAR2:	ld	a,(PARITY)	; see if we are using the parity bit
+	cp	PARNON		; no parity => no quoting
+	jp	z,SPAR3		; yup, so use the default quote character &
+
+SPAR1:	xor	a		; save not-quoting
+	ld	(SQUOTE),a
+SPAR3:	call	DECC		; update counters, etc
+	jp	z,SPARX
+
+	ld	a,(hl)		; get repeat prefixing
+	call	DECC
+	push	af		; save flags
+	cp	SPACE-32	; we want it?
+	jp	z,SPAR4
+	ld	(SREPT),a
+SPAR4:	pop	af		; restore flags
+	jp	z,SPARX
+
+	ld	de,SCAPAS	; point to start of capability byte(s)
+	push	af		; must do this...
+SPAR5:	pop	af		; cos we restore the SPACK
+	ld	a,(hl)
+	call	DECC		; get SCAP1 (or n)
+	ld	(SCAP1),a
+	push	af
+	and	01		; another byte following?
+	jp	nz,SPAR5
+	pop	af		; see if any other data bytes (windows, etc)
+	jp	z,SPARX
+
+	ld	a,(hl)		; get window size
+	call	DECC
+	ld	(SWINDO),a
+	jp	z,SPARX
+
+	ld	a,(hl)		; get long packets ms bits
+	call	DECC
+	ld	d,a		; unchared ms bits-ish
+	ld	a,(hl)
+	call	DECC		; ls bits-ish
+	push	hl		; and we are doing maths
+	push	bc		; and an intermediate result in BC
+	ld	b,0
+	ld	c,d		; get ms bits-ish to BC
+	ld	l,c		; get number to HL
+	ld	h,b
+
+	; now multipy by 95
+
+	add	hl,hl		; *2
+	add	hl,hl		; *4
+	add	hl,hl		; *8
+	add	hl,hl		; *16
+	push	hl		;  *16 to ...
+	pop	de		;  ... DE
+	add	hl,hl		; *32
+	add	hl,de		; *(32+16) = *48
+	add	hl,hl		; *96
+	or	a		; *(96-1)
+	sbc	hl,bc
+	ld	e,a		; ls bits-ish
+	ld	d,0
+	add	hl,de		; *95 + ls bits. Phew.
+	ld	(SDPKT),hl	; save long packet length
+	pop	bc
+	pop	hl		; restore regs
+
+SPARX:	ret			; if here, (assume) no more data to read in
+
+;[10] routines required follow
+
+DECC:	ld	a,(hl)		; get data byte
+	sub	SPACE		; unchar it
+	inc	hl		; increment input pointer
+	dec	c		; decrement data counter
+	ret			; return
+;[10] end or SPAR replacement
+  ELSE
+;[11] Restore older SPAR...
+; Older SPAR follows...
+
+SPAR:	ld	(TEMP4),a	; save the number of arguments
+
+	; Initialize some variables to their required default values,
+	; so we use the right values even if the remote Kermit doesn't
+	; send the full packet:
+	; - we don't do anything with timeout values yet.
+	; - no default pad count/pad character?
+
+	ld	a,CR		; EOL character = carriage-return
+	ld	(SEOL),a
+	ld	a,'#'		; quote character = '#'
+	ld	(SQUOTE),a
+	ld	a,'&'		; eighth-bit quote character = '&'
+	ld	(QBCHR),a
+	ld	a,'1'		; block-check = 1-character-checksum
+	ld	(INICHK),a
+ 
+	ld	a,(hl)		; get the max packet size
+	sbc	a,SPACE		; subtract a space
+	ld	(SPSIZ),a	; save it
+	ld	a,(TEMP4)
+	cp	3		; fewer than three pieces?
+	ret	m		; if so, we are done
+	inc	hl
+	inc	hl		; increment past the time out info
+	ld	a,(hl)		; get the number of padding chars
+	sbc	a,SPACE
+	ld	(SPAD),a
+	ld	a,(TEMP4)
+	cp	4		; fewer than four pieces?
+	ret	m		; if so we are done
+	inc	hl
+	ld	a,(hl)		; get the padding char
+	add	a,100o		; re-controlify it
+	and	7Fh
+	ld	(SPADCH),a
+	ld	a,(TEMP4)
+	cp	5		; fewer than five pieces?
+	ret	m		; if so, we are done
+	inc	hl
+	ld	a,(hl)		; get the EOL char
+	sbc	a,SPACE
+	ld	(SEOL),a
+	ld	a,(TEMP4)
+	cp	6		; fewer than six pieces?
+	ret	m		; if so, we are done
+	inc	hl
+	ld	a,(hl)		; get the quote char
+	ld	(SQUOTE),a
+	ld	a,(TEMP4)	; get the amount of data supplied
+	cp	7		; have an 8-bit quote?
+	ret	m		; if not there, all done
+	inc	hl		; yes, get the character
+	ld	a,0
+	ld	(QUOT8),a	; assume not quoting
+	ld	a,(hl)		; get the supplied character
+	cp	'N'		; No?
+	jp	z,SPAR1		; then don't try to do it
+	cp	SPACE		; maybe they don't know about it...
+	jp	z,SPAR1		; then don't try to do it
+	cp	'Y'		; Yes?
+	jp	nz,SPAR2	; if not 'Y', assume it's a quote char
+	ld	a,(PARITY)	; using parity?
+	cp	PARNON		; no, don't need quoting...
+	jp	z,SPAR1
+	ld	a,0FFh		; else turn on...
+	ld	(QUOT8),a	; ...quote flag
+	jp	SPAR1
+
+;[11] Note: If capas etc required, beware of the next two lables, as these 
+; are used elsewhere.
+
+SPAR2:	ld	(QBCHR),a	; use their quote char (should validate)
+	ld	a,0FFh
+	ld	(QUOT8),a	; turn quote flag and fall thru...
+
+SPAR1:	ld	a,(TEMP4)	; determine if block check type given
+	cp	8		; is the field there?
+	ret	m		; if not, all done
+	inc	hl		; point to the character
+	ld	a,(hl)		; get the value
+	ld	b,a		; copy value
+	ld	a,(CHKTYP)	; get our type
+	cp	b		; is it our desired type?
+	ret	nz		; if not, use default (1-character-checksum)
+	ld	(INICHK),a	; match, store as type to use after init
+	ret			;  and return
+;[10] end of replacement
+;[11] end of replacement of replacement (ie back to original code)
+  ENDIF
+
+; Copy characters from packet to disk (or screen)
+; Called by: RDATA
+
+PTCHR:	ld	(TEMP1),a	; save the size
+	ld	a,(REMTXT)	; get remote command flag
+	or	a		; Remote command in progress?
+	jr	nz,PTCHR0	; yes, don't check for file collisions
+	ld	a,(FLWFLG)	; get File Warning (Set Collision) flag
+	cp	2		; SET COLLISION DISCARD?
+	jr	nz,PTCHR0	; no
+	ld	a,(DSCFLG)	; yes, get "discard" flag
+	or	a		; discarding file?
+	jr	z,PTCHR0	; no
+	ld	a,'X'		; yes, simulate a user rejection
+	ld	(CZSEEN),a
+	jp	RSKP		; and pretend success
+
+PTCHR0:	ld	hl,DATA		; beginning of received packet data
+	ld	(OUTPNT),hl	; remember where we are
+	ld	a,(RQUOTE)
+	ld	b,a		; keep the quote char in B
+	ld	c,0		; assume no 8-bit quote char
+	ld	a,(QUOT8)	; doing 8-bit quoting?
+	or	a
+	jr	z,PTCHR1	; no, keep going
+	ld	a,(QBCHR)	; else get 8-bit quote char
+	ld	c,a		; keep this in C
+PTCHR1:	ld	hl,TEMP1
+	dec	(hl)		; decrement # of chars in packet
+	jp	m,RSKP		; return successfully if done
+	ld	a,(REMTXT)	; to screen only?
+	and	a
+	jr	nz,PTCHR2	; don't do any disk stuff
+
+	ld	hl,(BUFLEN)	; big buffer size in bytes
+	ld	de,(CHRCNT)	; number of chars in big buffer
+	call	CPHLDE		; still space left?
+	jr	c,PTCHR2	; yes
+	call	OUTBUF		; no, output buffer
+	jp	PTCHR9		; error return if disk is full
+
+PTCHR2:	ld	hl,(OUTPNT)	; get position in output buffer
+	ld	a,(hl)		; grab a char
+	inc	hl		; and bump pointer
+	ld	e,0		; assume nothing to OR in
+	cp	c		; is it the binary quote char?
+	jr	nz,PTCH2A	; no, keep going
+	ld	e,80h		; include parity bit
+	ld	a,(TEMP1)
+	dec	a
+	ld	(TEMP1),a	; decrement character count
+	ld	a,(hl)		; get next character
+	inc	hl		; bump pointer
+PTCH2A:	ld	(OUTPNT),hl
+	cp	b		; is it the quote char?
+	jr	nz,PTCHR3	; changed to PTCHR3 so includes parity
+	ld	a,(hl)		; get the quoted character
+	inc	hl
+	ld	(OUTPNT),hl	; and bump pointer
+	ld	hl,TEMP1
+	dec	(hl)		; decrement # of chars in packet
+	ld	d,a		; save the char
+	and	80h		; turn off all but the parity bit
+	or	e		; let parity come from either (???)
+	ld	e,a		; save the parity bit
+	ld	a,d		; get the char
+	and	7Fh		; turn off the parity bit
+	cp	b		; is it the quote char?
+	jr	z,PTCHR3	; if so, just go write it out
+	cp	c		; maybe it's the 8-bit prefix character?
+	jr	z,PTCHR3	; then don't controllify
+	ld	a,d		; get the char
+	add	a,40h		; make the character a control char again
+	and	7Fh		;  modulo 128
+PTCHR3:	or	e		; OR in the parity bit
+	ld	l,a		; save for a while
+	ld	a,(REMTXT)	; to screen or disk?
+	and	a
+	ld	a,l		; restore char
+	jr	z,PTCH31	; to disk
+	push	de
+	push	bc
+	ld	e,a		; to display
+	call	OUTCON
+	pop	bc
+	pop	de
+	jp	PTCHR1		; continue
+
+PTCH31:	ld	hl,(BUFPNT)	; destination buffer
+	ld	(hl),a		; store it
+	inc	hl
+	ld	(BUFPNT),hl	; update the pointer
+	ld	hl,(CHRCNT)
+	inc	hl
+	ld	(CHRCNT),hl	; increase character count
+	jp	PTCHR1		; and loop to next char
+
+PTCHR9:	ld	de,ERMS11	; "?Disk full"
+	push	de		; save pointer
+	call	ERROR3		; put it on the error line
+	pop	de		; restore pointer
+	ld	a,(ARGBLK)	; get packet-number
+	call	COUNTP		; increment it
+	ld	(ARGBLK),a	; as packet to send
+SNDERR:	ld	hl,DATA		; where to put the message for "E" packet
+	ld	c,0		; zero length of packet data
+PTCH9A:	ld	a,(de)		; get a character to copy
+	or	a		; no more to copy?
+	jr	z,PTCH9B	; yes, we can send the packet
+	cp	CR		; CR also ends message?
+	jr	z,PTCH9B
+	ld	(hl),a		; no, copy the character
+	inc	de		; and increment source/dest pointers
+	inc	hl
+	inc	c		; increment character count
+	jr	PTCH9A		; copy entire error message
+PTCH9B:	ld	(hl),0		; put in a zero
+	ld	a,c		; get number of characters in the message
+	ld	(ARGBLK+1),a	;  and store as number of packet data chars
+	ld	a,'E'		; make it an Error packet
+	call	SPACK		; send the Error packet
+	nop			; don't really care if
+	nop			;  the send fails since we're
+	nop			;   bombing off anyway
+	ret			; take error return
+
+ERMS11:	defb	'?Disk full',0
+
+; Fill a data packet from file
+; Called by: SFILE, SDATA
+
+GTCHR:	ld	a,(CURCHK)	; get current block check type
+	sub	'1'		; get the extra overhead
+	ld	b,a		; get a copy
+	ld	a,(SPSIZ)	; get the maximum packet size
+	sub	5		; subtract the overhead
+	sub	b		; determine max packet length
+	ld	(TEMP1),a	; this is the number of chars we are to get
+	ld	hl,FILBUF	; where to put the data
+	ld	(CBFPTR),hl	; remember where we are
+	ld	b,0		; no chars
+GTCHR1:	ld	a,(TEMP1)
+	or	a		; check the number of chars left
+	jr	nz,GTCHR2	; go on if there is space left
+	ld	a,b		; return the count in A
+	jp	RSKP
+
+GTCHR2:	ld	hl,(CHRCNT)	; any characters left in the big buffer?
+	ld	a,h
+	or	l
+	jr	nz,GTCHR4	; yes, go fetch character
+	call	INBUF		; else get another buffer full
+	jp	GTCH30		; if no more, return what we got
+	jp	GTCHR4		; if we got some, proceed
+
+GTCH30:	ld	a,b		; return the count in A
+	or	a		; got any chars?
+	jp	nz,RSKP		; if so, return them
+	jp	GTCEOF		; if not, say we found the end of the file
+
+GTCHR4:	ld	hl,(BUFPNT)	; position in big buffer
+	ld	a,(hl)		; get a char from the file
+	inc	hl		; advance the pointer
+	ld	(BUFPNT),hl
+	ld	hl,(CHRCNT)
+	dec	hl		; decrement character count
+	ld	(CHRCNT),hl
+
+	;TODO: remove this check for RSX180/280?
+
+	cp	CTRLZ		; is it a ^Z?
+	jr	nz,GTCHR5	; if not just proceed
+
+	ld	a,(FMFLG)	; was the file created by CP/M...
+	cp	1		;  in ASCII-mode?
+	jr	z,GTCH42	; Control-Z stops text
+	cp	2		;  in BINARY mode?
+	jr	z,GTCH44	; yes, pass the ^Z
+
+	; At this point file-mode is DEFAULT.
+	; If the rest of the record is filled with ^Zs, we're at EOF,
+	; otherwise it's a regular character.
+
+	ld	hl,(BUFPNT)	; since CHRCNT is ZERO at EOF-time
+	ld	de,(CHRCNT)	; (set by INBUF5 B.G.E)
+				; get the number of chars left in the big buffer
+GTCH41:	ld	a,d
+	or	e
+	dec	de
+	jr	nz,GTCH43	; any chars left?
+GTCH42:	ld	hl,0		; if not, get a zero
+	ld	(CHRCNT),hl	; say no more chars in buffer
+	ld	a,b		; return the count in A
+	jp	RSKP
+
+GTCH43:	; Scan rest of buffer for non ^Z -- If we find a non ^Z, fall into
+	; GTCH44. If we get to the end of the buffer before finding a non
+	; ^Z, fall into GTCH42.
+
+	ld	a,(hl)		; get the next char
+	inc	hl		; move the pointer
+	cp	CTRLZ		; is it a ^Z?
+	jr	z,GTCH41	; if so, see if the rest are
+GTCH44:	ld	a,CTRLZ		; restore the ^Z
+
+GTCHR5:	call	ENCODE		; encode character and store in packet buffer
+	jp	nc,GTCHR1	; success, go around again
+
+	; not enough room left in buffer...
+
+	ld	hl,(BUFPNT)
+	dec	hl
+	ld	(BUFPNT),hl	; back up over last character
+	ld	hl,(CHRCNT)	; point to character count
+	inc	hl		; increment it
+	ld	(CHRCNT),hl
+	ld	a,b		; count of chars transferred
+	jp	RSKP		; return it
+
+GTCEOF:	ld	a,-1		; get a minus one
+	ret	
+
+; Encode single character and save it in packet buffer.
+; Returns with carry flag set if buffer is full.
+; Updates character count in B.
+
+ENCODE:	ld	hl,(CBFPTR)	; load ponter to character buffer
+	ld	ix,TEMP1	; IX points to space remaining
+	ld	d,a		; save the char
+	ld	a,(ix)		; get space remaining
+	cp	3		; 3 chars left?
+	ret	c		; no, return with carry flag set
+	ld	a,d		; get the char
+	and	80h		; turn off all but parity
+	ld	e,a		; save the parity bit
+	ld	a,(SQUOTE)	; get the quote char
+	ld	c,a		; keep quote char in C
+	jr	z,ENCOD1	; no parity, skip this check...
+	ld	a,(QUOT8)	; doing eighth-bit quoting?
+	or	a
+	jr	z,ENCOD1	; no, just proceed normally
+	dec	(ix)		; decrement space remaining
+	ld	a,(QBCHR)	; get 8th-bit quote character
+	ld	(hl),a		; put the quote char in the buffer
+	inc	hl		; increment destination buffer pointer
+	inc	b		; increment the char count
+	ld	e,0		; no parity bit to OR in
+ENCOD1:	ld	a,d		; restore the char
+	and	7Fh		; turn off the parity
+	ld	d,a		; save here for later...
+	cp	SPACE		; compare to a space
+	jr	c,ENCOD4	; if less then its a control char, handle it
+	cp	DEL		; is the char a Delete?
+	jr	z,ENCOD4	; go quote it
+	ld	a,(QUOT8)	; are we doing 8th-bit quoting?
+	or	a
+	jr	z,ENCOD2	; if not, skip this test and restore character
+	ld	a,(QBCHR)	; get 8th-bit quote character
+	cp	d		; same as current character?
+	jr	z,ENCOD3	; yes, have to quote it...
+ENCOD2:	ld	a,d		; no, get character back again
+	cp	c		; is it the quote char?
+	jr	nz,ENCOD5	; if not, proceed
+ENCOD3:	dec	(ix)		; decr char count (know room for at least one)
+	ld	(hl),c		; put the (quote) char in the buffer
+	inc	hl		; advance destination buffer pointer
+	inc	b		; increment the char count
+	ld	a,d		; restore character again
+ENCOD5:	dec	(ix)		; decrement char total remaining
+	or	e		; OR in the parity bit, clear carry flag
+	ld	(hl),a		; put the char in the buffer
+	inc	hl		; advance destination buffer pointer
+	inc	b		; increment the char count
+	ld	(CBFPTR),hl	; store destination buffer pointer
+	ret			; return with carry flag clear
+
+ENCOD4:	dec	(ix)		; decrement space remaining
+	ld	(hl),c		; put the quote in the buffer
+	inc	hl		; advance destination buffer pointer
+	inc	b		; increment the char count
+	add	a,40h		; make the char non-control
+	and	7Fh		;  modulo 128
+	jr	ENCOD5		; put the char in the buffer and return
+
+; Get the file name (including host to micro translation) and create the file.
+; Called by: RFILE
+
+GOFIL:	ld	hl,DATA		; get the address of the file name
+	ld	a,(REMLEN)	; allow use of local name if one was given
+	or	a		; anything there?
+	jr	z,GOFIL0	;  no, use the one in the data packet
+	ld	hl,REMNAM	; yes, use this instead
+GOFIL0:	ld	ix,FCB2		; put result in FCB2 (will open for write)
+	call	PFN		; parse file name
+	xor	a		; zero "discard" flag
+	ld	(DSCFLG),a
+	ld	ix,FCB2
+	ld	a,(ix+F.ATTR)
+	and	FN.VER		; version explicit?
+	jp	z,GOFIL9	; no, create new version
+	ld	a,(FLWFLG)	; is file warning on?
+	or	a
+	jp	z,GOFIL4	; if not, just proceed (overwrite existing file)
+
+	call	SETFCB		; setup FCB2 with default dev/dir if necessary
+	call	OPENRW		; see if file exists
+	jr	c,GOFIL9	; no, create it
+	call	CLOSE2		; close file
+
+	; file exists
+
+	ld	a,(FLWFLG)	; get flag again
+	cp	2		; SET COLLISION DISCARD?
+	jp	nz,GOFIL2	; no
+	ld	a,0FFh		; yes, order rejection of the file
+	ld	(DSCFLG),a
+	jp	RSKP		; and pretend successful open
+
+GOFIL2:	or	a		; SET COLLISION OVERWRITE?
+	jr	nz,GOFIL3
+GOFIL4:	call	DELET2		; delete old file (TODO: better open file and IO.TRN it to avoid possible race condition)
+	call	MAKFI1		; re-create the file
+	jp	GOFL91		; disk was full or access denied
+	jp	RSKP		; success
+
+GOFIL3:	; here with SET COLLISION NEW-VERSION
+
+	ld	de,INFMS5	; inform the user
+	call	ERROR3
+	ld	a,(ix+F.ATTR)
+	and	NOT FN.VER
+	ld	(ix+F.ATTR),a	; force new version
+GOFIL9:	call	MAKFIL		; create the file
+	jp	GOFL91		; disk was full or access denied
+	jp	RSKP		; success
+
+GOFL91:	ld	de,ERMS11
+	jp	ERROR3
+
+INFMS5:	defb	'%New version created',0
+
+; This is the FINISH command.  It tells the remote KERSRV to exit.
+; Here from KERMIT
+
+FINISH:	call	CFMCMD
+	call	SELMDM		; select modem
+	call	PURMDM		; purge modem input buffer
+	call	SELCON		; select terminal again
+	xor	a
+	ld	(NUMTRY),a	; inititialize count
+	ld	a,'1'		; reset block check type to single character
+	ld	(CURCHK),a
+
+FINSH1:	ld	a,(NUMTRY)	; how many times have we tried?
+	cp	MAXTRY		; too many times?
+	jp	m,FINSH3	; no, try it
+FINSH2:	ld	de,ERMS18	; say we couldn't do it
+	call	PRTERR
+	jp	KERMIT		; go home
+
+FINSH3:	inc	a		; increment the number of tries
+	ld	(NUMTRY),a
+	xor	a
+	ld	(ARGBLK),a	; make it packet number zero
+	ld	a,1
+	ld	(ARGBLK+1),a	; one piece of data
+	ld	hl,DATA
+	ld	(hl),'F'	; Finish running Kermit
+	ld	a,'G'		; Generic command packet
+	call	SPACK		; send packet
+	jp	FINSH2		; error, tell the user and die
+	call	RPACK		; success, get an acknowledgement
+	jp	FINSH1		; go try again
+	cp	'Y'		; ACK?
+	jp	z,KERMIT	; yes, we are done
+	cp	'E'		; is it an Error packet?
+	jp	nz,FINSH1	; try sending the packet again
+	call	ERROR1		; print the error message
+	jp	KERMIT		; and exit
+
+ERMS18:	defb	'?Unable to tell host that the session is finished',0
+
+; This is the LOGOUT command.  It tells the remote KERSRV to logout.
+; Here from: KERMIT
+
+LOGOUT:	call	CFMCMD
+	call	LOGO		; send the logout packet
+	jp	KERMIT		; go get another command
+	jp	KERMIT		; whether we succeed or not
+
+; Do logout processing.
+; Called by: BYE, LOGOUT
+
+LOGO:	call	SELMDM		; select modem
+	call	PURMDM		; purge modem input buffer
+	call	SELCON		; select terminal again
+	xor	a
+	ld	(NUMTRY),a	; inititialize count
+	ld	a,'1'		; reset block check type to single character
+	ld	(CURCHK),a
+
+LOGO1:	ld	a,(NUMTRY)	; how many times have we tried?
+	cp	MAXTRY		; too many times?
+	jp	m,LOGO3		; no, try it
+LOGO2:	ld	de,ERMS19	; say we couldn't do it
+	call	PRTERR
+	ret			; finished
+
+LOGO3:	inc	a		; increment the number of tries
+	ld	(NUMTRY),a
+	xor	a
+	ld	(ARGBLK),a	; make it packet number zero
+	ld	a,1
+	ld	(ARGBLK+1),a	; one piece of data
+	ld	hl,DATA
+	ld	(hl),'L'	; Logout the remote host
+	ld	a,'G'		; Generic command packet
+	call	SPACK
+	jp	LOGO2		; tell the user and die
+	call	RPACK		; get an acknowledgement
+	jp	LOGO1		; go try again
+	cp	'Y'		; ACK?
+	jp	z,RSKP		; yes, we are done
+	cp	'E'		; is it an Error packet?
+	jp	nz,LOGO1	; try sending the packet again
+	jp	ERROR1		; print the error message and return
+
+ERMS19:	defb	'?Unable to tell host to logout',0
+
+; Packet routines
+
+; Send_Packet
+; This routine assembles a packet from the arguments given and sends it
+; to the host.
+;
+; Expects the following:
+;   A        - Type of packet (D,Y,N,S,R,E,F,Z,T)
+;   ARGBLK   - Packet sequence number
+;   ARGBLK+1 - Number of data characters
+; Returns: nonskip if failure
+;          skip if success
+; Called by: READ, RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT,
+;            FINISH, LOGOUT, NAK, ACKP
+
+SPACK:	ld	(ARGBLK+2),a	; remember packet type
+	ld	hl,PACKET	; get address of the send packet
+	ld	a,(SNDSOP)	; get start-of-pkt char
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	ld	a,(CURCHK)	; get current checksum type
+	sub	'1'		; determine extra length of checksum
+	ld	b,a		; copy length
+	ld	a,(ARGBLK+1)	; get the number of data chars
+	add	a,' '+3		; real packet character count made printable
+	add	a,b		; determine overall length
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	ld	bc,0		; zero the checksum AC
+	ld	c,a		; start the checksum
+	ld	a,(ARGBLK)	; get the packet number
+	add	a,' '		; add a space so the number is printable
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	add	a,c
+	ld	c,a		; add the packet number to the checksum
+	ld	a,0
+	adc	a,b		; add high order portion of checksum
+	ld	b,a		; copy back to B for 16-bit result
+	ld	a,(ARGBLK+2)	; get the packet type
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	add	a,c
+	ld	c,a		; add the packet number to the checksum
+	ld	a,0
+	adc	a,b		; get high order portion of checksum
+	ld	b,a		; copy back to B
+SPACK2:	ld	a,(ARGBLK+1)	; get the packet size
+	or	a		; are there any chars of data?
+	jp	z,SPACK3	; no, finish up
+	dec	a		; decrement the char count
+	ld	(ARGBLK+1),a	; put it back
+	ld	a,(hl)		; get the next char
+	inc	hl		; point to next char
+	add	a,c
+	ld	c,a		; add the packet number to the checksum
+	ld	a,0
+	adc	a,b		; get high order portion of checksum
+	ld	b,a		; copy back to B
+	jp	SPACK2		; go try again
+
+SPACK3:	ld	a,(CURCHK)	; get the current checksum type
+	cp	'2'		; two character?
+	jp	z,SPACK4	; yes, go handle it
+	jp	nc,SPACK5	; no, go handle CRC if '3'
+	ld	a,c		; get the character total
+	and	0C0h		; turn off all but the two high order bits
+	rlca			; shift them into the low order position
+	rlca			;  two left rotates same as 6 rights
+	add	a,c		; add it to the old bits
+	and	3Fh		; turn off the two high order bits
+	add	a,' '		; add a space so the number is printable
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	jp	SPACK7		; go store EOL character
+
+; Here for 3 character CRC-CCITT
+
+SPACK5:	ld	(hl),0		; store a null for current end
+	push	hl		; save pointer
+	ld	hl,PACKET+1	; point to first checksumed character
+	call	CRCCLC		; calculate the CRC
+	pop	hl		; restore the pointer
+	ld	c,e		; get low order half for later
+	ld	b,d		; copy the high order
+	ld	a,d		; get the high order portion
+	rlca			; shift off low 4 bits
+	rlca			;  .  .  .
+	rlca			;  .  .  .
+	rlca			;  .  .  .
+	and	0Fh		; keep only low 4 bits
+	add	a,' '		; put into printing range
+	ld	(hl),a		; store the character
+	inc	hl		; point to next position
+
+; Here for two character checksum
+
+SPACK4:	ld	a,b		; get high order portion
+	and	0Fh		; only keep last four bits
+	rlca			; shift up two bits
+	rlca			;  . .  .
+	ld	b,a		; copy back into safe place
+	ld	a,c		; get low order half
+	rlca			; shift  high two bits
+	rlca			;  to low two bits
+	and	03h		; keep only two low bits
+	or	b		; get high order portion in
+	add	a,' '		; convert to printing character range
+	ld	(hl),a		; store the character
+	inc	hl		; point to next character
+	ld	a,c		; get low order portion
+	and	3Fh		; keep only six bits
+	add	a,' '		; convert to printing range
+	ld	(hl),a		; store it
+	inc	hl		; bump the pointer
+
+SPACK7:	ld	a,(DBGFLG)
+	or	a		; is debugging enabled?
+	jr	z,SPACK8
+	push	hl		; yes, save address of end of packet
+	ld	(hl),0		; null-terminate the packet for display
+	ld	a,(OPMODE)	; Remote mode?
+	and	a
+	jr	z,SPAC7A	; so don't say a thing
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	jr	nz,SPAC7A	; don't say a thing either
+	call	SPPOS		; position cursor
+	ld	de,PACKET+1	; print the packet
+	call	PRTSTR
+
+	ld	a,(PRNFLG)	; is the printer on too?
+	and	a
+	jr	z,SPAC7A
+	ld	hl,SSTATM	; print state
+	call	PRINTM		; dumptext, but to printer
+	ld	a,(STATE)
+	ld	e,a
+	call	OUTPRN
+	ld	hl,PRINCR	; CR/LF to printer
+	call	PRINTM
+	ld	hl,SPACKM
+	call	PRINTM
+	ld	hl,PACKET+1
+	call	PRINTM
+	ld	hl,PRINCR
+	call	PRINTM
+	ld	hl,PRINCR
+	call	PRINTM
+
+SPAC7A:	pop	hl		; restore address of end of packet
+SPACK8:	ld	a,(SEOL)	; get the EOL the other host wants
+	ld	(hl),a		; put in the packet
+	inc	hl		; point to next char
+	xor	a		; get a null
+	ld	(hl),a		; put in the packet
+	;...
+
+; Write out the packet.
+
+OUTPKT:	call	SELMDM		; set up for output to comm port
+	ld	a,(SPAD)	; get the number of padding chars
+	ld	(TEMP1),a
+OUTPK2:	ld	a,(TEMP1)	; get the count
+	dec	a
+	jp	m,OUTPK6	; if none left, proceed
+	ld	(TEMP1),a
+	ld	a,(SPADCH)	; get the padding char
+	call	SETPAR		; set parity appropriately
+	ld	e,a		; put the char in right AC
+	call	OUTMDM		; output it
+	jr	OUTPK2
+
+OUTPK6:	ld	hl,PACKET	; point to the packet
+OUTLUP:	ld	a,(hl)		; get the next character
+	or	a		; is it a null?
+	jr	z,OUTLUD	; if so return success
+	call	SETPAR		; set parity for the character
+	ld	e,a		; put it in right AC
+	call	OUTMDM		; and output it
+
+	; TAC trap: If this character is the TAC intercept character,
+	; and the TAC trap is enabled, we have to output it twice.
+	; If the TAC trap is enabled, TACFLG contains the intercept
+	; character (the current character cannot be NUL, so we don't
+	; have to worry about doubling nulls in the message)
+
+	ld	a,(TACFLG)	; get current intercept character, or zero
+	cp	(hl)		; compare against current data character
+	jr	nz,OUTPK8	; if different, do nothing
+	call	SETPAR		; match, set appropriate parity
+	ld	e,a		; put it in the right register,
+	call	OUTMDM		;  and output it a second time
+OUTPK8:	inc	hl		; increment the char pointer
+	jp	OUTLUP
+
+OUTLUD:	call	SELCON		; select console
+	jp	RSKP		; and return success
+
+SSTATM:	defb	'<SState:> ',0
+SPACKM:	db	'<Data transmitted> ',0
+
+; Receive_Packet
+; This routine waits for a packet to arrive from the host.  It reads
+; characters until it finds a SOH.  It then reads the packet into packet.
+;
+; Returns: nonskip if failure (checksum wrong or packet trashed)
+;          skip if success, with
+;               A        - message type
+;               ARGBLK   - message number
+;               ARGBLK+1 - length of data
+; Called by: RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT,
+;            FINISH, LOGOUT
+
+RPACK:	call	INPKT		; read up to the end-of-line character
+	jp	R		; return bad
+RPACK0:	call	GETCHR		; get a character
+	jp	RPACK		; hit eol; null line; just start over
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	nz,RPACK0	; no, go until it is
+RPACK1:	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	ld	(PACKET+1),a	; store in packet also
+	ld	c,a		; start the checksum
+	ld	a,(CURCHK)	; get block check type
+	sub	'1'		; determine extra length of block check
+	ld	b,a		; get a copy
+	ld	a,c		; get back length character
+	sub	' '+3		; get the real data count
+	sub	b		; get total length
+	ld	(ARGBLK+1),a
+	ld	b,0		; clear high order half of checksum
+	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	ld	(ARGBLK),a
+	ld	(PACKET+2),a	; save also in packet
+	add	a,c
+	ld	c,a		; add the character to the checksum
+	ld	a,0		; clear A
+	adc	a,b		; get high order portion of checksum
+	ld	b,a		; copy back to B
+	ld	a,(ARGBLK)
+	sub	' '		; get the real packet number.
+	ld	(ARGBLK),a
+	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	ld	(TEMP1),a	; save the message type
+	ld	(PACKET+3),a	; save in packet
+	add	a,c
+	ld	c,a		; add the character to the checksum
+	ld	a,0		; clear A
+	adc	a,b		; get high order portion of checksum
+	ld	b,a		; copy back to B
+	ld	a,(ARGBLK+1)	; get the number of data characters
+	ld	(TEMP2),a
+	ld	hl,DATA		; point to the data buffer
+	ld	(DATPTR),hl
+RPACK2:	ld	a,(TEMP2)
+	sub	1		; any data characters?
+	jp	m,RPACK3	; if not, go get the checksum
+	ld	(TEMP2),a
+	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	ld	hl,(DATPTR)
+	ld	(hl),a		; put the char into the packet
+	inc	hl		; point to the next character
+	ld	(DATPTR),hl
+	add	a,c
+	ld	c,a		; add the character to the checksum
+	ld	a,0		; clear A
+	adc	a,b		; get high order portion of checksum
+	ld	b,a		; copy back to B
+	jp	RPACK2		; go get another
+
+RPACK3:	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	sub	' '		; turn the char back into a number
+	ld	(TEMP3),a
+
+	; determine type of checksum
+
+	ld	a,(CURCHK)	; get the current checksum type
+	cp	'2'		; 1, 2 or 3 character?
+	jp	z,RPACK4	; if zero, 2 character
+	jp	nc,RPACK5	; go handle 3 character
+	ld	a,c		; get the character total
+	and	0C0h		; turn off all but the two high order bits
+
+	; shift them into the low order position
+
+	rlca			; two left rotates same as six rights
+	rlca
+	add	a,c		; add it to the old bits
+	and	3Fh		; turn off the two high order bits
+	ld	b,a
+	ld	a,(TEMP3)	; get the real received checksum
+	cp	b		; are they equal?
+	jp	z,RPACK7	; if so, proceed
+RPACK9:	call	UPDRTR		; if not, update the number of retries
+	ret			; return error
+
+; Here for three character CRC-CCITT
+
+RPACK5:	ld	hl,(DATPTR)	; get the address of the data
+	ld	(hl),0		; store a zero in the buffer to terminate packet
+	ld	hl,PACKET+1	; point at start of checksummed region
+	call	CRCCLC		; calculate the CRC
+	ld	c,e		; save low order half for later
+	ld	b,d		; also copy high order
+	ld	a,d		; get high byte
+	rlca			; want high four bits
+	rlca			;  .  .  .
+	rlca			; and shift two more
+	rlca			;  .  .  .
+	and	0Fh		; keep only 4 bits
+	ld	d,a		; back into D
+	ld	a,(TEMP3)	; get first value back
+	cp	d		; correct?
+	jp	nz,RPACK9	; no, punt
+	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	sub	' '		; remove space offset
+	ld	(TEMP3),a	; store for later check
+	; ...
+
+; Here for a two character checksum and last two characters of CRC
+
+RPACK4:	ld	a,b		; get high order portion
+	and	0Fh		; only four bits
+	rlca			; shift up two bits
+	rlca			;  .  .  .
+	ld	b,a		; save back in B
+	ld	a,c		; get low order
+	rlca			; move two high bits to low bits
+	rlca			;  .  .  .
+	and	03h		; save only low two bits
+	or	b		; get other 4 bits
+	ld	b,a		; save back in B
+	ld	a,(TEMP3)	; get this portion of checksum
+	cp	b		; check first half
+	jp	nz,RPACK9	; if bad, go give up
+	call	GETCHR		; get a character
+	jp	R		; hit end of line, return bad
+	ld	hl,RCVSOP	; is it receive start-of-pkt char
+	cp	(hl)
+	jp	z,RPACK1	; yes, then go start over
+	sub	' '		; remove space offset
+	ld	b,a		; save in safe place
+	ld	a,c		; get low 8 bits of checksum
+	and	3Fh		; keep only 6 bits
+	cp	b		; correct value
+	jp	nz,RPACK9	; bad, give up
+RPACK7:	ld	hl,(DATPTR)
+	ld	(hl),0		; put a null at the end of the data.
+	ld	a,(TEMP1)	; get the type
+	jp	RSKP
+
+RSTATM:	db	'<RState:> ',0
+RPACKM:	db	'<Data received   > ',0
+
+; Receive and buffer packet
+; Returns: nonskip if error (timeout)
+;          skip if success; packet starts at RECPKT (which holds the SOH)
+;          and is terminated by a null.
+;          console is selected in either case.
+; Called by: RPACK
+
+INPKT:	ld	hl,RECPKT	; point to the beginning of the packet
+	ld	(PKTPTR),hl
+INPKT1:	call	INCHR		; get first character
+	jp	R		; return failure
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jr	nz,INPKT1	; if not, ignore leading junk
+	jr	INPKT3		; else go put it in packet
+
+INPKT2:	call	INCHR		; get a character
+	jp	R		; return failure
+	ld	hl,RCVSOP	; is it receive start-of-pkt char?
+	cp	(hl)
+	jr	nz,INPKT3	; if not, continue
+	ld	hl,RECPKT	; else throw away what we've got so far
+	ld	(PKTPTR),hl
+INPKT3:	ld	hl,(PKTPTR)
+	ld	(hl),a		; put the char in the packet
+	inc	hl
+	ld	(PKTPTR),hl
+	ld	b,a
+	ld	de,RECPKX	; start over if packet buffer overflow
+	or	a
+	sbc	hl,de
+	jr	nc,INPKT	; buffer overflow
+	ld	a,(REOL)	; get the EOL char
+	cp	b
+	jr	nz,INPKT2	; if not loop for another
+
+	;[gnn]	*** added by Godfrey Nix   Nottingham University ***
+	;[gnn]	to allow Kermit server to echo our packets back
+
+	ld	hl,RECPKT+3	; point to packet type
+	ld	a,(PACKET+3)	; get the one we sent
+	cp	(hl)		; are they the same?
+	jr	z,INPKT		; yes, get another packet
+
+	;[gnn]  *** end of patch *****
+
+	; begin IBM change/fdc
+	; This moved from OUTPK7 -- it appears that waiting until we're
+	; ready to send a packet before looking for turnaround character
+	; is long enough for it to get lost. Better to look now.
+
+	ld	a,(IBMFLG)	; is this the IBM?
+	or	a
+	jr	z,INPKT6	; if not, then proceed
+	ld	a,(STATE)	; check if this is the Send-Init packet
+	cp	'S'
+	jr	z,INPKT6	; if so don't wait for the XON
+INPKT5:	call	INCHR		; wait for the turn-around char
+	jp	INPKT6
+	cp	XON		; is it the IBM turn-around character?
+	jr	nz,INPKT5	; if not, go until it is
+INPKT6:	ld	hl,(PKTPTR)	; reload packet pointer
+
+	; end IBM change/fdc
+
+	dec	hl		; back up to end of line character
+	ld	(hl),0		; replace it with a null to stop RPACK:
+	call	SELCON		; we've got the packet, return to console
+
+	ld	a,(DBGFLG)	; is debugging enabled?
+	or	a
+	jr	z,INPKT7
+	inc	hl		; point to next char
+	ld	a,(OPMODE)	; Remote mode?
+	and	a
+	jr	z,INPKT7	; so don't say a thing
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	jr	nz,INPKT7	; don't say a thing either
+	call	RPPOS		; position cursor
+	ld	de,RECPKT+1	; print the packet
+	call	PRTSTR
+
+	ld	a,(PRNFLG)	; is the printer on too?
+	and	a
+	jr	z,INPKT7
+	ld	hl,RSTATM	; print state
+	call	PRINTM		; dumptext, but to printer
+	ld	a,(STATE)
+	ld	e,a
+	call	OUTPRN
+	ld	hl,PRINCR	; CR/LF to printer
+	call	PRINTM
+	ld	hl,RPACKM
+	call	PRINTM
+	ld	hl,RECPKT+1
+	call	PRINTM
+	ld	hl,PRINCR
+	call	PRINTM
+	ld	hl,PRINCR
+	call	PRINTM
+
+INPKT7:	ld	hl,RECPKT
+	ld	(PKTPTR),hl	; save the packet pointer
+	jp	RSKP		; if so we are done
+
+PRINCR:	db	CR,LF,0
+
+; Get next character from buffered packet.
+; Returns nonskip at end of packet.
+; Called by: RPACK
+
+GETCHR:	ld	hl,(PKTPTR)	; get the packet pointer
+	ld	a,(hl)		; get the char
+	inc	hl
+	ld	(PKTPTR),hl
+	or	a		; is it the null we put at the end of the packet?
+	jp	nz,RSKP		; if not, return retskp
+	ret			; if so return failure
+
+; Character input loop for file transfer
+; Returns: nonskip if timeout or character typed on console
+;                  (console selected)
+;          skip with character from modem in A (parity stripped
+;                  if necessary; modem selected)
+; Preserves BC, DE, HL in either case.
+; Called by: INPKT
+
+INCHR:	push	hl		; save HL and BC
+	push	bc
+	ld	a,(RTIME)	; get initial value for timeout
+	ld	l,a
+	ld	h,0
+	add	hl,hl		; multiply by 10 (since INPMDM timeout
+	ld	e,l		;  is hardwired to 100ms)
+	ld	d,h
+	add	hl,hl
+	add	hl,hl
+	add	hl,de
+	ld	(TIMVAL),hl	; result is in seconds
+INCHR0:	call	SELMDM		; select modem
+	call	INPMDM		; try to get a character from the modem
+	or	a
+	jr	z,INCHR2	; if zero, nothing there
+	ld	b,a
+	ld	a,(PARITY)	; is the parity none?
+	cp	PARNON
+	ld	a,b
+	jr	z,INCHR1	; if so just return
+	and	7Fh		; turn off the parity bit
+INCHR1:	pop	bc		; restore registers
+	pop	hl
+	jp	RSKP		; take skip return, character in A
+
+INCHR2:	call	SELCON		; select console
+	call	INPCON		; try to get a character from the console
+	or	a
+	jr	z,INCHR6	; if not go do timer thing
+	cp	CR		; is it a carriage return?
+	jr	z,INCHR4	; if so, return
+	cp	CTRLZ		; Control-Z?
+	jr	z,INCHR5	; yes, go flag it
+	cp	CTRLC		; Control-C?
+	jr	z,INCHR7	; re-enter, he wants to get out
+	cp	CTRLX		; Control-X?
+	jr	nz,INCHR6	; no, ignore it, do timer thing
+INCHR5:	add	a,100o		; convert to printing range
+	ld	(CZSEEN),a	; flag we saw a control-Z
+	jr	INCHR6		; and do timer thing
+INCHR4:	pop	bc		; restore registers
+	pop	hl
+	ret			; and return
+
+INCHR6:	ld	a,(TIMFLG)	; pick up timer flag
+	or	a		; are we allowed to use timer?
+	jr	z,INCHR0	; no, don't time out
+	ld	hl,(TIMVAL)	; decrement time-out
+	dec	hl		;
+	ld	(TIMVAL),hl	; ((TIMOUT-1) * 100ms + loop time)
+	ld	a,h		; retry if not time-out
+	or	l		;
+	jr	nz,INCHR0	;
+	call	UPDRTR		; count as retry (?)
+  IF 1
+	call	PURMDM		; purge modem input buffer
+  ENDIF
+	pop	bc		; restore registers
+	pop	hl
+	ret			; and return to do retry
+
+INCHR7:	call	CLRTOP		; clear screen and home cursor
+	ld	a,(TAKFLG)	; Take-file in progress?
+	and	1
+	call	nz,CLSETK	; yes, close it and reset TAKE-flag
+	xor	a		;  so all processing is halted
+	ld	(SRVFLG),a	; reset also the Server Mode flag
+	jp	KERMIT		;  then re-enter kermit
+
+; Routine to calculate a CRC-CCITT for a string.
+;
+; This routine will calculate a CRC using the CCITT polynomial for a string.
+;
+; Call with: HL/ Address of null-terminated string
+; 16-bit CRC value is returned in DE.
+; Registers BC and HL are preserved.
+;
+; Called by: SPACK, RPACK
+
+CRCCLC:	push	hl		; save HL
+	push	bc		;  and BC
+	ld	de,0		; initial CRC value is 0
+
+CRCCL0:	ld	a,(hl)		; get a character
+	or	a		; check if zero
+	jr	z,CRCCL1	; if so, all done
+	push	hl		; save the pointer
+	xor	e		; add in with previous value
+	ld	e,a		; get a copy
+	and	0Fh		; get last 4 bits of combined value
+	ld	c,a		; get into C
+	ld	b,0		; and make high order zero
+	ld	hl,CRCTB2	; point at low order table
+	add	hl,bc		; point to correct entry
+	add	hl,bc		;  .  .  .
+	push	hl		; save the address
+	ld	a,e		; get combined value back again
+	rrca			; shift over to make index
+	rrca			;  .  .  .
+	rrca			;  .  .  .
+	and	1Eh		; keep only 4 bits
+	ld	c,a		; set up to offset table
+	ld	hl,CRCTAB	; point at high order table
+	add	hl,bc		; correct entry
+	ld	a,(hl)		; get low order portion of entry
+	xor	d		; XOR with previous high order half
+	inc	hl		; point to high order byte
+	ld	d,(hl)		; get into D
+	pop	hl		; get back pointer to other table entry
+	xor	(hl)		; include with new high order half
+	ld	e,a		; copy new low order portion
+	inc	hl		; point to other portion
+	ld	a,(hl)		; get the other portion of the table entry
+	xor	d		; include with other high order portion
+	ld	d,a		; move back into D
+	pop	hl		; restore pointer
+	inc	hl		; point to next character
+	jr	CRCCL0		; go get next character
+
+CRCCL1:	pop	bc		; restore B
+	pop	hl		;  and HL
+	ret			; and return, DE = CRC-CCITT
+
+CRCTAB:	defw	00000h
+	defw	01081h
+	defw	02102h
+	defw	03183h
+	defw	04204h
+	defw	05285h
+	defw	06306h
+	defw	07387h
+	defw	08408h
+	defw	09489h
+	defw	0A50Ah
+	defw	0B58Bh
+	defw	0C60Ch
+	defw	0D68Dh
+	defw	0E70Eh
+	defw	0F78Fh
+
+CRCTB2:	defw	00000h
+	defw	01189h
+	defw	02312h
+	defw	0329Bh
+	defw	04624h
+	defw	057ADh
+	defw	06536h
+	defw	074BFh
+	defw	08C48h
+	defw	09DC1h
+	defw	0AF5Ah
+	defw	0BED3h
+	defw	0CA6Ch
+	defw	0DBE5h
+	defw	0E97Eh
+	defw	0F8F7h
+
+; This is where we go if we get an error during a protocol communication.
+; ERROR prints the error packet on line 6 or so, and aborts the transfer.
+;
+; Called by: RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT
+; ERROR1 prints CRLF followed by the error packet.
+;
+; Called by: FINISH, LOGOUT
+; ERROR2 just prints the error packet.
+; ERROR3 positions cursor and prints error message specified in DE.
+; Called by: RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF,
+;            SEOT, PARWRN, GOFIL, OUTBUF
+
+ERROR:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	jr	nz,ERROR0	; so don't say a thing
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	jr	nz,ERROR0	; don't say a thing either
+	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	call	z,SCRERR	; no, position the cursor
+ERROR0:	ld	a,'A'		; set the state to Abort
+	ld	(STATE),a
+	jr	ERROR2
+
+ERROR1:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	jr	z,ERROR2	; yes
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	call	z,PRCRLF	; no, print newline
+ERROR2:	ld	a,(ARGBLK+1)	; get the length of the data
+	ld	c,a
+	ld	b,0		; put it into BC
+	ld	hl,DATA		; get the address of the data
+	add	hl,bc		; get to the end of the string
+	ld	(hl),0		; put a null byte at the end
+	ld	de,DATA		; print error message
+	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	jr	nz,ERRR2A	; yes, print message, quiet or not!
+	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	ret	z		; so don't say a thing
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	ret	nz		; don't say a thing either
+ERRR2A:	call	PRTSTR
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	call	z,PRCRLF	; no, print newline
+	ret	
+
+ERROR3:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	ret	z		; yes, return
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	ret	nz		; so don't say a thing
+	ld	a,(REMTXT)	; doing a Remote command?
+	or	a
+	jr	nz,ERR3A	; yes, don't position cursor
+	push	de		; save the pointer to the message
+	call	SCRERR		; position the cursor
+	pop	de		; get the pointer back
+ERR3A:	call	PRTSTR		; print error message
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	call	z,PRCRLF	; no, print newline
+	ret	
+
+; Set up for file transfer.
+; Called by READ, SEND.
+
+INIT:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	jr	z,INIT1
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	call	z,SYSSCR	; no, fix up screen
+INIT1:	call	SELMDM		; select modem
+	call	PURMDM		; purge any pending input data
+	call	SELCON		; select console again.
+	ret	
+
+; Set state to ABORT
+; Called by: RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT, NAK, ACKP
+
+ABORT:	ld	a,'A'		; otherwise abort
+	ld	(STATE),a
+	ret	
+
+; NAK - Send NAK packet
+; Here from: RINIT, RFILE, RDATA
+; NAK0 - update retry count and send NAK packet
+; Here from: RINIT, RFILE, RDATA, TRYAGN
+
+NAK0:	call	UPDRTR		; update number of retries
+NAK:	ld	a,(PKTNUM)	; get the packet number we're waiting for
+	ld	(ARGBLK),a
+	xor	a		; no data
+	ld	(ARGBLK+1),a
+	ld	a,'N'		; NAK that packet
+	call	SPACK
+	jp	ABORT		; give up
+	ret			; go around again
+
+; Increment and display retry count
+; Called by: RFILE, SINIT, SFILE, SDATA, SEOF, SEOT,
+;            NAK, RPACK, INCHR, TRYAGN
+
+UPDRTR:	ld	hl,(NUMRTR)
+	inc	hl		; increment the number of retries
+	ld	(NUMRTR),hl
+	ld	a,(REMTXT)	; doing a Remote server command?
+	or	a
+	ret	nz		; yes, keep mum
+OUTRTR:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	ret	z		; yes, return
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	ret	nz		; so don't say a thing
+	call	SCRNRT		; position cursor
+	ld	hl,(NUMRTR)
+	call	NOUT		; write the number of retries
+	call	CLREOL		; erase to end of line
+	jp	FLSCON		; flush output and return
+
+; This routine prints parity warnings. All registers are saved except for A.
+; Called by: SDATA
+
+PARWRN:	push	bc		; save registers
+	push	de
+	push	hl
+	ld	de,INMS25	; load message address
+	call	ERROR3		; print it
+	pop	hl		; restore registers
+	pop	de
+	pop	bc
+	ret	
+
+INMS25:	defb	BELL,'Warning: eighth bit cannot be sent',0
+
+; Print message in status field. Address of message is in DE.
+; Called by: READ, SEND
+
+FINMES:	ld	a,(OPMODE)	; Remote operation?
+	and	a
+	ret	z		; so don't say a thing
+	ld	a,(QUIETD)	; a quiet display?
+	and	a
+	jr	z,FINME0	; so do usual stuff
+	push	de		; save pointer to completion message
+	call	PRCRLF		; best do a new line
+	pop	de		; restore completion message pointer
+	call	PRTSTR		; and send message
+	ld	e,SPACE		; send a space or two
+	call	OUTCON
+	call	OUTCON
+	jp	FLSCON		; flush output and exit back
+
+FINME0:	; else for screaming screens...
+
+	push	de		; save message
+	call	SCRST		; position cursor and clear to end of line
+	pop	de		; print the termination message
+	call	PRTSTR
+	jp	SCREND		; position cursor for prompt
+
+; Compare expected packet number against received packet number.
+; Return with flags set (Z = packet number valid)
+; Called by: RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT
+
+COMPP:	ld	a,(PKTNUM)	; get the packet number
+	ld	b,a
+	ld	a,(ARGBLK)
+	cp	b
+	ret	
+
+; Increment the packet number, modulo 64.
+; Called by: RINIT, RFILE, RDATA, SINIT, SFILE, SDATA, SEOF, SEOT
+
+COUNTP:	inc	a		; increment packet number
+	and	3Fh		; turn off the two high order bits
+	ld	(PKTNUM),a	; save modulo 64 of number
+	ld	hl,(NUMPKT)
+	inc	hl		; increment number of packets
+	ld	(NUMPKT),hl
+	ret	
+
+; Send an ACK-packet
+; Called by: RFILE, RDATA, TRYAGN
+
+ACKP:	xor	a
+	ld	(NUMTRY),a	; reset number of retries
+	ld	(ARGBLK+1),a	; no data (the packet number is in ARGBLK)
+	ld	a,'Y'		; acknowledge packet
+	call	SPACK		; send packet
+	jp	ABORT
+	ret	
+
+; ?
+; Called with A/ current retry count
+; Called by: RFILE, RDATA
+
+TRYAGN:	inc	a		; increment it
+	ld	(OLDTRY),a	; save the updated number of tries
+	ld	a,(PKTNUM)	; get the present packet number
+	dec	a		; decrement
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get the packet's number
+	cp	b		; is the packet's number one less than now?
+	jp	nz,NAK0		; no, NAK it and try again.
+	call	UPDRTR		; update the number of retries
+	jp	ACKP
+
+; Output a null-terminated string to the PRINTER  We assume that the
+; console has been selected.  Called with HL = address of string.
+; Called by: SPACK, INPKT
+
+PRINTM:	ld	a,(hl)		; get character from string
+	or	a
+	ret	z		; done if null
+	push	hl		; save string address
+	ld	e,a		; move character to E for outcon
+	call	OUTPRN		; output character to printer
+	pop	hl		; restore string address
+	inc	hl		; point past printed character
+	jr	PRINTM		; go output rest of string
+
+; Test if character in A is the start of header character.  We get
+; the start of packet character from SOHCHR, which can be SET
+; [HP] not used?
+
+TSTSOH:	push	hl		; save these registers for a bit
+	ld	hl,SOHCHR	; we have to test if this is the character
+	cp	(hl)		; if zero, then it is
+	pop	hl
+	ret			; return with flags set
+
+	dseg
+
+REMNAM:	defs	60		; secondary filename storage (remote on Send,
+				; local on Get)
+REMLEN:	defs	1		; length of name
+TIMVAL:	defw	0		; timer value
+DATPTR:	defs	2		; position in packet data buffer
+CBFPTR:	defs	2		; position in character buffer
+PKTPTR:	defs	2		; position in receive packet
+
+	end

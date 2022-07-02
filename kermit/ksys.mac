@@ -1,0 +1,2906 @@
+; KSYS.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021-2022, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file constains mostly RSX180-specific routines, and also
+;	implements the DIRECTORY, ERASE, RENAME and COPY commands.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 21, 4-Dec-2021 by H. Peraza: add VFC parameter to QIO blocks as
+;       required by RSX180/280 V6.31 and up.
+;
+; edit 20, 18-May-2022 by H. Peraza: fix remote operation (line set to TI:).
+;
+; edit 19, 22-May-2021 by H. Peraza: when selecting a new line, update the
+;       SPEED variable with the value obtained from device characteristics.
+;
+; edit 18, 28-Mar-2021 by H. Peraza: the DIR routine now uses OUTCHR and
+;       OUTSTR for thext output. In server mode, the routines capture the
+;       output of DIR and sends it as a series of D-packets to the remote
+;       client.
+;
+; edit 17, 22-Mar-2021 by H. Peraza: added function to flush modem output,
+;       as required for proper working of the CONNECT command.
+;
+; edit 16, 21-Mar-2021 by H. Peraza: close all files at exit. Use PRTERR
+;       routine to output error messages. New get/send/server screen layout.
+;
+; edit 15, 9-Jan-2021 by H. Peraza: converted to Z80, rewritten almost
+;       completely for the RSX180/280 system. All I/O is now done here,
+;       so there are no more system calls (previously BDOS calls) scattered
+;       through the code. The DIRECTORY command now outputs file attributes
+;       and creation date in addition to file sizes when the listing mode
+;       is set to LONG, so it looks similar to PIP's output. The TC.ANS
+;       terminal characteristics byte is used to select between VT100 and
+;       VT52 screen control sequences. Modem I/O routines are buffered,
+;       with input timeout. Terminal input uses unsolicited-char AST.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 14, 1-Apr-1991 by MF. Correct a bug which crept in with edit 13 which
+;	caused any control-key other than ^Y or ^Z to act like ^X after a key
+;	had been depressed to halt output of the TYPE/PRINT commands.
+;
+; edit 13, 25-Mar-1991 by MF. Make the TYPE command always abort to Kermit
+;	command-level if ^C is entered on the console even if multiple files
+;	are being typed via wild-cards. Make ^X typed on the console abort
+;	typeout of the current file and begin typeout of the next file,
+;	if any, otherwise go back to Kermit command-level.
+;	The foregoing also applies to the PRINT command.
+;
+; edit 12, 14-Feb-1991 by MF. Call "clrtop" in TYPE command at "type1"
+;	rather than sending a <ff> directly to the terminal as some
+;	terminals don't respond to <ff> characters. Thus the screen will be
+;	cleared (if the terminal allows) before each file is typed.
+;	Also use "getfil" rather than the bdos "openf" call to open
+;	files for typing (label "type2"). This tightens up the code.
+;	Zero "fcbcnt" before starting to type files (label "type0b").
+;	This apparently fixes a phantom bug which caused incorrect lookup (and
+;	hence garbage typeout) of files occassionally after a new disk
+;	was inserted and a SET DEFAULT-DISK was performed to reset the disk
+;	system. (It looked like parts of other files were being typed, as
+;	if the directory had been misread or had not been reset.)
+;
+; edit 11, 8-Feb-1991 by MF. Cause the bdos call for direct console input
+;	in "ckchr" **not** to go thru the bdos trap but to call bdos at 0005h
+;	directly. This corrects a bug wherein if commands such as INPUT
+;	(which check to see if a keyboard key has been pressed) were executed
+;	from a TAKE-file, the character following the terminator of such
+;	commands was being interpreted as that keyboard input, thus causing
+;	the next command in the TAKE-file to be unrecognized since its
+;	first character had been eaten as a result of the keyboard check.
+;	This bug **may** be the cause of a report received by Dr. Martin
+;	J. Carter of Nottingham University in the U.K. in which Kermit
+;	was reported to have read a character beyond a command terminator
+;	in a TAKE-file, making the subsequent command unrecognizable since
+;	its first character was missing.
+;
+; edit 10, 29-Jan-1991 by MF. Use the big buffer for TYPE/PRINT commands.
+;	Thus, edit 9 has been superseded.
+;
+; edit 9, 29-Jan-1991 by MF. Corrected EOF check in TYPE command routine
+;	following label "type20". a READF call, if successful, gives A=0
+;	(not A=0FFH) and A not zero if failure. Thus the "INR A" instruction
+;	checking for EOF was **always** nonzero. The reason the TYPE command
+;	worked is that CP/M text files indicate the text end-of-file with a
+;	Control-Z, in which case the TYPE routine branched correctly. In
+;	other words, this edit is more for aesthetic purposes to satisfy
+;	purists than something brought about by dire necessity!
+;
+; edit 8, 28-Jan-1991 by MF. Added code courtesy of Dr. Martin J. Carter
+;	of Nottingham University, UK, to use the big buffer for the COPY
+;	command.
+;
+; edit 7, 18-Sep-1990 by MF.  Added RENAME routine to implement the
+;	RENAME (FRENAME) command to rename a CP/M file.
+;	Modified COPY routine to explicitly reject wild-carded filenames
+;	by using COMND function CMOFI rather than functions CMIFI and
+;	CMIFIN to get input and output filenames.
+;	Modified ERA and COPY routines to not act upon the respective
+;	commands until a "confirm" is typed.  This prevents these
+;	routines from taking off upon recognition of action characters
+;	like "?", which can be quite annoying if one is an inexperienced user.
+;
+; edit 6, March 11, 1987 by OBSchou.  Added in the TYPE and PRINT commands
+;	Both type to the screen, print also echoes to printer.
+;
+; edit 5 20 June, 1986.  Added support for multiple file FCB buffering.
+;
+; edit 4: June 16, 1986 OBSchou at Loughborough University, UK
+;       added in a test to prevent a DIR command issued from a TAKE command
+;       being interruped by the next character in the take command buffer.
+;       Also added code for USER nn. (Well, its OS related,is it not?)
+;
+; edit 3: July 8, 1984 (CJC)
+;       Merge modifications from Toad Hall: support LASM (linked by CPSTT,
+;       links to CPSWLD), use prcrlf where appropriate.
+;
+; edit 2: June 5, 1984 (CJC)
+;       documentation and formatting; delete unused code (dir13); add module
+;       version string.
+;
+; edit 1: May, 1984 (CJC)
+;       extracted from CPMBASE.M80 version 3.9; modifications are described in
+;       the accompanying .UPD file.
+
+	.Z80
+
+	ident	/21/
+
+	include	KDEF.INC
+	include	SYSFN.INC
+	include	QIO.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	BDRATES.INC
+	include	ERRORS.INC
+
+	public	SYSINIT,SYSEXIT,PRTSTR,SELCON,SELMDM,OUTCON,OUTMDM
+	public	SYSSCR,SCRNP,SCRNRT,SCRFLN,CLRTOP,CLREOL,CSRPOS
+	public	SCRERR,SCRST,RPPOS,SPPOS,SCREND,SYSCON,SYSCLS
+	public	SYSINH,INHLPS,SYSINT,SYSFLT,MDMFLT,PRTFLT,SYSBYE
+	public	SYSSPD,SPDTBL,SPHTBL,SYSPRT,INPCON,INPMDM,LPTSTAT
+	public	GETCON,FLSCON,FLSMDM,OUTLPT,DELCHR,CLRLIN,TTAB
+	public	PURMDM,TTYTYP,DELAY,EXTERN
+
+	public	SYSVER,DIR,DIR2,ERA,COPY,RENAME,TYPE,CKCHR,MFINIT
+	public	MFNAME,MFEND,SFCB,FCB,FCB2,OPENR,OPENRW,CREATF
+	public	CLOSEF,CLOSE2,READF,READF2,SEEK2,WRITEF,DELET2
+	public	OPENTK,READTK,CLSETK,SETFCB,ALUN,CHDIR,DSKFRE
+
+	public	ERMS15,SFCB,HIDEFS,FREBKS
+
+	extrn	KERMIT,COMND,NOUT,GETFIL,INBUF,PRCRLF,PRNFL,STRLEN
+	extrn	STRCPY,CPYNAM,RSKP,DEVSTR,DIRSTR,OUTPRN,PRTERR
+	extrn	OUTCHR,OUTSTR
+
+	extrn	VERSION,BANNER,RSXVER,CURDEV,CURDIR,$MEMRY,BUFADR
+	extrn	BUFSEC,BUFLEN,BUFPNT,MAXBSC,DBGFLG,HOSTNM,PORT
+	extrn	TEMP1,NUMBER,CHRCNT,TAKFLG,TAKBUF,TAKFCB,FNBUF
+	extrn	FCBS2,SRVFLG,SPEED,OPMODE
+
+	extrn	ATTACH,DETACH,PUTCH,PUTSTR,TTLUN,TTFLSH,UCASE
+	extrn	CPHLDE,CVTBD,CVTLD,BCD2BIN,CVTBH
+
+; Terminal input queue offsets (see QGET and QPUT routines)
+
+TQ.IP	equ	0		; input pointer
+TQ.OP	equ	TQ.IP+1		; output pointer
+TQ.BUF	equ	TQ.OP+1		; buffer
+
+; File open bit numbers (see FOPNFL)
+
+DFBIT	equ	0		; directory open bit flag
+RFBIT	equ	1		; read file open bit flag
+WFBIT	equ	2		; write file open bit flag
+TFBIT	equ	3		; TAK file open bit flag
+SFBIT	equ	4		; system file open bit flag
+
+	cseg
+
+SYSVER:	defb	'KSYS (21) 18-May-2022',0	; name, edit number, date
+
+; System-dependent initialization
+; Called once at program start.
+
+SYSINIT:
+	ld	hl,0
+	ld	de,GTKBUF
+	SC	.GTSK		; get task information
+	ld	hl,TCKSEC
+	ld	c,I.TCKS
+	SC	.GIN		; get ticks/sec for delay function
+	ld	hl,HOSTNM
+	ld	c,I.HOST
+	SC	.GIN		; get host name
+	ld	hl,CURDIR
+	ld	c,GD.TI
+	SC	.GDIR		; get current directory name
+	ld	hl,RSXVER
+	ld	c,I.VERS
+	SC	.GIN		; get system type and version
+	ld	de,'TI'
+	ld	c,0
+	ld	a,LUNTI
+	ld	(TTLUN),a
+	ld	b,a
+	SC	.ALUN		; assign LUN to terminal
+	ld	de,ASTCON	; terminal AST routine address
+	ld	c,LUNTI
+	call	ATTACH		; attach terminal with ASTs
+	ret	c
+	ld	hl,QIOSTC
+	SC	.QIO		; put terminal in binary mode
+	ld	ix,TTQ
+	call	QINIT		; init terminal input queue
+	xor	a
+	ld	(OCNT),a	; clear comm line input
+	ld	(ICNT),a	;  and output char counters
+	ld	hl,OBUF
+	ld	(OPTR),hl	; reset input...
+	ld	hl,IBUF
+	ld	(IPTR),hl	; ...and output buffer pointers
+	ld	(OPMODE),a	; default mode is Remote
+	ld	(MDMSET),a	; no comm line attached yet
+	ld	a,(TC.ANS+1)	; get terminal type
+	or	a		; ANSI?
+	ld	hl,VT100	; use VT100 sequences if yes
+	jr	nz,SINIT1
+	ld	hl,VT52		; else assume VT52
+SINIT1:	ld	de,TTBLK
+	ld	bc,TTSIZE
+	ldir			; setup terminal definition block
+	ld	de,BANNER	; build banner string
+	ld	hl,VERSION	; copy Kermit version
+	call	STRCPY
+	ld	hl,SYSMSG	; "on RSX"
+	call	STRCPY
+	ld	a,(RSXVER+2)
+	cp	2
+	ld	a,'2'
+	jr	z,SINIT2
+	ld	a,'1'
+SINIT2:	ld	(de),a		; store system type
+	inc	de
+	inc	hl
+	call	STRCPY
+	ld	hl,(RSXVER)
+	ex	de,hl		; convert system version number to string
+	ld	a,d		; major number
+	call	CVTBD
+	ld	(hl),'.'	; add a dot separator
+	inc	hl
+	ld	a,e		; minor number
+	call	CVTBD
+	ld	(hl),' '
+	inc	hl
+	ld	(hl),'('
+	inc	hl
+	ld	de,HOSTNM	; append host name
+	ld	b,9
+	call	CPYNAM
+	ld	(hl),')'
+	inc	hl
+	ld	(hl),0		; null ends string
+
+	; locate large buffer for multi-sector I/O: space between $MEMRY
+	; and the top of task memory is available for buffering, except
+	; we don't want to use more than NBUF buffers (if we use too many,
+	; the remote end could time out while we're writing to disk).
+	; NBUF is system-dependent, but for now we'll just use 8Kbytes.
+	; If you get retransmissions and other protocol errors after
+	; transferring the first NBUF sectors, lower the value with the
+	; SET BUFFER-SIZE command.
+
+	; Note: MAXBUF must be a multiple of BUFSIZ
+
+NBUF	equ	8*1024		; 8K
+NSEC	equ	NBUF/BUFSIZ	; 8K / number of bytes per sector
+
+	ld	hl,(GTKBUF+GT.END) ; get top of available memory
+	ld	de,($MEMRY)	; get start of buffer
+	ld	(BUFADR),de	; store it
+	or	a
+	sbc	hl,de		; obtain size of free memory space
+	jr	c,SINIT7	; should not happen
+	ld	b,0
+	ld	de,BUFSIZ
+	or	a
+SINIT3:	sbc	hl,de		; see how many disk blocks we can fit in
+	jr	c,SINIT4
+	inc	b		; count
+	jr	SINIT3		; and loop
+SINIT4:	ld	a,b
+	or	a		; zero means no space for buffers
+	jr	z,SINIT7	;  so exit
+	ld	(MAXBSC),a	; save for SET BUFFER use to compare
+	cp	NSEC		; initially limit the buffer size to this
+	jr	c,SINIT5
+	ld	a,NSEC
+SINIT5:	ld	(BUFSEC),a	; how many disk blocks we can fit in buffer
+	ld	hl,0		; now compute buffer size
+SINIT6:	add	hl,de		;  as multiple of BUFSIZ
+	djnz	SINIT6
+	ld	(BUFLEN),hl	; store buffer size in bytes
+	ret			; return from system-dependent routine
+
+SINIT7:	ld	de,NOROOM	; not enough room for buffers
+	call	PRTSTR		; complain about it
+	xor	a
+	ld	(TTCHR1+1),a
+	ld	hl,QIOSTC
+	SC	.QIO		; restore terminal mode
+	ld	hl,EX.SEV	; and return with error status
+	SC	.EXIT
+
+NOROOM:	defb	LF,'KER -- Not enough room',CR,0
+SYSMSG:	defb	'on RSX',0,'80 V',0
+
+; System-dependent termination.
+
+SYSEXIT:
+	call	CLOSEF		; paranoia check (a file may remain open
+	call	CLOSE2		;  after an Error or Abort condition)
+	call	MFEND
+	call	TTFLSH		; flush terminal output
+	ld	a,(MDMSET)
+	or	a		; comm line attached?
+	jr	z,sysx1		; no
+	ld	hl,MDMRST
+	SC	.QIO		; restore original comm line settings
+	ld	c,LUNMDM
+	call	DETACH		; detach from comm line
+	xor	a
+	ld	(MDMSET),a
+	ld	(OPMODE),a
+sysx1:	xor	a
+	ld	(TTCHR1+1),a
+	ld	hl,QIOSTC
+	SC	.QIO		; restore terminal mode
+	ld	c,LUNTI
+	call	DETACH		; detach from terminal
+	ret
+
+; Delay routine. Called with time (seconds) in HL. Aborts delay if a
+; key is pressed.
+; Destroys BC
+
+DELAY:	push	hl
+	push	de
+	call	INPCON		; terminal input available?
+	jr	nz,D1		; yes, return
+	ld	d,2		; units = seconds, magnitude in HL
+	ld	e,EFNTM
+	ld	bc,0		; no AST
+	SC	.MRKT		; mark time
+	ld	e,EFNTM
+	SC	.WTSE		; wait for event flag
+	ld	bc,0
+	ld	e,EFNTM
+	SC	.CMKT		; cancel timeout event if still pending
+	call	INPCON		; drop char, if any
+D1:	pop	de
+	pop	hl
+	ret
+
+;      +----|----|----|----|----|----|----|...
+;    1 |
+;    2 |                Kermit-180 V4.0 on RSX180 Vx.y (hostname)
+;    3 |
+;    4 |  Packet number: ____
+;    5 |        Retries: ____
+;    6 |      File name: ____________
+;    7 |
+;    8 |         Status: ______
+;    9 |     Last error: ______
+;   10 |
+;   11 |          RPack: ___(if debugging)...
+;   12 |
+;   13 |          SPack: ___(if debugging)...
+;   14 |
+;   15 |Kermit-180 SY0:[USER]>  (when finished)
+
+HDLIN	equ	2
+NPPOS	equ	4*100h+18
+RTPOS	equ	5*100h+18
+FNPOS	equ	6*100h+18
+ERPOS	equ	9*100h+18
+STPOS	equ	8*100h+18
+RPKPOS	equ	11*100h+18
+SPKPOS	equ	13*100h+18
+PRPLIN	equ	15
+
+; Set up screen display for file transfer
+; Called with kermit version in DE
+
+SYSSCR:	call	CLRTOP		; clear screen
+	ld	hl,BANNER	; get banner string
+	push	hl		; save address for a bit
+	call	STRLEN		; compute length
+	ld	a,80		; screen width
+	sub	b		; subtract length
+	rra			; and divide by 2 (carry should be clear)
+	ld	c,a		; set column
+	ld	b,HDLIN		; get header row
+	call	CSRPOS		; position cursor
+	pop	de		; get banner string
+	call	PRTSTR		; print it
+	ld	de,OUTLIN	; print field names
+	call	XYSTR
+	ld	a,(DBGFLG)	; is debugging enabled?
+	or	a
+	ret	z		; finished if no debugging
+	inc	de		; set up debugging fields
+XYSTR:	ld	a,(de)		; get column
+	or	a		; zero?
+	ret	z		; yes, return
+	ld	c,a		; get column into reg C
+	inc	de		; advance pointer
+	ld	a,(de)		; get row
+	ld	b,a		; into reg B
+	push	de
+	call	CSRPOS		; position cursor
+	pop	de
+	inc	de		; point to message
+	call	PRTSTR		; output string
+	inc	de		; skip trailing null
+	jr	XYSTR		; and loop to process next
+
+OUTLIN:	defb	3,4,'Packet number:',0
+	defb	9,5,'Retries:',0
+	defb	7,6,'File name:',0
+	defb	10,8,'Status:',0
+	defb	6,9,'Last error:',0
+	defb	0
+	defb	11,11,'Rpack:',0
+	defb	11,13,'Spack:',0
+	defb	0
+
+SCRNP:	ld	bc,NPPOS	; position cursor to output number of packets
+	jp	CSRPOS
+
+SCRNRT:	ld	bc,RTPOS	; position cursor to output number of retries
+	jp	CSRPOS
+
+SCRFLN:	ld	bc,FNPOS	; position cursor to output file name
+	call	CSRPOS
+CLREOL:	ld	de,TK		; erase line
+	jp	PRTSTR
+
+SCRERR:	ld	bc,ERPOS
+	call	CSRPOS		; position cursor on error line
+	jp	CLREOL		; erase line
+
+SCRST:	ld	bc,STPOS
+	call	CSRPOS		; position cursor on status line
+	jp	CLREOL		; erase line
+
+RPPOS:	ld	bc,RPKPOS
+	call	CSRPOS		; position cursor on read packet line
+	jp	CLREOL		; erase line
+
+SPPOS:	ld	bc,SPKPOS
+	call	CSRPOS		; position cursor on sent packet line
+	jp	CLREOL		; erase line
+
+; Modify SCREND to make the cursor line conditional on use of debugging.
+
+SCREND:	ld	a,(DBGFLG)
+	or	a
+	jr	z,SCR1ND
+	ld	bc,PRPLIN*100h+1; debugging in use
+	jr	SCR2ND
+SCR1ND:	ld	bc,RPKPOS	; no debugging
+	ld	c,1
+SCR2ND:	call	CSRPOS		; position cursor
+CLREOS:	ld	de,TJ
+	jp	PRTSTR		; erase to end of screen
+
+; Output string in DE
+
+PRTSTR:	ex	de,hl
+	call	PUTSTR		; send it to terminal
+	call	TTFLSH
+	ex	de,hl
+	ret
+
+; System-dependent processing for start of CONNECT command
+
+SYSCON:
+	ret	
+
+; System-dependent close routine, called when exiting transparent session.
+
+SYSCLS:
+	ret	
+
+; Help for system-dependent special functions.
+; Called in response to <escape>?, after listing all the system-independent
+; escape sequences.
+
+SYSINH:
+	ld	de,INHLPS	; we got options...
+	call	PRTSTR		; print them.
+	ret	
+
+; Additional, system-dependent help for transparent mode (two-character
+; escape sequences)
+
+INHLPS:
+	defb	CR,LF,'B  Transmit a BREAK'
+	defb	0
+
+; System dependent special functions
+; Called when transparent escape character has been typed; the second
+; character of the sequence is in A (and in B).
+; Returns:
+;   non-skip: sequence has been processed
+;   skip:     sequence was not recognized
+
+SYSINT:	call	UCASE		; convert lower case to upper, for testing...
+	cp	'B'		; send break?
+	jp	z,SENDBR	; yes, go do it.  return nonskip when through.
+	jp	RSKP		; take skip return - command not recognized.
+
+; Officially, a "break" is 300 milliseconds of "space" (idle line is
+; "mark").  (or maybe 200 milliseconds; I forget.)  The timing isn't
+; usually that critical, but we'll make an attempt, at least.  Sending
+; too long a break can cause some modems to hang up.
+
+SENDBR:
+	ret
+
+; System-dependent filter
+; Called with character in E.
+; If this character should not be printed, return with A = zero.
+; Preserves BC, DE, HL.
+; Note: <xon>,<xoff>,<del>, and <nul> are always discarded.
+
+SYSFLT:	ld	a,e		; return non-zero
+	ret	
+
+; Modem filter
+; Called with character to be sent to modem in E with parity set as
+; appropriate.
+; Return with accumulator = 0 to do nothing, <> 0 to send char in E.
+
+MDMFLT:	ld	a,e		; return non-zero
+	ret	
+
+; Printer filter
+; Called with character to be sent to printer in E
+; Returns with A = 0 to do nothing, <> 0 to print it.
+;
+; This routine is for those printers that automatically insert
+; a LF on CR, or CR for LF.
+
+PRTFLT:	ld	a,e		; return non-zero
+	ret	
+
+; System-dependent processing for BYE command (e.g. to hang up the phone.)
+
+SYSBYE:
+	ret	
+
+; Set baud rate, code in E.
+
+SYSSPD:	ld	a,e		; get the parsed value
+SETBD:	ld	(MDSPD+1),a	; store it
+	ld	hl,MDMSPD
+	SC	.QIO		; TODO: timeout?
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Speed tables
+;   (Note that speed tables MUST be in *alphabetical* order for later
+;   lookup procedures, and must begin with a value showing the total
+;   number of entries.  The speed help tables are just for us poor
+;   humans.
+
+;       db      string length,string,code (2 identical bytes or 1 word)
+
+SPDTBL:	defb	23		; 23 entries
+	defb	3,'110',0,	S.110,	S.110
+	defb	6,'115200',0,	S.115K2,S.115K2
+	defb	4,'1200',0,	S.1200,	S.1200
+	defb	5,'134.5',0,	S.134,	S.134
+	defb	5,'14400',0,	S.14K4,	S.14K4
+	defb	3,'150',0,	S.150,	S.150
+	defb	4,'1800',0,	S.1800,	S.1800
+	defb	5,'19200',0,	S.19K2,	S.19K2
+	defb	3,'200',0,	S.200,	S.200
+	defb	4,'2000',0,	S.2000,	S.2000
+	defb	4,'2400',0,	S.2400,	S.2400
+	defb	5,'28800',0,	S.28K8,	S.28K8
+	defb	3,'300',0,	S.300,	S.300
+	defb	4,'3600',0,	S.3600,	S.3600
+	defb	5,'38400',0,	S.38K4,	S.38K4
+	defb	4,'4800',0,	S.4800,	S.4800
+	defb	2,'50',0,	S.50,	S.50
+	defb	5,'57600',0,	S.57K6,	S.57K6
+	defb	3,'600',0,	S.600,	S.600
+	defb	4,'7200',0,	S.7200,	S.7200
+	defb	2,'75',0,	S.75,	S.75
+	defb	5,'76800',0,	S.76K8,	S.76K8
+	defb	4,'9600',0,	S.9600,	S.9600
+
+SPHTBL:	defb	CR,LF,'   50     75    110    134.5  150    200    300    600'
+	defb	CR,LF,' 1200   1800   2000   2400   3600   4800   7200   9600'
+	defb	CR,LF,'14400  19200  28800  38400  57600  76800 115200'
+	defb	0
+
+; This is the system-dependent SET PORT command.
+
+SYSPRT:	ld	a,(MDMSET)
+	or	a		; comm line attached?
+	jr	z,SYSP1		; no
+
+	ld	hl,MDMRST
+	SC	.QIO		; else restore original comm line settings
+	;jr	c,...
+	ld	c,LUNMDM
+	call	DETACH		; detach from previous line
+	xor	a
+	ld	(MDMSET),a
+
+SYSP1:	ld	hl,PORT		; get a pointer to name of new comm line
+	ld	b,LUNMDM
+	call	ALUN		; assign LUN and get device info
+	ret	c		; on error, return
+
+	xor	a
+	ld	(ICNT),a	; reset I/O counters and pointers
+	ld	(OCNT),a
+	push	hl
+	ld	hl,OBUF
+	ld	(OPTR),hl
+	ld	hl,IBUF
+	ld	(IPTR),hl
+	pop	hl
+
+	ld	de,GTKBUF+GT.TI
+	call	CMPDEV		; new line same as current terminal?
+	jr	z,SYSP2		; yes, don't change settings
+
+	;*TODO: attach with timeout, else the program will be
+	; blocked here until the terminal is detached.
+
+	ld	de,0		; no ASTs
+	ld	c,LUNMDM
+	call	ATTACH		; attach to comm line
+	ret	c
+
+	ld	a,0FFh
+	ld	(MDMSET),a	; set flag
+	ld	(OPMODE),a	; now in Local mode
+
+	ld	hl,MDMGTC
+	SC	.QIO		; remember original settings
+	;jr	c,...		; don't return on error, but try instead
+				;  to set characteristics that make sense?
+	ld	a,(OLDSPD+1)
+	ld	(SPEED),a	; update serial speed variable
+
+	ld	hl,MDMSTC
+	SC	.QIO		; slave terminal, disable echo
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	ret	z
+	scf
+	ret
+
+SYSP2:	xor	a
+	ld	(MDMSET),a
+	ld	(OPMODE),a	; now in Remote mode
+	ret
+
+CMPDEV:	ld	b,3
+cmp1:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	cmp1
+	ret
+
+; Select modem port, called before using INPMDM or OUTMDM
+; Preserves BC, DE, HL.
+
+SELMDM:	ld	a,(MDMSET)
+	or	a		; modem line already attached?
+	ret	nz		; yes, return
+
+	push	hl
+	push	de
+	push	bc
+	ld	de,0		; no ASTs
+	ld	c,LUNMDM
+	call	ATTACH		; (re)attach to comm line
+	jr	c,selm1
+
+	ld	a,0FFh
+	ld	(MDMSET),a	; set flag
+
+	ld	hl,MDMGTC
+	SC	.QIO		; remember original settings
+
+	ld	hl,MDMSTC
+	SC	.QIO		; slave terminal, disable echo
+
+selm1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Select console port, called before using INPCON or OUTCON
+; Preserves BC, DE, HL.
+
+SELCON:	; postpone operation until next console read
+	ret
+
+RESCON:	ld	a,(MDMSET)
+	or	a		; modem line attached?
+	ret	z		; no, return
+
+	ld	a,(OPMODE)
+	or	a		; are we in Local mode?
+	ret	nz		; yes, return
+
+	push	hl
+	push	de
+	push	bc
+	ld	de,ASTCON	; terminal AST routine address
+	ld	c,LUNTI
+	call	ATTACH		; (re)attach terminal with ASTs
+	jr	c,selc1
+
+	ld	hl,MDMRST
+	SC	.QIO		; restore original comm line settings
+
+	xor	a
+	ld	(MDMSET),a	; clear flag
+
+selc1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Get character from console, or return zero.
+; Result is returned in A.  Destroys DE, HL.
+
+INPCON:	call	RESCON
+	push	ix
+	call	TTFLSH		; flush terminal output
+	ld	ix,TTQ
+	call	QGET		; fetch char, if available
+	pop	ix
+	ret	nc		; here it is
+	xor	a		; else return zero
+	ret
+
+; Wait for and get character from console.
+; Result is returned in A.  Destroys DE, HL.
+
+GETCON:	call	RESCON
+	push	ix
+	push	bc
+	call	TTFLSH		; flush terminal output
+GC1:	ld	e,EFNGC
+	SC	.CLEF		; clear event flag before accessing queue
+	ld	ix,TTQ
+	call	QGET		; fetch char
+	jr	nc,GC2		; if available, return
+	ld	e,EFNGC
+	SC	.WTSE		; else wait for character to arrive
+	jr	GC1		; loop to get char
+GC2:	or	a
+	jr	z,GC1		; ignore null chars
+	pop	ix
+	pop	bc
+	ret
+
+; Output character in E to the console.
+; Destroys C, preserves E.
+
+OUTCON:	ld	c,e
+	call	PUTCH		; use SYSLIB routine
+	or	a
+	ret
+
+; Flush any pending console output.
+
+FLSCON:	jp	TTFLSH		; use SYSLIB routine
+
+; Unsolicited console input AST routine
+
+ASTCON:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	ix,TTQ
+	ld	c,l
+	ld	a,c		; get char
+	cp	CTRLC		; Control-C?
+	call	z,QINIT		; yes, purge input queue
+	call	QPUT		; store char in queue
+	ld	e,EFNGC
+	SC	.SETF		; and set event flag
+	ld	e,EFNTM
+	SC	.SETF		; abort delay, if running
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX		; exit AST
+
+; Reset input queue
+
+QINIT:	xor	a
+	ld	(ix+TQ.IP),a	; reset input
+	ld	(ix+TQ.OP),a	;  and output counters
+	ret
+
+; Fetch character from queue. Returns with Carry set if queue is empty.
+
+QGET:	ld	a,(ix+TQ.OP)	; get output pointer
+	cp	(ix+TQ.IP)	; same as input pointer?
+	scf
+	ret	z		; yes, queue empty, return with Carry set
+	ld	e,a		; get output pointer into E
+	inc	a		; advance output pointer for next op
+	and	3Fh		; wrap around
+	ld	(ix+TQ.OP),a	; store new value
+	ld	d,0		; make 16-bit offset
+	push	ix
+	add	ix,de		; add to queue address
+	ld	a,(ix+TQ.BUF)	; fetch char from buffer
+	pop	ix
+	or	a		; success, return with Carry clear
+	ret
+
+; Store character in queue. Returns with Carry set if the queue is full.
+
+QPUT:	ld	a,(ix+TQ.IP)	; get input pointer
+	ld	e,a		; save it
+	inc	a		; advance for next op
+	and	3Fh		; wrap around
+	cp	(ix+TQ.OP)	; same as output pointer?
+	scf
+	ret	z		; yes, queue full, return with Carry set
+	ld	(ix+TQ.IP),a	; store new value
+	ld	d,0		; make 16-bit offset
+	push	ix
+	add	ix,de		; add to queue address
+	ld	(ix+TQ.BUF),c	; store char in buffer
+	pop	ix
+	or	a		; success, return with Carry clear
+	ret
+
+; Returns Z if queue is empty.
+
+QEMPTY:	ld	a,(ix+TQ.IP)	; are input
+	sub	(ix+TQ.OP)	;  and output pointers equal?
+	or	a		; set flags and return
+	ret
+
+; Output character in E to the modem.
+; The parity bit has been set as necessary.
+; Returns nonskip; BC, DE, HL preserved.
+
+OUTMDM:	push	hl		; save registers
+	push	de
+	push	bc
+	call	OUTMD		; output char
+	pop	bc
+	pop	de
+	pop	hl		; restore registers
+	ret			; and return
+
+OUTMD:	ld	hl,(OPTR)	; load output buffer pointer
+	ld	(hl),e		; store character
+	inc	hl		; advance pointer
+	ld	(OPTR),hl	; save it back
+	ld	a,(OCNT)	; get char counter
+	inc	a		; increase it
+	ld	(OCNT),a	; save it back
+	cp	128		; is buffer full?
+	jr	z,FLSMDM	; yes, send it
+	ld	a,e		; no, check character
+	cp	CR		; carriage return?
+	ret	nz		; no, return
+	;...
+
+; Flush modem output.
+; Destroys HL.
+
+FLSMDM:	ld	a,(OCNT)	; get number of characters in buffer
+	or	a
+	ret	z
+	ld	l,a
+	ld	h,0		; make it a 16-bit word
+	ld	(QIOMWR+Q.LEN),hl ; save for QIO request
+	xor	a
+	ld	(OCNT),a	; clear character count
+	ld	hl,OBUF
+	ld	(OPTR),hl	; and reset output buffer pointer
+	ld	hl,QIOMWR
+	SC	.QIO		; send request
+	ret	c		; error, queuing failed
+	ld	a,(OSB)		; check return code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, set Carry and return
+	ret
+
+; Get character from modem; return zero if none available.
+; Destroys BC, DE, HL.
+
+INPMDM:	ld	a,(ICNT)	; get input character count
+	or	a		; anything in input buffer?
+	jr	z,INPM2		; no, time to read
+
+INPM1:	dec	a		; yes, decrement character count
+	ld	(ICNT),a	; store it back
+	ld	hl,(IPTR)	; load input buffer pointer
+	ld	a,(hl)		; fetch the character
+	inc	hl		; advance pointer
+	ld	(IPTR),hl	; store it back
+	or	a		; return success
+	ret
+
+INPM2:	ld	hl,IBUF
+	ld	(IPTR),hl
+
+	ld	d,1		; set a timeout; units = ticks
+	ld	hl,10		; HL = magnitude
+	ld	e,EFNMD		; use QIO event number
+	ld	bc,0		; no AST
+	SC	.MRKT		; mark time
+
+	ld	hl,QIOMRD	; try reading from modem port
+	SC	.QIO		; queue operation and wait
+	push	af
+	ld	bc,0
+	ld	e,EFNMD
+	SC	.CMKT		; cancel timeout event if still pending
+	pop	af
+	jr	c,INPM4		; request failed, return zero
+
+	ld	a,(ISB)		; check read status
+	or	a		; complete?
+	jr	z,INPM3		; yes
+	cp	E.PEND		; request pending (timeout)?
+	jr	nz,INPM4	; no: something else, return zero
+
+	ld	hl,QIOMKI
+	SC	.QIO		; else kill the pending read operation
+				; (we still get a partial read)
+
+	ld	a,(ISB)		; check read status
+	or	a		; completed meanwhile?
+	jr	z,INPM3		; yes
+	cp	E.ABOP		; no, read aborted?
+	jr	nz,INPM4	; no, return zero
+
+INPM3:	ld	hl,(ISB+2)	; else process what we got
+	ld	a,h		; check length
+	or	l		; anything?
+	ret	z		; no, return zero
+	ld	a,l		; else get character count in A
+	jp	INPM1		; and go to fetch character and return
+
+INPM4:	xor	a		; here on error, return zero
+	ret
+
+; Purge comm input line.
+; Modem is selected.
+; Currently, just gets characters until none are available.
+
+PURMDM:	call	INPMDM		; try to get a character
+	or	a		; got one?
+	jr	nz,PURMDM	; if so, try for another
+	ret			; receiver is drained, return
+
+; Get the printer status. Return A = 0FFh if OK, or 0 if not.
+
+LPTSTAT:
+	xor	a		; not supported at this time
+	ret	
+
+; Output character in E to printer
+; Console is selected.
+; Preserves DE.
+
+OUTLPT:	push	de		; save DE in either case
+	call	PRTFLT		; go through printer filter
+	and	a		; if A = 0 do nothing
+	jp	z,OUTLP1
+	;...send char
+OUTLP1:	pop	de		; restore saved register pair
+	ret	
+
+; Erase the character before the current cursor position
+
+DELCHR:	ld	e,BS		; get a backspace
+	call	OUTCON
+	ld	e,' '		; get a space
+	call	OUTCON
+	ld	e,BS		; get a backspace
+	jp	OUTCON
+
+; Erase the current line
+
+CLRLIN:	ld	e,CR
+	call	OUTCON		; move cursor to start of line
+	ld	de,TK
+	jp	PRTSTR		; clear to end of line
+
+; Erase the whole screen, and go home. preserves B (but not C)
+
+CLRTOP:	ld	de,ERASCR
+	jp	PRTSTR
+
+; Screen manipulation routines
+
+; Move cursor to row B, column C
+
+CSRPOS:	ld	hl,(CSRSET)
+	jp	(hl)
+
+CSR52:	push	bc		; save coordinates
+	ld	e,ESC		; cursor lead-in sequence
+	call	OUTCON
+	ld	e,'Y'
+	call	OUTCON
+	pop	hl		; restore coordinates
+	ld	a,h		; get row
+	add	a,' '-1		; space is row one
+	ld	e,a
+	push	hl
+	call	OUTCON		; output row
+	pop	hl
+	ld	a,l		; get column
+	add	a,' '-1		; space is column one
+	ld	e,a
+	jp	OUTCON		; output it and return
+
+CSR100:	push	bc		; save coordinates
+	ld	e,ESC		; cursor lead-in sequence
+	call	OUTCON
+	ld	e,'['
+	call	OUTCON
+	pop	hl		; peek at coordinates
+	push	hl		;  then save away again
+	ld	l,h		; get row
+	ld	h,0		; HL = row
+	call	NOUT		; output in decimal
+	ld	e,';'		; follow with semicolon
+	call	OUTCON		; print it
+	pop	hl		; restore column
+	ld	h,0		; HL = column
+	call	NOUT
+	ld	e,'H'		; terminate with 'move cursor' command
+	jp	OUTCON		; output it and return
+
+VT52:	defb	'VT52',0,0	; TTYTYP
+	defb	ESC,'H',ESC,'J',0,0,0,0,0,0,0,0 ; ERASCR
+	defw	CSR52		; CSRSET
+	defb	ESC,'A',0,0	; TA
+	defb	ESC,'B',0,0	; TB
+	defb	ESC,'C',0,0	; TC
+	defb	ESC,'D',0,0	; TD
+	defb	ESC,'E',0,0	; TE
+	defb	ESC,'F',0,0	; TF
+	defb	ESC,'G',0,0	; TG
+	defb	ESC,'H',0,0	; TH
+	defb	ESC,'I',0,0	; TI
+	defb	ESC,'J',0,0	; TJ
+	defb	ESC,'K',0,0	; TK
+
+VT100:	defb	'VT100',0	; TTYTYP
+	; Note that we cannot support Graphics Mode or the H19
+	; erase-screen command (<esc>E), because the sequences are
+	; more than three bytes.
+	defb	ESC,'<',ESC,'[H',ESC,'[J',0,0,0,0 ; ERASCR
+	defw	CSR100		; CSRSET
+	defb	ESC,'[A',0	; TA
+	defb	ESC,'[B',0	; TB
+	defb	ESC,'[C',0	; TC
+	defb	ESC,'[D',0	; TD
+	defb	0,0,0,0		; TE
+	defb	0,0,0,0		; TF
+	defb	0,0,0,0		; TG
+	defb	ESC,'[H',0	; TH
+	defb	ESC,'M',0,0	; TI
+	defb	ESC,'[J',0	; TJ
+	defb	ESC,'[K',0	; TK
+
+; "External" (custom) terminal emulation
+
+EXTERN:	jp	0		; none
+
+; Change directory to the one specified in FCB.
+
+CHDIR:	ld	a,(FCB+F.ATTR)
+	and	FN.DEV		; was a device specified?
+	jr	z,CHD2		; no, skip
+	ld	hl,FCB+F.DEV
+	ld	b,LUNTMP
+	call	ALUN		; assign LUN
+	ret	c		; on error, return
+	push	hl
+	pop	ix
+	bit	DV.DIR,(ix+4)	; directory device?
+	ld	a,E.BADOP
+	scf
+	ret	z		; no, error
+	ld	hl,FCB+F.DEV
+	ld	de,CURDEV
+	ld	bc,3
+	ldir			; yes, set new device name
+CHD2:	ld	a,(FCB+F.ATTR)
+	ld	c,a
+	and	FN.DIR		; directory specified?
+	ld	hl,FCB+F.DIR
+	jr	nz,CHD3		; yes
+	ld	a,c
+	and	FN.NAME		; else try filename
+ IF 0
+	ld	a,E.BADOP
+	scf
+ ENDIF
+	ret	z		; nope
+	ld	hl,FCB+F.NAME
+CHD3:	;*TODO: ensure directory exists on CURDEV?
+	ld	de,CURDIR
+	ld	bc,9
+	ldir			; copy directory name
+	ld	hl,CURDIR
+	ld	c,SD.TSK
+	SC	.SDIR		; set task's current directory
+	ret
+
+; This is the DIR command.  Display the name and size of all files matching
+; the filespec.
+; Here from: KERMIT
+
+; TODO:
+; - error if dir wildc specified 'Wildcards in directory name not allowed'
+
+DIR:	ld	de,SFCB		; where to put the data, if any.
+	ld	a,CMIFIN
+	call	COMND		; parse a full or piece of file-spec
+	jp	DIR1		; ignore errors
+DIR1:	call	DIR2
+	jp	KERMIT
+
+; The actual directory display routine. Called also from SERVER.
+
+DIR2:	call	MFINIT		; init file search
+	jp	c,DIRERR
+
+	ld	a,(HIDEFS)	; check directory listing format
+	or	a		; long?
+	ld	hl,IXFCB
+	call	nz,OPNSYS	; yes, open index file to read file attributes
+
+	ld	a,(SRVFLG)
+	or	a		; server mode?
+	jr	nz,DIR2A	; yes, skip header
+	ld	de,INMS14	; print header message
+	call	OUTSTR
+	jp	c,DIRERR
+	ld	hl,FNBUF
+	push	hl
+	ld	de,SFCB+F.DEV
+	call	DEVSTR		; copy device name
+	ld	de,SFCB+F.DIR
+	call	DIRSTR		; copy directory name
+	ld	(hl),CR
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),LF
+	inc	hl
+	ld	(hl),0
+	pop	de
+	call	OUTSTR		; output string
+	jp	c,DIRERR
+
+DIR2A:	ld	c,3		; number of names per line
+	ld	b,25		; name width
+	ld	a,(HIDEFS)	; long directory listing?
+	or	a
+	jp	z,DIR3		; no
+	ld	c,1		; yes, display only one entry per line
+	ld	b,19
+DIR3:	ld	a,c
+	ld	(FPLN),a	; save file names per line
+	ld	(NNAMS),a	; init counter
+	ld	a,b
+	ld	(DIRW),a	; save name width
+
+	ld	hl,0
+	ld	(NFILES),hl	; clear file counter
+
+DIR5:	call	MFNAME		; get some names
+	jp	c,DIR17		; got none - do summary
+
+DIR6:	; check for console break
+
+	ld	a,(TAKFLG)	; but not if issued from TAKE...
+	and	a
+	jp	nz,DIR6A	; we do the lot regardless
+
+	call	CKQTYP		; see if a ctrl-C or other character from user
+	jp	DIR17		; ctrl-C entered, abort
+	jr	c,DIR17		; ctrl-X entered, abort but print summary (TODO)
+
+DIR6A:	; print an entry
+
+	ld	ix,FCB		; point to filename
+	ld	hl,FNBUF	; dest string address
+	push	hl
+	call	FCBS2		; convert name to string
+	pop	de
+	push	de
+	call	OUTSTR		; display string
+	pop	hl
+	jp	c,DIRERR
+	call	STRLEN
+	ld	a,(DIRW)	; get width
+	sub	b
+	ld	b,a
+DIR6B:	ld	e,' '		; pad name
+	call	OUTCHR		;  with spaces
+	jp	c,DIRERR
+	djnz	DIR6B		;   up to the desired width
+
+	ld	hl,(NFILES)
+	inc	hl		; increment file counter
+	ld	(NFILES),hl
+
+	ld	a,(HIDEFS)	; long listing format?
+	or	a
+	call	nz,DIR25	; yes, print size and attributes
+
+	ld	hl,NNAMS	; point to names counter
+	dec	(hl)		; one less on this line
+	jr	nz,DIR5
+	call	OUTNL		; CR/LF needed
+	jp	c,DIRERR
+	ld	a,(FPLN)
+	ld	(NNAMS),a	; reset number of names per line
+	jp	DIR5		; loop
+
+DIR17:	; done with directory, display free space remaining on device
+
+	call	MFEND		; close directory
+	ld	a,(HIDEFS)	; doing long directory listing?
+	or	a
+	call	nz,CLOSYS	; yes, close the index file
+
+	ld	a,(NNAMS)	; check files per line counter
+	ld	hl,FPLN
+	cp	(hl)		; is last line complete?
+	call	nz,OUTNL	; no, an extra newline is needed
+	jp	c,DIRERR
+
+	ld	a,(SRVFLG)	; server mode?
+	or	a
+	ret	nz		; yes, return
+	ld	a,(HIDEFS)	; long directory listing?
+	or	a
+	ret	z		; no, return
+
+	call	DSKFRE		; else compute free disk space
+	jp	c,DIRERR	; on error, return
+
+	call	OUTNL
+	jp	c,DIRERR
+	ld	hl,FNBUF
+	push	hl
+	ld	bc,(NFILES)	; get number of files listed
+	xor	a
+	ld	e,a
+	ld	d,a		; no leading zeros or spaces
+	call	CVTLD		; convert to decimal
+	ld	(hl),0		; end with a null
+	pop	de
+	call	OUTSTR		; display the value
+	jp	c,DIRERR
+
+	ld	de,INMS15	; " files, "
+	call	OUTSTR
+	jp	c,DIRERR
+	push	de
+	ld	a,(FREBKS)	; get number of free blocks
+	ld	hl,(FREBKS+1)
+	add	a,a		; convert to bytes (multiply by 512)
+	adc	hl,hl		; which is 2*256
+	ld	b,a		; multiplying by 256 is the same as
+	xor	a		;  shifting one byte left
+	ld	c,a
+	ex	de,hl		; result in DE:BC
+	ld	hl,FNBUF
+	push	hl
+	call	CVTLD		; convert value to decimal
+	ld	(hl),0		; end with a null
+	pop	de
+	call	OUTSTR		; display the result
+	pop	de
+	jp	c,DIRERR
+	inc	de		; " bytes free"
+	call	OUTSTR
+	ret	nc		; all done, return
+
+DIRERR:	call	MFEND		; close directory
+	call	CLOSYS
+
+	;*TODO: display error message
+
+	ret
+
+OUTNL:	ld	e,CR
+	call	OUTCHR
+	ret	c
+	ld	e,LF
+	jp	OUTCHR
+
+INMS14:	db	CR,LF,LF,'Directory ',0
+INMS15:	db	' file(s), ',0,' byte(s) free',CR,LF,0
+
+; Display file size and attributes.
+
+DIR25:	ld	hl,(INUM)	; get index file entry number
+	call	IXREAD		; read index file entry
+	ret	c		; on error, return
+
+	ld	hl,(INODE+IE.USED) ; get number of data blocks used into BHL
+	ld	a,(INODE+IE.USED+2)
+	ld	b,a
+	ld	de,(INODE+IE.LBCN) ; get last block byte count into DE
+	ld	a,h
+	or	l
+	jr	nz,DIR25A
+	ld	e,l		; if no blocks allocated, file size is zero
+	ld	d,l
+	jr	DIR25B		; so we can skip the computations below
+
+DIR25A:	push	de
+	call	DEC24		; otherwise compute size in bytes
+	ld	e,0
+	ld	d,l
+	ld	l,h
+	ld	h,0
+	sla	d
+	rl	l
+	rl	h		; (num blocks - 1) * 512
+	pop	bc
+	ld	a,c
+	add	a,e
+	ld	e,a
+	ld	a,b
+	adc	a,d
+	ld	d,a
+	ld	a,0
+	adc	a,l
+	ld	l,a
+	ld	a,0
+	adc	a,h
+	ld	h,a		; add last block byte count
+
+DIR25B:	ld	c,e
+	ld	b,d
+	ex	de,hl		; value now in DEBC
+	ld	hl,FNBUF
+	push	hl
+	ld	a,' '
+	call	CVTLD		; convert long value to string
+	ld	(hl),0
+	pop	de
+	call	OUTSTR		; output value
+	ret	c
+
+	ld	de,FNBUF
+	push	de
+	ld	a,(INODE+IE.ATTR)
+	call	ATRSTR		; convert file attributes to string
+	ld	hl,INODE+IE.TCRE
+	call	DTSTR		; convert file creation date
+	xor	a
+	ld	(de),a		; end string with a null
+	pop	de
+	jp	OUTSTR		; and display it
+
+; Collect disk block usage statistics.
+
+BMHSZ	equ	16		; bitmap header size
+
+DSKFRE:	xor	a
+	ld	hl,0
+	ld	(FREBKS),hl	; clear number of free disk blocks
+	ld	(FREBKS+2),a
+
+	ld	hl,BMFCB
+	call	OPNSYS
+	ret	c
+
+	call	BMREAD		; read first block
+	jp	c,DF7
+	ld	(DIRLEN),de	; remember number of bytes read
+	ld	hl,BMHSZ
+	call	CPHLDE		; read successful?
+	ld	a,E.EOF		; no, return
+	jp	c,DF7
+
+	ld	a,(DIRBF+4)
+	ld	(CLFACT),a	; cluster factor
+
+	ld	hl,(DIRBF+0)
+	ld	a,(DIRBF+2)
+	ld	(NBLKS),hl	; total blocks in volume
+	ld	(NBLKS+2),a
+	ld	b,a
+	call	BK2CL
+	ld	(CCNT),hl	; total clusters
+	ld	a,b
+	ld	(CCNT+2),a
+
+	ld	hl,DIRBF+BMHSZ	; skip header
+	ld	(DIRPTR),hl
+	ld	hl,(DIRLEN)
+	ld	bc,-BMHSZ
+	add	hl,bc
+	ld	(DIRLEN),hl
+
+	ld	c,0		; bit mask in C
+
+DF1:	ld	a,c
+	or	a		; time to read next bitmap byte?
+	jr	nz,DF5		; jump if not
+
+DF2:	ld	hl,(DIRLEN)
+	ld	a,h
+	or	l		; all bytes in buffer processed?
+	jr	z,DF3		; read next block if yes
+	dec	hl
+	ld	(DIRLEN),hl
+
+	ld	hl,(DIRPTR)
+	ld	a,(hl)		; else get next byte from buffer
+	ld	(BMP),a		; save bitmap byte
+	inc	hl
+	ld	(DIRPTR),hl
+	jr	DF4
+
+DF3:	ld	hl,DIRBF
+	ld	(DIRPTR),hl
+	call	BMREAD		; read next block
+	jr	c,DF7
+	ld	(DIRLEN),de	; remember number of bytes read
+	ld	a,d
+	or	e		; read successful?
+	jr	nz,DF2		; loop if yes
+	ld	a,E.EOF
+	jr	DF7
+
+DF4:	ld	c,80h		; reset mask to MSBit
+DF5:	ld	a,(BMP)
+	and	c		; bitmap bit set?
+	jr	nz,DF6		; jump if yes (used block)
+	ld	hl,FREBKS
+	call	INC24M		; otherwise increment count
+DF6:	rr	c		; shift mask, note CY clear from above
+	ld	hl,(CCNT)
+	ld	a,(CCNT+2)
+	ld	b,a
+	call	DEC24		; decrement block count
+	ld	(CCNT),hl
+	ld	a,b
+	ld	(CCNT+2),a
+	or	h
+	or	l		; all bits counted?
+	jr	nz,DF1		; loop if not
+
+	ld	hl,(FREBKS)
+	ld	a,(FREBKS+2)
+	ld	b,a
+	call	CL2BK		; convert result to blocks
+	ld	(FREBKS),hl
+	ld	a,b
+	ld	(FREBKS+2),a
+	xor	a
+DF7:	push	af
+	call	CLOSYS		; close bitmap file
+	pop	af		; error/success code
+	ret
+
+; Convert blocks in BHL to clusters. Returns remainder in A.
+
+BK2CL:	ld	a,(CLFACT)
+	or	a
+	ret	z
+	push	de
+	ld	e,a
+	ld	d,a
+	xor	a
+BC1:	srl	b		; clusters = blocks >> cluster_factor
+	rr	h
+	rr	l
+	rra
+	dec	d
+	jr	nz,BC1
+BC2:	rlca
+	dec	e
+	jr	nz,BC2
+	pop	de
+	ret
+
+; Convert clusters in BHL to blocks.
+
+CL2BK:	ld	a,(CLFACT)
+	or	a
+	ret	z
+CB1:	add	hl,hl		; blocks = clusters << cluster_factor
+	rl	b
+	dec	a
+	jr	nz,CB1
+	ret
+
+; Convert file date and time (HL = timestamp) to string @DE
+
+DTSTR:	push	hl
+	call	valdt		; validate date and time
+	pop	hl
+	ret	c		; return if error
+	call	DATSTR		; convert date
+	ld	a,' '		; separator
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	inc	de
+	call	TIMSTR		; convert time
+	ret
+
+DATSTR:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ex	de,hl
+	ld	a,(de)		; day
+	call	CVTBH
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	ld	a,(de)		; month
+	call	BCD2BIN
+	dec	a
+	cp	12
+	jr	c,ds1
+	xor	a
+ds1:	ld	c,a
+	add	a,a
+	add	a,c
+	ex	de,hl
+	push	hl
+	ld	hl,month
+	ld	c,a
+	ld	b,0
+	add	hl,bc
+	ld	bc,3
+	ldir
+	pop	hl
+	ex	de,hl
+	ld	(hl),'-'
+	inc	hl
+	dec	de
+	dec	de
+	ld	a,(de)		; year
+	call	CVTBH
+	inc	de
+	ld	a,(de)
+	call	CVTBH
+	ex	de,hl
+	pop	hl
+	ret
+
+TIMSTR:	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ex	de,hl
+	ld	a,(de)		; hour
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; min
+	call	CVTBH
+	ld	(hl),':'
+	inc	hl
+	inc	de
+	ld	a,(de)		; sec
+	call	CVTBH
+	ex	de,hl
+	pop	hl
+	ret
+
+month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
+
+; Validate date (only day and month)
+
+valdt:	inc	hl
+	inc	hl
+	ld	c,12h+1		; month
+	call	vldt1		; check if in range
+	ret	c
+	ld	c,31h+1		; day
+vldt1:	ld	a,(hl)
+	inc	hl
+	or	a
+	scf
+	ret	z
+	cp	c
+	ccf
+	ret
+
+; Convert 'C'ontiguous and 'L'ocked attrib bits to string @DE
+
+ATRSTR:	ex	de,hl
+	ld	c,a
+	ld	(hl),' '	; one leading space
+	inc	hl
+	ld	a,c
+	and	FA.CTG		; Contiguous bit set?
+	ld	a,'C'		; yes, put a 'C'
+	jr	nz,pa1
+	ld	a,' '		; else a space
+pa1:	ld	(hl),a
+	inc	hl
+	ld	a,c
+	and	FA.LCK		; Locked bit set?
+	ld	a,'L'		; yes, put an 'L'
+	jr	nz,pa2
+	ld	a,' '		; else put a space
+pa2:	ld	(hl),a
+	inc	hl
+	ld	(hl),' '	; add a trailing space
+	inc	hl
+	ex	de,hl
+	ret
+
+; ERA command - Erase a CP/M file
+; Here from: KERMIT
+
+ERA:	ld	a,CMIFI		; parse a file-spec
+	ld	de,FCB		; into FCB
+	call	COMND
+	jp	KERMIT		; bad parse
+	ld	a,CMCFM		; get a confirm from the user
+	call	COMND
+	jp	KERMIT		; no? try another command
+
+	ld	ix,FCB
+	call	SETFCB		; set defaults
+	ld	e,(ix+F.DEV)	; get device name into DE
+	ld	d,(ix+F.DEV+1)
+	ld	c,(ix+F.UNIT)	; get unit number in C
+	ld	b,LUNFIL	;  and LUN number in B
+	SC	.ALUN		; assign LUN
+	jr	c,ERA1		; on error, return
+
+	ld	hl,QDEL
+	SC	.QIO		; delete file
+	jr	c,ERA1		; could not queue operation
+	ld	a,(IOSB)	; done, but succesful?
+	or	a
+	jp	z,KERMIT	; yes
+
+;;;	ld	de,INMS18	; "File(s) erased"
+
+ERA1:	ld	de,ERMS20	; "unable to delete file"
+	call	PRTERR
+	jp	KERMIT
+
+ERMS15:	db	'?Unable to find file',0
+ERMS20:	db	'?Unable to delete file',0
+;;;INMS18:	db	'File(s) erased',0	;;;
+
+; TYPE - type a file or files to the console.  
+;
+; This utility also used by PRINT, where the characters printed to 
+; the console are also copied to the printer if the PRNFL flag 
+; is non-zero.  Uses MFNAME to type (print) multiple names.  
+; Each file is preceeded with a formfeed character (usually clears 
+; the screen on a VDU)
+
+TYPE:	ld	a,CMIFI		; parse a file name
+	ld	de,SFCB		; let the parser know where the FCB is
+	call	COMND
+	jp	TYPE02		; if error say so
+
+	call	MFINIT		; init file search
+	jp	c,TYPE02	; error
+	call	MFNAME		; get first file
+	jp	c,TYPE02	; match not found
+
+TYPE1:	xor	a		; clear the character count
+	ld	(TEMP1),a	;  alias column counter
+
+TYPE2:	call	GETFIL		; now open the file
+	jp	c,TYPE02	; error
+
+	call	PRCRLF		; prevent overwriting prompt
+	;*TODO: form-feed if printing
+
+TYPE20:	call	INBUF		; fill input buffers
+	jp	TYPEX		; thru end-of-file reached
+TYPE21:	ld	hl,(CHRCNT)	; get buffer character counter
+	ld	a,h
+	or	l
+	jr	z,TYPE20	; get more characters if needed
+	dec	hl		; decrement counter
+	ld	(CHRCNT),hl	; remember new buffer character counter
+	ld	hl,(BUFPNT)	; now get character pointer
+	ld	a,(hl)		;  and get character to type (print)
+	inc	hl		; increment the pointer
+	ld	(BUFPNT),hl	;  and remember it
+	and	7Fh		; make sure character is printable
+	cp	20h		; is it a control character?
+	jr	nc,TYPE3
+	cp	TAB		; if its a TAB, then expand it
+	jr	nz,TYPE2B
+
+TYPE2C:	ld	a,' '		; send a space
+	call	TYPIT		; type it
+	ld	a,(TEMP1)	; get the number of characters so far
+	and	07h		; see if an 8th pos?
+	jr	nz,TYPE2C	; loop until all spaces done, then exit
+	jr	TYPE21		; continue
+
+TYPE2B:	cp	CR		; is it a CR or LF?
+	jr	nz,TYPE2D
+	call	TYPIT		; do a CR
+	xor	a
+	ld	(TEMP1),a	; CR or LF => clear character count
+	jr	TYPE21		; continue
+
+TYPE2D:	cp	LF
+	jr	nz,TYPE2E
+	call	TYPIT		; print the character
+	xor	a
+	ld	(TEMP1),a	; CR or LF clears the character count
+	jr	TYPE21		; continue
+
+TYPE2E:	cp	CTRLZ		; is it end of file?
+	jr	nz,TYPE2F
+	jr	TYPEX		; yes, so close and try for another file
+
+TYPE2F:	push	af		; control char - save the character
+	ld	a,'^'		; send control chars as e.g. ^A
+	call	TYPIT
+	pop	af
+	add	a,40h
+TYPE3:	call	TYPIT
+	jr	TYPE21		; and continue along
+
+TYPEX:	call	CLOSEF		; close the file
+	ld	a,CR		; send CR/LF to screen/printer to clear buffers
+	call	TYPIT
+	ld	a,LF
+	call	TYPIT
+	call	MFNAME		; and see if there are other files to type
+	jp	nc,TYPE1	; yup, so go do it
+	call	MFEND		; close directroy
+	xor	a		; make sure the flag is reset
+	ld	(PRNFL),a
+	jp	KERMIT		; then exit
+
+TYPEX0:	call	CLOSEF		; close the file
+	ld	a,CR		; clear buffers
+	call	TYPIT
+	ld	a,LF
+	call	TYPIT
+	xor	a		; clear flag
+	ld	(PRNFL),a
+	ld	a,(TAKFLG)	; see if we're TAKEing commands
+	and	01h		;  from a file
+	call	nz,CLSETK	; if we are, abort TAKE-file processing
+	jp	KERMIT		; back to Kermit command-level
+
+; error for file not found (or access denied)
+
+TYPE02:	ld	de,NOFILE	; say no file name (it's invalid)
+	call	PRTERR
+	call	MFEND		; close directory
+	xor	a
+	ld	(PRNFL),a	; clear the flag
+	jp	KERMIT		; so abort
+
+TYPIT:	ld	e,a
+	call	CKQTYP		; see if a ctrl-C or other character from user
+	jp	TYPIT2		; ctrl-C entered, abort
+	jr	c,TYPIT1	; ctrl-X entered, so abort file
+	push	de		; save for a bit
+	call	OUTCON		; send it to the console
+	ld	a,(TEMP1)	; update the number of characters sent
+	inc	a
+	ld	(TEMP1),a
+	pop	de
+	ld	a,(PRNFL)	; see if we have to print it too
+	and	a
+	ret	z
+	call	OUTPRN		; send character to printer (buffer)
+	ret	
+
+TYPIT1:	pop	de		; adjust stack again
+	jp	TYPEX		; and say we are done (for this file)
+
+TYPIT2:	pop	de		; adjust the stack
+	jp	TYPEX0		; and abort file typeout completely
+
+; CKQTYP - Check for requested Quiet Type (i.e. hang on a second)
+;
+; Routine sees if the user has typed ANY key. If a key HAS been pressed
+; see if its a Control-C. If so, flag for an abort, else wait for 
+; a second entry from the user. If its a Control-C, flag an abort
+; else continue with the print.
+;
+; Note: only the DE registers maintained. All others destroyed.
+; **NOTE** CKQTYP now gives a nonskip return if Control-C is typed,
+; a skip-return with carry set if a Control-X is typed and a skip-return
+; with carry clear if any other character is typed as the second character.
+
+CKQTYP:	push	de		; save the character to be printed
+	call	CKCHR		; see if user entered a character
+	and	7Fh		; strip parity, etc.
+	jp	z,CKQTY3	; nothing entered, so go on as usual (see below)
+	cp	CTRLC		; control-C?
+	jp	z,CKQT1A	; yes, give nonskip return
+	cp	CTRLX		; control-X?
+	jp	z,CKQTY1	; yes, set carry and exit
+	cp	XOFF		; XOFF?
+	jp	nz,CKQTY3	; no, return as usual
+CKQTY2:	call	CKCHR		; wait for XON
+	and	7Fh
+	cp	CTRLC		; if control-C, abort
+	jp	z,CKQT1A
+	cp	CTRLX		; control-X?
+	jp	z,CKQTY1	; yes, so flag abort file
+	cp	XON		; XON?
+	jr	nz,CKQTY2	; no, keep waiting
+CKQTY3:	pop	de		; else restore the character to be typed
+	or	a		; clear carry
+	jp	RSKP		; continue with type/print (skip ret)
+
+CKQTY1:	pop	de		; restore stack again
+	scf			; set carry and return
+	jp	RSKP		; skip ret
+
+CKQT1A:	pop	de		; adjust stack
+	ret			;  and return
+
+CKCHR:	call	SELCON		; make sure we are talking to the console
+	call	INPCON		; see if user has any input for us
+	ret
+
+; COPY - routine to copy from a single source file (no wildcards allowed)
+;        to a destination file.
+
+COPY:	ld	a,CMOFI		; parse source file name, no wildcards
+	ld	de,FCB
+	call	COMND
+	jp	KERMIT		; if error, abort
+
+	ld	a,CMOFI		; parse a target file name, no wildcards
+	ld	de,FCB2		; use FCB2 as destination
+	call	COMND
+	jp	KERMIT		; couldn't
+
+	ld	a,CMCFM		; get a confirm from the user
+	call	COMND
+	jp	KERMIT		; no? try another command
+
+	ld	de,SAMEMS	; if they are, it's a daft thing to do
+	call	PRTERR		; tell user
+	jp	KERMIT		; and try again
+
+	ld	ix,FCB
+	call	SETFCB		; set device and directory fields as necessary
+	ld	ix,FCB2
+	call	SETFCB		; ditto for target FCB
+
+	call	GETFIL		; open source file
+	jp	nc,COPY4
+	ld	de,NOFILE	; assume file not found
+	call	PRTERR
+	jp	KERMIT		; and die
+
+COPY4:	call	CREATF		; create target file
+	jr	nc,COPY5
+	call	CLOSEF		; close source file
+	ld	de,ERMS12	; display error message
+	call	PRTERR
+	jp	KERMIT		; and die
+
+COPY5:	call	INBUF		; start of copy proper: get bufferful
+	jp	COPY8		; nonskip return: treat as EOF
+
+	ld	hl,(CHRCNT)	; get total bytes read
+COPY51:	ld	de,BUFSIZ
+	call	CPHLDE		; more than a full sector?
+	jr	c,COPY6		; yes, write BUFSIZ bytes
+	ex	de,hl		; no, write remaining bytes
+COPY6:	ld	hl,(BUFPNT)	; pick up buffer pointer
+	call	WRITEF		; write sector
+	jr	c,COPY8		; break on write error
+	ld	hl,(BUFPNT)
+	ld	de,BUFSIZ
+	add	hl,de		; advance buffer pointer
+	ld	(BUFPNT),hl
+	ld	hl,(CHRCNT)
+	or	a
+	sbc	hl,de		; decrement character count
+	jr	c,COPY7		; last write was a partial one, so end
+	ld	(CHRCNT),hl
+	jr	nz,COPY51	; loop to write next sector
+	jp	COPY5		; time to read next bufferful
+
+COPY7:	call	CLOSEF		; close source file, ignore errors
+	call	CLOSE2		; close target file
+	ld	de,ERMS17
+	jp	c,COPY9
+	jp	KERMIT		; all OK, done
+
+COPY8:	push	af		; save error code
+	call	CLOSEF		; close source file, ignore errors
+	call	CLOSE2		; close target file, ignore errors
+	pop	af		; restore error code
+COPY9:	ld	de,ERMS17	; say disk is full
+	call	PRTERR
+	jp	KERMIT
+
+NOFILE:	db	'?File not found',0
+SAMEMS:	db	'?Source and destination files are the same',0
+ERMS12:	db	'?Directory full',0
+ERMS17:	db	'?Disk full',0
+
+; RENAME - Rename a file
+
+RENAME:	ld	a,CMOFI		; get nonwild filename
+	ld	de,FCB
+	call	COMND
+	jp	KERMIT		; couldn't get it
+
+	ld	a,CMOFI		; get filespec to rename it to
+	ld	de,FCB2
+	call	COMND
+	jp	KERMIT		; couldn't
+
+	ld	ix,FCB
+	call	SETFCB		; set defaults
+	ld	ix,FCB2
+	call	SETFCB		; set defaults
+
+	ld	hl,(FCB+F.DEV)
+	ld	de,(FCB2+F.DEV)
+	call	CPHLDE		; device names must match
+	jr	nz,RENAM2
+	ld	a,(FCB+F.UNIT)
+	ld	c,a
+	ld	a,(FCB2+F.UNIT)
+	cp	c
+	jr	nz,RENAM2
+
+	ld	a,(FCB2+F.ATTR)	; target must have specified at least a name 
+	and	FN.NAME OR FN.EXT ; or an extension
+	jr	nz,RENAM2
+
+	ld	e,(ix+F.DEV)	; get device name into DE
+	ld	d,(ix+F.DEV+1)
+	ld	c,(ix+F.UNIT)	; get unit number in C
+	ld	b,LUNFIL	;  and LUN number in B
+	SC	.ALUN		; assign LUN
+	jr	c,RENAM2	; on error, return
+
+	ld	hl,QREN
+	SC	.QIO		; rename file
+	jr	c,RENAM2	; could not queue operation
+	ld	a,(IOSB)	; done, but succesful?
+	or	a
+	jp	z,KERMIT	; yes
+
+;;	ld	de,NOFILE	; inform the user
+;;	ld	de,ERMS31	; file exists
+RENAM2:	ld	de,ERMS16	; no, complain
+	call	PRTERR
+	jp	KERMIT		; and start over
+
+;;ERMS31:	db	'?File already exists',0
+ERMS16:	db	'?Unable to rename file',0
+
+; Multi-file access subroutines, allows processing of multiple files
+; (i.e. *.ASM;*) from disk.
+
+; Initialize directory search, returns Carry flag set on error.
+
+MFINIT:	call	MFEND		; just in case
+	ld	ix,SFCB
+	call	SETFCB		; fill-in device and dir fields, if necessary
+	ld	e,(ix+F.DEV)	; get device name into DE
+	ld	d,(ix+F.DEV+1)
+	ld	c,(ix+F.UNIT)	; get unit number in C
+	ld	b,LUNDIR	;  and LUN number in B
+	SC	.ALUN		; assign LUN
+	ret	c		; on error, return
+
+MF2:	; TODO: default to '*' for unset F.NAME, F.EXT and F.VER?
+
+	ld	hl,SFCB+F.DEV	; prepare directory FCB
+	ld	de,DFCB+F.DEV
+	ld	bc,3
+	ldir			; copy device name and unit from search FCB
+	ld	hl,MDNAME
+	ld	bc,9
+	ldir			; directory is MASTER
+	ld	hl,SFCB+F.DIR
+	ld	bc,9
+	ldir			; file name is directory name
+	ld	hl,DIREXT
+	ld	bc,3
+	ldir			; extension is DIR
+	ld	hl,0
+	ld	(DFCB+F.VER),hl	; version is highest
+	ld	a,FN.DEV OR FN.NAME OR FN.DIR OR FN.EXT ;OR FN.VER
+	ld	(DFCB+F.ATTR),a	; set name field bits
+
+	ld	hl,DIRBF
+	ld	(DIRPTR),hl	; reset directory pointer
+	ld	hl,0
+	ld	(DIRLEN),hl	; invalidate directory buffer
+	ld	(QDREAD+Q.BLK),hl ; reset block number
+	ld	(QDREAD+Q.BLK+2),hl
+	ld	hl,QDACC
+	SC	.QIO		; open directory
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,FOPNFL
+	set	DFBIT,(hl)	; set directory open flag
+	ld	hl,QDREAD
+	SC	.QIO		; read first block
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(IOSB+2)
+	ld	(DIRLEN),hl	; remember number of bytes read
+	xor	a		; return success
+	ret
+
+; End directory search
+
+MFEND:	ld	hl,FOPNFL
+	bit	DFBIT,(hl)	; directory open?
+	ret	z		; no, return
+	res	DFBIT,(hl)	; clear flag
+	ld	hl,QDDEA
+	SC	.QIO		; close directory, ignore errors
+	ret
+
+; Return the next matching file name. This routine builds the proper name
+; in the FCB each time it is called. The FCB will be set up with the next
+; name, ready to do normal processing (OPEN, READ, etc.)
+;
+; Carry is set if no more names can be found.
+
+MFNAME:	ld	a,(FOPNFL)
+	bit	DFBIT,a		; directory open?
+	scf
+	ld	a,E.IO
+	ret	z		; return error if not
+	push	bc		; save registers
+	push	de
+	push	hl
+
+MFNAM0:	ld	de,(DIRLEN)
+	ld	hl,DESZ
+	call	CPHLDE		; any entries left?
+	jr	nc,MFNAM1	; yes, process next
+
+	call	INCDBL		; next directory block
+
+	ld	hl,DIRBF
+	ld	(DIRPTR),hl	; reset directory pointer
+	ld	hl,0
+	ld	(DIRLEN),hl	; invalidate directory buffer
+	ld	hl,QDREAD
+	SC	.QIO		; read next directory block
+	jr	c,MFNAM3
+	ld	a,(IOSB)
+	or	a
+	scf
+	jr	nz,MFNAM3	; on error or EOF, return
+	ld	hl,(IOSB+2)
+	ld	(DIRLEN),hl	; remember number of bytes read
+
+MFNAM1:	ld	ix,SFCB		; get address of search FCB
+	ld	hl,(DIRPTR)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; valid entry (in use)?
+	dec	hl
+	ld	a,d
+	or	e
+	jr	z,MFNAM2	; no, skip
+	ld	(INUM),de	; save index entry number for DIR command
+	call	DMATCH		; directory entry matches?
+	jr	nz,MFNAM2	; no, skip
+
+	; build FCB from entry
+
+	push	hl
+	ld	hl,SFCB+F.DEV
+	ld	de,FCB+F.DEV
+	ld	bc,3+9
+	ldir			; copy device and directory
+	pop	hl
+	ld	bc,DE.NAME
+	add	hl,bc		; point to file name in directory entry
+	ld	bc,9+3+2
+	ldir			; copy file name, extension and version number
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FCB+F.ATTR),a	; set name field bits
+	call	NEXTDE		; advance to next directory entry for next call
+	xor	a		; return success
+MFNAM3:	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+MFNAM2:	call	NEXTDE		; advance to next directory entry
+	jr	MFNAM0		; and loop to process it
+
+INCDBL:	ld	hl,QDREAD+Q.BLK
+INCBLK:	inc	(hl)		; increase 32-bit block number
+	ret	nz
+	inc	hl
+INC24M:	inc	(hl)		; entry: increase 24-bit value
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+NEXTDE:	ld	hl,(DIRPTR)
+	ld	de,DESZ
+	add	hl,de		; move to next directory entry in buffer
+	ld	(DIRPTR),hl
+	ld	hl,(DIRLEN)
+	or	a
+	sbc	hl,de		; decrease number of bytes left
+	ld	(DIRLEN),hl
+	ret	nc
+	ld	hl,0		; force 0 if result was less negative
+	ld	(DIRLEN),hl
+	ret
+
+; Match directory entry against file search pattern.
+; Called with HL = address of directory entry, IX = SFCB address
+; Returns Z flag set on success
+
+DMATCH:	ld	a,(ix+F.ATTR)	; check search pattern
+	and	FN.NAME		; name was specified?
+	jr	z,DM2		; no, all names match
+DM1:	push	hl
+	ld	de,DE.NAME
+	add	hl,de
+	ld	de,SSTR
+	ld	b,9
+	call	CPSTR		; build name string
+	push	ix
+	pop	hl
+	ld	de,F.NAME
+	add	hl,de
+	ld	de,SPAT
+	ld	b,9
+	call	CPSTR		; build pattern string
+	ld	hl,SPAT
+	ld	de,SSTR
+	call	MATCH		; strings match?
+	pop	hl
+	ret	nz		; no
+DM2:	ld	a,(ix+F.ATTR)
+	and	FN.EXT		; extension specified?
+	jr	z,DM3		; no, all extensions match
+	push	hl
+	ld	de,DE.EXT
+	add	hl,de
+	ld	de,SSTR
+	ld	b,3
+	call	CPSTR		; build name string
+	push	ix
+	pop	hl
+	ld	de,F.EXT
+	add	hl,de
+	ld	de,SPAT
+	ld	b,9
+	call	CPSTR		; build pattern string
+	ld	hl,SPAT
+	ld	de,SSTR
+	call	MATCH		; strings match?
+	pop	hl
+	ret	nz		; no
+DM3:	ld	a,(ix+F.ATTR)
+	and	FN.VER		; extension specified?
+	ret	z		; no, all versions match
+	ld	a,(ix+F.WLDC)
+	cpl
+	and	FN.VER		; version is a wildcard?
+	ret	z		; yes, matches all versions
+	push	hl
+	ld	de,DE.VER
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	e,(ix+F.VER)
+	ld	d,(ix+F.VER+1)
+	call	CPHLDE		; else compare version numbers
+	pop	hl
+	ret
+
+CPSTR:	ld	a,(hl)		; get char from name
+	cp	' '+1		; space or control means end
+	jr	c,cp1
+	ld	(de),a		; store in string buffer
+	inc	hl
+	inc	de
+	djnz	CPSTR		; loop until all chars processed
+cp1:	xor	a
+	ld	(de),a		; end with a null
+	ret
+
+; Wildcard match routine from PIP sources.
+; Matches string in DE against pattern in HL. Both are zero-terminated.
+; Returns Z if string matches pattern.
+
+MATCH:	ld	c,1		; star flag: 0 if star seen, 1 otherwise
+start:	ld	(PSTR),de
+	ld	(PPAT),hl
+loop:	ld	a,(de)
+	or	a
+	jr	z,eloop
+	ld	a,(hl)
+	cp	'%'		; % matches a single character
+	jr	z,next
+	cp	'*'		; * matches zero or more characters
+	jr	nz,other
+	ld	c,0		; star = 0
+	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z		; match
+	jr	start
+
+other:	ld	a,(de)		; any other character matches literally
+	cp	(hl)
+	jr	z,next
+	ld	a,c
+	or	a		; no star?
+	ret	nz		; no match
+	ld	hl,(PSTR)
+	inc	hl
+	ld	(PSTR),hl
+	ex	de,hl		; old ++str in DE
+	ld	hl,(PPAT)	; old pat in HL
+	jr	loop
+
+next:	inc	de
+	inc	hl
+	jr	loop
+
+eloop:	ld	a,(hl)
+	cp	'*'
+	jr	nz,s1
+	inc	hl
+	ld	a,(hl)
+s1:	or	a
+	ret			; match if end of pattern
+
+; Setup unspecified device and directory FCB fields with current defaults.
+; Called with IX = address of FCB.
+
+SETFCB:	ld	a,(ix+F.ATTR)
+	and	FN.DEV		; device name specified?
+	jr	nz,SF1		; yes
+	push	ix		; no, set to current device
+	pop	hl
+	ld	de,F.DEV
+	add	hl,de
+	ex	de,hl
+	ld	hl,CURDEV
+	ld	bc,3
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.DEV
+	ld	(ix+F.ATTR),a
+SF1:	ld	a,(ix+F.ATTR)
+	and	FN.DIR		; directory name specified?
+	ret	nz		; yes
+	push	ix		; no, set to current directory
+	pop	hl
+	ld	de,F.DIR
+	add	hl,de
+	ex	de,hl
+	ld	hl,CURDIR
+	ld	bc,9
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.DIR
+	ld	(ix+F.ATTR),a
+	ret
+
+; Assign LUN and get device information.
+; Called with pointer to device name in HL and LUN in B.
+; Returns a pointer to a 6-byte buffer with LUN information in HL.
+; On error, returns with Carry flag set.
+
+ALUN:	ld	e,(hl)		; get device name into DE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)		; get unit number into C
+ALUN1:	SC	.ALUN		; assign LUN
+	ret	c		; on error, return
+	ld	hl,GLUNB	; get buffer address for LUN information
+	ld	c,b		; get LUN into C
+	SC	.GTLUN		; get LUN information
+	ret			; return flags
+
+; Open a file for read, assumes FCB has been setup.
+
+OPENR:	call	CLOSEF		; just in case
+	ld	de,(FCB+F.DEV)
+	ld	a,(FCB+F.UNIT)
+	ld	c,a
+	ld	b,LUNFIL
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,0
+	ld	(QFRD+Q.BLK),hl	; reset block number
+	ld	(QFRD+Q.BLK+2),hl
+	ld	hl,QFACC
+	SC	.QIO		; open file
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,FOPNFL
+	set	RFBIT,(hl)	; set file open flag
+	ld	hl,QFRAT
+	SC	.QIO		; read attributes
+	jr	c,opne1
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FCB+F.ATTR),a	; now we have all bits
+	ld	a,(IOSB)
+	or	a
+	ret	z
+opne1:	push	af
+	call	CLOSEF
+	pop	af
+	ret
+
+; Open file for read and write, assumes FCB2 has been setup.
+
+OPENRW:	call	CLOSE2		; just in case
+	ld	de,(FCB2+F.DEV)
+	ld	a,(FCB2+F.UNIT)
+	ld	c,a
+	ld	b,LUNFI2
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,0
+	ld	(QFWR+Q.BLK),hl	; reset block number
+	ld	(QFWR+Q.BLK+2),hl
+	ld	(QFRD2+Q.BLK),hl
+	ld	(QFRD2+Q.BLK+2),hl
+	ld	hl,QFACRW
+	SC	.QIO		; open file in read/write mode
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,FOPNFL
+	set	WFBIT,(hl)	; set file open flag
+	ld	hl,QFRAT2
+	SC	.QIO		; read attributes
+	jr	c,opne2
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FCB2+F.ATTR),a	; now we have all bits
+	ld	a,(IOSB)
+	or	a
+	ret	z
+opne2:	push	af
+	call	CLOSE2
+	pop	af
+	ret
+
+; Create file, assumes FCB2 has been setup
+
+CREATF:	call	CLOSE2		; just in case
+	ld	de,(FCB2+F.DEV)
+	ld	a,(FCB2+F.UNIT)
+	ld	c,a
+	ld	b,LUNFI2
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,0
+	ld	(QFWR+Q.BLK),hl	; reset block number
+	ld	(QFWR+Q.BLK+2),hl
+	ld	hl,QFCRE
+	SC	.QIO		; create and open the file
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,FOPNFL
+	set	WFBIT,(hl)	; set file open flag
+	ld	hl,QFRAT2
+	SC	.QIO		; read attributes
+	jr	c,opne3
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FCB2+F.ATTR),a	; now we have all bits
+	ld	a,(IOSB)
+	or	a
+	ret	z
+opne3:	push	af
+	call	CLOSE2
+	pop	af
+	ret
+
+; Close file open for read.
+
+CLOSEF:	ld	hl,FOPNFL	; check the file open flag
+	bit	RFBIT,(hl)	; is the file open?
+	ret	z		; no, return
+	res	RFBIT,(hl)	; else clear flag
+	ld	hl,QFDEA
+	SC	.QIO		; and close file
+	ret	c		; error, queue failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, return with Carry set
+	ret
+
+; Close file open for write.
+
+CLOSE2:	ld	hl,FOPNFL	; check the file open flag
+	bit	WFBIT,(hl)	; is the file open?
+	ret	z		; no, return
+	res	WFBIT,(hl)	; else clear flag
+	ld	hl,QFDEA2
+	SC	.QIO		; and close file
+	ret	c		; error, queue failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, return with Carry set
+	ret
+
+; Delete the file that was open for write. Usually called by the Receive
+; Kermit command to delete incomplete files. Since the FCB2 has been
+; updated with file attributes by the CREATF or OPENRW routines, the
+; version number is explicit, as required by the IO.DEL system function.
+; Assumes that the LUN has been set.
+
+DELET2:	call	CLOSE2		; just in case
+	ld	hl,QDEL2
+	SC	.QIO		; delete the file
+	ret	c		; error, queue failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, return with Carry set
+	ret
+
+; Read disk block. Called with destination buffer address in HL.
+; Returns Carry set on error.
+
+READF:	ld	(QFRD+Q.BUF),hl	; store buffer address in QIO block
+	ld	hl,QFRD		; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	de,0
+	ret	c		; return if queuing failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	hl,QFRD+Q.BLK	; yes, prepare to read next block
+	call	INCBLK		; increment block number in QIO block
+	ld	de,(IOSB+2)	; return number of bytes read in DE
+	xor	a		; clear Carry to indicate success
+	ret
+
+; Read disk block from file opened for read and write (FCB2).
+; Called with destination buffer address in HL.
+; Returns Carry set on error.
+
+READF2:	ld	(QFRD2+Q.BUF),hl; store buffer address in QIO block
+	ld	hl,QFRD2	; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	de,0
+	ret	c		; return if queuing failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	de,(IOSB+2)	; yes, return number of bytes read in DE
+	xor	a		; clear Carry to indicate success
+	ret
+
+; Write (possibly partial) block to disk.
+; Called with buffer address in HL and number of bytes to write in DE.
+; Returns Carry set on error.
+
+WRITEF:	ld	(QFWR+Q.BUF),hl	; store buffer address in QIO block
+	ld	(QFWR+Q.LEN),de	; store number of bytes to write
+	ld	hl,QFWR		; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	de,0
+	ret	c		; return if queuing failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	hl,QFWR+Q.BLK	; yes, prepare to read next block
+	call	INCBLK		; increment block number in QIO block
+	ld	de,(IOSB+2)	; return number of bytes written in DE
+	xor	a
+	ret
+
+; Seek read/write file to the specified block number in DEHL.
+; (just sets the block number, no read/write happens).
+
+SEEK2:	ld	(QFRD2+Q.BLK),hl
+	ld	(QFRD2+Q.BLK+2),de
+	xor	a
+	ret
+
+; Open TAK file, assumes TAKFCB has been setup.
+
+OPENTK:	call	CLSETK		; just in case
+	ld	de,(TAKFCB+F.DEV)
+	ld	a,(TAKFCB+F.UNIT)
+	ld	c,a
+	ld	b,LUNTAK
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	hl,0		; reset block number
+	ld	(QTKRD+Q.BLK),hl
+	ld	(QTKRD+Q.BLK+2),hl
+	ld	hl,QTKACC
+	SC	.QIO		; open file
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,FOPNFL
+	set	TFBIT,(hl)	; set file open flag
+	ld	hl,QTKRAT
+	SC	.QIO		; read attributes
+	jr	c,opne4
+	ld	a,(IOSB)
+	or	a
+	ret	z
+opne4:	push	af
+	call	CLSETK
+	pop	af
+	ret
+
+; Close TAK file and set the TAKE flag to zero.
+
+CLSETK:	ld	hl,FOPNFL	; check the file open flag
+	bit	TFBIT,(hl)	; is the file open?
+	ret	z		; no, return
+	res	TFBIT,(hl)	; else clear flag
+	ld	hl,TAKFLG	; reset also the take file bit (bit 0)
+	res	0,(hl)		;  in TAKFLG
+	ld	hl,QTKDEA
+	SC	.QIO		; and close file
+	ret	c		; error, queue failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, return with Carry set
+	ret
+
+; Read disk block from TAK file, destination buffer is TAKBUF.
+; Returns Carry set on error.
+
+READTK:	ld	hl,QTKRD	; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	de,0
+	ret	c		; return if queuing failed
+	ld	a,(IOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	hl,QTKRD+Q.BLK	; yes, prepare to read next block
+	call	INCBLK		; increment block number in QIO block
+	ld	de,(IOSB+2)	; return number of bytes read in DE
+	xor	a		; clear Carry to indicate success
+	ret
+
+; Open system file (index or bitmap), assumes DFCB has been setup.
+; Called with HL = FCB of system file to open
+
+OPNSYS:	push	hl
+	call	CLOSYS		; just in case
+	pop	hl
+	ld	(QSACC+Q.P1),hl
+	ld	de,F.DEV
+	add	hl,de
+	ex	de,hl
+	ld	hl,DFCB+F.DEV
+	push	hl
+	ld	bc,3
+	ldir			; copy device name and unit
+	pop	hl
+	ld	b,LUNSYS
+	call	ALUN		; assign LUN
+	ret	c
+	ld	hl,QSACC
+	SC	.QIO		; open index file
+	ret	c
+	ld	a,(IOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,0
+	ld	(QSRD+Q.OFS),hl
+	ld	(QSRD+Q.BLK),hl
+	ld	(QSRD+Q.BLK+2),hl
+	ld	hl,FOPNFL
+	set	SFBIT,(hl)	; set file open flag
+	xor	a
+	ret
+
+; Close system file (index or bitmap).
+
+CLOSYS:	ld	hl,FOPNFL	; check the file open flag
+	bit	SFBIT,(hl)	; is the file open?
+	ret	z		; no, return
+	res	SFBIT,(hl)	; else clear flag
+	ld	hl,QSDEA
+	SC	.QIO		; and close file
+	ret			; don't care about errors
+
+; Read bitmap file header.
+
+BMREAD:	ld	hl,DIRBF	; use directory buffer to read the bitmap
+	ld	(QSRD+Q.BUF),hl	; (assumes the directory has been closed)
+	ld	hl,512		; read one full block
+	ld	(QSRD+Q.LEN),hl
+	ld	hl,QSRD
+	SC	.QIO		; send the request
+	ret	c		; error, the system could not queue it
+	ld	a,(IOSB)	; finished, check return code
+	or	a		; zero means success
+	scf			; else set Carry flag
+	ret	nz		; and return
+	ld	hl,QSRD+Q.BLK
+	call	INCBLK		; increase block number for next read op
+	ld	de,(IOSB+2)	; return actual number of bytes read in DE
+	xor	a
+	ret
+
+; Read index file entry. Called with entry number in HL
+
+IXREAD:	ld	a,h
+	or	l
+	ld	a,E.INV
+	scf
+	ret	z
+	ld	de,INODE	; use a dedicated dest buffer
+	ld	(QSRD+Q.BUF),de
+	ld	de,IESZ		; read only a single entry
+	ld	(QSRD+Q.LEN),de
+	dec	hl
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	e,h
+	and	1Fh
+	ld	d,a		; DE = inode/8 = relative block number
+	ld	(QSRD+Q.BLK),de
+	ld	h,0
+	add	hl,hl		; HL = (inode%8)*64 = offset within block
+	ld	(QSRD+Q.OFS),hl
+	ld	hl,0
+	ld	(QSRD+Q.BLK+2),hl
+	ld	hl,QSRD
+	SC	.QIO		; read the entry
+	ret	c		; error, queuing failed
+	ld	a,(IOSB)	; else check return code
+	or	a		; zero means success
+	ret	z
+	scf			; else return with Carry flag set
+	ret
+
+; Decrement 24-bit value in BHL registers
+
+DEC24:	ld	a,h		; check low 16-bits before decrement
+	or	l
+	dec	hl		; decrement low word
+	ret	nz		; return if did not wrap around
+	dec	b		; else decrement high byte
+	ret			; and we're done
+
+	dseg
+
+GTKBUF:	defs	GTKSZ		; buffer for task information
+
+TCKSEC:	defs	2		; system clock ticks per second
+
+TTBLK	equ	$		; start of terminal definition block
+TTYTYP:	defs	6		; terminal name
+ERASCR:	defs	12		; clear screen and home cursor
+CSRSET:	defs	2		; address of cursor positioning routine
+TTAB	equ	$		; start location of translate table
+TA:	defs	4		; cursor up
+TB:	defs	4		; cursor down
+TC:	defs	4		; cursor right
+TD:	defs	4		; cursor left
+TE:	defs	4		; clear display
+TF:	defs	4		; enter Graphics Mode
+TG:	defs	4		; exit Graphics mode
+TH:	defs	4		; cursor home
+TI:	defs	4		; reverse linefeed
+TJ:	defs	4		; clear to end of screen
+TK:	defs	4		; clear to end of line
+TTSIZE	equ	$-TTBLK		; size of terminal definition block
+
+QIOSTC:	QIOW$	SF.SMC,LUNTI,EFNTI,IOSB,,<TTCHR1,2>
+QIOGTC:	QIOW$	SF.GMC,LUNTI,EFNTI,IOSB,,<TTCHR2,2>
+TTCHR1:	defb	TC.BIN,1	; set binary mode
+TTCHR2:	defb	TC.ANS,0	; get terminal type
+IOSB:	defs	4
+
+TTQ:	defs	1		; TQ.IP
+	defs	1		; TQ.OP
+	defs	64		; TQ.BUF
+
+MDMSET:	defs	1		; non-zero if comm line is attached
+
+MDMGTC:	QIOW$	SF.GMC,LUNMDM,EFNMD,IOSB,,<MDORIG,10>	; get original settings
+MDMSTC:	QIOW$	SF.SMC,LUNMDM,EFNMD,IOSB,,<MDCOMM,8>	; set comm characteristics
+MDMRST:	QIOW$	SF.SMC,LUNMDM,EFNMD,IOSB,,<MDORIG,8>	; restore original config
+MDMSPD:	QIOW$	SF.SMC,LUNMDM,EFNMD,IOSB,,<MDSPD,2>	; set line speed
+QIOMRD:	QIOW$	IO.RVB,LUNMDM,EFNMD,ISB,,<IBUF,128,0,,,>
+QIOMWR:	QIOW$	IO.WVB,LUNMDM,EFNMD,OSB,,<OBUF,128,0,,,>
+QIOMKI:	QIOW$	IO.KIL,LUNMDM,EFNMD,OSB
+MDORIG:	defb	TC.BIN,0	; orig. binary mode
+	defb	TC.NEC,0	; orig. echo mode
+	defb	TC.SLV,0	; orig. slave status
+	defb	TC.NBR,0	; orig. broadcast mode
+OLDSPD:	defb	TC.SPD,S.0	; orig. serial speed
+MDCOMM:	defb	TC.BIN,1	; set binary mode
+	defb	TC.NEC,1	; no echo
+	defb	TC.SLV,1	; slave
+	defb	TC.NBR,1	; no broadcast
+MDSPD:	defb	TC.SPD,S.0	; set speed
+ISB:	defs	4
+OSB:	defs	4
+
+IBUF:	defs	128		; comm line input buffer
+ICNT:	defs	1		; number of chars read from comm line
+IPTR:	defw	IBUF		; pointer to current char in comm input buffer
+OBUF:	defs	128		; comm line output buffer
+OCNT:	defs	1		; number of chars in output buffer
+OPTR:	defw	OBUF		; pointer to next free space in output buffer
+
+SFCB:	defs	FINFSZ		; search FCB
+DFCB:	defs	FINFSZ		; directory FCB
+FCB:	defs	FINFSZ		; FCB returned by MFNAME
+FCB2:	defs	FINFSZ		; destination FCB for copy and rename ops
+
+HIDEFS:	defb	0FFh		; flag <> 0 if we show file size in DIR
+NNAMS:	defs	1		; counter for filenames per line
+EQUFLG:	defb	0		; set to non zero if copy files same
+FPLN:	defs	1		; file names per line for the DIR command
+DIRW:	defs	1		; width of directory entry on the screen
+
+GLUNB:	defs	6		; buffer for .GTLUN
+
+MDNAME:	defb	'MASTER   '	; master directory name
+DIREXT:	defb	'DIR'		; directory extension
+
+IOACR	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
+IOACRW	equ	IO.ACC OR ((SF.ACR OR SF.ACW OR SF.SHR) SHL 8)
+
+QDACC:	QIOW$	IOACR,LUNDIR,EFNFIL,IOSB,,<DFCB>
+QDREAD:	QIOW$	IO.RVB,LUNDIR,EFNFIL,IOSB,,<DIRBF,512,0,0,0,0>
+QDDEA:	QIOW$	IO.DEA,LUNDIR,EFNFIL,IOSB
+
+QFACC:	QIOW$	IOACR,LUNFIL,EFNFIL,IOSB,,<FCB>
+QFRAT:	QIOW$	IO.RAT,LUNFIL,EFNFIL,IOSB,,<FCB,FINFSZ>
+QFRD:	QIOW$	IO.RVB,LUNFIL,EFNFIL,IOSB,,<DIRBF,512,0,0,0,0>
+QFDEA:	QIOW$	IO.DEA,LUNFIL,EFNFIL,IOSB
+
+QFCRE:	QIOW$	IO.CRE,LUNFI2,EFNFIL,IOSB,,<FCB2,0,0>
+QFACRW:	QIOW$	IOACRW,LUNFI2,EFNFIL,IOSB,,<FCB2>
+QFRAT2:	QIOW$	IO.RAT,LUNFI2,EFNFIL,IOSB,,<FCB2,FINFSZ>
+QFWR:	QIOW$	IO.WVB,LUNFI2,EFNFIL,IOSB,,<DIRBF,512,0,0,0,0>
+QFRD2:	QIOW$	IO.RVB,LUNFI2,EFNFIL,IOSB,,<DIRBF,512,0,0,0,0>
+QFDEA2:	QIOW$	IO.DEA,LUNFI2,EFNFIL,IOSB
+
+QREN:	QIOW$	IO.REN,LUNFIL,EFNFIL,IOSB,,<FCB,FCB2>
+QDEL:	QIOW$	IO.DEL,LUNFIL,EFNFIL,IOSB,,<FCB>
+QDEL2:	QIOW$	IO.DEL,LUNFI2,EFNFIL,IOSB,,<FCB2>
+
+QTKACC:	QIOW$	IOACR,LUNTAK,EFNFIL,IOSB,,<TAKFCB>
+QTKRAT:	QIOW$	IO.RAT,LUNTAK,EFNFIL,IOSB,,<TAKFCB,FINFSZ>
+QTKRD:	QIOW$	IO.RVB,LUNTAK,EFNFIL,IOSB,,<TAKBUF,512,0,0,0,0>
+QTKDEA:	QIOW$	IO.DEA,LUNTAK,EFNFIL,IOSB
+
+FOPNFL:	defb	0		; file open flag (bit mask)
+DIRPTR:	defw	DIRBF		; directory pointer
+DIRLEN:	defs	2		; bytes left in DIRBF
+DIRBF:	defs	512		; directory buffer
+
+PSTR:	defs	2		; pointer to match string
+SSTR:	defs	10		; string to match
+PPAT:	defs	2		; pointer to pattern string
+SPAT:	defs	10		; pattern string
+
+IXFCB:	defw	0		; index file FCB
+	defb	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	defb	'SY',0,'MASTER   ','INDEXF   ','SYS'
+	defw	0
+	defb	0,0
+	defw	0
+
+BMFCB:	defw	0		; bitmap file FCB
+	defb	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	defb	'SY',0,'MASTER   ','BITMAP   ','SYS'
+	defw	0
+	defb	0,0
+	defw	0
+
+QSACC:	QIOW$	IOACR,LUNSYS,EFNFIL,IOSB,,<IXFCB>
+QSRD:	QIOW$	IO.RVB,LUNSYS,EFNFIL,IOSB,,<INODE,IESZ,0,0,0,0>
+QSDEA:	QIOW$	IO.DEA,LUNSYS,EFNFIL,IOSB
+
+INUM:	defs	2		; index file entry number
+INODE:	defs	IESZ		; buffer for index file entry
+
+NFILES:	defs	2		; number of files listed by the DIR command
+CLFACT:	defs	1		; cluster factor
+BMP:	defs	1		; bitmap byte
+CCNT:	defs	3		; cluster count
+NBLKS:	defs	3		; total number blocks on device
+FREBKS:	defs	3		; number of free blocks
+
+	end

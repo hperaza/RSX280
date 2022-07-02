@@ -1,0 +1,533 @@
+; KSER.MAC
+;       KERMIT - (Celtic for "FREE")
+;
+;       This is the RSX180/280 implementation of the Columbia University
+;       KERMIT file transfer protocol. (C) 2021, Hector Peraza.
+;
+;       Version 4.0
+;
+; Derived from Kermit-80, originally written by Bill Catchings of the
+; Columbia University Center for Computing Activities, 612 W. 115th St.,
+; New York, NY 10025. with contributions by Frank da Cruz, Daphne Tzoar,
+; Bernie Eiben, Bruce Tanner, Nick Bush, Greg Small, Kimmo Laaksonen,
+; Jeff Damens, and many others. 
+;
+;       Copyright June 1981,1982,1983,1984,1985 Columbia University
+;
+;       This file contains the (system-independent) routines that implement
+;       the SERVER part of the KERMIT protocol.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Revision history (latest first):
+;
+; edit 7, 4-Dec-2021 by H. Peraza: don't display transfer status Kermit
+;       is in Remote mode.
+;
+; edit 6, 29-Mar-2021 by H. Peraza: implemented the server CD and SPACE
+;       commands.
+;
+; edit 5, 28-Mar-2021 by H. Peraza: implemented the server DIR command.
+;       The output of the DIR routine is captured and send as a series
+;       of packets to the remote client.
+;
+; edit 4, 21-Mar-2021 by H. Peraza: get and send commands already working.
+;
+; edit 3, 19-Mar-2021 by H. Peraza: preliminary Server Mode loop.
+;
+; edit 2, 27-Dec-2020 by H. Peraza: converted to Z80, targeting RSX180/280.
+;
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+; Old Kermit-80 4.11 revision history:
+;
+; edit 1: September, 1987.  Created CPSSER.ASM from bits from the two CPSPK?
+;	files.  
+;	The code herein is to allow remote systems to communicate to 
+;	this Kermit running in SERVER mode.  Note that not every server 
+;	command will be supported, mind...
+
+	.Z80
+
+	ident	/07/
+
+	include	KDEF.INC
+	include	FCB.INC
+
+	public	SRVVER,SERVER
+
+	extrn	KERMIT,RPACK,SPACK,NAK,NAK0,ACKP,SEND1,SDATA,READ1
+	extrn	SPAR,SEOF,SNDERR,CSRPOS,SCREND,ENCODE,FINMES,ERROR3
+	extrn	SINIT,SEOT,OUTPKN,OUTCHR,OUTSTR,COMPP,COUNTP,DIR2
+	extrn	OUTRTR,UPDRTR,ERROR,DEVSTR,DIRSTR,STRLEN,STRCPY
+	extrn	SETFCB,CHDIR,CPYNAM,MFINIT,MFEND,CVTLD,DSKFRE
+	extrn	PRTSTR,ERMS32
+
+	extrn	SRVFLG,ARGBLK,DATA,NUMPKT,PKTNUM,NUMRTR,NUMTRY,CURCHK
+	extrn	SFCB,QUIETD,SPSIZ,FILBUF,CBFPTR,SIZE,TEMP1,TEMP2,STATE
+	extrn	SRVTXT,OPROC,FCB,CURDEV,CURDIR,CDMSG,FREBKS,RQUOTE
+	extrn	QUOT8,QBCHR,OPMODE
+
+	extrn	PFN
+
+	cseg
+
+SRVVER:	db	'KSER  (7)  4-Dec-2021',0	; name, edit number, date
+
+; SERVER - Wait for and process Kermit packet(s).
+
+SERVER:	ld	a,(OPMODE)	; Remote operation?
+	or	a
+	jr	nz,SERV01	; no
+	ld	de,INMS16
+	call	PRTSTR		; else output message
+	jr	SERV02
+SERV01:	ld	a,(QUIETD)
+	or	a		; quiet display?
+	ld	bc,0
+	call	z,CSRPOS	; no, home cursor
+SERV02:	ld	hl,0
+	ld	(NUMPKT),hl	; set the number of packets to zero
+	ld	(NUMRTR),hl	; set the number of retries to zero
+	xor	a
+	ld	(PKTNUM),a	; set the packet number to zero
+	ld	(NUMTRY),a	; set the number of tries to zero
+	ld	a,'1'
+	ld	(CURCHK),a	; start with single-character checksum
+	call	RPACK		; wait for packet
+	jp	NAK1		; trashed packet: NAK, retry
+	cp	'I'		; Info packet?
+	jp	nz,SERV1	; no
+	ld	a,(ARGBLK+1)	; get the number of data bytes
+	ld	hl,DATA		; pointer to the data
+	call	SPAR		; read in the data (decode what they want)
+	call	ACKP		; ACK the packet
+	jp	SERVER		; and restart the server
+
+NAK1:	call	NAK		; NAK the packet
+	jp	SERVER		; and restart the server
+
+INMS16:	defb	CR,LF,'Entering server mode, you can now return to your local Kermit.'
+	defb	CR,LF,'Exit server by typing the Kermit FINISH command on your local'
+	defb	CR,LF,'machine.',CR,LF,0
+
+; Process the packet
+
+SERV1:	cp	'S'		; Send-Initiate packet?
+	jr	nz,SERV2	; no
+	jp	READ1		; else receive file
+
+SERV2:	cp	'R'		; Receive-Initiate packet?
+	jr	nz,SERV3	; no
+	call	DECODE		; decode packet data
+	ld	hl,DATA		; get a pointer to the data
+	ld	ix,SFCB		; place result in source FCB
+	call	PFN		; parse filename
+	jp	SEND1		; send file
+
+SERV3:	cp	'K'		; Kermit command?
+	jr	nz,SERV4	; no
+
+	;...TODO
+
+	jp	SERV7
+
+SERV4:	cp	'C'		; Host command?
+	jr	nz,SERV5	; no
+	jp	SERV7		; and we'll not support them for security reasons
+				; (right now Kermit-180 runs as privileged task!)
+
+SERV5:	cp	'G'		; Generic command?
+	jp	nz,SERV6	; no
+	call	DECODE		; decode packet data
+	ld	a,(TEMP2)	; get length of decoded data
+	ld	c,a		; keep a copy in register C
+	or	a		; any command?
+	jp	z,SERV7		; no, error
+	ld	hl,DATA
+	ld	a,(hl)		; get command char
+	cp	'F'		; Finish?
+	jp	nz,SERV50	; no
+	call	ACKP		; ACK the command
+	ld	a,(OPMODE)	; Remote operation?
+	or	a
+	jr	z,SERV5A	; yes
+	ld	a,(QUIETD)
+	or	a		; quiet display?
+	call	z,SCREND	; no, position cursor
+SERV5A:	xor	a
+	ld	(SRVFLG),a	; exit server mode
+	jp	KERMIT		; back to command mode
+
+SERV50:	cp	'S'		; Set?
+	jp	nz,SERV51	; no
+
+	;...TODO
+
+	jp	SERV7
+
+SERV51:	cp	'C'		; Change directory?
+	jp	nz,SERV52	; no
+	call	GETARG		; get argument (directory name), if present
+	ld	hl,FILBUF
+	ld	ix,FCB
+	call	PFN		; parse directory name, if present
+	ld	a,(FCB+F.ATTR)
+	and	F.DIR OR F.NAME
+	jr	z,S511
+	call	CHDIR		; set current dir
+	ld	de,ERMS32
+	jp	c,SERV71
+S511:	ld	hl,CDMSG
+	ld	de,FILBUF
+	call	STRCPY
+	ex	de,hl
+	ld	de,CURDEV
+	call	DEVSTR
+	ld	de,CURDIR
+	call	DIRSTR
+	call	ACKL		; send long ACK
+	jp	SERVER
+
+SERV52:	cp	'D'		; Directory?
+	jp	nz,SERV53	; no
+	call	GETARG		; get argument (directory name), if present
+	ld	hl,FILBUF
+	ld	ix,SFCB
+	call	PFN		; parse directory name, if present
+	call	SETFCB		; use current dir, if none was specified
+	ld	hl,FILBUF	; repare header for X packet
+	ld	de,SFCB+F.DEV
+	call	DEVSTR		; copy device name
+	ld	de,SFCB+F.DIR
+	call	DIRSTR		; copy directory name
+	call	SNDINI		; send S packet, set output to SNDCHR
+	call	DIR2		; do the directory command
+ IF 0
+	jp	c,KERMIT
+ ELSE
+	ld	de,ERMS32
+	jp	c,SERV71
+ ENDIF
+	call	SNDEOF		; end transmission
+	jp	SERVER		; and restart the server
+
+SERV53:	cp	'U'		; Disk Usage?
+	jp	nz,SERV54	; no
+	call	GETARG		; get argument (directory name), if present
+	ld	hl,FILBUF
+	ld	ix,SFCB
+	call	PFN		; parse directory name, if present
+	call	SETFCB		; use current dir, if none was specified
+	call	MFINIT
+	ld	de,ERMS32
+	jp	c,SERV71
+	call	DSKFRE
+	ld	de,ERMS32
+	jp	c,SERV71
+	call	MFEND
+	ld	hl,FILBUF
+	ld	de,SFCB+F.DEV
+	call	DEVSTR		; copy device name
+	ex	de,hl
+	ld	hl,DFMSG
+	call	STRCPY
+	push	hl
+	ex	de,hl
+	ld	bc,(FREBKS)	; get 24-bit free blocks value
+	ld	de,(FREBKS+2)
+	ld	d,0
+	xor	a
+	call	CVTLD
+	ex	de,hl
+	pop	hl
+	inc	hl
+	call	STRCPY
+	call	ACKL		; send long ACK
+	jp	SERVER
+
+DFMSG:	defb	' has ',0,' blocks free.',0
+
+SERV54:	cp	'E'		; Erase file?
+	jp	nz,SERV55	; no
+
+	;...TODO
+
+SERV55:	cp	'T'		; Type file?
+	jp	nz,SERV56	; no
+
+	;...TODO
+
+SERV56:	cp	'R'		; Rename?
+	jp	nz,SERV57	; no
+
+	;...TODO
+
+SERV57:	cp	'W'		; Who?
+	jp	nz,SERV58	; no
+
+	;...TODO
+
+SERV58:	cp	'M'		; Short Message?
+	jp	nz,SERV59	; no
+
+	;...TODO
+
+SERV59:	cp	'L'		; Logout/Bye?
+	jp	nz,SERV7	; no, and that's about it
+
+	;...TODO
+
+SERV6:	cp	'N'		; NAK?
+	jp	z,SERVER	; yes, ignore
+
+SERV7:	ld	de,ERMS1
+SERV71:	push	de
+	call	ERROR3		; display error message
+	pop	de
+	inc	de		; skip question mark
+	call	SNDERR		; send Error packet
+	jp	SERVER		; restart server
+
+ERMS1:	defb	'?Invalid command',0
+
+; Decode packet data. This routine is sort of duplicated in KPKT.MAC,
+; but not easily reusable.
+
+DECODE:	ld	hl,DATA		; beginning of received packet data
+	ld	ix,DATA		; replace packet with decoded data
+	ld	a,(ARGBLK+1)	; get length
+	ld	(TEMP1),a
+	xor	a
+	ld	(TEMP2),a
+	ld	a,(RQUOTE)
+	ld	b,a		; keep the quote char in B
+	ld	c,0		; assume no 8-bit quote char
+	ld	a,(QUOT8)	; doing 8-bit quoting?
+	or	a
+	jr	z,PTCHR1	; no, keep going
+	ld	a,(QBCHR)	; else get 8-bit quote char
+	ld	c,a		; keep this in C
+PTCHR1:	ld	a,(TEMP1)
+	dec	a		; decrement # of chars in packet
+	ret	m		; return successfully if done
+	ld	(TEMP1),a
+	ld	a,(hl)		; grab a char
+	inc	hl		; and bump pointer
+	ld	e,0		; assume nothing to OR in
+	cp	c		; is it the binary quote char?
+	jr	nz,PTCH2A	; no, keep going
+	ld	e,80h		; include parity bit
+	ld	a,(TEMP1)
+	dec	a
+	ld	(TEMP1),a	; decrement character count
+	ld	a,(hl)		; get next character
+	inc	hl		; and bump pointer
+PTCH2A:	cp	b		; is it the quote char?
+	jr	nz,PTCHR3	; changed to PTCHR3 so includes parity
+	ld	a,(TEMP1)
+	dec	a		; decrement # of chars in packet
+	ld	(TEMP1),a
+	ld	a,(hl)		; get the quoted character
+	inc	hl
+	ld	d,a		; save the char
+	and	80h		; turn off all but the parity bit
+	or	e		; let parity come from either (???)
+	ld	e,a		; save the parity bit
+	ld	a,d		; get the char
+	and	7Fh		; turn off the parity bit
+	cp	b		; is it the quote char?
+	jr	z,PTCHR3	; if so, just go write it out
+	cp	c		; maybe it's the 8-bit prefix character?
+	jr	z,PTCHR3	; then don't controllify
+	ld	a,d		; get the char
+	add	a,40h		; make the character a control char again
+	and	7Fh		;  modulo 128
+PTCHR3:	or	e		; OR in the parity bit
+	ld	(ix),a		; store it in destination buffer
+	inc	ix		; update the pointer
+	ld	a,(TEMP2)
+	inc	a
+	ld	(TEMP2),a	; increase character count
+	jp	PTCHR1		; and loop to next char
+
+; Get command argument. On entry, HL still points to command char and
+; C contains the command length. The result is placed in FILBUF.
+
+GETARG:	ld	de,FILBUF	; load pointer to destination string
+	inc	hl
+	dec	c		; decrement length (count command char)
+	jr	z,GET2		; branch if zero
+	ld	a,(hl)		; get argument length
+	dec	c		; count it
+	jr	z,GET2
+	sub	' '		; zero length?
+	jr	z,GET2		; yes
+	jr	c,GET2		; paranoia check
+	ld	b,a
+GET1:	inc	hl
+	ld	a,(hl)
+	ld	(de),a		; copy directory name
+	inc	de
+	dec	c
+	jr	z,GET2
+	djnz	GET1
+GET2:	xor	a
+	ld	(de),a		; end with a null
+	ret
+
+; Send long ACK with the string specified in FILBUF.
+
+ACKL:	ld	a,(PKTNUM)
+	ld	(ARGBLK),a	; set packet number
+	call	OUTPKN		; display packet number
+	ld	hl,FILBUF
+	ld	de,DATA
+	push	de
+	call	STRCPY		; copy header string to Y packet
+	pop	hl
+	call	STRLEN		; compute length
+	ld	a,b
+	ld	(ARGBLK+1),a	; set packet length
+	ld	a,'Y'
+	call	SPACK		; send the packet
+	jp	KERMIT		; failed
+	ret			; success
+
+; Set up variables to build next packet to send.
+
+SNDINI:	ld	hl,SNDCHR
+	ld	(OPROC),hl
+	call	OUTRTR		; reset display of number of retries
+	ld	a,'S'
+	ld	(STATE),a	; init state
+	ld	a,0FFh
+	ld	(SRVTXT),a	; set flag for SINIT
+	call	SINIT		; do Send-Init with S packet
+	xor	a
+	ld	(SRVTXT),a
+	ld	a,(STATE)	; now see if we are in the 'X' state
+	cp	'F'
+	jr	z,SNDI0		; yes, all is in order
+	cp	'A'		; no, in Abort state?
+	jr	nz,SNDINI	; no, retry
+	jp	KERMIT		; else abort
+
+SNDI0:	ld	a,(PKTNUM)
+	ld	(ARGBLK),a	; set packet number
+	ld	hl,FILBUF
+	ld	de,DATA
+	push	de
+	call	STRCPY		; copy header string to X packet
+	pop	hl
+	call	STRLEN		; compute length
+	ld	a,b
+	ld	(ARGBLK+1),a	; set packet length
+	ld	a,'X'
+	call	SPACK		; send X packet
+	jp	ABORT		; error
+	call	RPACK		; get a packet
+	jp	SNDI0		; trashed, retry (TODO: show retry cnt)
+	cp	'Y'		; ACK?
+	jr	nz,SNDI2	; no, try next
+SNDI4:	call	COMPP		; expected packet?
+	jr	nz,SNDI0	; no, hold out for the right one
+	call	COUNTP		; count packet
+	ld	a,'D'
+	ld	(STATE),a
+SNDI1:	ld	a,(CURCHK)	; get current block check type
+	sub	'1'		; get the extra overhead
+	ld	b,a		; get a copy
+	ld	a,(SPSIZ)	; get the maximum packet size
+	sub	5		; subtract the overhead
+	sub	b		; determine max packet length
+	ld	(TEMP1),a	; this is the number of chars we are to get
+	ld	hl,FILBUF	; where to put the data
+	ld	(CBFPTR),hl	; remember where we are
+	xor	a
+	ld	(TEMP2),a	; clear character count
+	ret
+
+SNDI2:	cp	'N'		; NAK?
+	jr	nz,SNDI3	; no, try Error packet
+	call	UPDRTR		; update the number of retries
+	ld	a,(PKTNUM)	; get current packet number
+	inc	a		; increment it
+	and	3Fh		;  modulo 64
+	ld	b,a
+	ld	a,(ARGBLK)	; get packet's number
+	cp	b		; is the packet's number one more than now?
+	jr	nz,SNDI0	; if not, go try again
+	jr	SNDI4		; just as good as ACK, go to the ACK code
+
+SNDI3:	cp	'E'		; is it an Error packet?
+	jp	nz,ABORT	; no, abort
+	call	ERROR		; yes, display error info
+ABORT:	jp	KERMIT
+
+; Store character in packet to send to remote machine.
+; When the packet becomes full, send the packet and get an ACK.
+
+SNDCHR:	push	bc		; save registers
+	push	hl
+	ld	a,(TEMP2)	; get current number of chars
+	ld	b,a		;  into reg B
+	ld	a,(TEMP1)
+	or	a		; get the number of chars left
+	jr	nz,SNDCH2	; go on if there is space left
+SNDCH1:	push	de
+	call	SNDFLS		; send packet, get ACK and reset state
+	pop	de		; restore char
+	jr	c,SNDCH3	; error
+	ld	b,0		; no chars
+SNDCH2:	ld	a,e		; get char
+	push	de
+	call	ENCODE		; encode character and store in packet buffer
+	pop	de
+	ld	a,b
+	ld	(TEMP2),a	; store char count
+	jr	c,SNDCH1	; no space, send packet and try again
+SNDCH3:	pop	hl		; restore registers
+	pop	bc
+	ret
+
+SNDFLS:	ld	a,(TEMP2)	; get number of chars in packet
+	or	a		; anything to send
+	ret	z		; no, return
+	ld	(SIZE),a	; store packet size
+SND1:	call	OUTPKN		; display packet number
+	ld	a,0FFh
+	ld	(SRVTXT),a	; set flag for SDATA routine
+	call	SDATA		; send packet, get ACK
+	ld	a,(SRVTXT)
+	or	a		; success?
+	jp	z,SNDI1		; yes, reset pointers and return
+	ld	a,(STATE)
+	cp	'D'		; retry needed?
+	jr	z,SND1		; yes
+	scf			; else operation was aborted by the client
+	ret			;  or by a fatal error
+
+SNDEOF:	call	SNDFLS		; send remaining packet
+	ret	c
+SND2:	call	OUTPKN		; output packet number
+	ld	a,0FFh
+	ld	(SRVTXT),a	; set flag for SDATA routine
+	call	SEOF		; send EOF packet, get ACK
+	ld	a,(SRVTXT)
+	or	a		; success?
+	jr	z,SND3		; yes
+	ld	a,(STATE)
+	cp	'Z'		; retry needed?
+	jr	z,SND2		; yes
+	scf			; else operation was aborted by the client
+	ret			;  or by a fatal error
+SND3:	call	OUTPKN
+	call	SEOT		; send End-of-Transmission, get ACK
+	ld	a,(STATE)
+	cp	'C'		; success?
+	ret	z		; yes
+	cp	'B'		; retry needed?
+	jr	z,SND3		; yes
+	scf			; else operation was aborted by the client
+	ret			;  or by a fatal error
+
+	end
