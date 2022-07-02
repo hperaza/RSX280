@@ -1,0 +1,23 @@
+
+	The language is pretty much fixed right now.
+
+	T.SEEK will probably not be implemented, because it would need
+	a lot of space.
+
+	The T3X.OAPPND mode of T.OPEN might be an option, but it is hard
+	to get right for text files.
+
+	Maybe later:
+
+	There are currently no unsigned operators (./ .< .> .<= .>=).
+
+	Local storage should be deallocated when branching out of a loop.
+	E.g.:
+
+	FOR (i=0, 100) DO VAR foo;
+	    LEAVE;
+	END
+
+	should deallocate the space for FOO. The compiler currently does
+	not do this, and the program will crash. Caveat utilitor!
+

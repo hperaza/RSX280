@@ -1,0 +1,190 @@
+
+	2021-12-08
+
+	- Added optimizations suggested by Hector Peraza, improving code
+	  size and speed and reducing compiler size by 450 bytes.
+
+
+	2021-04-30
+
+	- Fixed uninitialized frame issue (HELLO2 example miscompiled).
+
+
+	2020-03-06
+
+	- Squeezed out a few bytes by combining DISJ and CONJ functions
+	  into LOGOP function.
+
+	- Fix: MOD operator should be unsigned, e.g. 0xffff mod 99 = 96.
+
+	- Fixed T.MEMSCAN tests in test suite.
+
+	- Updated documentation of MOD and >> operators (>> is logical,
+	  not arithmetic).
+
+
+	2020-02-06
+
+	- Optimization: frameless procedures no longer set up an empty
+	  frame. E.g. FOO() DO END will now compile to LD HL,0; RET.
+
+	- Optimization: RETURN jumps to the exit point when there is
+	  a call frame to deallocate instead of duplicating the
+	  deallocation code.
+
+	Compiler size is down 200 bytes after adding the optimization,
+	i.e. the larger compiler self-compiles to a smaller binary.
+
+
+	2020-02-03
+
+	- Fix: T.MEMCOPY(A, B, 0) now copies nothing.
+
+	- Added address operator tests to test suite.
+
+
+	2020-01-31
+
+	- T.READ(T3X.SYSIN, B, N) now adds a CR character to B, if less
+	  than N characters were entered on the console, e.g. entering
+	  FOO<CR> will fill the buffer B with F,O,O,CR, if N>=4. The
+	  additional CR will also be counted in the return value.
+
+	  This change increases portability with other systems, like
+	  Unix, which would include an LF character in the buffer when
+	  CR is pressed.
+
+	  In particular, programs that exit when zero-length input is
+	  read from the console will no longer do so when receiving an
+	  empty line.
+
+	- Added T.GETARG test to test suite; passing arguments to
+	  TEST.COM will now display the arguments on the console.
+
+
+	2020-01-28
+
+	- Fix: constants are now allowed in packed vectors.
+
+	- Fix: T.GETARG sometimes fetched an empty argument N when
+	  there were only N-1 arguments.
+
+	- HALT; now equals HALT 0; (T3X compatibility).
+
+
+	2020-01-26
+
+	- Removed superflous jump in library init code.
+
+	- Added procedure pointers and the CALL operator of full T3X.
+
+
+	2020-01-25
+
+	- Fix: MKLIB did no longer work, because the module size moved
+	  to a different location in the library. Thanks, Martin!
+
+	- Re-arranged jump table in library and placed module size at
+	  a more convenient location.
+
+
+	2020-01-24
+
+	- Added Martin's SETUP and BUILD submit files. Thanks!
+
+	- Added the T.BPW procedure for better T3X compatibility.
+
+
+	2020-01-11
+
+	- Fix: the runtime library now sets up a local stack at the
+	  top of the TPA. Thanks, Martin!
+
+
+	2020-01-08
+
+	- Fix: MKLIB would generate an unusable image, if the linker
+	  leaves garbage in the last record of LIB.BIN. Thanks again,
+	  Hector Peraza, for sending me patches!
+
+	- Renamed assembly language files *.ASM, because that is what
+	  some assemblers expect. Also added missing END statement to
+	  LIB.ASM. Thanks, Martin!
+
+	- Added /R option to CPMFILE command for replacing the original
+	  file with the converted file.
+
+
+	2020-01-07
+
+	- Fix: zero-length T.WRITE caused output of 64K records. This
+	  also prevented MKLIB from working on CP/M.
+
+	- Fix: opening a file name with a lower-case drive letter did
+	  not work.
+
+	  Thanks, Hector Peraza, for sending me patches for both of the
+	  above bugs! And also for shortening sign detection in the
+	  multiplication and division routines to a few bytes!
+
+	- Also fixed zero-length T.READ while I'm at it.
+
+	- Covered zero-length T.READ and T.WRITE in the test suite.
+
+
+	2020-01-06
+
+	- Added peephole optimizer.
+
+	- Implemented synthesis of conditional jumps. Binary is almost
+	  one KB smaller now.
+
+
+	2020-01-05
+
+	- Corrected instructions for the triple test in README.
+
+	- Fix: memcopy(x,x,n) (note: src=dest!) unbalanced the stack.
+
+	- Extended the test suite (TEST.T).
+
+
+	2020-01-04
+
+	- Runtime library: zapping entire FCB (except for file name)
+	  before OPEN FILE and CREATE FILE.
+
+
+	2020-01-03
+
+	- Fixed signed division and multiplication (used 1's complement,
+	  oops).
+
+	- Added simple test suite.
+
+
+	This version is based on T3X9, Release 2.
+
+	- retargeted to CP/M-Z80
+
+	- D and S may overlap in T.MEMCOPY(D, S, N)
+
+	- allocating local storage in blocks
+
+	- local storage limited to +/-126 bytes
+
+	- N in T.READ(0, B, N) must be <= 128
+
+	- Only up to three files can be open simultaneously
+
+	- T.WRITE will return %1 in case of partial write
+
+	- T3X.SYSOUT and T3X.SYSERR are the same
+
+	- files will NOT be closed on exit
+
+	- x << 0 and x >> 0 are undefined
+
+	- there is only a limited number of forward references,
+	  symbol table sizes were decreased a bit
+

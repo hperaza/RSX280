@@ -1,0 +1,69 @@
+! Draw a Mandelbrot set using ASCII characters.
+! Example from http://t3x.org/t3x/exam-mandel.html
+
+! Denominator for fixed-point computations
+const   SCALE = 100;
+
+! ASCII renditions of filled rectangles:
+const   FULL    = 'M',  ! completely filled
+        UPPER   = '"',  ! upper half filled
+        LOWER   = 'm',  ! lower half filled
+        EMPTY   = '\s'; ! empty
+
+! Compute the color of a point x+yi
+f(x, y) do
+    var cr, ci, zr, zi, ir;
+    var i;
+
+    zr := 0;            ! z = 0+0i
+    zi := 0;
+    cr := x*SCALE/25;   ! c = x+yi
+    ci := y*SCALE/20;
+    ! try 100 iterations
+    for (i=0, 100) do
+        ! z := z^2+c
+        ir := zr*zr/SCALE - zi*zi/SCALE;
+        zi := zr*zi/SCALE + zi*zr/SCALE + ci;
+        zr := ir + cr;
+        ! if |z| > 2+2i, x+yi is not a member
+        ! of the Mandelbrot set M
+        if (zi > 2*SCALE \/ zr > 2*SCALE \/
+            zi < -2*SCALE\/ zr < -2*SCALE
+        )
+            return 0;
+    end
+    ! |z| <= 2+2i after 100 iterations,
+    ! so x+yi is probably in M
+    return %1;
+end
+
+do
+    var x, y, r;    ! coordinates, point color
+    var line::81;   ! line buffer
+    var even;       ! even line flag
+
+    even := 0;
+    line::0  := '\n';
+    line::80 := '\r';
+    for (y=-24, 25) do      ! lines
+        for (x=-59, 20) do  ! columns
+            r := \f(x,y);
+            ! When drawing an even line,
+            ! merge the color of r into the
+            ! current rectangle ...
+            ie (even)
+                line::(x+60) :=
+                    line::(x+60)->
+                        ! odd point was on
+                        r-> FULL: UPPER:
+                        ! odd point was off
+                        r-> LOWER: EMPTY;
+            ! ... else just memorize the color
+            else
+                line::(x+60) := r;
+        end
+        ! Even line completed, print it
+        if (even) t.write(1, line, 81);
+        even := \even;
+    end
+end

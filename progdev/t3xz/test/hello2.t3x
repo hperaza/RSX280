@@ -1,0 +1,12 @@
+do var k, buf::20;
+	t.write(T3X.SYSOUT, "\nEnter your name: ", 17);
+	k := t.read(T3X.SYSIN, buf, 20);
+	ie (k < 2) do
+		t.write(T3X.SYSOUT, "\nGoodbye!\r", 10);
+	end
+	else do
+		t.write(T3X.SYSOUT, "\nHello, ", 7);
+		t.write(T3X.SYSOUT, buf, k-1);
+		t.write(T3X.SYSOUT, "!\r", 3);
+	end
+end

@@ -1,0 +1,1601 @@
+; T3XZ runtime library
+; Nils M Holm, 2019,2020
+; Public Domain / CC0 license
+; RSX180/280 version by H Peraza, 2022
+
+	.Z80
+
+	include	SYSFN.INC
+	include	FCB.INC
+	include	TCB.INC
+	include	QIO.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+
+	cseg
+
+rtlib:	jp	start
+
+	; The following definitions MUST start at 0103h
+	; and MUST be kept in this order!
+
+	defw	rtlen		; 0103 module length for mklib.t
+	defb	'T3X'		; 0105
+
+	jp	mul15s		; 0108
+	jp	div15s		; 010b
+	jp	mod15		; 010e
+	jp	mul16		; 0111
+	jp	div16		; 0114
+	jp	cmp16s		; 0117
+	jp	cmp16		; 011a
+	jp	t_bpw		; 011d
+	jp	t_newline	; 0120
+	jp	t_memcomp	; 0123
+	jp	t_memcopy	; 0126
+	jp	t_memfill	; 0129
+	jp	t_memscan	; 012c
+	jp	t_getarg	; 012f
+	jp	t_open		; 0132
+	jp	t_close		; 0135
+	jp	t_read		; 0138
+	jp	t_write		; 013b
+	jp	t_rename	; 013e
+	jp	t_remove	; 0141
+	jp	t_system	; 0144
+	jp	exit		; 0147
+	jp	(hl)		; 014a
+
+fcb3:	defw	0		; FCBs and buffers for file descriptors 3,
+fcb4:	defw	0		; 4,
+fcb5:	defw	0		; and 5
+tbuf:	defw	0		; temporary buffer
+handle:	defb	0		; file descriptor id
+
+cmdbuf:	ds	128		; command line buffer
+
+buf:	ds	9		; name buffer for filename parsing routine
+wcflg:	ds	1		; set if wilcards found in current field
+
+IOACR	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
+
+qcreat:	QIOW$	IO.CRE,0,1,iosb,,<,,>
+qopenr:	QIOW$	IOACR,0,1,iosb,,<>
+qclose:	QIOW$	IO.DEA,0,1,iosb
+qrw:	QIOW$	IO.RVB,0,1,iosb,,<,128,,,,>
+qrenam:	QIOW$	IO.REN,2,1,iosb,,<,>
+qdel:	QIOW$	IO.DEL,2,1,iosb,,<>
+iosb:	defs	4
+
+; Call frame layout
+;
+; +-----------------+
+; | argument 1      | <-- IX+2+2N
+; +-----------------+
+; | ...             |
+; +-----------------+
+; | argument N      | <-- IX+4
+; +-----------------+
+; | saved frame     |
+; +-----------------+
+; | return address  | <-- SP, IX
+; +-----------------+
+
+; 16x16 unsigned multiplication, HL = HL*DE.
+; Algorithm from Rodney Zaks, "Programming the Z80".
+
+mul16:	ld	a,l		; transfer HL to CA
+	ld	c,h
+	ld	b,16		; 16 bits to multiply
+	ld	hl,0
+mul0:	srl	c		; shift CA right, get low bit
+	rra
+	jr	nc,mul1		; zero fell out, do not add
+	add	hl,de		; else add DE
+mul1:	ex	de,hl		; DE = DE*2
+	add	hl,hl
+	ex	de,hl
+	djnz	mul0
+	ret
+
+; 16/16 unsigned division, HL = HL div DE, DE = HL rem DE.
+; Algorithm from Rodney Zaks, "Programming the Z80".
+
+div16:	ld	a,h		; transfer HL to AC
+	ld	c,l
+	ld	hl,0		; intermediate result
+	ld	b,16		; 16 bits to divide
+div0:	rl	c		; get AC high bit, rotate in result bit
+	rla
+	adc	hl,hl		; HL = HL*2, never sets C
+	sbc	hl,de		; trial subtract and test DE > HL
+	jr	nc,div1
+	add	hl,de		; DE > HL, restore HL
+div1:	ccf			; result bit
+	djnz	div0
+	rl	c		; rotate in last result bit
+	rla
+	ld	d,a
+	ld	e,c
+	ex	de,hl
+	ret
+
+; strip signs from HL and DE
+
+strip:	bit	7,d
+	jr	z,sb0
+	ld	a,d
+	cpl
+	ld	d,a
+	ld	a,e
+	cpl
+	ld	e,a
+	inc	de
+sb0:	bit	7,h
+	ret	z
+neghl:	ld	a,h
+	cpl
+	ld	h,a
+	ld	a,l
+	cpl
+	ld	l,a
+	inc	hl
+	ret
+
+; 15x15 signed multiplication
+
+mul15s:	ld	a,h
+	xor	d
+	rla			; sign difference to carry
+	push	af
+	call	strip
+	call	mul16
+	pop	af
+	ret	nc
+	jr	neghl
+
+; 15/15 signed division, common subroutine
+
+divs:	ex	de,hl
+	ld	a,h
+	xor	d
+	rla			; sign difference to carry
+	push	af
+	call	strip
+	call	div16
+	pop	af
+	ret
+
+; 15/15 signed division
+
+div15s:	call	divs
+	ret	nc
+	jr	neghl
+
+; 15/15 signed remainder
+
+mod15:	ex	de,hl
+	call	div16
+	ex	de,hl
+	ret
+
+; signed comparison HL-DE, set Z and CY flags,
+; where CY indicates that HL < DE
+
+cmp16s:	xor	a
+	sbc	hl,de
+	ret	z
+	jp	pe,csv1		; V=1?
+	jp	m,cs1
+cs0:	or	a
+	ret
+csv1:	jp	p,cs0
+cs1:	scf
+	ret
+
+cmp16:
+	ret
+
+; T.BPW()
+; Return bytes per word on target machine.
+
+t_bpw:	ld	hl,2
+	ret
+
+; T.NEWLINE(B)
+; Fill B with newline sequence.
+
+t_newline:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	h,(ix+5)	; HL = B
+	ld	l,(ix+4)
+	push	hl
+	ld	(hl),CR		; B::0 = 0Dh
+	inc	hl
+	ld	(hl),LF		; B::1 = 0Ah
+	inc	hl
+	ld	(hl),0		; B::2 = 0
+	pop	hl		; return B
+	pop	ix
+	ret
+
+; T.MEMCOMP(R1, R2, N)
+; Compare regions R1 and R2 of size N,
+; return difference between first differing
+; pair of bytes; return 0 if R1=R2
+
+t_memcomp:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	h,(ix+9)	; fetch args
+	ld	l,(ix+8)	; R1
+	ld	d,(ix+7)	; R2
+	ld	e,(ix+6)
+	ld	b,(ix+5)	; N
+	ld	c,(ix+4)
+
+	ld	a,b		; nothing to compare?
+	or	c
+	jr	z,mc0a		; always succeed
+
+mc0:	ld	a,(de)		; (hl) = (de)?
+	cp	(hl)
+	jr	nz,mc1		; no? return difference
+	inc	de		; else proceed with next char pair
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,mc0		; repeat until BC=0
+
+mc0a:	ld	hl,0		; regions are equal
+	jr	mc2
+
+mc1:	ld	e,a		; return (hl)-(de)
+	ld	l,(hl)
+	ld	h,0
+	ld	d,0
+	xor	a
+	sbc	hl,de
+
+mc2:	pop	ix
+	ret
+
+; T.MEMCOPY(DEST, SRC, N)
+; Copy N bytes from SRC to DEST
+; regions may overlap.
+
+t_memcopy:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	d,(ix+9)	; fetch args, DEST
+	ld	e,(ix+8)
+	ld	h,(ix+7)	; SRC
+	ld	l,(ix+6)
+	ld	b,(ix+5)	; N
+	ld	c,(ix+4)
+
+	ld	a,b
+	or	c
+	jr	z,mcp1
+
+	push	hl		; is (hl) >= (de)?
+	xor	a
+	sbc	hl,de
+	pop	hl
+	jp	z,mcp1		; (hl) = (de)
+	jr	nc,mcp0
+
+	add	hl,bc		; (hl) > (de), copy from end
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	dec	hl
+	dec	de
+	lddr
+	ld	hl,0
+	pop	ix
+	ret
+
+mcp0:	ldir			; (hl) < (de), copy from beginning
+
+mcp1:	ld	hl,0
+	pop	ix
+	ret
+
+; T.MEMFILL(R, C, N)
+; Fill N bytes starting at R with C.
+
+t_memfill:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	h,(ix+9)	; fetch args
+	ld	l,(ix+8)	; R
+	ld	e,(ix+6)	; C, we use only the LSB
+	ld	b,(ix+5)	; N
+	ld	c,(ix+4)
+
+	ld	(hl),e		; place C in R::0
+	ld	d,h		; and then copy it forward BC-1 times
+	ld	e,l
+	inc	de
+	dec	bc
+	ldir
+
+	ld	hl,0
+	pop	ix
+	ret
+
+; T.MEMSCAN(R, C, N)
+; Find first byte C in region R of size N
+; return offset of the byte or -1, if C is not in R.
+
+t_memscan:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	h,(ix+9)	; fetch args
+	ld	l,(ix+8)	; R
+	ld	a,(ix+6)	; C, we use only the LSB
+	ld	b,(ix+5)	; N
+	ld	c,(ix+4)
+
+	inc	bc		; search one byte past region
+	cpir
+
+	ld	a,b		; if search went past region, fail
+	or	c
+	jp	z,fail
+
+	ld	d,(ix+9)	; get offset: R::HL-R
+	ld	e,(ix+8)
+	xor	a
+	sbc	hl,de
+	dec	hl
+
+	pop	ix
+	ret
+
+; Skip to next non-blank token after the one pointed to by HL
+; stop after B characters
+
+skipto:	ld	a,(hl)		; first skip over any non-blanks
+	cp	' '
+	jr	z,sk0
+	inc	hl
+	djnz	skipto
+	ret
+
+sk0:	ld	a,(hl)		; then skip over blanks
+	cp	' '
+	ret	nz
+	inc	hl
+	djnz	sk0
+	ret
+
+; T.GETARG(A, BUF, N)
+; Extract up to N-1 characters from A'th command line argument,
+; store the characters in BUF and append a delimiting NUL char.
+; Return the number of characters extracted (excluding the NUL).
+
+t_getarg:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+9)	; A > 255? then fail
+	or	a
+	jp	nz,fail
+
+	ld	hl,cmdbuf
+	ld	c,(ix+8)	; A
+	ld	a,(hl)		; B = max chars to search/extract
+	or	a		; COMTAIL empty?
+	jp	z,fail		; then fail
+
+	ld	b,a
+	inc	hl
+	inc	c		; we have arg0 in RSX180/280
+
+ga0:	dec	c		; got the desired one?
+	jr	z,ga1		; then extract it
+
+	call	skipto		; skip to next argument
+
+	ld	a,b		; end of COMTAIL reached?
+	or	a
+	jp	z,fail		; then fail
+
+	jr	ga0		; proceed with next argument
+
+	; now extract the argument
+
+ga1:	ld	d,(ix+7)	; DE = BUF
+	ld	e,(ix+6)
+	ld	c,(ix+4)	; C = max. chars to extract
+	dec	c
+
+ga2:	ld	a,(hl)		; get one char from argument
+	cp	' '		; is it a blank?
+	jr	z,ga3		; then that's it
+	cp	CR		; end of line?
+	jr	z,ga3		; yes, done
+	or	a
+	jr	z,ga3
+
+	ld	(de),a
+	inc	hl
+	inc	de
+	dec	c		; decrement maximum
+	jr	z,ga3		; maximum zero? then that's it
+
+	djnz	ga2
+
+ga3:	xor	a		; append NUL
+	ld	(de),a
+	ld	h,(ix+7)
+	ld	l,(ix+6)
+	xor	a
+	ex	de,hl
+	sbc	hl,de
+
+	pop	ix
+	ret
+
+; Convert character in A to upper case.
+
+upcase:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	sub	'a'-'A'
+	ret
+
+; Expand NUL-terminated filename in string at HL to FCB at DE.
+
+expandfn:
+	push	de
+	ex	(sp),ix		; get FCB address into IX
+	call	inifcb		; init FCB with defaults
+	call	skipbl
+	ld	de,buf
+	ld	b,9
+	call	getw		; get first component
+	cp	':'
+	jr	nz,pfn1
+
+	; set device name
+
+	ld	a,c
+	cp	2		; empty or too short device name?
+	jp	c,pferr		; exit with error if yes
+	inc	hl		; skip delimiter
+
+	push	hl
+	ld	hl,buf
+	ld	a,(hl)
+	call	isalpha
+	jp	c,pferr1
+	ld	(ix+F.DEV),a
+	dec	c
+	inc	hl
+	ld	a,(hl)
+	call	isalpha
+	jp	c,pferr1
+	ld	(ix+F.DEV+1),a
+	dec	c
+	inc	hl
+	ld	b,c
+	call	getnum
+	jp	c,pferr1
+	ld	a,d		; must be < 256
+	or	a
+	jp	c,pferr1
+	ld	(ix+F.UNIT),e
+	pop	hl
+
+	ld	c,FN.DEV	; signal device was specified
+	call	setbit
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get next component
+
+pfn1:	cp	'$'
+	jr	nz,pfn10
+
+	; $ is a shortcut for LB0:[SYSTEM]
+
+	inc	hl		; skip dollar sign
+	ld	a,c
+	or	a
+	jp	nz,pferr
+
+	ld	a,(ix+F.ATTR)
+	ld	b,a
+	and	FN.DEV
+	jr	nz,pfn15
+
+	ld	a,b
+	or	FN.DEV
+	ld	(ix+F.ATTR),a
+
+	ld	(ix+F.DEV),'L'
+	ld	(ix+F.DEV+1),'B'
+	ld	(ix+F.UNIT),0
+
+pfn15:	ld	de,sysdir
+	ld	b,6
+	jr	pfn11
+
+pfn10:	cp	'['
+	jr	nz,pfn2
+
+	; set directory name
+
+	inc	hl		; skip delimiter
+	ld	a,c
+	or	a
+	jp	nz,pferr
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get directory name
+	cp	']'
+	jp	nz,pferr
+	ld	a,c
+	or	a		; empty directory name?
+	jp	z,pferr		; exit with error if yes
+	inc	hl		; skip delim
+
+	ld	de,buf
+	ld	b,c
+pfn11:	push	ix
+pfn12:	ld	a,(de)
+	call	upcase
+	ld	(ix+F.DIR),a	; copy to dest
+	inc	de
+	inc	ix
+	djnz	pfn12
+	pop	ix
+
+	ld	c,FN.DIR	; signal directory was specified
+	call	setbit
+
+	ld	de,buf
+	ld	b,9
+	call	getw		; get next component
+
+pfn2:	; set file name
+
+	ld	a,c
+	or	a
+	jr	z,pfn22
+
+	push	hl
+	push	ix
+	ld	b,c
+	ld	hl,buf
+pfn21:	ld	a,(hl)
+	call	upcase
+	ld	(ix+F.NAME),a	; copy to dest
+	inc	hl
+	inc	ix
+	djnz	pfn21
+	pop	ix
+	pop	hl
+
+	ld	c,FN.NAME	; signal file name was specified
+	call	setbit
+
+pfn22:	ld	a,(hl)
+	cp	'.'
+	jr	nz,pfn4
+
+	inc	hl		; skip delimiter
+	ld	de,buf
+	ld	b,3
+	call	getw
+
+	; set extension
+
+	ld	a,c
+	or	a
+	jr	z,pfn32
+
+	push	hl
+	push	ix
+	ld	b,c
+	ld	hl,buf
+pfn31:	ld	a,(hl)
+	call	upcase
+	ld	(ix+F.EXT),a	; copy to dest
+	inc	hl
+	inc	ix
+	djnz	pfn31
+	pop	ix
+	pop	hl
+
+pfn32:	ld	c,FN.EXT	; signal file extension was specified
+	call	setbit
+
+pfn4:	ld	a,(hl)
+	cp	';'		; version number specified?
+	jr	z,pfn5		; jump if yes
+	or	a		; else return success
+	pop	ix
+	ret
+
+pfn5:	inc	hl		; skip delimiter
+	call	setflg		; set wilcard flag
+	ld	a,(hl)
+	cp	'*'		; * in version field means any version
+	inc	hl		; skip *
+	jr	z,pfn6		; signal version was explicit
+
+	xor	a
+	ld	(wcflg),a	; clear wildcard flag
+	dec	hl		; back to start of number
+
+	ld	de,buf
+	ld	b,9
+	call	getw
+
+	ld	a,c
+	or	a
+	jr	z,pferr
+
+	push	hl
+	ld	hl,buf
+	ld	b,c
+	call	getnum
+	pop	hl
+	jr	c,pferr
+	ld	(ix+F.VER),e
+	ld	(ix+F.VER+1),d
+
+pfn6:	ld	c,FN.VER	; signal file version was specified
+	call	setbit
+	xor	a		; return success
+	pop	ix
+	ret
+
+pferr1:	pop	hl
+pferr:	scf
+	pop	ix
+	ret
+
+sysdir:	db	'SYSTEM'
+
+setbit:	ld	a,(ix+F.ATTR)
+	or	c
+	ld	(ix+F.ATTR),a
+	ld	a,(wcflg)
+	and	c
+	or	(ix+F.WLDC)
+	ld	(ix+F.WLDC),a
+	ret
+
+; Init FCB (IX = FCB)
+
+inifcb:	ld	(ix+F.ATTR),0
+	ld	(ix+F.DEV),'S'
+	ld	(ix+F.DEV+1),'Y'
+	ld	(ix+F.UNIT),0
+	ld	b,9
+	push	ix
+ini1:	ld	(ix+F.DIR),' '
+	ld	(ix+F.NAME),' '
+	inc	ix
+	djnz	ini1
+	pop	ix
+	ld	b,3
+	push	ix
+ini2:	ld	(ix+F.EXT),' '
+	inc	ix
+	djnz	ini2
+	pop	ix
+	xor	a
+	ld	(ix+F.VER),a
+	ld	(ix+F.VER+1),a
+	ld	(ix+F.WLDC),a
+	ret
+
+; Skip blanks
+
+skp:	inc	hl
+skipbl:	ld	a,(hl)
+	cp	' '
+	jr	z,skp
+	cp	9
+	jr	z,skp
+	ret
+
+; Get word (max B chars) until delimiter found, C = word length
+
+getw:	xor	a
+	ld	(wcflg),a	; clear wildcard flag
+	ld	c,a
+gw0:	ld	a,(hl)
+	call	isdelim
+	ret	z
+	ld	(de),a
+	call	iswildc		; test for wildcard
+	call	z,setflg
+	inc	hl
+	inc	de
+	inc	c
+	djnz	gw0
+gw1:	ld	a,(hl)
+	call	isdelim
+	ret	z
+	inc	hl
+	jr	gw1
+
+setflg:	ld	a,0FFh		; all bits set
+	ld	(wcflg),a
+	ret	
+
+isdelim:
+	cp	' '
+	ret	z
+	cp	9
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'$'
+	ret	z
+	cp	'['
+	ret	z
+	cp	']'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	','
+	ret	z
+	cp	'='
+	ret	z
+	cp	'/'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'('
+	ret	z
+	cp	')'
+	ret	z
+	cp	'|'
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	ESC
+	ret	z
+	or	a
+	ret
+
+iswildc:
+	cp	'*'
+	ret	z
+	cp	'%'
+	ret
+
+isalpha:
+	call	upcase
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+isnum:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+; Parse number from input string (HL) length B. Returns value in DE.
+; CY set on error.
+
+getnum:	ld	de,0
+	ld	a,b
+	or	a
+	ret	z
+	ld	a,(hl)
+	cp	'+'
+	jr	z,gn0
+	cp	'-'
+	jr	nz,gn1
+	push	hl
+	ld	hl,negde
+	ex	(sp),hl		; negate DE before return
+gn0:	inc	hl		; skip sign
+	dec	b
+	scf
+	ret	z
+gn1:	ld	a,(hl)		; get char
+	call	isnum
+	ret	c		; error if not a digit
+	push	bc
+	ex	de,hl
+	call	adddig		; else add it to accum
+	ex	de,hl
+	pop	bc
+	ret	c
+	inc	hl
+	djnz	gn1
+	ret
+
+adddig:	ld	c,l
+	ld	b,h
+	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,bc		; *5
+	ret	c
+	add	hl,hl		; *10
+	ret	c
+	sub	'0'
+	ld	c,a
+	ld	b,0
+	add	hl,bc		; +digit
+	ret
+
+negde:	ld	a,d
+	cpl
+	ld	d,a
+	ld	a,e
+	cpl
+	ld	e,a
+	inc	de
+	ret
+
+	cseg
+
+; T.OPEN(NAME, MODE)
+; Open file NAME.
+; If MODE=0 open existing file for reading.
+; If MODE=1 erase and create file.
+
+; Internal file descriptor layout:
+;
+; +----...----+------+------+------+-------+-------+----...----+
+; |    FDB    | PTR  | LEN  | TYPE | BLKN  | OFFS  |   BUFFER  |
+; +----...----+------+------+------+-------+-------+----...----+
+;              1 byte 1 byte 1 byte 2 bytes 2 bytes  128 bytes
+;
+; In an unused descriptor, the first byte
+; of the FDB is set to FFh.
+
+PTR	equ	FDBSZ+0
+LEN	equ	PTR+1
+TYPE	equ	LEN+1
+BLKN	equ	TYPE+1
+OFFS	equ	BLKN+2
+BUFR	equ	OFFS+2
+FDSIZE	equ	BUFR+128
+
+t_open:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	; do not bother with a loop, just try
+	; the available descriptors in sequence
+
+	ld	hl,handle	; try descriptor 3
+	ld	(hl),3
+	ld	de,(fcb3)
+	ld	a,(de)
+	inc	a
+	jr	z,op0		; unused? open it
+
+	inc	(hl)		; try descriptor 4
+	ld	de,(fcb4)
+	ld	a,(de)
+	inc	a
+	jr	z,op0		; unused? open it
+
+	inc	(hl)		; try descriptor 5
+	ld	de,(fcb5)
+	ld	a,(de)
+	inc	a
+	jr	z,op0		; unused? open it
+
+	jp	fail		; no descriptors unused
+
+op0:	ld	b,(ix+4)	; MODE = 0, open for reading
+	ld	a,(ix+5)
+	or	b
+	jr	z,oprd
+
+	; else open for writing
+
+opwr:	ld	h,(ix+7)	; file name
+	ld	l,(ix+6)
+	push	de
+	call	expandfn	; expand to FCB format
+	pop	de
+	call	CREATE		; then create it
+	jp	c,fail		; creation failed?
+	jr	op2
+
+	; open for reading
+
+oprd:	ld	h,(ix+7)	; file name
+	ld	l,(ix+6)
+	push	de
+	call	expandfn
+	pop	de
+	call	OPEN		; open existing file
+	jp	c,fail		; failed?
+
+	; open or create done
+
+op2:	push	de
+	pop	iy		; IY = FD
+
+	xor	a
+	ld	(iy),a		; mark descriptor in use
+	ld	(iy+BLKN),a	; start from block zero
+	ld	(iy+BLKN+1),a
+	ld	(iy+OFFS),a	; offset zero
+	ld	(iy+OFFS+1),a
+
+	ld	hl,PTR		; HL = PTR
+	add	hl,de
+	ld	a,(ix+4)	; file type
+	or	a
+	jr	z,op3
+
+	xor	a		; when writing file, set PTR to 0
+	jr	op4
+
+op3:	ld	a,128		; when reading, set PTR to end of buffer
+
+op4:	ld	(hl),a		; set PTR
+	inc	hl
+	ld	(hl),a		; set LEN
+	inc	hl
+	ld	a,(ix+4)	; also set TYPE
+	ld	(hl),a
+
+	ld	a,(handle)	; return handle
+	ld	l,a
+	ld	h,0
+	pop	ix
+	ret
+
+CREATE:	ld	a,(handle)
+	inc	a
+	ld	(qcreat+Q.LUN),a ; set LUN
+	ld	(qcreat+Q.P1),de ; set FDB address
+	ld	b,a
+	call	ALUN
+	ret	c
+	ld	hl,0
+	ld	(qcreat+Q.P2),hl
+	ld	(qcreat+Q.P3),hl
+	ld	hl,qcreat
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+OPEN:	ld	a,(handle)
+	inc	a
+	ld	(qopenr+Q.LUN),a ; set LUN
+	ld	(qopenr+Q.P1),de ; set FDB address
+	ld	b,a
+	call	ALUN
+	ret	c
+	ld	hl,qopenr
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+ALUN:	ld	hl,F.DEV
+	add	hl,de
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	SC	.ALUN
+	pop	de
+	ret
+
+CLOSE:	ld	a,(handle)
+	inc	a
+	ld	(qclose+Q.LUN),a ; set LUN
+	ld	hl,qclose
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; T.CLOSE(FD)
+; Close file descriptor.
+
+t_close:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	ld	a,(ix+5)	; FD>255? then fail
+	or	a
+	jp	nz,fail
+
+	ld	a,(ix+4)	; find descriptor
+	ld	de,(fcb3)
+	cp	3
+	jr	z,cl0
+
+	ld	de,(fcb4)
+	cp	4
+	jr	z,cl0
+
+	ld	de,(fcb5)
+	cp	5
+	jr	z,cl0
+
+	jp	fail		; none of 3,4,5, so fail
+
+cl0:	ld	(handle),a
+	push	de
+	pop	iy		; IY = FD
+	ld	a,(iy+TYPE)	; TYPE = 0? (file read-only)
+	or	a
+	jr	z,cl1		; then just close it
+
+	ld	a,(iy+PTR)	; unwritten data in buffer?
+	or	a
+	jr	z,cl1		; no? then just close it
+
+	call	flush		; flush unwritten data
+	jp	c,fail
+
+cl1:	call	CLOSE		; now close the file
+	jp	c,fail		; close failed?
+
+	ld	(iy),0FFh	; mark descriptor unused
+	ld	hl,0
+
+	pop	ix
+	ret
+
+; Read up to 128 characters from the console
+; (used by T.READ)
+
+rdcon:
+	ld	b,(ix+5)	; number N of chars to read
+	ld	c,(ix+4)
+
+	ld	a,b		; no bytes to read?
+	or	c
+	jr	nz,rc1
+	ld	hl,0		; then succeed trivially
+	jr	rc0
+
+rc1:	ld	a,b		; N > 255?
+	or	a
+	jp	nz,fail		; then fail
+
+	ld	a,c		; N > 128?
+	cp	81h
+	jp	nc,fail		; still fail
+
+	ld	a,IO.RVB
+	ld	(qrw+Q.FUNC),a
+	ld	a,1
+	ld	(qrw+Q.LUN),a
+
+	ld	hl,(tbuf)	; use TBUF for reading
+	ld	(qrw+Q.BUF),hl
+	ld	(qrw+Q.LEN),bc
+
+	ld	hl,qrw
+	SC	.QIO
+	jp	c,fail
+	ld	a,(iosb)
+	or	a
+	jp	nz,fail
+	ld	bc,(iosb+2)
+	ld	a,c		; did we read anything?
+	or	a
+	jr	nz,rc0a		; no? return single CR
+
+	ld	hl,0
+	ld	d,(ix+7)	; BUF
+	ld	e,(ix+6)
+	jr	addcr
+
+rc0a:	push	bc		; remember number of chars
+
+	ld	hl,(tbuf)	; move to data
+	ld	d,(ix+7)	; BUF
+	ld	e,(ix+6)
+	ldir			; move TBUF to BUF argument of T.READ
+
+	pop	hl		; number of chars read
+	push	hl
+
+	ld	b,(ix+5)	; number N of chars to read
+	ld	c,(ix+4)
+
+	xor	a
+	sbc	hl,bc
+	pop	hl
+	jr	z,rc0
+
+addcr:	ld	a,CR
+	ld	(de),a
+	inc	hl
+
+rc0:	pop	ix
+	ret
+
+; T.READ(FD, BUF, N)
+; Read up to N bytes from FD into BUF.
+
+t_read:	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	ld	a,(ix+9)	; FD > 255?
+	or	a
+	jp	nz,fail		; then fail
+
+	ld	a,(ix+8)	; FD = 0?
+	or	a
+	jp	z,rdcon		; then read the console
+
+	ld	de,(fcb3)	; else try the file descriptors
+	cp	3
+	jr	z,rdfile
+
+	ld	de,(fcb4)
+	cp	4
+	jr	z,rdfile
+
+	ld	de,(fcb5)
+	cp	5
+	jr	z,rdfile
+
+	jp	fail
+
+rdfile:	ld	(handle),a
+	ld	b,(ix+5)	; number of bytes to read
+	ld	c,(ix+4)
+
+	ld	a,b		; no bytes to read?
+	or	c
+	jr	z,rf2		; then succeed trivially
+
+	push	de
+	pop	iy		; IY = FD
+
+	ld	hl,BUFR		; HL = BUFFER
+	add	hl,de
+
+	ld	e,(iy+PTR)	; DE = @BUFFER::PTR
+	ld	d,0
+	add	hl,de
+	ex	de,hl
+
+	ld	h,(ix+7)	; HL = BUF argument of T.READ
+	ld	l,(ix+6)
+
+rf0:	ld	a,(iy+PTR)	; PTR >= LEN?
+	cp	(iy+LEN)
+	jr	c,rf1		; no
+
+	call	more		; buffer empty, read more
+	jr	c,rf2		; and exit if read failed
+
+	call	nextrec		; prepare to read next record
+	call	resetptr	; reset pointer (PTR and DE)
+
+rf1:	ex	de,hl		; transfer byte from BUFFER to BUF
+	ldi	
+	ex	de,hl
+	inc	(iy+PTR)	; increment PTR
+
+	ld	a,b		; still bytes to read?
+	or	c
+	jr	nz,rf0		; yes? then loop
+
+rf2:	ld	h,(ix+5)	; return number of bytes actually read
+	ld	l,(ix+4)
+	xor	a
+	sbc	hl,bc
+	pop	ix
+	ret
+
+; Re-fill buffer of read-only file descriptor
+
+more:	push	hl		; save registers
+
+	push	iy
+	pop	de
+	ld	hl,BUFR
+	add	hl,de		; HL = BUFR
+	ld	de,128		; DE = length
+	call	READ		; read from file
+	ld	(iy+LEN),e
+
+	pop	hl		; restore registers
+	ret
+
+; Write record to file
+
+WRITE:	ld	a,IO.WVB
+	jr	rw		; continue via common code
+
+; Read record from file
+
+READ:	ld	a,IO.RVB
+rw:	ld	(qrw+Q.FUNC),a	; set operation code
+	ld	a,(handle)
+	inc	a
+	ld	(qrw+Q.LUN),a	; set LUN
+	ld	(qrw+Q.BUF),hl	; set buffer address
+	ld	l,(iy+BLKN)
+	ld	h,(iy+BLKN+1)
+	ld	(qrw+Q.BLK),hl
+	ld	hl,0
+	ld	(qrw+Q.BLK+2),hl
+	ld	(qrw+Q.LEN),de	; set length
+	ld	l,(iy+OFFS)
+	ld	h,(iy+OFFS+1)
+	ld	(qrw+Q.OFS),hl
+	ld	hl,qrw
+	SC	.QIO
+	ret	c
+	ld	de,(iosb+2)
+	ld	a,(iosb)
+	or	a
+	ret	z
+	ld	de,0
+	scf
+	ret
+
+nextrec:
+	push	hl
+	ld	l,(iy+OFFS)
+	ld	h,(iy+OFFS+1)
+	ld	de,128
+	add	hl,de
+	ld	a,h
+	cp	2
+	jr	c,nxt2
+	inc	(iy+BLKN)
+	jr	nz,nxt1
+	inc	(iy+BLKN+1)
+nxt1:	ld	hl,0
+nxt2:	ld	(iy+OFFS),l
+	ld	(iy+OFFS+1),h
+	pop	hl
+	ret
+
+; reset pointers in READ/WRITE operations
+; IY = pointer to file descriptor
+; Output:
+; PTR = 0
+; DE = pointer to buffer
+
+resetptr:
+	ld	(iy+PTR),0	; reset PTR
+	push	iy
+	pop	de		; reset DE to @BUFFER:0
+	push	hl
+	ld	hl,BUFR
+	add	hl,de
+	ex	de,hl
+	pop	hl
+	ret
+
+; Flush buffer of write-only file descriptor
+
+flush:	push	hl		; save registers
+
+	push	iy
+	pop	de
+	ld	hl,BUFR
+	add	hl,de		; HL = BUFR
+	ld	e,(iy+PTR)	; DE = length
+	ld	d,0
+	call	WRITE		; write the buffer
+
+	pop	hl		; also restore other registers
+	ret
+
+; Common exit point in case of failure
+
+fail:	ld	hl,0FFFFh
+	pop	ix
+	ret
+
+; Write characters to the console
+; (used by T.WRITE)
+
+wrcon:	ld	h,(ix+7)	; BUF
+	ld	l,(ix+6)
+	ld	(qrw+Q.BUF),hl
+
+	ld	h,(ix+5)	; number of chars to write
+	ld	l,(ix+4)
+	push	hl		; save count
+
+	ld	a,h		; nothing to write?
+	or	l
+	jr	z,wc1		; then succeed trivially
+
+	ld	(qrw+Q.LEN),hl
+
+	ld	a,IO.WVB
+	ld	(qrw+Q.FUNC),a
+	ld	a,1
+	ld	(qrw+Q.LUN),a
+
+	ld	hl,0
+	ld	(qrw+Q.VFC),hl
+
+	ld	hl,qrw
+	SC	.QIO
+	jr	c,wc2
+	ld	a,(iosb)
+	or	a
+	jr	nz,wc2
+
+wc1:	pop	hl		; return saved count
+	pop	ix
+	ret
+
+wc2:	pop	hl
+	jp	fail
+
+; T.WRITE(FD, BUF, N)
+; WRITE N bytes from BUF to FD.
+
+t_write:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	ld	a,(ix+9)	; FD > 255?
+	or	a
+	jr	nz,fail		; then fail
+
+	ld	a,(ix+8)	; writing to T3X.SYSOUT (console)?
+	cp	1
+	jr	z,wrcon
+
+	cp	2		; T3X.SYSERR is also console
+	jr	z,wrcon
+
+	cp	3		; otherwise try the FDs
+	ld	de,(fcb3)
+	jr	z,wrfile
+
+	cp	4
+	ld	de,(fcb4)
+	jr	z,wrfile
+
+	cp	5
+	ld	de,(fcb5)
+	jr	z,wrfile
+
+	jp	fail		; no FD? then fail
+
+wrfile:	ld	(handle),a
+	ld	b,(ix+5)	; number of bytes to write
+	ld	c,(ix+4)
+
+	ld	a,b		; nothing to write?
+	or	c
+	jr	z,wf2		; then succeed trivially
+
+	push	de
+	pop	iy		; IY = FD
+
+	ld	hl,BUFR		; HL = BUFFER
+	add	hl,de
+
+	ld	e,(iy+PTR)	; DE = @BUFFER::PTR
+	ld	d,0
+	add	hl,de
+	ex	de,hl
+
+	ld	h,(ix+7)	; HL = BUF argument of T.WRITE
+	ld	l,(ix+6)
+
+wf0:	ld	a,(iy+PTR)	; PTR >= 128?
+	cp	128
+	jr	c,wf1		; no
+
+	call	flush		; buffer full, flush
+	jp	c,fail		; and test for write failure
+
+	call	nextrec		; prepare to write next record
+	call	resetptr	; reset PTR and DE
+
+wf1:	ldi			; transfer byte from BUF to BUFFER
+	inc	(iy+PTR)	; increment PTR
+
+	ld	a,b		; still bytes to write?
+	or	c
+	jr	nz,wf0		; yes? then loop
+
+wf2:	ld	h,(ix+5)	; all bytes written successfully
+	ld	l,(ix+4)
+	pop	ix
+	ret
+
+; T.RENAME(OLD, NEW)
+; Rename file OLD as NEW.
+; Fail if OLD does not exist or NEW does exist.
+; Return 0=success or -1=failure.
+
+t_rename:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	ld	h,(ix+7)	; expand OLD name to TBUF
+	ld	l,(ix+6)
+	ld	de,(tbuf)
+	ld	(qrenam+Q.P1),de
+	call	expandfn
+
+	ld	hl,(tbuf)	; expand NEW name to TBUF+16
+	ld	de,FDBSZ
+	add	hl,de
+	ex	de,hl
+	ld	(qrenam+Q.P2),de
+	ld	h,(ix+5)
+	ld	l,(ix+4)
+	call	expandfn
+
+	call	RENAME
+	jp	c,fail
+
+	ld	hl,0
+	pop	ix
+	ret
+
+RENAME:	ld	hl,(tbuf)
+	ld	b,2		; use LUN 2
+	call	ALUN
+	ret	c
+	ld	hl,qrenam
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; T.REMOVE(NAME)
+
+t_remove:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+
+	ld	h,(ix+5)	; expand NAME name to TBUF
+	ld	l,(ix+4)
+	ld	de,(tbuf)
+	ld	(qdel+Q.P1),de
+	call	expandfn
+
+	call	DELETE
+	jp	c,fail
+
+	ld	hl,0
+	pop	ix
+	ret
+
+DELETE:	ld	hl,(tbuf)
+	ld	b,2		; use LUN 2
+	call	ALUN
+	ret	c
+	ld	hl,qdel
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; T.SYSTEM(HL)
+; Do a system call with HL=HL
+; Return the value of A.
+
+t_system:
+	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	d,(ix+5)
+	ld	e,(ix+4)
+	SC	-1
+	ld	l,a
+	ld	h,0
+	pop	ix
+	ret
+
+; Exit to the system with HL=code
+
+exit:	SC	.EXIT
+	jr	exit		; never reaches here
+
+	; MAIN PROGRAM ENTRY POINT
+
+start:
+	ld	hl,0
+	ld	de,cmdbuf
+	SC	.GTSK
+	ld	sp,(cmdbuf+GT.END) ; set up local stack
+
+	ld	hl,cmdbuf
+	ld	(hl),0
+	ld	e,128
+	SC	.GTCMD
+	ld	e,(hl)		; zeroed above in case no command line present
+	ld	d,0
+	inc	hl
+	add	hl,de
+	ld	(hl),0		; add a null terminator
+
+	ld	hl,-FDSIZE	; set up FCB3 + buffer
+	add	hl,sp
+	ld	sp,hl
+	ld	(hl),0FFh
+	ld	(fcb3),hl
+
+	ld	hl,-FDSIZE	; FCB4
+	add	hl,sp
+	ld	sp,hl
+	ld	(hl),0FFh
+	ld	(fcb4),hl
+
+	ld	hl,-FDSIZE	; FCB5
+	add	hl,sp
+	ld	sp,hl
+	ld	(hl),0FFh
+	ld	(fcb5),hl
+
+	ld	hl,-130		; set up temporary buffer
+	add	hl,sp
+	ld	sp,hl
+	ld	(tbuf),hl
+
+rtlen	equ	$-rtlib
+
+	; T3X code starts here ...
+
+	end

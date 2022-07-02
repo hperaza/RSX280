@@ -1,0 +1,44 @@
+Changelog
+---------
+
+27/06/22
+
+- First quick port of T3X/Z V1.6 to RSX180/280. Runtime library ported, except
+  for the t_bdos and t_bdoshl functions.
+
+- Summary output only if /V is specified on the command line (thus, no longer
+  output by default, to match the "silent" behavior of RSX applications).
+
+- Prefix error messages with 'T3X -- ' as per RSX conventions.
+
+- Default to .T3X file extension.
+
+- Generate task file header:
+  * Remember top of text segment after first pass so we can initialize the
+    header fields accordingly.
+  * Use the file name as default task name.
+  * The file is created non-contiguous as the necessary library support is
+    not there yet.
+
+
+28/06/22
+
+- Close Infile and Outfile on error to avoid RSX180/280 complaining about
+  about "exit with outstanding I/O".
+
+- Create output file only during the second pass, else RSX will produce two
+  versions of the file.
+
+- CG_HALT now passes the argument of the 'halt' statement to the exit routine.
+
+- First successful compilation of the compiler under RSX180/280!
+
+- The default ("success") exit code under RSX180/280 is 1 and not 0 (0 means
+  "warning").
+
+
+01/07/22
+
+- Report code and data size, number of symbols, etc. as unsigned decimal.
+
+

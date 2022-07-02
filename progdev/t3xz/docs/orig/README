@@ -1,0 +1,202 @@
+
+	T3X/Z - A T3X compiler for Z80-based computers running CP/M
+
+	For a summary of the T3X language, see http://t3x.org/t3x/
+
+	T3X/Z is a single-stage two-pass compiler for a superset of
+	version 9 of the T3X programming language (T3X9). It compiles
+	Hello World in four seconds on an Amstrad NC100 (4MHz Z80 CPU)
+	and bootstraps in seven minutes. It is packaged in a single
+	30KB COM file and needs no additional programs or libraries.
+	It compiles directly from T3X to Z80 machine code and should
+	work on any Z80-based CP/M machine with at least 44KB of TPA.
+	Of course, T3X/Z can be set up as a cross compiler to CP/M on
+	any system providing a T3X implementation.
+
+	The source code of T3X/Z is based on T3X9, but makes some
+	improvements, like better T3X compatibility and slightly more
+	efficient code generation. It consists of ~1750 lines of T3X
+	plus ~1200 lines of Z80 assembly language for the runtime
+	library. It successfully triple tests on CP/M 2.2 and CP/NC.
+
+
+	INSTALLING THE T3X/Z COMPILER
+
+	Rename the file T.BIN T.COM and copy it to your CP/M machine.
+	That's it. You should now be able to compile T3X programs.
+
+
+	COMPILING THE COMPILER
+
+	This step requires the T3X/Z source code. If you downloaded a
+	binary package, fetch it at the T3X homepage (see top of file).
+
+	You need an existing T3X compiler in order to compile T3X/Z.
+	The provided binary (T.BIN) will do fine. You also need a Z80
+	assembler. I am using ZMAC, but any assembler using Zilog syntax
+	should work. If you do not want to re-assemble the library, just
+	use the LIB.BIN file.
+
+	The following instructions are for cross-compiling T3X/Z on Unix.
+
+	First, assemble the runtime library:
+
+	zmac lib.asm
+
+	Then generate a version of the compiler source code that contains
+	an image of the runtime lbrary:
+
+	tx -ml mklib.t
+	./mklib
+
+	Finally, compile the compiler:
+
+	tx -ml t.t
+
+	and then self-compile the compiler:
+
+	./t t
+
+	This last step will generate the final "t.com" file.
+
+	
+	RE-BUILDING THE COMPILER UNDER CP/M
+
+	On CP/M 2.2 with the SUBMIT patch from DRI App Note #12 applied,
+	you can use the SETUP.SUB and BUILD.SUB files to compile the
+	T3X/Z compiler. Thanks to Martin (comp.os.cpm) for supplying
+	these files! Run SETUP once to rename, convert, and patch the
+	sources and BUILD to rebuild the compiler. DRI App Note #13 can
+	be found here: http://www.classiccmp.org/cpmarchives/cpm/mirrors/
+	oak.oakland.edu/pub/cpm/cpminfo/cpm22app.lbr (NOTE: line break
+	in the URL).
+
+	To compile T3X/Z manually, you need the following files on your
+	CP/M machine:
+
+	CPMFILE.COM (renamed CPMFILE.BIN)
+	T.COM       (renamed T.BIN)
+	T.SRC
+	MKLIB.T
+	LIB.ASM     (or LIB.BIN)
+	DEFS.ASM    (or LIB.BIN)
+
+	The source files need to be in CP/M text format, so you will have
+	to convert them first:
+
+	CPMFILE T.SRC /R
+	CPMFILE MKLIB.T /R
+	CPMFILE LIB.ASM /R
+	CPMFILE DEFS.ASM /R
+
+	Next, assemble the runtime library, LIB.ASM, or use the supplied
+	LIB.BIN file. You can use ZMAC or M80 to assemble the file. Some
+	assemblers may generate a COM file, so you might have to rename
+	it LIB.BIN.
+
+	Then, generate the actual compiler source code. This step will
+	merge the files T.SRC and LIB.BIN and generate the file T.T:
+
+	T MKLIB
+	MKLIB
+
+	The compiler is now ready to compile, but do rename it before
+	bootstrapping, because it will erase the file T.COM in case of
+	an error:
+
+	REN T0.COM=T.COM
+	T0 T /V
+
+	This takes a while (about 7 minutes on a 4MHz NC100), so the /V
+	option will entertain you while you stand by. :)
+
+
+	TESTING THE COMPILER
+
+	There is a simple test suite in the file TEST.T. To test the
+	compiler, compile and run that file. (Do not forget to convert
+	TEST.T to CP/M text format first!):
+
+	T TEST
+	TEST
+
+
+	TRIPLE-TESTING THE COMPILER
+
+	In order to triple-test the compiler, first install it on a CP/M
+	machine or emulator. If you did not generate the file T.T on CP/M,
+	you will also need the CPMFILE command (which is included in the
+	T3X/Z archive) to convert the source code to CP/M text format
+
+	CPMFILE T.T /R
+
+	You can then run the triple test:
+
+	REN T0.COM=T.COM
+	T0 T /V
+	PIP T1.COM=T.COM
+	T1 T /V
+
+	At this point the files T1.COM and T.COM should be identical.
+
+	Make sure to rename the compiler to something other than T.COM
+	before self-compiling, because it will erase the file T.COM in
+	case of an error!
+
+
+	USAGE
+
+	T FILE     will compile FILE.T to FILE.COM.
+
+	T FILE /V  will print function names while compiling; this is
+	           intended as a progress indicator. An upper-case V
+	           must be used on systems that distinguish the case
+		   of letters on the command line.
+
+
+	GETTING STARTED
+
+	The file T3XZ.TXT contains a very brief introduction to the
+	T3X/Z language. There are some example programs and utilities in
+	this archive. Then, there is the compiler source code in the
+	file T.SRC. A lot of additional information can be found on the
+	T3X homepage, mentioned at the top of this file.
+
+
+	THE T3X/Z LANGUAGE AND COMPILER
+
+	The T3X/Z compiler is derived from the T3X9 compiler, but
+	implements a larger subset of the full T3X language. However,
+	T3X/Z is still not a full T3X compiler. This is a summary of
+	its limitations:
+
+	* The only runtime class available is T3X, the core class.
+
+	* Local variables may not allocate more than 126 bytes per
+	  function.
+
+	* Bodies of loops cannot allocate local storage, if you use
+	  LOOP or LEAVE inside of them.
+
+	* When reading T3X.SYSIN, the length parameter must not exceed
+	  128, i.e. N<=128 must apply in T.READ(T3X.SYSIN, B, N).
+
+	* Only up to 3 files may be open at the same time.
+
+	* T3X.SYSOUT and T3X.SYSERR are the same device. This is
+	  inherent in the nature of CP/M.
+
+	* T.WRITE will return %1 in case of a partially successful
+	  write operation. It will return N when T.WRITE(FD,B,N)
+	  writes exactly N bytes.
+
+	* Files do not close automatically on exit. Do use T.CLOSE!
+
+	* Symbol table sizes are smaller and the number of forward
+	  references (DECLs) it limited.
+
+	With these differences in mind, the T3X documentation also
+	applies to T3X/Z. See, for instance, the T3X 7.x package at the
+	T3X home page or, for a more scenic view, have a look at the
+	T3X book: t3x.org/t3x/t3x.html
+
