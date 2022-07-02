@@ -149,6 +149,7 @@ progdev: libs system
 	@cp -u libs/syslib/syslib.irl progdev/tkb
 	@cp -u libs/syslib/syslib.lib progdev/lbr
 	@cp -u libs/fcslib/fcslib.lib progdev/lbr
+	@cp -u libs/syslib/syslib.lib progdev/t3xz
 	@(cd progdev; ${MAKE} all)
 
 # Compile Kermit
@@ -219,6 +220,7 @@ disk-image:
 	@echo "import ./hello.mac hello.mac" >> mkimg.cmd
 	@echo "import ./hello.cmd hello.cmd" >> mkimg.cmd
 	@echo "import ./hello1.mac hello1.mac" >> mkimg.cmd
+	@echo "import ./progdev/t3xz/test/hello.t3x hello.t3x" >> mkimg.cmd
 	@echo "import ./type.cmd type.cmd" >> mkimg.cmd
 	@echo "import ./mce/mceini.cmd mceini.cmd" >> mkimg.cmd
 	@echo "mkdir games 20,3" >> mkimg.cmd
