@@ -395,6 +395,10 @@ copy-kermit: kermit
 	@echo "delete kermit.tsk" >> copy.cmd
 	@echo "import kermit/kermit.tsk kermit.tsk /c" >> copy.cmd
 	@echo "dir" >> copy.cmd
+	@echo "cd test" >> copy.cmd
+	@echo "delete kermit.ini" >> copy.cmd
+	@echo "import kermit/kermit.ini kermit.ini" >> copy.cmd
+	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(disk) < copy.cmd
 	@rm copy.cmd
@@ -402,7 +406,7 @@ copy-kermit: kermit
 # Copy everything to the disk image.
 copy-all: copy-system copy-utils copy-help \
           copy-progdev copy-basic copy-test \
-          copy-games copy-kermit
+          copy-kermit copy-games
 
 # Configure system
 sysvmr-old:
