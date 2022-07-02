@@ -1,0 +1,1118 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Exec part 1, Eval
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	public	IGNORE,EXECUTE,EVAL,STROPR,STPR,OPRFP0,OPRFP
+	public	OPRINT,INTEVAL,CHKSTK
+
+	extrn	XEQNTR,FNDSTL,LITEVAL,SKPEOL,PSHFAC,POPFAC,FPLD
+	extrn	FPST,FPINT,ADDSTK,SUBSTK,FIXUP,DISPAT,CPHLDE
+	extrn	$FPUSH,$FPOP,$IPUSH,$IPOP,$ICOPY,$CALL,LET,FOR
+	extrn	$ADR,$MLR,$DVR,$MLI,$DVI,XII$,XFI$,XFF$,CKCTLC
+	extrn	ADDHLA,LET,ASSIGN,CALLS,CALLX,INT,READ,ENDPRG
+	extrn	LOCGET,FTOI1,ITOF,MKSTR,VFVAL,VFSTR,IFX,FOR,NEXT
+	extrn	IFEND,RETURN,GOTO,GOSUB,ON,INPUT,LINPUT,PRINT
+	extrn	STOP,CLRFAC,$POLSH,$UNPOL,$IR,RESTORE,RNDMIZ,EOF
+	extrn	OPEN,CLOSE,CHAIN,OVLAY,KILL,NAME,FNDVAR
+
+	extrn	$TAB,$SYS,$RCO,$ABO,$TTYS,$CTC,$RCC,$RNDA,$RND
+	extrn	$ABS,$SGN,$BIN,$OCT,$LEN,$ASC,$CHR,$POS,$SEG,$VAL
+	extrn	$TRM,$STR,$PI,$INT,$DAT,$CLK,SIN,COS,SQRT,ATAN,EXP
+	extrn	ALOG,ALOG10
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+IGNORE:	call	SKPEOL		; find end of statement (or program line)
+EXECUTE:call	CKCTLC		; ^C detected?
+	jp	c,STOP		; STOP if yes
+	ld	(CPSAVE),hl
+	call	XEQNTR		; empty routine
+exec1:	ld	a,(hl)
+	inc	hl
+	or	a		; token?
+	jp	p,exec2		; it's a pointer
+	and	7Fh		; mask low 7 bits
+	cp	1Fh+1		; > 1Fh?
+	jp	nc,CALLS	; if yes -> syntax error
+	call	DISPAT		; tokens 80h..9Fh
+	dw	EXECUTE		; '\' token
+	dw	IGNORE		; DIM
+	dw	IGNORE		; COMMON
+	dw	IGNORE		; REM
+	dw	IGNORE		; DEF
+	dw	IGNORE		; DATA
+	dw	CALLX		; CALL
+	dw	STOP		; STOP
+	dw	LET		; LET
+	dw	FOR		; FOR
+	dw	IFX		; IF
+	dw	IFEND		; IF END #
+	dw	NEXT		; NEXT
+	dw	RETURN		; RETURN
+	dw	GOSUB		; GOSUB
+	dw	GOTO		; GOTO
+	dw	ON		; ON
+	dw	INPUT		; INPUT
+	dw	LINPUT		; LINPUT
+	dw	PRINT		; PRINT
+	dw	READ		; READ
+	dw	RESTORE		; RESTORE
+	dw	RESTORE		; RESET
+	dw	RNDMIZ		; RANDOMIZE
+	dw	ENDPRG		; END
+	dw	EOF		; end of program
+	dw	OPEN		; OPEN
+	dw	CLOSE		; CLOSE
+	dw	CHAIN		; CHAIN
+	dw	OVLAY		; OVERLAY
+	dw	KILL		; KILL
+	dw	NAME		; NAME
+
+exec2:	ld	d,a		; note order!
+	ld	e,(hl)
+	inc	hl
+	bit	0,e		; bit 0 set? (odd#)
+	jr	nz,exec1	; jump if yes (line number, ignore)
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,de		; index into symbol table
+	ex	de,hl		; DE = var address
+	pop	hl
+	jp	ASSIGN		; do variable assignment in LET code
+
+;-----------------------------------------------------------------------
+
+; Evaluate expression
+; input: HL points to tokenized string
+; returns: CY set if string expression, CY clear if numeric
+
+EVAL:	call	CHKSTK		; check stack space
+	ld	de,T.TERM	; push 'end of expression' marker
+	push	de
+	jr	oprand
+uminus:	ld	de,T.UMIN	; push unary minus
+	push	de
+	call	CHKSTK
+oprand:	ld	a,(hl)		; get next token
+	inc	hl
+	or	a
+	jp	p,varble	; jump if not a token
+	cp	0FBh		; numeric literal?
+	jp	nc,numlit	; jump if yes
+	cp	T.LPAR		; '(' token?
+	jp	z,lpar
+	cp	T.MIN		; '-' token? (unary minus)
+	jr	z,uminus	; if yes -> push 'unary minus' token
+	cp	T.PLS		; '+' token? (unary plus)
+	jr	z,oprand	; if yes -> ignore it
+	cp	T.FN		; FN?
+	jp	z,fnfn
+	cp	T.SNGQ		; ' token?
+	jp	z,quote
+	cp	T.DBLQ		; " token?
+	jp	z,quote
+	sub	T.SYS		; check for builtin function 
+	cp	1Eh+1
+	jp	nc,snerr	; syntax error if above max token
+	cp	18h
+	jr	nc,func2
+	call	DISPAT
+	dw	$SYS		; SYS
+	dw	$RCO		; RCTRLO
+	dw	$ABO		; ABORT
+	dw	$TTYS		; TTYSET
+	dw	$CTC		; CTRLC
+	dw	$RCC		; RCTRLC
+	dw	$RNDA		; RND()
+	dw	$RND		; RND
+	dw	$ABS		; ABS
+	dw	$SGN		; SGN
+	dw	$BIN		; BIN
+	dw	$OCT		; OCT
+	dw	$LEN		; LEN
+	dw	$ASC		; ASC
+	dw	$CHR		; CHR$
+	dw	$POS		; POS
+	dw	$SEG		; SEG$
+	dw	$VAL		; VAL
+	dw	$TRM		; TRM$
+	dw	$STR		; STR$
+	dw	$PI		; PI
+	dw	$INT		; INT
+	dw	$DAT		; DAT$
+	dw	$CLK		; CLK$
+
+func2:	push	hl
+	sub	18h
+	add	a,a
+	ld	hl,FTBL2
+	call	ADDHLA
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	pop	hl
+	push	de		; push function address
+	call	EVAL		; evaluate expr
+	jr	nc,func3	; jump if numeric expr
+	rst	10h
+	db	00h		; otherwise -> argument error
+func3:	pop	de
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token?
+	jp	nz,snerr	; if not -> syntax error
+	call	ITOF
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$CALL		; call the function
+	dw	$UNPOL		; leave polish mode
+	jp	OPRFP
+
+FTBL2:	dw	SIN		; SIN
+	dw	COS		; COS
+	dw	SQRT		; SQR
+	dw	ATAN		; ATN
+	dw	EXP		; EXP
+	dw	ALOG		; LOG
+	dw	ALOG10		; LOG10
+
+; literal (number follows) tokens
+
+numlit:	push	af		; remember token
+	call	LITEVAL		; load the "tokenized" number into FP accum
+	ld	bc,-1		; integer
+	ld	(CLCMOD),bc
+	pop	af		; pop token
+	cp	T.LBYT		; integer? (T.LBYT or T.LINT)
+	call	nc,ITOF		; convert to float if yes
+	jp	ENEXT
+
+; '(' token
+
+lpar:	call	EVAL		; evaluate expression (recursive call)
+	jr	c,lpstr		; jump if string expr
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; matching ')' token?
+	jp	z,ENEXT
+lsnerr:	rst	10h
+	db	06h		; if not -> syntax error
+
+lpstr:	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; matching ')' token?
+	jr	nz,lsnerr	; if not -> syntax error
+	jp	STROPR
+
+; not a token, try a variable name
+
+varble:	ld	d,a		; DE = offset to variable in sym table
+	ld	e,(hl)		;      (note order!)
+	inc	hl
+	ex	de,hl
+	ld	bc,(SYMBOL)	; add variable pool address
+	add	hl,bc
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	dec	hl
+	ex	de,hl
+	push	de
+	ld	a,(de)
+	and	0Ch		; array?
+	jr	nz,array	; jump if yes
+	ld	a,(de)
+	inc	de
+	inc	de
+	and	03h		; string?
+	push	de
+	pop	ix
+	jp	z,strvar	; jump if yes
+	jp	arr6
+
+CHKSTK:	push	hl
+	ld	hl,0
+	add	hl,sp
+	ld	de,(PDSIZE)
+	call	CPHLDE		; stack below the limit?
+	pop	hl
+	ret	c		; return if not (if SP > PDSIZE)
+	rst	10h
+	db	1Dh		; expression too complex
+
+errtyp:	rst	10h
+	db	1Eh		; type mismatch
+
+array:	call	EVAL		; recursive call
+	jr	c,errtyp	; error if string expr -> type mismatch
+	pop	ix
+	push	ix
+	bit	4,(ix+0)	; virtual array?
+	jr	z,arr2		; jump if not
+	ld	bc,(FAC2)	; BC = SS2SAV
+	ld	de,(FAC1)	; DE = SS1SAV
+	ld	a,d
+	or	a
+	jp	p,arr1		; index must be positive
+	rst	10h
+	db	22h		; subscript out of bounds
+arr1:	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token? only one dimension allowed
+	jr	z,arr5
+	rst	10h
+	db	06h		; syntax error
+
+arr2:	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)	; result must be < 32768
+	ld	a,b
+	or	c
+	jr	nz,erroob	; else error -> subscript out of bounds
+	ld	a,(hl)
+	cp	T.RPAR		; ')' token? (one dimension)
+	jr	z,arr3		; jump if yes
+	inc	hl
+	cp	T.COM		; ',' token?
+	jr	nz,lsnerr	; if not -> syntax error
+	ld	bc,(FAC2)
+	push	bc		; push first array index
+	call	EVAL		; compute second index
+	jr	c,errtyp	; error if string expr
+	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)	; result must be < 32768
+	ld	a,b
+	or	c
+	jr	nz,erroob	; else error -> subscript out of bounds
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token?
+	jp	nz,lsnerr	; if not -> syntax error
+	ld	bc,(FAC2)	; BC = SS2SAV
+	ld	a,b
+	or	a		; second index must be positive
+	jp	m,erroob	; else error -> subscript out of bounds
+	pop	de		; DE = SS1SAV
+	jr	arr4
+
+erroob:	rst	10h
+	db	22h		; subscript out of bounds
+
+arr3:	inc	hl
+	ld	bc,-1		; BC = SS2SAV = -1: no second dimension
+	ld	de,(FAC2)	; DE = SS1SAV
+arr4:	ld	a,d
+	or	a		; first index must be positive
+	jp	m,erroob	; else error -> subscript out of bounds
+arr5:	pop	ix
+	push	ix
+	ld	a,(ix+0)
+	and	03h
+	jp	z,strarr
+	call	LOCGET		; locate array element
+	jr	nc,arr6		; jump if resident array
+	pop	bc		; drop word
+	call	VFVAL		; read numeric value from virtual array
+	jr	ENEXT
+
+arr6:	pop	bc
+	ld	a,(bc)
+	and	02h
+	jr	nz,arr7
+	ld	bc,-1		; integer
+	ld	(CLCMOD),bc
+	call	CLRFAC		; clear FP accum
+	jr	arr8		; store integer and continue
+
+arr7:	ld	bc,1		; float
+	ld	(CLCMOD),bc
+	call	FPLD		; store num into FP accum, IX = addr on stack
+	jr	ENEXT
+
+arr8:	ld	c,(ix+0)
+	ld	b,(ix+1)
+	ld	(FAC2),bc
+ENEXT:	ld	a,(hl)		; get next token
+	cp	T.EOL		; '\' token
+	jr	z,donow
+	cp	T.GOTO		; GOTO
+	jr	z,donow
+	cp	T.GSUB		; GOSUB
+	jr	z,donow
+	cp	T.PWR
+	jp	c,snerr		; syntax error
+	pop	bc		; pop token
+	push	bc
+	ld	a,c
+	cp	T.PWR+1		; ^
+	jr	c,donow		; if <= T.PWR (if < T.PWR+1)
+	cp	T.DIV+1		; * /
+	jr	c,prec2		; if <= T.DIV (if < T.DIV+1)
+	cp	T.MIN+1		; + -
+	jr	c,prec3		; if <= T.MIN (if < T.MIN+1)
+	cp	T.EQ+1		;
+	jr	c,prec4
+	ld	a,(hl)
+	cp	T.EQ+1
+	jr	c,notnow
+prec4:	ld	a,(hl)
+	cp	T.MIN+1
+	jr	c,notnow
+prec3:	ld	a,(hl)
+	cp	T.DIV+1
+	jr	c,notnow
+prec2:	ld	a,(hl)
+	cp	T.PWR+1
+	jr	c,notnow
+donow:	pop	bc		; pop token
+	ld	a,c
+	sub	T.PWR		; process tokens 0A1h..0A7h
+	call	DISPAT
+	dw	uparrw		; ^
+	dw	unary		; 0A2h = unary minus
+	dw	star		; *
+	dw	slash		; /
+	dw	plus		; +
+	dw	minus		; -
+	dw	termin		; 0A7h = end of expression
+
+notnow:	call	PSHFAC		; push FP accum on stack
+	call	CHKSTK
+	ld	bc,(CLCMOD)
+	push	bc
+	ld	c,(hl)
+	ld	b,0
+	push	bc
+	inc	hl
+	jp	oprand
+
+; "end of expression" token
+
+termin:	or	a		; clear CY
+	ret
+
+; '-' token
+
+minus:	call	SUBSTK		; subtract top number from FP accum
+
+; unary minus token
+
+unary:	ld	bc,(FAC1)	; an integer?
+	ld	a,b
+	or	c
+	jr	z,uinteg	; jump if yes
+	ld	a,b
+	add	a,80h		; change sign of FP accum
+	ld	b,a
+	ld	(FAC1),bc
+	jr	ENEXT
+
+uinteg:	ld	bc,(FAC2)	; change integer sign
+	push	hl
+	ld	hl,0
+	or	a
+	sbc	hl,bc
+	ld	(FAC2),hl
+	pop	hl
+	jp	po,ENEXT
+	rst	10h
+	db	2Fh		; integer overflow
+	ld	bc,0
+	ld	(FAC2),bc
+	jp	ENEXT
+
+; '+' token
+
+plus:	call	ADDSTK		; add top number to FP accum
+	jp	ENEXT
+
+; '*' token
+
+star:	call	FIXUP
+	jp	m,istar		; jump if integer
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$MLR		; float multiply
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jp	ENEXT
+
+istar:	call	$POLSH		; enter polish mode
+	dw	$ICOPY		; copy integer to stack
+	dw	$MLI		; integer multiply
+	dw	$IPOP		; pop integer from stack and leave polish mode
+	jp	ENEXT
+
+; '/' token
+
+slash:	call	FIXUP
+	jp	m,islash
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$DVR		; float divide
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jp	ENEXT
+
+islash:	call	$POLSH		; enter polish mode
+	dw	$ICOPY		; copy integer to stack
+	dw	$DVI		; integer divide
+	dw	$IPOP		; pop integer from stack and leave polish mode
+	jp	ENEXT
+
+snerr:	rst	10h
+	db	06h		; syntax error
+
+; ' or " token
+
+quote:	dec	hl
+	call	FNDSTL		; find string end and calculate length
+	jr	z,qnull		; jump if null string
+	dec	de
+	dec	de
+	dec	de
+	push	de		; push string address - 3
+	ld	ix,0
+	add	ix,sp		; IX points to string address
+	push	bc		; push length
+	call	MKSTR		; store string
+	pop	bc		; pop string addr (replaced length)
+	pop	de		; drop original string address - 3
+	push	bc		; push new address back
+	jp	STPRO
+
+qnull:	ld	bc,-1		; null strings have an address of -1
+	push	bc
+	jr	STROPR
+
+strarr:	pop	af		; drop word
+	call	LOCGET		; locate array element
+	jr	nc,sboth
+	jp	VFSTR		; read string from virtual array
+
+; string variable
+
+strvar:	pop	bc		; drop word
+sboth:	ld	c,(ix+0)
+	ld	b,(ix+1)
+	ld	a,b
+	and	c
+	inc	a		; test for null string
+	jr	z,qnull
+	call	CHKSTK
+	ld	a,(bc)
+	ld	c,a
+	ld	b,0
+	push	bc
+	call	MKSTR
+
+	; fall thru
+
+; fixed string functions return here
+
+STROPR:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+2)	; check token on stack
+	cp	T.CONC		; '&' token
+	jr	z,concat
+	cp	T.PLS		; '+' token
+	jr	z,concat
+	ld	a,(hl)		; check following token
+	cp	T.CONC		; '&' token
+	jr	z,ampwt
+	cp	T.PLS		; '+' token
+	jr	z,ampwt
+	ld	a,(ix+2)
+	cp	T.TERM		; end of expression?
+	jr	nz,snerr	; no -> syntax error
+	pop	bc		; pop string address
+	pop	de		; drop token
+	pop	de		; DE = return address
+	push	bc		; push string address
+	push	de		;  then return address
+	inc	bc		; point to address field in string block
+	ld	a,b
+	or	c		; check for null string (address = -1)
+	jr	z,soprx		; jump if null string
+	ex	de,hl
+	ld	hl,2
+	add	hl,sp
+	ex	de,hl		; DE = (SP+2) string address on stack
+	inc	bc
+	ld	a,e		; note order!
+	ld	(bc),a
+	dec	bc
+	ld	a,d
+	ld	(bc),a
+soprx:	ld	bc,0		; string
+	ld	(CLCMOD),bc
+	scf
+	ret
+
+ampwt:	ld	e,(hl)
+	inc	hl
+	ld	d,0
+	push	de		; push token
+	call	EVAL		; recursive call: evaluate expr
+	jr	c,STROPR	; jump if string expr
+	rst	10h
+	db	1Eh		; otherwise -> type mismatch
+
+concat:	pop	bc
+	push	bc
+	ld	a,b
+	and	c
+	inc	a		; if (sp) = -1
+	jr	nz,catnot
+	pop	de		; restore stack
+	pop	de		;
+	jr	STROPR
+catnot:	ld	ix,0
+	add	ix,sp
+	ld	c,(ix+4)
+	ld	b,(ix+5)
+	ld	a,b
+	and	c
+	inc	a		; (sp+4) = -1?
+	jr	nz,catlng
+	pop	bc
+	pop	de		; restore stack
+	pop	de		;
+	push	bc
+	jr	STPRO
+
+; string concatenation
+
+catlng:	call	CHKSTK
+	ld	a,(bc)
+	ld	e,a		; get length of string 1 into E
+	pop	bc
+	push	bc
+	ld	a,(bc)		; get length of string 2
+	add	a,e		; compute total length
+	jr	c,errlng	; -> string too long
+	ld	e,a
+	ld	d,0
+	push	de		; push length
+	ld	de,4
+	add	ix,de		; IX = addr of string 1 on stack
+	call	MKSTR		; store string in dynamic area
+	pop	bc		; pop new string address
+	ld	e,(ix+0)
+	ld	d,(ix+1)	; get address of string 1 into DE
+	ld	a,(de)		; fetch length
+	ld	(ix+0),c
+	ld	(ix+1),b	; replace str1 addr with result string addr
+	add	a,c
+	ld	c,a
+	ld	a,0
+	adc	a,b
+	ld	b,a		; add size of str1
+	inc	bc		; +3 (length + address field), BC now
+	inc	bc		;  points to the concatenation point
+	inc	bc
+	pop	de		; pop str2 address
+	pop	af		; drop word
+	push	hl
+	ex	de,hl		; str2 address now in HL
+	ld	e,c		; DE = dst
+	ld	d,b
+	ld	c,(hl)		; BC = length of str2
+	ld	b,0
+	inc	hl
+	inc	hl
+	inc	hl		; HL = src
+	ldir			; append str2
+	pop	hl
+
+	; fall thru
+
+; dynamic string functions return here
+
+STPR:	pop	bc		; get address of dynamic string into BC
+	push	bc		; (keep it on the stack)
+STPRO:	ex	de,hl
+	ld	hl,0
+	add	hl,sp
+	ex	de,hl		; DE points to string address on the stack
+	inc	bc
+	inc	bc		;!!!make this shorter
+	ld	a,e
+	ld	(bc),a		; store address in dynamic string block
+	dec	bc
+	ld	a,d
+	ld	(bc),a
+	jp	STROPR
+
+errlng:	rst	10h
+	db	1Fh		; string too long
+
+; entry for functions that return no value (zero)
+
+OPRFP0:	call	CLRFAC		; clear FP accum
+
+	; fall trhu
+
+; float functions return here
+
+OPRFP:	ld	bc,1		; integer
+	ld	(CLCMOD),bc
+	jp	ENEXT
+
+; '^' token - base value is on stack (1 word above), exponent is on FP accum
+
+uparrw:	pop	bc
+	ld	a,b
+	or	a
+	jp	m,XIIR		; int^int, real result
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c		; check exponent
+	jr	nz,XFF		; jump if not an integer (real^real)
+uparr1:	ld	bc,(FAC2)
+	ld	a,b
+	or	c		; exponent is zero?
+	jr	nz,XFI		; jump if not (real^int)
+	pop	bc		; else pop base
+OPRFP1:	pop	bc
+	ld	bc,04080h	; result is 1.0
+	ld	(FAC1),bc
+	jr	OPRFP
+
+; x^y: real base, integer non-zero exponent - real result
+
+XFI:	call	$POLSH		; enter polish mode
+	dw	$IPUSH		; push integer on stack
+	dw	XFI$		; compute x^y%
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jr	OPRFP
+
+; x^y: integer base, integer exponent - real result
+
+XIIR:	pop	bc
+	ld	bc,(CLCMOD)
+	ld	a,b		; check CLCMOD
+	or	a		; integer?
+	jp	m,uparr2	; jump if yes
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	z,OPRFP1	; x^0 = 1.0
+	call	FPINT		; convert FP to 8-bit integer
+	jr	nc,XIF		; int^real
+	call	$POLSH		; enter polish mode
+	dw	$IR		; integer to real
+	dw	$IPUSH		; push integer on stack
+	dw	XFI$		; compute x^y%
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jr	OPRFP
+
+; x^y: integer base, real exponent - real result
+
+XIF:	call	$POLSH		; enter polish mode
+	dw	$IR		; integer to real
+	dw	$FPUSH		; push FP accum on stack
+	dw	XFF$
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jr	OPRFP
+
+uparr2:	ld	bc,(FAC2)
+	ld	a,b
+	or	c
+	jr	nz,XII		; int^int, int result
+	inc	bc
+	ld	(FAC2),bc	; x^0 = 1
+	pop	bc
+	jr	OPRINT
+
+; x^y: integer base, integer exponent - integer result
+
+XII:	call	$POLSH		; enter polish mode
+	dw	$IPUSH		; push integer on stack
+	dw	XII$		; compute x%^y%
+	dw	$IPOP		; pop integer from stack and leave polish mode
+
+; POS, ASC, LEN, OCT, BIN return here (integer result)
+
+OPRINT:	ld	bc,-1		; integer
+	ld	(CLCMOD),bc
+	jp	ENEXT
+
+; x^y: real base, real exponent
+
+XFF:	call	FPINT		; convert FP to 8-bit integer
+	jr	c,uparr1
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	XFF$
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jp	OPRFP
+
+; FN token
+
+fnfn:	ld	d,(hl)		; note order!
+	inc	hl
+	ld	e,(hl)		; offset to function in DE
+	inc	hl
+	ld	a,(hl)		; get next char
+	inc	hl
+	cp	T.LPAR		; must be '(' token
+	jp	nz,fnsner	; if not -> syntax error
+	push	hl
+	ld	hl,(DEFTAB)
+	add	hl,de		; index into FN table
+	inc	hl		; skip FN name, point to code address
+	inc	hl
+	ld	a,(hl)		; fetch second word from table
+	inc	hl		;  (address of function in code)
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl		; into DE
+	pop	hl
+	ld	a,d		; test for 0FFFFh
+	and	e
+	inc	a
+	jp	z,fnundf	; -> undefined function
+fnswap:	push	de		; save function pointer
+	call	CHKSTK
+	call	EVAL		; evaluate argument
+	jr	c,fnstr		; jump if string expr
+
+	; numeric argument
+
+	ex	(sp),hl		; push HL, pop pointer to FN code
+	call	FNDVAR		; get variable address
+	ld	c,e		;  into BC
+	ld	b,d
+	ex	de,hl		; DE = pointer to FN code
+	pop	hl		; restore HL
+	ld	a,(bc)		; check var type
+	and	0Ch
+	jr	nz,fnsner	; -> syntax error
+	ld	a,(bc)
+	and	03h
+	jr	z,fntmer	; -> type mismatch
+	ld	a,(bc)
+	and	02h
+	jr	nz,fn1
+	call	FTOI1
+	ld	bc,(FAC2)
+	push	bc
+	jr	fnrepl		; continue via common code
+
+fn1:	call	ITOF		; if integer, convert to float
+	call	PSHFAC		; push FP accum on stack
+	jr	fnrepl
+
+	; string argument
+
+fnstr:	pop	ix		; pop string address into IX
+	ex	(sp),hl		; push HL, pop pointer to FN code
+	call	FNDVAR		; get variable address
+	ld	c,e		;  into BC
+	ld	b,d
+	ex	de,hl		; DE = pointer to FN code
+	pop	hl		; restore HL
+	ld	a,(bc)		; check var type
+	and	0Ch
+	jr	nz,fnsner	; -> syntax error
+	ld	a,(bc)
+	inc	bc
+	inc	bc
+	and	03h
+	jr	nz,fntmer	; -> type mismatch
+	push	ix
+	inc	ix
+	push	ix		;!!!
+	ex	(sp),hl
+	ld	a,h
+	or	l
+	pop	hl
+	jr	z,fnrepl	; jump if IX = 0 (null string)
+	push	hl
+	ld	hl,2
+	add	hl,sp		; HL = addr of IX on stack
+	ld	(ix+0),h	; note order!
+	ld	(ix+1),l	;!!!write better
+	pop	hl
+
+	; check for next argument or end of function call
+
+fnrepl:	ld	a,(de)
+	cp	T.COM		; ',' token
+	jr	nz,fnocom	; -> check for ')' if not
+	inc	de
+	cp	(hl)		; comma must match in caller
+	inc	hl
+	jr	z,fnswap	; loop to process next argument
+fnarge:	rst	10h
+	db	00h		; argument error
+
+fnundf:	rst	10h
+	db	20h		; undefined function
+
+fnsner:	rst	10h
+	db	06h		; syntax error
+
+fntmer:	rst	10h
+	db	1Eh		; type mismatch
+
+	; end of function call
+
+fnocom:	cp	T.RPAR		; ')' token?
+	jr	nz,fnarge	; if not -> argument error
+	push	de		; push function code position (1)
+	ld	ix,0
+	add	ix,sp
+	ld	a,(de)
+	inc	de
+	cp	(hl)		; see if there is a closing parenthesis
+	inc	hl		; in caller's code (number of args must match)
+	jr	nz,fnarge	; if not -> argument error
+	ld	a,(de)
+	inc	de
+	cp	T.EQ		; '=' token must follow
+	jr	nz,fnarge	; -> argument error
+	push	hl		; remember code position (caller of func)
+	push	de		; remember function code position
+	ld	e,(ix+0)	; get code position saved at (1)
+	ld	d,(ix+1)
+	inc	ix		; point now to FP arg on stack
+	inc	ix
+fn2:	dec	de
+	ld	a,(de)		; get variable name
+	ld	c,a		;  (note order!)
+	dec	de
+	ld	a,(de)
+	ld	b,a		; get offset to variable arg into BC
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,bc		; index into symbol table
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ld	a,(bc)		; check variable type
+	and	03h
+	jr	z,swapst
+	ld	a,(bc)
+	inc	bc
+	inc	bc		; point to variable value
+	and	01h		; integer?
+	ld	a,4		; float size
+	jr	z,fn4		; branch if not
+fn3:	ld	a,2		; integer size
+fn4:	push	de
+	ld	e,a
+swapn:	ld	a,(ix)		; swap numbers @BC and @IX (this is done
+	ld	d,a		; preserve the value of the argument
+	ld	a,(bc)		; variable between calls, which may be used
+	ld	(ix),a		; as a real variable elsewhere in the program)
+	ld	a,d
+	ld	(bc),a
+	inc	ix
+	inc	bc
+	dec	e
+	jr	nz,swapn
+	pop	de
+	jr	fn6
+
+swapst:	inc	bc		; swap strings @BC and @IX
+	inc	bc		; first, fix backpointers
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	inc	hl
+	ld	a,h
+	or	l
+	jr	z,fn5		; jump if null string
+	ld	(hl),b		; set backpointer of str @IX (note order!)
+	inc	hl
+	ld	(hl),c
+fn5:	ld	a,(bc)
+	ld	l,a
+	inc	bc
+	ld	a,(bc)
+	ld	h,a
+	dec	bc
+	inc	hl
+	ld	a,h
+	or	l
+	jr	z,fn3		; jump if null string to swap variable
+	push	de		;  addresses
+	push	ix
+	pop	de
+	ld	(hl),d		; set backpointer of str @BC (note order!)
+	inc	hl
+	ld	(hl),e
+	pop	de
+	jr	fn3		; jump to swap variable addresses
+
+fn6:	dec	de		; back to arg start
+	ld	a,(de)
+	cp	T.LPAR		; '(' token
+	jp	nz,fn2
+	pop	hl
+	ld	(CPSAVE),hl
+	call	EVAL		; evaluate function
+	jr	c,fn7		; jump if string expr
+	ld	ix,0
+	jr	fn8
+fn7:	pop	ix
+fn8:	ld	a,(hl)
+	cp	T.EOL		; '\' token
+	jp	nz,fnsner	; -> syntax error
+	pop	hl
+	ld	(CPSAVE),hl
+	pop	de
+fn9:	dec	de
+	ld	a,(de)
+	ld	c,a		; note order!
+	dec	de
+	ld	a,(de)
+	ld	b,a
+	push	hl
+	ld	hl,(SYMBOL)	;!!!same code as fn2 -> separate func?
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ld	a,(bc)
+	and	03h
+	jr	z,fn11		; jump if string
+	ld	a,(bc)
+	inc	bc
+	inc	bc
+	and	01h
+	jr	nz,fn10		; jump if integer
+  IF 0
+	call	PSHFAC		; push FP accum on stack
+  ELSE
+	push	hl
+	ld	hl,(FAC2)	; push FP accum on stack
+	ex	(sp),hl		;  (can't call PSHFAC here,
+	push	hl		;   since it destroys BC)
+	ld	hl,(FAC1)
+	ex	(sp),hl
+  ENDIF
+	push	ix		; save IX (!!!use a simple ldir?)
+	ld	ix,6
+	add	ix,sp		; IX = SP+6 (address of number)
+	call	FPLD		; load FP accum from IX
+	push	bc		; get address
+	pop	ix		;  into IX
+	call	FPST		; store FP accum
+	pop	ix		; restore IX
+	call	POPFAC		; pop FP accum from stack
+	pop	bc		; restore stack
+	pop	bc
+	jr	fn13
+
+fn10:	ex	(sp),hl		;!!!write better!
+	ld	a,l
+	ld	(bc),a
+	inc	bc
+	ld	a,h
+	ld	(bc),a
+	pop	hl
+	jr	fn13
+
+fn11:	inc	bc
+	inc	bc
+	ex	(sp),hl		;!!!write better!
+	ld	a,l
+	ld	(bc),a		; restore old backpointer
+	inc	bc
+	ld	a,h
+	ld	(bc),a
+	dec	bc
+	ex	de,hl		; DE <- HL
+	ex	(sp),hl		; push DE, pop HL
+	push	hl
+	ld	l,c
+	ld	h,b
+	ld	bc,(SYMBOL)
+	or	a
+	sbc	hl,bc		; BC-SYMBOL
+	ld	c,l
+	ld	b,h
+	pop	hl
+	inc	bc
+	inc	de
+	ld	a,d
+	or	e
+	jr	z,fn12		; jump if null string
+	ld	a,b
+	ld	(de),a		; note order!
+	inc	de
+	ld	a,c
+	ld	(de),a
+	inc	de
+fn12:	pop	de
+fn13:	dec	de
+	ld	a,(de)
+	cp	T.LPAR		; '(' token
+	jr	nz,fn9
+	dec	de
+	ld	a,(de)
+	ld	c,a		; note order!
+	dec	de
+	ld	a,(de)
+	ld	b,a
+	push	hl
+	ld	hl,(DEFTAB)
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	pop	hl
+	inc	bc
+	ld	a,(bc)
+	dec	bc
+	cp	'$'
+	jr	nz,fn14
+	push	ix
+	pop	bc
+	ld	a,b
+	or	c
+	jp	z,fntmer	; -> type mismatch
+	push	bc
+	ld	a,b
+	and	c		; test for 0FFFFh (null string)
+	inc	a
+	jp	nz,STPR
+	jp	STROPR
+
+fn14:	push	ix
+	ex	(sp),hl
+	ld	a,h
+	or	l		;!!!write better
+	pop	hl
+	jp	nz,fntmer
+	inc	bc
+	ld	a,(bc)
+	dec	bc
+	cp	'%'
+	jr	nz,fn15
+	call	FTOI1
+	jp	ENEXT
+fn15:	call	ITOF
+	jp	ENEXT
+
+;-----------------------------------------------------------------------
+
+; Evaluate integer expression
+
+INTEVAL:call	EVAL		; evaluate expression
+	jr	c,iearg		; if string expression -> argument error
+	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)	; a 16-bit integer remains?
+	ld	a,b
+	or	c
+	ret	z		; return if yes
+iearg:	rst	10h		; else -> argument error
+	db	00h
+
+	END

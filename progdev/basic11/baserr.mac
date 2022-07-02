@@ -1,0 +1,246 @@
+	TITLE	BASIC-11 interpreter for Z80
+	SUBTTL	Error Routines
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	cseg
+
+CR	equ	0Dh
+LF	equ	0Ah
+BL	equ	20h
+
+	public	ERRMSG,STOP
+
+	extrn	RCTLO,MSG,MSGHL,CLOSYS,FLINEN,ODEVTT,NUMOUT,READY
+
+;-----------------------------------------------------------------------
+
+; We arrive here via jump from trap handler
+
+ERRMSG:	call	RCTLO		; reset ctrl-O
+	ex	(sp),hl
+	ld	a,(hl)		; get trap code
+	inc	hl
+	ex	(sp),hl
+	push	bc
+	push	de
+	push	hl
+	ld	l,a
+	ld	h,0
+	add	hl,hl		; *2, make word offset
+	ld	bc,ERRTAB
+	add	hl,bc		; add table address
+	ld	a,(hl)		; get word from table
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,(hl)		; get first byte
+	inc	hl		; point to string
+	ld	c,a
+	or	a
+	jp	m,em1		; hi-bit set?
+	ld	sp,(STK)	; no, restore stack
+em1:	push	hl		; push pointer
+	jp	m,em2		; jump if hi-bit set
+	call	MSG		; else print crlf
+	db	CR,LF,0
+em2:	call	MSG
+	db	'?',0
+	pop	hl		; pop pointer into HL
+	call	MSGHL		; and print entire error message
+	push	bc
+	call	BOMBDD		; print "AT LINE nnn" if necessary
+	pop	bc
+	ld	a,c
+	or	a		; hi-bit set?
+	jp	m,em4		; yes, continue program execution
+	ld	hl,(HIFSAV)
+	ld	a,h
+	or	l
+	jr	z,em3
+	ld	(HIFREE),hl
+	ld	hl,0
+	ld	(HIFSAV),hl
+em3:	call	CLOSYS		; close channel 13
+	jp	READY		; display READY prompt
+
+em4:	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+BOMBDD:	call	FLINEN
+	ld	hl,(FAC2)
+	ld	a,h
+	or	a
+	jp	m,bdd1
+	call	MSG
+	db	' AT LINE ',0
+	ld	hl,(ODEV)
+	push	hl		; save current write chan descr
+	ld	hl,(COLUMN)
+	push	hl
+	call	ODEVTT		; clear ODEV, reset PRINT output pointer
+	ld	hl,0
+	ld	(FAC1),hl
+	call	NUMOUT		; output FP accum as decimal
+	pop	hl
+	ld	(COLUMN),hl
+	pop	hl
+	ld	(ODEV),hl
+bdd1:	call	MSG
+	db	CR,LF,0
+	ret
+
+STOP:	call	RCTLO		; rctrlo
+	call	MSG
+	db	CR,LF,'STOP',0
+	call	BOMBDD		; print "AT LINE nnn" if necessary
+	call	CLOSYS		; close channel 13
+	jp	READY		; and display READY prompt
+
+	IFDEF	LMSG
+
+E$ARG:	db	00h,'ARGUMENT ERROR',0
+E$MSP:	db	00h,'MISSING SUBPROGRAM',0
+E$NRC:	db	00h,'NO ROOM FOR CALL',0
+E$ENL:	db	00h,'END NOT LAST',0
+E$ATL:	db	00h,'ARRAYS TOO LARGE',0
+E$ULN:	db	00h,'UNDEFINED LINE NUMBER',0
+E$SYN:	db	00h,'SYNTAX ERROR',0
+E$RES:	db	00h,'RESEQUENCE ERROR',0
+E$SUB:	db	00h,'SUBSTITUTE ERROR',0
+E$IDM:	db	00h,'ILLEGAL DIM',0
+E$VCU:	db	00h,'VIRTUAL ARRAY CHANNEL ALREADY IN USE',0
+E$COO:	db	00h,'COMMON OUT OF ORDER',0
+E$STL:	db	00h,'STRING TOO LONG',0
+E$TIC:	db	00h,'TOO MANY ITEMS IN COMMON',0
+E$FAD:	db	00h,'FUNCTION ALREADY DEFINED',0
+E$TLT:	db	00h,'LINE TOO LONG TO TRANSLATE',0
+E$PTB:	db	00h,'PROGRAM TOO BIG',0
+E$CCP:	db	00h,'CHECKSUM ERROR IN COMPILED PROGRAM',0
+E$IEF:	db	00h,'ILLEGAL END OF FILE IN COMPILED FILE',0
+E$CIE:	db	00h,'CHANNEL I/O ERROR',0
+E$BSO:	db	00h,'BUFFER STORAGE OVERFLOW',0
+E$CNO:	db	00h,'CHANNEL NOT OPEN',0
+E$ICN:	db	00h,'ILLEGAL CHANNEL NUMBER',0
+E$CAO:	db	00h,'CHANNEL ALREADY OPEN',0
+E$IID:	db	00h,'ILLEGAL I/O DIRECTION',0
+E$FNF:	db	00h,'FILE NOT FOUND',0
+E$RPL:	db	00h,'USE REPLACE',0
+E$IFS:	db	00h,'ILLEGAL FILE SPECIFICATION',0
+E$PRU:	db	00h,'PRINT USING ERROR',0
+E$ETC:	db	00h,'EXPRESSION TOO COMPLEX',0
+E$NSM:	db	00h,'NUMBERS AND STRINGS MIXED',0
+E$ST1:	db	00h,'STRING TOO LONG',0
+E$UFN:	db	00h,'UNDEFINED FUNCTION',0
+E$INS:	db	00h,'INCONSISTENT NUMBER OF SUBSCRIPTS',0
+E$SOB:	db	00h,'SUBSCRIPT OUT OF BOUNDS',0
+E$SSO:	db	00h,'STRING STORAGE OVERFLOW',0
+E$TMG:	db	00h,'TOO MANY GOSUBS',0
+E$CVO:	db	00h,'CONTROL VARIABLE OUT OF RANGE',0
+E$RWG:	db	00h,'RETURN WITHOUT GOSUB',0
+E$FSV:	db	00h,'NESTED FOR STATEMENTS WITH SAME CONTROL VAR',0
+E$FWN:	db	00h,'FOR WITHOUT NEXT',0
+E$NWF:	db	00h,'NEXT WITHOUT FOR',0
+E$IIM:	db	00h,'ILLEGAL IN IMMEDIATE MODE',0
+E$OOD:	db	00h,'OUT OF DATA',0
+E$BDR:	db	00h,'BAD DATA READ',0
+E$UAC:	db	00h,'UNDIMENSIONED ARRAY IN CALL',0
+E$LTL:	db	80h,'LINE TOO LONG',0
+E$IOV:	db	80h,'INTEGER OVERFLOW',0
+E$BRT:	db	80h,'BAD DATA-RETYPE FROM ERROR',0
+E$EIE:	db	80h,'EXCESS INPUT IGNORED',0
+E$ISE:	db	80h,'INPUT STRING ERROR',0
+E$FOV:	db	80h,'FLOATING OVERFLOW',0
+E$FUN:	db	80h,'FLOATING UNDERFLOW',0
+E$DV0:	db	80h,'DIVISION BY ZERO',0
+E$NGS:	db	80h,'NEGATIVE SQUARE ROOT',0
+E$BLG:	db	80h,'BAD LOG',0
+E$EER:	db	80h,'EXPONENTIATION ERROR',0
+E$NER:	db	00h,'NOT ENOUGH ROOM',0
+E$IFL:	db	00h,'ILLEGAL FILE LENGTH',0
+E$FTS:	db	00h,'FILE TOO SHORT',0
+E$PRV:	db	00h,'FILE PRIVILEGE VIOLATION',0
+
+	ELSE
+
+E$ARG:	db	00h,'ARG',0
+E$MSP:	db	00h,'MSP',0
+E$NRC:	db	00h,'NRC',0
+E$ENL:	db	00h,'ENL',0
+E$ATL:	db	00h,'ATL',0
+E$ULN:	db	00h,'ULN',0
+E$SYN:	db	00h,'SYN',0
+E$RES:	db	00h,'RES',0
+E$SUB:	db	00h,'SUB',0
+E$IDM:	db	00h,'IDM',0
+E$VCU:	db	00h,'VCU',0
+E$COO:	db	00h,'COO',0
+E$STL:	db	00h,'STL',0
+E$TIC:	db	00h,'TIC',0
+E$FAD:	db	00h,'FAD',0
+E$TLT:	db	00h,'TLT',0
+E$PTB:	db	00h,'PTB',0
+E$CCP:	db	00h,'CCP',0
+E$IEF:	db	00h,'IEF',0
+E$CIE:	db	00h,'CIE',0
+E$BSO:	db	00h,'BSO',0
+E$CNO:	db	00h,'CNO',0
+E$ICN:	db	00h,'ICN',0
+E$CAO:	db	00h,'CAO',0
+E$IID:	db	00h,'IID',0
+E$FNF:	db	00h,'FNF',0
+E$RPL:	db	00h,'RPL',0
+E$IFS:	db	00h,'IFS',0
+E$PRU:	db	00h,'PRU',0
+E$ETC:	db	00h,'ETC',0
+E$NSM:	db	00h,'NSM',0
+E$ST1:	db	00h,'STL',0
+E$UFN:	db	00h,'UFN',0
+E$INS:	db	00h,'INS',0
+E$SOB:	db	00h,'SOB',0
+E$SSO:	db	00h,'SSO',0
+E$TMG:	db	00h,'TMG',0
+E$CVO:	db	00h,'CVO',0
+E$RWG:	db	00h,'RWG',0
+E$FSV:	db	00h,'FSV',0
+E$FWN:	db	00h,'FWN',0
+E$NWF:	db	00h,'NWF',0
+E$IIM:	db	00h,'IIM',0
+E$OOD:	db	00h,'OOD',0
+E$BDR:	db	00h,'BDR',0
+E$UAC:	db	00h,'UAC',0
+E$LTL:	db	80h,'LTL',0
+E$IOV:	db	80h,'IOV',0
+E$BRT:	db	80h,'BRT',0
+E$EIE:	db	80h,'EIE',0
+E$ISE:	db	80h,'ISE',0
+E$FOV:	db	80h,'FOV',0
+E$FUN:	db	80h,'FUN',0
+E$DV0:	db	80h,'DV0',0
+E$NGS:	db	80h,'NGS',0
+E$BLG:	db	80h,'BLG',0
+E$EER:	db	80h,'EER',0
+E$NER:	db	00h,'NER',0
+E$IFL:	db	00h,'IFL',0
+E$FTS:	db	00h,'FTS',0
+E$PRV:	db	00h,'PRV',0
+
+	ENDIF
+
+ERRTAB:	dw	E$ARG,E$MSP,E$NRC,E$ENL,E$ATL,E$ULN,E$SYN,E$RES
+	dw	E$SUB,E$IDM,E$VCU,E$COO,E$STL,E$TIC,E$FAD,E$TLT
+	dw	E$PTB,E$CCP,E$IEF,E$CIE,E$BSO,E$CNO,E$ICN,E$CAO
+	dw	E$IID,E$FNF,E$RPL,E$IFS,E$PRU,E$ETC,E$NSM,E$ST1
+	dw	E$UFN,E$INS,E$SOB,E$SSO,E$TMG,E$CVO,E$RWG,E$FSV
+	dw	E$FWN,E$NWF,E$IIM,E$OOD,E$BDR,E$UAC,E$LTL,E$IOV
+	dw	E$BRT,E$EIE,E$ISE,E$FOV,E$FUN,E$DV0,E$NGS,E$BLG
+	dw	E$EER,E$NER,E$IFL,E$FTS,E$PRV
+
+	END

@@ -1,0 +1,451 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Exec part 3
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	public	RESTORE,RNDMIZ,ENDPRG,EOF,CHAIN,CHAIN1,OVLAY
+	public	OPEN,CLOSE,KILL,NAME
+
+	extrn	CLRFAC,INITPG,$ADR,FNDSTR,OLD1,DISPAT,FLINEN
+	extrn	FILSPE,INIRD,NAMSET,DELETE,NAMETO,CPHLDE,SKPSYM
+	extrn	OPNFIL,CLOSCH,CLOSALL,READY,EXECUTE,INTEVAL,FILEA
+	extrn	$POLSH,$UNPOL,$ADR,DIMUL,VFBLK1,$FPUSH,$FPOP
+	extrn	$FPSH1
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; --- END
+
+ENDPRG:	inc	hl
+	ld	a,(hl)
+	cp	T.EOF		; end of program?
+	jr	z,EOF		; yes, end execution
+	rst	10h
+	db	03h		; END not last
+
+; --- "end of program" token
+
+EOF:	ld	de,(CODE)
+	call	CPHLDE		; if HL > CODE (i.e. not immediate mode)
+	call	c,CLOSALL	;  close all files
+	jp	READY		; stop execution, go to immediate mode
+
+; --- CHAIN
+
+CHAIN:	call	CLOSALL		; close all files
+	call	GTFNAM		; get filename argument
+CHAIN1:	call	NAMSET		; set program filename
+	call	FILSPE		; make filename block
+	db	'BAC'
+	ld	a,2
+	ld	(CHNFLG),a
+	ld	bc,0
+	ld	(EDITLN),bc
+	ld	a,(hl)
+	cp	T.LINE		; LINE token?
+	call	z,GTLNUM	; get line number if yes
+	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	nz,snerr	; syntax error if not
+	call	INITPG
+	jp	OLD1
+snerr:	rst	10h
+	db	06h		; syntax error
+
+; --- OVERLAY
+
+OVLAY:	call	FNDSTR		; evaluate string expression
+	call	FILSPE		; make filename block
+	db	'BAS'
+	call	FLINEN
+	ld	bc,(FAC2)
+	inc	bc
+	ld	(EDITLN),bc
+	xor	a
+	ld	(CHNFLG),a
+	ld	a,(hl)
+	cp	T.LINE		; LINE specified?
+	jr	nz,ovl1		; jump if not
+	call	GTLNUM		; else get line number
+	ld	a,(CHNFLG)
+	inc	a
+	ld	(CHNFLG),a
+ovl1:	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	nz,snerr	; syntax error if not
+	jp	OLD1
+
+GTLNUM:	inc	hl
+	call	INTEVAL		; evaluate integer expression
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a
+	jp	m,snerr		; -> syntax error
+	or	c
+	jr	z,snerr		; (!!!was ble)
+	ld	(EDITLN),bc
+	ret
+
+; --- KILL
+
+KILL:	call	GTFNAM		; get filename argument
+	call	FILSPE		; make filename block
+	db	'DAT'
+	call	DELETE		; delete the file
+next:	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; end of line?
+	jr	nz,snerr	; no -> syntax error
+	jp	EXECUTE
+
+; --- NAME
+
+NAME:	call	GTFNAM		; get filename argument
+	call	FILSPE		; make filename block
+	db	'DAT'
+	ld	a,(hl)
+	inc	hl
+	cp	T.TO		; 'TO' token must follow
+	jr	nz,snerr
+	call	GTFNAM		; get filename argument
+	call	FILSPE		; make filename block
+	db	'DAT'
+	call	NAMETO		; rename the file
+	jr	next		; ensure end of line and continue execution
+
+GTFNAM:	call	FNDSTR		; evaluate string expression
+	ld	a,c
+	or	a		; check length
+	ret	nz		; and return if > 0
+	rst	10h
+	db	1Bh		; otherwise -> illegal file specification
+
+; --- OPEN
+
+OPEN:	call	GTFNAM		; get filename argument
+	call	FILSPE		; make filename block
+	db	'DAT'
+	ld	bc,4000h	; BC = "open for read" (input) flag
+	ld	a,(hl)		; get next token
+	inc	hl
+	cp	T.FINP		; FOR INPUT?
+	jr	z,opn1		; jump if yes, flag already set
+	cp	T.FOUT		; FOR OUTPUT?
+	jr	z,openw		; if yes, jump to set "open for write" flag
+	ld	bc,0		; clear flags (input and output)
+	push	bc		; push I/O flags
+	jr	opn2
+openw:	ld	bc,2000h	; BC = "open for write" (output) flag
+opn1:	push	bc		; push I/O flags
+	ld	a,(hl)		; get next token
+	inc	hl
+opn2:	cp	T.ASF		; AS FILE?
+	jp	nz,snerr	; required!
+	ld	a,(hl)
+	cp	T.FILN		; '#' token?
+	jr	nz,opn3		; optional
+	inc	hl		;  so skip it
+opn3:	call	INTEVAL		; get channel number, must be an integer
+	ld	de,(FAC2)	; DE = channel number
+	ld	a,d
+	or	a
+	jr	nz,errch	; must be between 0 and 12 inclusive
+	ld	a,e
+	cp	12+1
+	jr	nc,errch
+	ld	(T1),de		; T1 = channel number
+	push	hl		; push HL
+	ex	de,hl		; HL = channel number
+	call	FILEA		; get channel descriptor address
+	pop	hl		; restore HL
+	pop	bc
+	ld	a,(ix+1)
+	or	b		; set I/O flags
+	ld	(ix+1),a
+	push	ix		; replace stack value with chan descr address
+	or	a		; any virtual array declared for this channel?
+	jp	m,opn4		; if yes, jump to find it
+	ld	a,(hl)
+	cp	T.DBUF		; DOUBLE BUF option?
+	jp	nz,opn11	; jump if not
+	set	4,(ix+1)	; set "double-buf" bit (1000h)
+	inc	hl
+	jp	opn11		; jump to check for more OPEN options
+
+errch:	rst	10h
+	db	16h		; illegal channel number
+
+; note: stack = IX = chan descr addr
+
+opn4:	ld	(ix+0),04h	; note byte, MSB bit is unchanged (4 = EOF?)
+	ld	bc,(FAC2)	; C = channel number (still in FP accum)
+	call	VAFIND		; find virtual array with same chan #
+	push	de
+	pop	iy
+	ld	a,(de)
+	and	03h
+	ld	c,a
+	bit	0,c		; 01h
+	jr	z,opn5
+	ld	(ix+0),02h	; xx02h
+	set	2,(ix+1)	; 0400h
+	jr	opn6
+opn5:	ld	a,c
+	or	a
+	jr	nz,opn6
+	ld	a,(iy+3)
+	ld	(ix+0),a
+	set	3,(ix+1)	; 0800h
+opn6:	call	CLRFAC		; clear FP accum
+	bit	4,(iy+0)	; 10h
+	jr	z,opn7
+	ld	c,(iy+6)	; get SS2MAX
+	ld	b,(iy+7)
+	ld	(FAC2),bc	;  into FAC2
+	ld	c,(iy+4)	; get SS1MAX
+	ld	b,(iy+5)
+	ld	(FAC1),bc	;  into FAC1
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$FPSH1		; push 1.0 on stack
+	dw	$ADR		; add
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	jr	opn8
+
+opn7:	ld	c,(iy+4)	; get SS1MAX
+	ld	b,(iy+5)
+	inc	bc		; increment by 1
+	ld	(FAC2),bc	; store integer on FP accum
+	ld	bc,0
+	ld	(FAC1),bc
+	ld	c,(iy+6)	; get SS2MAX
+	ld	b,(iy+7)
+	ld	a,b
+	or	a
+	jp	m,opn8		; jump if negative (only one dimension)
+	inc	bc		; increment by 1
+	push	bc		; place it on stack
+	call	$POLSH		; enter polish mode
+	dw	DIMUL		; compute total elements (SS1MAX * SS2MAX)
+	dw	$UNPOL		; leave polish mode
+	pop	bc		; pop result
+	ld	(FAC2),bc	;  into FP accum
+	pop	bc
+	ld	(FAC1),bc
+opn8:	push	hl
+	ld	c,(ix+0)	; get element length into BC
+	ld	b,0
+	push	bc		; place it on stack
+	call	$POLSH		; enter polish mode
+	dw	DIMUL		; compute array size in bytes
+	dw	$UNPOL		; leave polish mode
+	call	VFBLK1		; compute block # and offset
+	pop	hl
+	inc	de		; check number of blocks required
+	ld	a,d
+	or	e
+	jr	nz,opn9
+	rst	10h
+	db	22h		; subscript out of bounds
+
+opn9:	push	de
+	ld	e,(ix+0)
+	ld	d,0
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	ld	c,e
+	ld	a,d
+	and	0FEh
+	ld	b,a		;;;do we need BC and DE after this???
+	ld	a,d		;;;
+	sub	02h		; DE -= 200h
+	ld	d,a
+	pop	de
+	jr	c,opn10		;!!!was blt, assuming DE was > 0
+	inc	de		;;;
+opn10:	ld	(T2),de
+	jr	opn12		; jump to check for more OPEN options
+
+opn11:	ld	bc,0
+	ld	(T2),bc
+opn12:	ld	bc,8000h	; 8000h means option not specified
+	ld	(MODE),bc	; initialize MODE
+	ld	(RECSIZ),bc	; initialize RECORDSIZE
+	ld	(FILSIZ),bc	; initialize FILESIZE
+opn13:	ld	a,(hl)		; get next token
+	inc	hl
+	cp	T.EOL		; '\' token?
+	jr	z,opn19		; jump if yes
+	cp	T.COM		; ',' token?
+	jr	z,opn13		; yes -> skip it
+	cp	T.MODE		; MODE?
+	jr	nz,opn14	; jump if not
+	ld	bc,MODE		; get option address
+	jr	opn17		; and go to fetch and store value
+opn14:	cp	T.RCSZ		; RECORDSIZE?
+	jr	nz,opn16	; jump if not
+	ld	a,(ix+1)	; check file flags
+	or	a
+	jp	p,opn15		; jump if not a virtual array channel
+	call	INTEVAL		; otherwise evaluate integer expression
+	jr	opn13		; and ignore it
+opn15:	ld	bc,RECSIZ	; get option address
+	jr	opn17		; go to fetch and store value
+
+opn16:	cp	T.FSZ		; FILESIZE?
+	jp	nz,snerr	; no -> syntax error
+	ld	bc,FILSIZ	; option address
+opn17:	push	bc		; push option address
+	call	INTEVAL		; evaluate integer expression
+	ex	(sp),hl		; push HL, pop option address
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,opn18
+	or	(hl)
+	cp	80h		; same option already seen?
+	jp	nz,snerr	; if yes -> syntax error
+opn18:	ld	de,(FAC2)
+	ld	(hl),d		; otherwise store value
+	dec	hl
+	ld	(hl),e
+	pop	hl		; restore HL
+	jr	opn13		; and go to check for more options
+
+opn19:	ld	bc,0
+	ld	(T3),bc
+	ld	(HLSAVE),hl
+	pop	ix		; pop channel descriptor address
+	ld	a,(ix+2)	; buffer allocated (file is open)?
+	or	(ix+3)
+	jr	nz,erropn	; if yes -> error
+	call	OPNFIL		; open the file
+	ld	hl,(HLSAVE)
+	jp	EXECUTE
+
+erropn:	rst	10h
+	db	17h		; channel already open
+
+; Search for a virtual array with the channel number specified in C.
+; It must exist, since the MSB of the channel flags was already set.
+
+VAFIND:	ld	de,(SYMBOL)
+vfnd1:	ld	a,(de)
+	bit	3,a		; 08h
+	jr	z,vfnd2
+	inc	de
+	inc	de
+	ld	a,(de)
+	dec	de
+	dec	de
+	cp	c
+	ret	z
+vfnd2:	ex	de,hl
+	call	SKPSYM		; skip to next variable
+	ex	de,hl
+	jr	vfnd1		; loop
+
+; --- CLOSE
+
+CLOSE:	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	z,cls4		; yes -> close all files
+cls1:	ld	a,(hl)
+	cp	T.FILN		; '#' token?
+	jr	z,cls2
+	jr	cls3
+cls2:	inc	hl		; skip it
+cls3:	call	INTEVAL		; get channel number, must be integer
+	ld	de,(FAC2)	; DE = channel number
+	ld	a,d
+	or	a
+	jr	nz,icnerr	; must be >= 0
+	ld	a,e
+	cp	12+1		; and <= 12
+	jr	nc,icnerr	; error otherwise
+	call	CLOSCH		; close channel
+	jr	c,cnoerr	; if error -> channel not open
+	call	CLSMOR		; see if more channels follow
+	jr	cls1		; loop
+
+cls4:	call	CLOSALL		; close all channels
+	jp	EXECUTE
+
+cnoerr:	rst	10h
+	db	15h		; channel not open
+
+icnerr:	rst	10h
+	db	16h		; illegal channel number
+
+CLSMOR:	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	z,clsend	; yes -> return one level higher
+	inc	hl		; advance program pointer
+	cp	T.COM		; else is a ',' token?
+	ret	z		; yes -> return to caller to process next item
+	jp	snerr		; otherwise -> syntax error
+clsend:	pop	bc		; drop return address
+	jp	EXECUTE
+
+; --- RESET, RESTORE
+
+RESTORE:ld	a,(hl)
+	cp	T.EOL		; '\' token
+	jr	nz,rst1
+	ld	bc,(PDL)
+	ld	a,0FFh
+	ld	(bc),a		; -1
+	inc	bc
+	ld	(bc),a
+	jp	EXECUTE
+rst1:	ld	a,(hl)
+	inc	hl
+	cp	T.FILN		; '#' token
+	jp	nz,snerr	; if not -> syntax error
+	call	INTEVAL		; evaluate integer expression
+	push	hl
+	ld	hl,(FAC2)	; HL = channel number
+	call	FILEA		; get channel descriptor address into IX
+	ld	a,(ix+1)
+	or	a
+	jp	m,icnerr	; -> illegal channel number
+	ld	a,(ix+2)
+	or	(ix+3)
+	jr	z,cnoerr	; -> channel not open
+	bit	5,(ix+1)	; 2000h
+	jr	nz,ioderr	; -> illegal I/O direction
+	ld	c,l
+	ld	b,h
+	call	INIRD		; init file block descr and read 1st block
+	pop	hl
+	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token
+	jp	nz,snerr	; -> syntax error
+	jp	EXECUTE
+
+ioderr:	rst	10h
+	db	18h		; illegal I/O direction
+
+; --- RANDOMIZE
+
+RNDMIZ:	push	hl
+	ld	hl,(RNDCT)
+	set	1,l
+	ld	(RND1),hl
+	pop	hl
+	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token
+	jp	nz,snerr
+	jp	EXECUTE
+
+	END

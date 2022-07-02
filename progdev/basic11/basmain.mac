@@ -1,0 +1,2224 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Main section, File I/O
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	ident	'V02-03'
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	public	START,VERSION,CPHLDE,CPIXBC,ADDHLA,READY,FLINE
+	public	FLINEN,FNDSTR,FRESTR,FNDSTL,CHKFIL,SKPSYM,LITEVAL
+	public	SKPEOL,SKPOBJ,SKIPBL,SKPLIN,SAVCHR,SAVCH1,DISPAT
+	public	ALLOC,CKCTLC,CCSTAT,VFBLK,VFBLK1,DNPACK,VARSIZ
+	public	CHKISE,CHKOSE,FILEA,CLOSYS,CLOSCH,CLOSALL,GETCHR
+	public	RDBLK,LINGET,ODEVTT,OPNSYS,OPNFIL,INITPG,PUTCHR
+	public	WRBLK,SETCOL,PURGALL,BYE,INIRD,NAMSET,RDNXBL
+	public	RDVFBL,WRVFBL,DELETE,NAMETO,MSG,MSG1,DOMSG,MSGHL
+	public	SAVREG,ISDIG,ISLETR,NEGHL,NEGBC,CHKBFP,CPDEHL
+	public	CPBCHL,CLRFNB
+
+	extrn	INIT,STOP,DATIM,EDIT,INTEVAL,CLRFAC,BYENTR
+	extrn	$TTIN,$TTOUT,$FLUSH,$FLINP,$EXIT,RDYNTR,EOFNTR
+	extrn	DIMUL,$POLSH,$UNPOL,FOPEN,FCLOSE,FREAD,FWRITE
+	extrn	FCREAT,CMPEXT,ADDEXT,EVAL,UACTST,$CHKCC,RCTLO
+	extrn	FRESET,FDELET,FRENAM,FVERS,FWAIT
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+START::	jp	INIT
+
+VERSION:db	'V02-03 ',0
+
+READY:	ld	sp,(STK)	; restore SP to the saved initial value
+	xor	a
+	ld	(CHNFLG),a	; clear CHAIN/OVERLAY flag
+	ld	hl,0
+	ld	(EDITLN),hl
+	ld	(CPSAVE),hl
+	call	IREADY		; flush terminal input
+	call	RDYNTR		; empty routine in BASCLI
+	call	MSG		; display prompt
+	db	CR,LF,'READY',CR,LF,0
+	ld	hl,0
+	ld	(IDEV),hl	; clear current input channel descriptor
+	jp	EDIT
+
+FLINE:	ld	a,(hl)		; get next program byte
+	or	a
+	scf
+	ret	m		; if token -> return with CY set
+	inc	hl
+	ld	b,a
+	ld	c,(hl)		; BC now contains the next 2 program bytes
+	inc	hl		;    (note order!)
+	bit	0,c		; odd value (offset to line number)?
+	scf
+	ret	z		; return if not
+	dec	bc		; else decrement to fix offset (make even)
+	push	hl
+	ld	hl,(LINTAB)
+	add	hl,bc		; index into line number table
+	ld	c,(hl)		; return line number in BC
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ex	de,hl		; return ptr to LINTAB+2 in DE
+	pop	hl
+	ret
+
+FLINEN:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,(CODE)
+	ld	de,(CPSAVE)
+	call	CPHLDE
+	jr	nc,fln1
+	ld	hl,0FFFFh	; -1
+	ld	(FAC2),hl
+	ret
+fln1:	call	FLINE
+	jr	c,fln2
+	call	CLRFAC		; clear FP accum
+	ld	(FAC2),bc	; store line number
+fln2:	call	SKPEOL		; find end of statement
+	ld	de,(CPSAVE)
+	call	CPHLDE
+	jr	nc,fln1		; loop
+	ret
+
+; Evaluate string expression.
+; Returns DE = pointer to string, C = length
+
+FNDSTR:	call	EVAL		; evaluate expression
+	jr	nc,sne1		; if not a string expression -> syntax error
+	call	FRESTR
+	ld	c,0
+	ld	a,d
+	or	e
+	ret	z
+	dec	de
+	ld	a,(de)
+	ld	c,a
+	inc	de
+	inc	de
+	inc	de
+	ret
+
+sne1:	rst	10h
+	db	06h		; syntax error
+
+; Free string by clearing backpointer.
+
+FRESTR:	pop	bc		; get return address into BC
+	pop	de		; pop pointer to string address into DE
+	push	bc		; push return address back
+	inc	de
+	ld	a,d
+	or	e
+	ret	z		; return if null string
+	xor	a
+	ld	(de),a		; clear backpointer
+	inc	de
+	ld	(de),a
+	dec	de
+	ret
+
+; Find string end and calculate length
+
+FNDSTL:	ld	a,(hl)
+	cp	T.DBLQ		; " token
+	jr	z,fstl1
+	cp	T.SNGQ		; ' token?
+	jr	nz,sne1		; no -> syntax error
+fstl1:	call	CHKFIL		; find string end
+	inc	hl		; skip ending quote token
+	ret
+
+CHKFIL:	inc	hl		; skip quote token and "text" token
+	inc	hl
+FNDETX:	ld	e,l		; save begin of string in DE
+	ld	d,h
+fnx1:	ld	a,(hl)		; search for ending zero-byte
+	inc	hl
+	or	a
+	jr	nz,fnx1
+	push	hl
+	sbc	hl,de		; note CY is clear from above
+	ld	c,l
+	ld	b,h
+	pop	hl
+	dec	bc		; BC = string length
+	ld	a,b
+	or	c		; set Z/NZ condition
+	ret
+
+; Skip to next variable
+
+SKPSYM:	push	bc
+	call	VARSIZ		; get length of entry into BC
+	add	hl,bc
+	pop	bc
+	ret
+
+; Return in BC the length of symbol table entry for variable in (HL).
+
+VARSIZ:	ld	a,(hl)
+	cp	04h		; check variable type
+	ld	bc,10
+	ret	nc		; if >= 4 (array)
+	cp	1+1
+	ld	bc,6
+	ret	c		; if <= 1 (integer or string)
+	ld	bc,8
+	ret
+
+; Allocate space for I/O buffer, BC = size in bytes.
+; Returns HL = buffer address.
+
+FREGET:	call	DNPACK
+	inc	bc
+	res	0,c		; ensure size is even
+	ld	hl,(HIFREE)
+	or	a
+	sbc	hl,bc
+	ret	c		; no space
+	ex	de,hl
+	ld	hl,(HISTR)
+	call	CPHLDE		; HIFREE - BC < HISTR?
+	ret	c		; return if yes
+	ex	de,hl
+	ld	(HIFREE),hl	; else set new HIFREE
+	or	a
+	ret
+
+	IFDEF	CALLS
+GTFTAB:	ld	bc,(FTABI)
+	ld	a,b
+	or	c
+	ret
+	ENDIF
+
+INITPG:	call	SAVREG		; save BC,DE,HL,IX,IY
+	call	PURGALL		; purge all channels
+	call	FRESET		; reset disk system
+	ld	hl,0
+	ld	(BUFCHN),hl	; clear list of free buffers
+	ld	(GSBCTR),hl	; clear GOSUB depth
+	ld	hl,034D9h
+	ld	(RND1),hl	; initial RND() seed = 1.01468E-07
+	ld	hl,0E6A9h
+	ld	(RND2),hl
+	ld	hl,(PDL)
+	ld	a,0FFh		; -1
+	ld	(hl),a		; clear push-down list
+	inc	hl		;  (first entry = 0FFFFh)
+	ld	(hl),a
+	inc	hl
+	ex	de,hl
+	ld	hl,(LIMIT)
+	or	a
+	sbc	hl,de		; TODO: check for <= 0?
+	ex	de,hl
+iclr:	ld	(hl),0
+	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,iclr
+	ld	hl,(LINTAB)
+	ld	de,(DEFTAB)	; DE = begin of user function table
+undf:	call	CPHLDE		; continue until LINTAB reached
+	ret	nc
+	inc	de
+	inc	de
+	ld	a,0FFh
+	ld	(de),a		; store -1 (undefine function)
+	inc	de
+	ld	(de),a
+	inc	de
+	jr	undf
+
+; Load "tokenized" number into FP accum (evaluate literal).
+; A = token value, HL = ptr to program line.
+
+LITEVAL:call	CLRFAC		; clear FP accum, preserves A
+	cp	0FFh		; floating point number follows? T.???
+	jr	z,lit1		; yes -> store it into FP accum
+	cp	0FCh		; "explicit" integer? T.???
+	jr	z,lit2
+	cp	0FEh		; or "normal" integer? T.???
+	jr	z,lit2		; yes, load it HI-first
+	jr	lit3		; otherwise load a single byte
+lit1:	ld	a,(hl)
+	inc	hl
+	ld	(FAC1+1),a
+	ld	a,(hl)
+	inc	hl
+	ld	(FAC1),a
+lit2:	ld	a,(hl)
+	inc	hl
+	ld	(FAC2+1),a
+lit3:	ld	a,(hl)
+	inc	hl
+	ld	(FAC2),a
+	ret
+
+; Reset PRINT output pointer
+
+ODEVTT:	push	hl
+	ld	hl,0
+	ld	(ODEV),hl	; clear current output channel descriptor
+	ld	hl,CLMNTT
+	ld	(COLUMN),hl
+	pop	hl
+	ret
+
+; Save (and restore later) the CPU registers BC,DE,HL,IX,IY. Note that AF
+; is not saved, since some routines use the CY flag to return status.
+
+SAVREG:	ex	(sp),hl		; push hl, pop ret address = func+3
+	push	ix
+	push	iy
+	push	de
+	push	bc
+	push	hl		; push <func+3>
+	ld	hl,restor
+	ex	(sp),hl		; push <restor>, pop <func+3>
+	push	hl		; push <func+3>
+	push	af
+	ld	hl,14		; af,func+3,restor,bc,de,iy,ix,hl,func+3
+	add	hl,sp		;                                 ^^
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; restore hl from stack
+	pop	af
+	ret			; co-program call to <func+3>
+restor:	pop	bc
+	pop	de
+	pop	iy
+	pop	ix
+	pop	hl
+	ret
+
+; Find end of statement.
+
+SKPEOL:	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	z,skip1		; increment HL and return if yes
+	call	SKPOBJ		; skip token and its arguments
+	jr	SKPEOL		; loop
+
+; Skip object.
+
+SKPOBJ:	ld	a,(hl)
+	inc	hl
+	or	a		; a token?
+	jp	p,skip1		; increment HL and return if not
+	dec	hl
+	cp	T.TEXT		; token was "literal" or number?
+	jr	nc,skplit	; if yes, brach to skip it
+	inc	hl
+	cp	T.FN		; is it FN?
+	jr	z,skip1		; increment HL and return if yes
+	dec	hl
+	cp	T.NEXT		; was it NEXT?
+	jr	z,skip11	; skip the next 11 bytes and return if yes
+	cp	T.CALL		; is it CALL?
+	jr	z,skip4		; skip the next 4 bytes if yes
+skip1:	inc	hl
+	ret
+
+skip5:	inc	hl
+skip4:	inc	hl
+	inc	hl
+skip2:	inc	hl
+	inc	hl
+	ret
+
+skip11:	ld	bc,11
+	add	hl,bc
+	ret
+
+; "literal" or number
+
+skplit:	jr	z,skpnz		; if "literal", skip until null found
+	cp	0FFh		; float literal token?
+	jr	z,skip5
+	cp	0FBh		; T.???
+	jr	z,skip2
+	cp	T.LBYT		; literal byte?
+	inc	hl
+	jr	z,skip1		; skip byte
+	jr	skip2		; else skip word
+
+skpnz:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	nz,skpnz
+	ret
+
+; Skip blanks
+
+skip:	inc	hl
+SKIPBL:	ld	a,(hl)
+	cp	' '		; space?
+	jr	z,skip		; yes, skip
+	cp	TAB		; TAB?
+	jr	z,skip		; yes, skip it too
+	ret
+
+; Skip to the start of next program line.
+
+SKPLIN:	call	SKPEOL		; skip to end of statement
+	ld	a,(hl)		; get program code byte
+	ld	d,a
+	or	a
+	jp	m,skpt		; jump if a token
+	inc	hl
+	ld	e,(hl)		; else get object offset into DE (note order!)
+	dec	hl
+	bit	0,e		; even?
+	jr	z,SKPLIN	; jump if yes (not a program line)
+	dec	de
+	push	hl
+	ld	hl,(LINTAB)
+	add	hl,de		; index into line number table
+	ex	de,hl		; return table entry in DE
+	pop	hl
+	or	a
+	ret
+skpt:	cp	T.EOF		; end of program?
+	jr	nz,SKPLIN	; loop if not
+	scf			; else return with CY set
+	ret
+
+; Char output routine for PRINT function: store char @T2, incr column @T1.
+
+SAVCHR:	nop			; see NUMSGN
+SAVCH1:	push	hl
+	ld	hl,(T2)
+	ld	(hl),a		; store char
+	inc	hl		; advance pointer
+	ld	(T2),hl
+	ld	hl,T1
+	inc	(hl)		; increment count
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Alloc array space from free space.
+
+; IX points to variable, array limits in SS1MAX and SS2MAX.
+; HL and DE preserved.
+
+ALLOC:	call	UACTST		; in CALLs module
+	push	hl
+	push	de
+	call	GETSIZ		; get number of bytes needed into DE
+	ld	hl,(HIFREE)
+	or	a
+	sbc	hl,de
+	jr	c,atl1		; -> arrays too large
+	push	hl		; remember new limit
+	push	de
+	ld	de,(HISTR)
+	call	CPDEHL
+	pop	de
+	jr	c,atl1		; if DE > HISTR -> arrays too large
+	ld	(ix+2),l	; store array address
+	ld	(ix+3),h
+	push	hl
+	ld	hl,(SS1MAX)
+	ld	(ix+4),l	; store limits
+	ld	(ix+5),h
+	ld	hl,(SS2MAX)
+	ld	(ix+6),l
+	ld	(ix+7),h
+	pop	hl
+	ld	a,(ix+0)	; get variable type
+	and	03h
+  IF 0
+	ld	bc,0		; if numeric, initialize to 0
+	jr	nz,alloc2
+	dec	bc		; if string, initialize to null strings (-1)
+	jr	alloc2
+alloc1:	ld	(hl),c		; initialize value
+	inc	hl
+	ld	(hl),b
+	inc	hl
+alloc2:	push	de
+	ld	de,(HIFREE)
+	call	CPDEHL
+	pop	de
+	jr	c,alloc1	; loop to initialize all array elements
+  ELSE
+	ld	c,0		; if numeric, initialize to 0
+	jr	nz,alloc1
+	dec	c		; if string, initialize to null strings (-1)
+alloc1:	ld	(hl),c		; initialize value
+	inc	hl
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,alloc1	; loop to initialize all array elements
+  ENDIF
+	pop	hl		; restore new limit
+	ld	(HIFREE),hl	; set new HIFREE
+	pop	de
+	pop	hl
+	ret
+
+atl1:	rst	10h
+	db	04h		; arrays too large
+
+; Get array size in bytes.
+
+; IX = variable address, array limits in SS1MAX and SS2MAX.
+; Return value in DE, HL and BC preserved.
+
+GETSIZ:	push	hl
+	push	bc
+	ld	bc,(SS1MAX)
+	inc	bc		; one extra element (arrays are 0-based)
+	ld	hl,(SS2MAX)
+gtsz1:	inc	hl
+	ld	a,h
+	or	l
+	jr	z,gtsz1		; if 2nd dimension was -1 make it 1
+	ld	de,0		; multiply HL*BC*2, result in DE
+	ld	a,16		;
+gtsz2:	add	hl,hl		;
+	jr	nc,gtsz3	;
+	ex	de,hl		;
+	add	hl,bc		;
+	ex	de,hl		;
+	jr	c,atl1		; overflow -> arrays too large
+gtsz3:	sla	e		;
+	rl	d		;
+	jr	c,atl1		;
+	dec	a		;
+	jr	nz,gtsz2	; DE = 2 times # elements needed
+	ld	a,(ix+0)
+	and	03h
+	jr	z,gtsz4
+	and	01h
+	jr	nz,gtsz4
+	sla	e		; get number of bytes needed
+	rl	d
+	jr	c,atl1		; overflow -> arrays too large
+gtsz4:	pop	bc
+	pop	hl
+	ret
+
+; Pack strings towards low memory.
+
+DNPACK:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	bc,0
+	push	bc		; push a zero
+	ld	ix,0
+	add	ix,sp
+	ld	bc,(LOSTR)	; get lo-str into BC
+	ld	hl,(LOFREE)	; get lo-free into HL
+	ld	(LOSTR),hl	; set lo-str = lo-free
+	jr	dnp2
+
+dnp1:	pop	de		; drop old length
+	ld	a,(bc)		; get string length
+	inc	bc
+	ld	e,a
+	ld	d,0
+	push	de		; push new length
+	or	a
+	jr	nz,dnp4
+dnp2:	push	hl
+dnp3:	ld	e,c		; !!!write better
+	ld	d,b
+	ld	hl,(HISTR)
+	call	CPHLDE		; BC < hi-str?
+	pop	hl
+	jr	c,dnp1		; loop if yes
+	ld	(HISTR),hl	; set new hi-str
+	pop	bc		; restore stack
+	ret
+
+dnp4:	ld	a,(bc)		; get string backpointer into DE
+	inc	bc
+	ld	d,a		; note order: first HI-byte
+	ld	a,(bc)
+	inc	bc
+	ld	e,a		; then LO-byte
+
+	ld	a,c
+	add	a,(ix+0)
+	ld	c,a
+	ld	a,b
+	adc	a,(ix+1)
+	ld	b,a		; BC+3 += length
+	inc	bc		; +1 (trailing length byte)
+
+	bit	0,e		; odd number? (i.e. offset to variable)
+	jr	z,dnp5		; jump if not (array element)
+	dec	de		; fix offset
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,de		; index into symbol table
+	ex	de,hl
+	pop	hl
+dnp5:	push	hl
+	ld	hl,(PDL)
+	call	CPHLDE
+	jr	nc,dnp3		; quit if DE >= PDL
+	ld	hl,(ARRAYS)
+	call	CPHLDE
+	jr	nc,dnp3		; quit if DE >= ARRAYS
+	ld	hl,(HIFREE)
+	call	CPHLDE
+	jr	nc,dnp6		; do if DE >= HIFREE
+	ld	hl,(LOFREE)
+	call	CPHLDE
+	jr	nc,dnp3		; quit if DE >= LOFREE
+	ld	hl,(SYMBOL)
+	call	CPHLDE
+	jr	nc,dnp6		; do if DE >= SYMBOL
+	push	ix
+	pop	hl
+	call	CPHLDE
+	jr	c,dnp3		; quit if DE < SP
+	ld	hl,(STK)
+	call	CPDEHL
+	jr	c,dnp3		; if DE > STK
+dnp6:	pop	hl
+	ld	a,(ix+0)
+	add	a,4
+	ld	(ix+0),a
+	ld	a,(ix+1)
+	adc	a,0
+	ld	(ix+1),a	; len += 4
+
+	ld	a,c
+	sub	(ix+0)
+	ld	c,a
+	ld	a,b
+	sbc	a,(ix+1)
+	ld	b,a		; BC -= len+4 (back to start of string) !!!write better
+
+	ld	a,(de)
+	cp	c
+	jr	nz,dnp7		; jump if BC != (DE) - backptr != varptr
+	inc	de
+	ld	a,(de)
+	dec	de
+	cp	b
+	jr	nz,dnp7
+
+	ld	a,l
+	ld	(de),a		; store new string address in var block
+	inc	de
+	ld	a,h
+	ld	(de),a
+
+	ld	e,c		; DE = src
+	ld	d,b
+	pop	bc		; BC = len (here always > 0)
+	push	bc
+	ex	de,hl		; HL = src, DE = dst
+	ldir
+	ex	de,hl		; HL = dst + len
+	ld	c,e		; BC = src + len
+	ld	b,d
+	jp	dnp2		; loop
+
+dnp7:	ld	a,c
+	add	a,(ix+0)
+	ld	c,a		; BC += len...
+	ld	a,b
+	adc	a,(ix+1)
+	ld	b,a
+	jp	dnp2		; loop
+
+;-----------------------------------------------------------------------
+
+CCSTAT:	ld	a,(CCFLG)	; ^C disabled?
+	or	a
+	ret	z		; no, return
+
+	; fall thru to check ^C status
+
+; check ^C status bits, return CY if ^C was detected.
+
+CCBITS:	call	$CHKCC
+	ld	a,(CCFLG+1)	; check ^C status
+	or	a
+	ret	p		; if no ^C signaled return with no CY set
+	xor	a
+	ld	(CCFLG+1),a	; clear ^C signaled bit
+	scf			; set carry flag
+	ret
+
+; Flush keyboard input if ^C was detected, return CY if ^C happened.
+
+CKCTLC:	ld	a,(CCFLG)	; if ^C disabled, return
+	or	a
+	ret	nz
+	call	CCBITS		; check ^C status
+	ret	nc		; return if no ^C signaled
+	call	$FLINP
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Compute block number of virtual array file and offset to array
+; element.
+
+; Called with IX = chan descr address, DE = elem size
+; FP accum = long index of elem
+; Returns DE = block#  BC = offset  IY = buffer descr address
+
+VFBLK:	push	hl
+	push	de		; push item size
+	call	$POLSH		; enter polish mode
+	dw	DIMUL		; compute itemsize * index
+	dw	$UNPOL		; leave polish mode
+	call	VFBLK1		; get block number and offset
+	pop	hl
+	push	bc
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc
+	pop	iy
+	call	CKVLIM		; ensure block is within limits
+	pop	bc
+	ret			; return CY if DE > HIBLK
+
+; Return CY if DE > (iy+HIBLK)
+
+CKVLIM:
+  IF 0
+	ld	a,(iy+BUFEND)
+	cp	d
+	ret	nz
+	ld	a,(iy+BUFEND+1)
+	cp	e
+	ret
+  ELSE
+	or	a
+	ret
+  ENDIF
+
+; Divide 32-bit number on (SP=l):(SP+2=h) by 512
+; Returns BC = n%512, DE = n/512
+
+VFBLK1:	pop	hl		; pop return address
+	pop	bc
+	pop	de
+	push	hl		; restore return address
+	ld	d,e
+	ld	e,b
+	ld	a,b
+	and	01h
+	ld	b,a		; BC = n%512
+	srl	d		; DE = n/256/2 = n/512
+	rr	e
+	ret
+
+;-----------------------------------------------------------------------
+
+; ---- < File I/O > ----
+
+CHKISE:	ld	bc,4000h	; mode = open for read only
+	push	bc
+	ld	bc,IDEV		; BC = &IDEV
+	jr	chk1
+
+CHKOSE:	ld	bc,2000h	; mode = open for write only
+	push	bc
+	ld	bc,ODEV		; BC = &ODEV
+chk1:	push	bc
+	call	INTEVAL		; evaluate integer expression
+	ld	de,(FAC2)	; DE = result (channel number)
+	ld	a,d
+	or	e
+	jr	z,chk2		; return if zero
+	push	de		; push channel number
+	push	hl		; push HL
+	ex	de,hl		; get channel number into HL
+	call	FILEA		; get channel descriptor address
+	ld	a,(ix+1)	; test MSB (virtual array bit)
+	or	a
+	jp	m,icnerr	; if set -> illegal channel number
+	ld	a,(ix+2)	; check buffer descriptor address
+	or	(ix+3)
+	jr	z,cnoerr	; if zero -> channel not open
+	pop	hl		; restore HL
+	pop	de		; pop channel number
+	pop	bc		; BC = &IDEV or &ODEV
+	ex	(sp),hl		; push HL, pop mode bit mask
+	ld	a,(ix+1)
+	and	h		; check direction
+	pop	hl		; restore HL
+	jr	z,direrr	; error if not the same
+	push	ix
+	ex	(sp),hl		; push HL, pop channel descr address
+	ld	a,l
+	ld	(bc),a		; store channel descr address in IDEV/ODEV
+	inc	bc
+	ld	a,h
+	ld	(bc),a
+	pop	hl		; restore HL
+	ret
+chk2:	pop	bc		; restore stack
+	pop	bc
+	ret
+
+cnoerr:	rst	10h
+	db	15h		; channel not open
+
+icnerr:	rst	10h
+	db	16h		; illegal channel number
+
+direrr:	rst	10h
+	db	18h		; illegal I/O direction
+
+; Get channel descriptor address into IX from channel number in HL
+
+FILEA:	ld	(T4),hl		; T4 = channel number
+	ld	a,h
+	or	l
+	jr	z,icnerr	; channel number can't be zero
+	dec	hl
+	add	hl,hl		; *2
+	add	hl,hl		; *4
+	ld	de,13*4
+	call	CPHLDE		; > 52? (chan# was > 13?)
+	jr	c,icnerr	; if yes, error -> illegal channel number
+	ex	de,hl
+	ld	ix,SEQFIL
+	add	ix,de		; IX = SEQFIL + 4*chan#
+	ret
+
+; Channel I/O error routine, purge channels before calling the error handler.
+
+IOERR:	call	PURGALL		; purge all channels
+	rst	10h
+	db	13h		; channel I/O error
+
+; Allocate and initialize a file I/O buffer (two for DOUBLEBUF files),
+; IX = channel descriptor address, on return IY contains the buffer
+; descriptor address.
+
+ALLBUF:	ld	a,(T1)
+	cp	13		; system channel?
+	jr	nz,alb1		; jump if not
+	ld	iy,(SYSBUF)	; else use the fixed system buffer descr
+	call	CLRFNB		; clear FDB
+	jr	alb2
+alb1:	call	GETBUF		; allocate a file I/O buffer, return addr in IY
+	jr	c,buferr	; on error -> buffer storage overflow
+alb2:	push	iy
+	pop	bc
+	ld	(ix+2),c	; store buffer address in channel descriptor
+	ld	(ix+3),b
+	ld	(iy+BUF2),c
+	ld	(iy+BUF2+1),b
+	bit	4,(ix+1)	; double buffering?
+	ret	z		; return if not
+	ld	e,(iy+BFDB)
+	ld	d,(iy+BFDB+1)
+	push	de
+	call	GETBUF		; else allocate another file I/O buffer
+	pop	de
+	jr	c,buferr	; on error -> buffer storage overflow
+	ld	(iy+BFDB),e	; second FDB pointer points to first
+	ld	(iy+BFDB+1),d	;  so only one copy is used
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	ld	(iy+BUF2),c	; make 2nd buffer's 2nd ptr point to 1st buffer
+	ld	(iy+BUF2+1),b
+	push	bc
+	ex	(sp),iy		; swap BC and IY
+	pop	bc
+	ld	(iy+BUF2),c	; make 1st buffer's 2nd ptr point to 2nd buffer
+	ld	(iy+BUF2+1),b
+	ret
+
+buferr:	rst	10h
+	db	14h		; buffer storage overflow
+
+; Allocate a buffer and a buffer descriptor block for file I/O (they are
+; contiguous), return the block address in IY. Return CY set if not enough
+; space for new block.
+
+GETBUF:	ld	bc,(BUFCHN)	; check list of free buffers
+	ld	a,b
+	or	c
+	jr	z,gtb1		; if empty -> allocate a fresh one
+	push	bc
+	pop	iy
+	ld	c,(iy+0)
+	ld	b,(iy+1)
+	ld	(BUFCHN),bc	; otherwise reuse it, update list pointer
+				;  with the link value stored in the buffer
+	push	iy
+	pop	hl
+	jr	gtb2		; clear buffer and return with
+				;  IY pointing to the reallocated buffer
+gtb1:	ld	hl,(FNBSZ)
+	ld	bc,BUFSZ+BDSZ
+	add	hl,bc		; size = buffer + buffer descr block
+	ld	c,l
+	ld	b,h
+	call	FREGET		; allocate space
+	ret	c		; return with CY set if not enough space
+	push	hl
+	pop	iy
+gtb2:	ld	bc,BDSZ
+	add	hl,bc		; FNB begins after buffer descriptor
+	ld	(iy+BFDB),l	; set FNB address in buffer descriptor
+	ld	(iy+BFDB+1),h
+	ld	bc,(FNBSZ)
+	add	hl,bc		; I/O buffer begins after FNB
+	ld	(iy+BUFAD),l	; set buffer address in buffer descriptor
+	ld	(iy+BUFAD+1),h
+CLRFNB:	ld	l,(iy+BFDB)
+	ld	h,(iy+BFDB+1)
+	ld	bc,(FNBSZ)	; note: size in bytes
+bclr1:	ld	(hl),0		; clear FDB
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,bclr1
+	ret			; note CY is clear
+
+; Release file I/O buffer, IX = channel descriptor address
+
+RLSBUF:	push	iy		; push IY (!!!may not be necessary)
+	push	bc
+	ld	a,(T1)
+	cp	13		; system channel?
+	jr	z,rls3		; if yes, return (uses fixed buffer)
+	ld	c,(ix+2)	; BC = buffer descriptor address
+	ld	b,(ix+3)
+	push	bc
+	pop	iy
+	ld	a,(iy+BUF2)	; DOUBLEBUF file?
+	cp	c
+	jr	nz,rls1		; jump if yes
+	ld	a,(iy+BUF2+1)
+	cp	b
+	jr	nz,rls1
+	ld	bc,(BUFCHN)
+	ld	(iy+BUFAD),c	; enter buffer into the linked list of free
+	ld	(iy+BUFAD+1),b	;  buffers
+	jr	rls2
+rls1:	push	hl
+	ld	l,(iy+BUF2)
+	ld	h,(iy+BUF2+1)
+	ld	bc,(BUFCHN)
+	ld	(hl),c		; save link into 2nd buffer
+	inc	hl
+	ld	(hl),b
+	dec	hl
+	ld	(iy+BUFAD),l	; chain 1st buffer to 2nd
+	ld	(iy+BUFAD+1),h
+	pop	hl
+rls2:	ld	(BUFCHN),iy	; set new list end
+rls3:	pop	bc
+	pop	iy		; pop IY
+	ret
+
+; Close system channel
+
+CLOSYS:	ld	de,13
+	ld	(T1),de		; set channel number to system channel
+
+; Close the specified channel (DE = channel number).
+
+CLOSCH:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	l,e		; get channel number into HL
+	ld	h,d
+	call	FILEA		; get channel descriptor address
+	ld	c,(ix+2)
+	ld	b,(ix+3)	; BC = buffer descriptor address
+	ld	a,b
+	or	c
+	jr	nz,cls1		; branch if buffer allocated (file is open)
+	ld	(ix+0),0
+	ld	a,(ix+1)
+	and	80h
+	ld	(ix+1),a	; otherwise clear all but the MSB
+	scf			; and return with CY set
+	ret
+
+cls1:	push	bc
+	pop	iy		; IY = buffer descriptor address
+	push	de		; push channel number
+	ld	a,(ix+1)	; MSB set (virtual array channel)?
+	or	a
+	jp	m,cls4		; jump if yes
+	bit	5,(ix+1)	; file opened for write only? (2000h)
+	jr	z,cls2		; jump if not
+	ld	e,(iy+BUFEND)	; DE = bufend
+	ld	d,(iy+BUFEND+1)
+	ld	l,(iy+BUFPTR)	; HL = bufptr (current position)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl
+
+  IF 1	; !!!CP/M -- move this to the system-dependent section
+	jr	cls11
+cls10:	ld	(hl),1Ah	; clear till end of buffer
+;--	ld	(hl),0		; clear till end of buffer
+	inc	hl
+cls11:	call	CPHLDE
+	jr	nc,cls10	; loop while HL <= DE
+	call	WRBLK		; write block
+  ELSE
+	ld	e,(iy+BUFAD)
+	ld	d,(iy+BUFAD+1)
+	call	CPHLDE		; BUFPTR points to begin of buffer?
+	call	nz,WRBLK	; write block if not
+  ENDIF
+cls2:	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	call	FWAIT		; wait for last buffer, may be a DOUBLEBUF file
+	jr	nc,cls3		; jump on success (close file and return)
+	cp	E.EOF
+	jr	z,cls3		; EOF error is OK
+	or	a
+	jr	nz,cls5		; anything else is fatal
+cls3:	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	call	FCLOSE
+	pop	de		; restore channel number
+	call	RLSBF		; release buffer
+	or	a		; clear carry and return
+	ret
+
+cls4:	; MSB set (virtual array channel)
+
+	bit	1,(ix+1)	; current block was modified? (0200h)
+	call	nz,WRVFBL	; write it to file if yes
+	jr	cls3		; close the file, release buffer and return
+
+cls5:	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	call	FCLOSE
+	pop	de		; restore channel number
+	call	RLSBF		; release buffer
+	jp	IOERR		; purge all channels, report channel I/O error
+
+; Close all open files
+
+CLOSALL:push	hl
+	ld	hl,(T4)		; save current channel number
+	push	hl
+	ld	b,12
+clsa1:	ld	e,b
+	ld	d,0
+	call	CLOSCH		; close channel
+	djnz	clsa1
+	pop	hl
+	ld	(T4),hl		; restore channel number
+	pop	hl
+	ret
+
+; Read a char if available from TT or a file, return the char in A.
+; The function returns CY on EOF.
+
+GETCHR:	ld	de,(IDEV)	; reading from file?
+	ld	a,d
+	or	e
+	jr	nz,gc1		; jump if yes
+	call	TTCHR		; get char from terminal
+	jr	gc2
+gc1:	call	FILCHR		; get char from file
+gc2:	ret	c		; on EOF return with CY set
+	and	7Fh		; clear hi-bit and CY flag
+	push	af
+	push	hl
+	ld	hl,(RNDCT)
+	call	ADDHLA
+	ld	(RNDCT),hl	; add char to the RANDOMIZE seed
+	pop	hl
+	pop	af		; and return with no carry
+	ret
+
+; Read character from file and return it in A. On EOF return CY set.
+
+FILCHR:	push	hl		; save HL
+	ld	ix,(IDEV)	; IX = input channel descriptor address
+	ld	c,(ix+2)	; BC = buffer descriptor address
+	ld	b,(ix+3)
+	bit	2,(ix+0)	; EOF bit set?
+	jr	z,fc1		; branch if not
+	xor	a
+	scf			; else return with CY set
+	pop	hl		; restore HL
+	ret
+fc1:	push	bc
+	pop	iy
+	ld	l,(iy+BUFPTR)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl		; increment bufptr
+	ld	(iy+BUFPTR),l
+	ld	(iy+BUFPTR+1),h
+	ld	a,(hl)		; get char from buffer
+	and	7Fh		; clear high bit
+	cp	CR		; end of line?
+	jr	nz,fc2
+	set	0,(ix+0)	; set EOL flag (0001h)
+fc2:	push	af
+	call	SKPNUL		; check BUFPTR, skip nulls, etc. and read
+	pop	af		;  next block if necessary
+	or	a
+	pop	hl		; return the char with CY clear
+	ret
+
+; The terminal is in buffered mode, so $TTIN below will pause until the
+; user has entered a full line and ended it with a CR (or ^C). A CR/LF
+; pair is returned at the end of the line if it was ended with a CR.
+; Editing characters like BS and DEL are not returned. Characters are
+; returned in A with CY clear. On EOF, CY is returned.
+;
+; If ^C was pressed, a single ^C is returned at the end of the line, the
+; ^C signaled bit is set and the function returns with CY set.
+
+TTCHR:	call	$TTIN
+	ret	c
+	cp	3		; ^C pressed?
+	jr	nz,tc1
+	ld	a,(CCFLG+1)
+	or	80h
+	ld	(CCFLG+1),a	; yes, set MSB of CCFLG
+	scf			; and return with CY set
+	ret
+tc1:	or	a
+	ret
+
+; Read block from file.
+; IY = block descriptor address
+; IX = channel descriptor address
+; T4 contains the channel number
+;
+; Since buffer addresses are always even, we can use the low bit
+; of BUF2 to indicate a queued read operation
+
+RDBLK:	push	hl
+	ld	e,(iy+BUF2)	; DE = address of next buffer (BUF2)
+	ld	d,(iy+BUF2+1)
+	push	iy
+	pop	hl
+	call	CPHLDE		; DOUBLEBUF file?
+	jr	z,rdb1		; branch if not
+
+	ld	hl,BUF2
+	add	hl,de
+	bit	0,(hl)		; read queued?
+	jr	z,rdb1		; branch if not
+
+	res	0,(hl)		; else reset bit
+	ld	(ix+2),e	; make next buffer current
+	ld	(ix+3),d
+	jr	rdb2
+
+rdb1:	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	ld	e,(iy+BUFAD)	; DE = buffer addr
+	ld	d,(iy+BUFAD+1)
+	ld	c,(iy+BLKNO)	; BC = block number
+	ld	b,(iy+BLKNO+1)
+	inc	bc		; next block
+	ld	(iy+BLKNO),c
+	ld	(iy+BLKNO+1),b
+	call	FREAD		; initiate read operation
+	jp	c,IOERR		; QIO error is fatal
+
+rdb2:	ld	l,(ix+2)
+	ld	h,(ix+3)
+	push	hl
+	pop	iy		; get this/next buffer address into IY
+	ld	l,(iy+BFDB)
+	ld	h,(iy+BFDB+1)
+	call	FWAIT		; wait for pending I/O operation to complete
+	jr	c,rdb4		; branch on QIO error
+
+	ld	e,(iy+BUF2)
+	ld	d,(iy+BUF2+1)
+	push	iy
+	pop	hl
+	call	CPHLDE		; DOUBLEBUF file?
+	jr	z,rdb3		; return if not
+
+	push	bc		; push number of bytes read
+	ld	c,(iy+BLKNO)
+	ld	b,(iy+BLKNO+1)
+	inc	bc		; next block number
+	push	de
+	ex	(sp),iy		; get address of next buffer into IY
+	ld	(iy+BLKNO),c	; set next block number
+	ld	(iy+BLKNO+1),b
+	ld	l,(iy+BFDB)	; get FDB address into HL
+	ld	h,(iy+BFDB+1)
+	ld	e,(iy+BUFAD)	; DE = buffer addr
+	ld	d,(iy+BUFAD+1)
+	call	FREAD		; initiate read operation of next block
+	jp	c,IOERR		; QIO error is fatal
+
+	set	0,(iy+BUF2)	; set 'read queued' indicator
+	pop	iy		; restore current buffer address
+	pop	bc		; pop number of bytes read (from wait op)
+
+rdb3:	ld	l,(iy+BUFAD)
+	ld	h,(iy+BUFAD+1)
+	dec	hl
+	ld	(iy+BUFPTR),l
+	ld	(iy+BUFPTR+1),h
+	add	hl,bc		; add number of bytes read
+	ld	(iy+BUFEND),l	; note BUFEND points to LAST byte
+	ld	(iy+BUFEND+1),h
+	pop	hl
+	xor	a		; return success
+	ret
+
+rdb4:	pop	hl		; restore HL
+	cp	E.EOF		; check error code, end of file?
+	jp	nz,filerr	; error is fatal if not
+	set	2,(ix+0)	; else set EOF flag
+	scf			; and return with CY set
+	ret
+
+; Check BUFPTR, skip nulls or LF-after-CR and read in next block if
+; necessary.
+
+SKPNUL:	call	CHKBFP		; bufptr == endptr?
+	jr	nz,skpn1	; jump if not
+	call	RDBLK		; load next block
+	ret	c		; return with CY set on error or EOF
+skpn1:	ld	l,(iy+BUFPTR)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl
+	ld	(iy+BUFPTR),l	; increment bufptr
+	ld	(iy+BUFPTR+1),h
+	ld	a,(hl)		; check byte
+	or	a
+	jr	z,SKPNUL	; skip it if zero
+	cp	1Ah		;!!! CP/M-specific
+	jr	z,skpn3
+	cp	LF		; LF?
+	jr	nz,skpn2	; return if not
+	bit	0,(ix+0)	; was previously a CR detected?
+	jr	z,skpn2		; return if not
+	res	0,(ix+0)	; else clear EOL flag
+	jr	SKPNUL		; and get next char (ignore LF)
+skpn2:	dec	hl
+	ld	(iy+BUFPTR),l	; decrement bufptr
+	ld	(iy+BUFPTR+1),h
+	or	a
+	ret
+skpn3:	set	2,(ix+0)	; set EOF flag (0004h) !!!CP/M-specific
+	jr	skpn2
+
+;-----------------------------------------------------------------------
+
+; Get input line from terminal or file.
+
+LINGET:	call	SAVREG		; save BC,DE,HL,IX,IY
+lget1:	ld	hl,LINE		; HL = begin of input buffer
+	ld	de,(IDEV)	; reading from file?
+	ld	a,d
+	or	e
+	jr	z,lget6		; jump if not
+lget2:	call	GETCHR		; get char (from file)
+	ret	c		; on EOF, return
+	cp	19h		; ^U
+	jr	z,lget1		; discard input and restart
+	cp	CR		; CR
+	jr	z,lget3
+	cp	7Fh		; DEL
+	jr	z,lget2
+	cp	' '
+	jr	c,lget5		; other control char
+lget3:	ld	(hl),a		; normal char -> save it into buffer
+	cp	CR		; CR?
+	ret	z		; if yes, return
+	inc	hl		; point to next buffer location
+	ld	de,(CODE)
+	dec	de
+	call	CPHLDE		; end of buffer reached? (begin of prog area)
+	jr	nc,lget2	; no, keep reading
+lget4:	rst	10h
+	db	2Eh		; line too long
+	jr	lget1		; !!!error routine does not return here?
+lget5:	or	a
+	jr	z,lget2		; skip any null characters
+	jr	lget3		; store any other control chars
+
+lget6:	call	GETCHR		; get char
+	jr	nc,lget7	; jump if not EOF
+	call	CKCTLC		; ^C detected?
+	jp	c,STOP		; STOP if yes
+	call	EOFNTR		; empty routine in BASCLI module
+	jr	lget6
+lget7:	or	a
+	jr	z,lget6		; skip any null characters
+	cp	CR		; CR?
+	jr	nz,lget8	; jump if not
+	dec	hl
+	ld	a,(hl)
+	inc	hl
+	cp	LF		; did we see a LF before?
+	ret	z		; return with CY clear if yes
+	ld	(hl),CR		; otherwise store a CR
+	or	a
+	ret			; and return with CY clear
+lget8:	ld	(hl),a		; store the byte
+	inc	hl		; advance the pointer
+	ld	de,(CODE)
+	dec	de
+	call	CPHLDE		; end of input buffer reached?
+	jr	c,lget4		; if yes -> error: line too long
+	jr	lget6		; loop
+
+;-----------------------------------------------------------------------
+
+; Print null-terminated string following call instruction.
+; Forces output to terminal. Saves and restores COLUMN and ODEV.
+
+MSG:	ex	(sp),hl
+	call	MSGHL
+	ex	(sp),hl
+	ret
+
+; Print null-terminated string following call instruction.
+
+MSG1:	ex	(sp),hl
+	call	DOMSG
+	ex	(sp),hl
+	ret
+
+; Print null-terminated string whose address is in HL.
+; Forces output to terminal. Saves and restores COLUMN and ODEV.
+
+MSGHL:	push	de
+	ex	de,hl
+	ld	hl,(ODEV)
+	push	hl		; save current output channel descriptor
+	ld	hl,(COLUMN)
+	push	hl
+	ex	de,hl
+	call	ODEVTT		; set output to terminal
+	call	DOMSG		; print the string
+	ex	de,hl
+	pop	hl
+	ld	(COLUMN),hl
+	pop	hl
+	ld	(ODEV),hl	; restore current output channel descriptor
+	ex	de,hl
+	pop	de
+	ret
+
+; Print null-terminated string whose address is in HL.
+
+DOMSG:	ld	a,(hl)		; get char
+	inc	hl
+	or	a		; end of string?
+	ret	z
+	call	PUTCHR		; output char in A
+	jr	DOMSG
+
+;-----------------------------------------------------------------------
+
+; Open a file on system channel, T3 contains operation code:
+; 0 = read, 1 = save, -1 = replace; the stack contains the filename block
+; BC contains channel mode flags. Returns channel descriptor in IX.
+
+OPNSYS:	call	CLOSYS		; close system channel, set chan# to system
+	ld	de,8000h
+	ld	(FILSIZ),de	; no explicit FILESIZE in CREATF
+	ld	hl,(T1)		; HL = channel number
+	call	FILEA		; get channel descriptor address
+	ld	(ix+0),c	; save flags
+	ld	(ix+1),b
+	ld	a,(T3)		; check operation
+	or	a
+	jr	z,opnr
+	set	5,(ix+1)	; set "open for write" flags if nonzero
+	jr	OPNFIL
+opnr:	set	6,(ix+1)	; set "open for read" flags if zero
+
+; open a file (OPEN... command)
+
+OPNFIL:	call	ALLBUF		; allocate and initialize file I/O buffer
+	call	CPYFNB
+	bit	7,(ix+1)	; check MSB (virtual array channel)
+	jp	nz,opnf8	; branch if set
+	bit	6,(ix+1)	; open for read?
+	jr	z,opnf2		; branch if not
+
+opnf1:	; open for read
+
+	call	OPENF		; open the file
+	jp	nc,opnf7	; branch on success
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	bc,BFDB
+	add	hl,bc
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	cp	E.FNF		; file not found?
+	jr	nz,opnerr	; error if not
+	ld	a,(T1)
+	cp	13		; system channel?
+	jr	nz,errfnf	; error if not
+
+	ld	de,EXTBAC	; else try with the default extension
+	call	CMPEXT		; BAC specified?
+	jr	nz,errfnf
+	ld	de,EXTBAS
+	ld	c,1
+	ex	de,hl
+	call	ADDEXT		; try BAS then.
+	jr	opnf1
+
+errfnf:	ld	a,E.FNF		; restore error code
+opnerr:	push	af
+	call	RLSBF		; release buffer
+	pop	af
+	jp	filerr		; output error message
+
+opnf2:	bit	5,(ix+1)	; open for write?
+	jr	z,opnf4		; branch if not
+
+	; open for write
+
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	de,BFDB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get FNB address into HL
+
+	ld	a,(T3)		; check operation
+	or	a
+	jr	z,opnf6		; branch to opnf6 if read (thus read/write)
+	jp	m,opnf3		; branch to opnf3 if replace
+	cp	1		; save?
+	jr	nz,opnf6	; branch to opnf6 if not
+
+	; save operation
+
+	call	FVERS
+	ld	a,b
+	or	c		; explicit version?
+	jr	z,opnf6		; create new version if not
+	call	OPENF		; else check if file exists
+	jr	c,opnf6		; branch if not to create a new one
+	call	FCLOSE		; else is error
+  IF 0	; !!!TODO
+	ld	a,...		; check device status word
+	or	a
+	jp	p,opnf6		; jump if not a disk device
+  ENDIF
+	call	RLSBF		; release buffer
+	rst	10h
+	db	1Ah		; file exists -> use replace
+
+opnf3:	; replace operation
+
+	call	OPENF		; make sure the file exists, get version
+	jr	c,opnerr	; on error, release buffer and output message
+	call	FCLOSE		; close the file
+	call	FDELET		; delete the file
+	jp	c,opnerr
+	jr	opnf6		; and jump to overwrite it
+
+opnf4:	; open for read/write
+
+	call	OPENF		; open the file
+	jr	c,opnf5		; on error -> try create
+	set	6,(ix+1)	; set "open for read" bits (4000h)
+	jr	opnf7
+
+opnf5:	cp	E.PERM
+	jr	z,opnerr
+opnf6:	call	CREATF		; create the file
+	jp	c,opnerr	; on error -> release buffer and output msg
+	set	5,(ix+1)	; set "open for write" bits (2000h)
+opnf7:	ld	bc,(T1)		; get channel number
+	call	INIRD		; init block descr and read the 1st block
+	jp	opnf17		; restore stack and return to caller
+
+opnf8:	; MSB bit of flags set (binary mode and/or virtual array channel)
+
+  IF 0	; !!!TODO
+	ld	a,...		; check device status word
+	or	a
+	jp	m,opnf9		; jump if disk device
+	rst	10h
+	db	1Bh		; otherwise -> illegal file specification
+  ENDIF
+opnf9:	ld	c,(ix+2)	; BC = buffer descriptor address
+	ld	b,(ix+3)
+	push	bc
+	pop	iy
+;*	ld	hl,(FNBSZ)
+;*	ld	de,BDSZ
+;*	add	hl,de
+;*	add	hl,bc		; HL = I/O buffer address
+;*	ld	(iy+BUFAD),l	; set buffer address in buffer descriptor
+;*	ld	(iy+BUFAD+1),h
+	bit	6,(ix+1)	; open for read?
+	jr	z,opnf11	; jump if not
+opnf10:	call	OPENF		; open the file
+;;;	jr	c,opnerr	; on error release buffer and display message
+;;;	jr	opnf13
+
+  IF 1
+	jr	nc,opnf13
+	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	cp	E.FNF
+	jp	nz,opnerr
+	ld	a,(T1)
+	cp	13		; system channel?
+	jp	nz,errfnf
+	ld	de,EXTBAC	; if yes, try with the default extension
+	call	CMPEXT		; BAC specified?
+	jp	nz,errfnf
+	ld	de,EXTBAS
+	ld	c,1
+	ex	de,hl
+	call	ADDEXT		; try BAS then.
+	jr	opnf10
+
+EXTBAC:	db	'BAC'
+EXTBAS:	db	'BAS'
+  ENDIF
+
+opnf11:	bit	5,(ix+1)	; open for write? (2000h)
+	jr	z,opnf12	; jump if not
+	call	CREATF		; create the file
+	jp	c,opnerr	; on error -> release buffer and output msg
+	jr	opnf15
+
+opnf12:	call	OPENF		; open the file
+	jr	c,opnf14	; on error, try create
+opnf13:	ld	bc,-1
+	ld	(iy+BLKNO),c	; set initial block number to -1
+	ld	(iy+BLKNO+1),b
+
+	; !!! TODO: RSX180 - set size of contiguous file
+
+	jr	opnf16
+opnf14:	call	CREATF		; create the file
+	jp	c,opnerr	; on error -> release buffer and output msg
+
+opnf15:	; !!! TODO: RSX180 - set size of contiguous file
+
+opnf16:	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc
+	ex	(sp),iy
+	call	INIBD		; init BUFPTR, BUFEND
+	pop	iy
+opnf17:	pop	bc		; pop return address
+	ld	hl,(FNBSZ)
+	add	hl,sp
+	ld	sp,hl		; discard filename block
+	push	bc		; restore return address
+	ret
+
+; Copy filename block from stack to the BFDB field of the file buffer.
+
+CPYFNB:	call	SAVREG
+	ld	hl,6+10
+	add	hl,sp		; 16 because SAVREG (4 otherwise)
+	ld	e,(ix+2)	; DE = buffer descriptor block
+	ld	d,(ix+3)
+	push	hl
+	ld	hl,BFDB
+	add	hl,de
+	ld	e,(hl)		; DE = dst
+	inc	hl
+	ld	d,(hl)
+	pop	hl		; HL = src
+	ld	bc,(FNBSZ)
+	ldir
+	ret
+
+; Open a file, IX points to channel descriptor address.
+
+OPENF:	call	SAVREG
+	ld	e,(ix+2)	; DE = buffer descriptor block
+	ld	d,(ix+3)
+	ld	hl,BFDB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,(T1)		; get channel number
+	add	a,LUNSY-1	; convert it to LUN
+	bit	7,(ix+1)	; virtual array channel?
+	jr	z,opn1		; jump if not
+	ld	c,1
+	call	FOPEN		; open in r/w mode for update and possibly extend
+				;!!!delete existing and create new (truncate)?
+	ret
+opn1:	ld	c,0
+	call	FOPEN		; open in read-only mode
+	ret
+
+; Create a file, IX points to channel descriptor address.
+; If the FILESIZE option was specified, request the desired number
+; of blocks (a positive FILESIZE value allocates contiguous disk space,
+; negative allocates non-contiguous).
+;
+; TODO: process MODE and RECORSIZE as well
+
+CREATF:	ld	bc,(FILSIZ)	; BC = FILESIZE option
+	ld	a,(ix+1)	; check MSB
+	or	a
+	jp	m,cre3		; branch if set (binary mode/virtual array)
+	ld	a,c		; FILESIZE specified?
+	or	a
+	jr	nz,cre1
+	ld	a,b
+	cp	80h
+	jr	z,cre5		; branch if not
+cre1:	ld	a,b
+	or	c		; FILESIZE = 0?
+	jr	nz,cre5
+cre2:	rst	10h
+	db	3Ah		; if yes -> illegal file length
+
+; MSB bit set (virtual array):
+
+cre3:
+  IF 0
+	ld	a,b
+	xor	80h
+	or	c		; FILESIZE specified (BC = 8000h)?
+	jr	z,cre4		; jump if not
+	ld	a,b
+	or	c		; FILESIZE 0?
+	jr	z,cre2		; if yes, error
+	ld	hl,(T2)
+	call	CPHLBC		; CY if HL > BC
+	jr	nc,cre5		; if BC >= t2
+  ENDIF
+cre4:	ld	bc,(T2)
+
+cre5:	call	SAVREG
+	ld	e,(ix+2)	; DE = buffer descriptor block
+	ld	d,(ix+3)
+	push	de
+	pop	iy
+	ld	l,(iy+BFDB)
+	ld	h,(iy+BFDB+1)
+  IF 0
+	ld	a,b
+	xor	80h
+	or	c		; FILESIZE specified (BC = 8000h)?
+	jr	z,4$
+	;...			; set FILESIZE
+cre7:
+  ENDIF
+	ld	a,(T1)		; get channel number
+	add	a,LUNSY-1	; convert it to LUN
+	bit	7,(ix+1)	; virtual array channel?
+	jr	z,cre6		; jump if not
+	ld	c,1
+	call	FCREAT		; create and open file in R/W mode
+	ret
+cre6:	ld	c,0
+	call	FCREAT		; create and open file in write-only mode
+				;!!!delete existing?
+	ret
+
+;-----------------------------------------------------------------------
+
+; Output character in A, if writing to terminal display a CRLF
+; when maximum terminal width reached.
+
+PUTCHR:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	c,a
+	ld	hl,(RNDCT)
+	call	ADDHLA		; add char to RANDOMIZE seed
+	ld	(RNDCT),hl
+	ld	hl,(COLUMN)
+pc1:	ld	a,c
+	and	60h		; printable?
+	jr	nz,pc2		; jump if yes
+	ld	a,c
+	cp	CR		; carriage return?
+	jr	nz,pc3
+	ld	(hl),0		; yes, reset output line length
+	jr	pc3
+pc2:	inc	(hl)		; no, increment length
+pc3:	ld	de,(ODEV)	; DE = current output channel descriptor
+	ld	a,d
+	or	e
+	jr	nz,pc5		; jump if not zero (writing to file)
+
+	; writing to terminal
+
+	ld	a,(WIDTH)
+	or	a		; if terminal width was set to 0, ignore it.
+	jr	z,pc4
+  IF 0
+	cp	(hl)		; maximum width reached?
+	jr	c,pc4
+	jr	z,pc4
+  ELSE
+	inc	a		; !!!check!!!
+	cp	(hl)		; maximum width reached?
+	jr	nc,pc4
+  ENDIF
+	ld	a,CR		; yes, output CRLF
+	call	$TTOUT
+	ld	a,LF
+	call	$TTOUT
+	ld	(hl),0		; clear length
+	jr	pc1		; and loop
+pc4:	ld	a,c
+	call	$TTOUT
+	ret
+
+pc5:	; writing to a file
+
+	push	de
+	pop	ix		; get channel descriptor address into IX
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de
+	pop	iy		; IY = buffer descriptor address
+  IF 0 ; OK for byte-oriented FWRITE
+	ld	a,c
+	cp	LF
+	ret	z
+	cp	CR
+	jp	z,WRBLK
+  ENDIF
+	call	CHKBFP		; bufptr == bufend?
+	call	z,WRBLK		; if yes -> write block
+	ld	l,(iy+BUFPTR)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl		; increment bufptr
+	ld	(iy+BUFPTR),l
+	ld	(iy+BUFPTR+1),h
+	ld	(hl),c		; store character in buffer
+	ret
+
+CHKBFP:	ld	a,(iy+BUFEND+1)
+	cp	(iy+BUFPTR+1)
+	ret	nz
+	ld	a,(iy+BUFEND)
+	cp	(iy+BUFPTR)
+	ret
+
+; Write block to a file.
+; IX = channel descriptor address
+; IY = buffer descriptor address
+; T4 contains channel number
+; Preserved HL, BC.
+;
+; Since buffer addresses are always even, we can use the low bit
+; of BUF2 to indicate a queued write operation
+
+WRBLK:	push	hl
+	push	bc
+	ld	e,(iy+BUF2)	; DE = address of next buffer (BUF2)
+	ld	d,(iy+BUF2+1)
+	push	iy
+	pop	hl
+	call	CPHLDE		; DOUBLEBUF file?
+	jr	z,wrb1		; branch if not
+
+	ld	hl,BUF2
+	add	hl,de
+	bit	0,(hl)		; write queued?
+	jr	z,wrb1		; branch if not
+
+	res	0,(hl)		; else reset bit
+	ld	l,(iy+BFDB)
+	ld	h,(iy+BFDB+1)
+	call	FWAIT		; wait for write operation to complete
+	jr	c,wrb4		; report any errors
+
+wrb1:	ld	l,(iy+BFDB)	; HL = FDB address
+	ld	h,(iy+BFDB+1)
+	ld	e,(iy+BUFAD)	; DE = buffer address
+	ld	d,(iy+BUFAD+1)
+	ld	c,(iy+BLKNO)	; BC = block number
+	ld	b,(iy+BLKNO+1)
+	inc	bc		; next block
+	ld	(iy+BLKNO),c
+	ld	(iy+BLKNO+1),b
+	call	FWRITE		; initiate write operation
+	jp	c,IOERR		; QIO error is fatal
+
+	ld	e,(iy+BUF2)
+	ld	d,(iy+BUF2+1)
+	push	iy
+	pop	hl
+	call	CPHLDE		; DOUBLEBUF file?
+	jr	nz,wrb2		; branch if yes
+
+	ld	l,(iy+BFDB)
+	ld	h,(iy+BFDB+1)
+	call	FWAIT		; else wait for write operation to complete
+	jr	c,wrb4		; report any errors
+	jr	wrb3
+
+wrb2:	ld	(ix+2),e	; make next buffer current
+	ld	(ix+3),d
+	set	0,(iy+BUF2)	; set 'write queued' indicator on old buffer
+	push	de
+	pop	iy
+	ld	c,(iy+BLKNO)	; BC = block number
+	ld	b,(iy+BLKNO+1)
+	inc	bc		; next block
+	ld	(iy+BLKNO),c
+	ld	(iy+BLKNO+1),b
+wrb3:	ld	l,(iy+BUFAD)
+	ld	h,(iy+BUFAD+1)
+	dec	hl
+	ld	(iy+BUFPTR),l	; reset buffer pointer
+	ld	(iy+BUFPTR+1),h
+	pop	bc
+	pop	hl
+	xor	a		; return success
+	ret
+
+wrb4:	pop	bc
+	pop	hl
+	push	af		; save error code
+	call	PURGE		; purge channel
+	pop	af
+;;	cp	E.PERM		; check error code
+;;	jp	nz,IOERR	; purge all channels, emit channel I/O error
+	jp	IOERR
+
+; Set PRINT output pointer, DE = channel number *2
+
+SETCOL:	push	hl
+	ld	hl,COLTAB-2
+	add	hl,de		; HL = &COLTAB[DE-1]
+	ld	(COLUMN),hl	; store address in COLUMN
+	pop	hl
+	ret
+
+; Purge all channels, except system channel 13
+
+PURGALL:call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,(T4)
+	push	hl		; save current channel number
+	ld	b,12		; start from channel number 12
+pa1:	ld	l,b		; HL = channel number
+	ld	h,0
+	call	FILEA		; get channel descriptor address
+	ld	a,(ix+2)
+	or	(ix+3)		; buffer allocated (file is open)?
+	call	nz,PURGE	; purge the channel if yes
+	djnz	pa1		; next channel
+	pop	hl
+	ld	(T4),hl		; restore current channel number
+	ret
+
+; Purge (clearout) channel, IX = channel descriptor address
+; Does not modify BC
+
+PURGE:	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	de,BFDB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	FCLOSE
+	ld	hl,(T4)		; get channel number
+	ld	(T1),hl		;  into T1
+RLSBF:	call	RLSBUF		; release buffer
+	xor	a
+	ld	(ix+2),a	; clear the pointer
+	ld	(ix+3),a
+	ld	(ix+0),a
+	ld	a,(ix+1)
+	and	80h
+	ld	(ix+1),a	; and clear all but the MSB of the flags
+	ret
+
+; --- BYE
+
+BYE:	call	BYENTR
+	call	PURGALL		; purge all channels
+	ld	hl,0
+	jp	$EXIT		; TODO: use exit with status
+
+IREADY:	ld	hl,0
+	ld	(CCFLG),hl	; clear ^C bits (this makes next call redundant)
+	call	CKCTLC		; check for ^C
+	call	RCTLO		; cancel ^O, enable terminal output
+	ret
+
+; Initialize block descriptor and read the first block (if not open for
+; write only) of the just opened file. BC = channel number.
+
+INIRD:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	e,(ix+2)	; DE = buffer descriptor address
+	ld	d,(ix+3)
+	push	de
+	pop	iy
+	ld	l,(iy+BUF2)
+	ld	h,(iy+BUF2+1)
+	call	CPHLDE		; file has a second buffer?
+	jr	z,ird1
+	push	iy
+	push	hl
+	pop	iy		; if yes, initialize it
+	call	INIBD		; initialize block descriptor fields
+	pop	iy
+ird1:	call	INIBD		; initialize block descriptor fields
+	res	2,(ix+0)	; clear EOF flag
+	bit	5,(ix+1)	; file open for write only?
+	ret	nz		; if not, return
+	ld	(T4),bc		; save channel number
+	call	RDBLK		; read block
+	ret	c
+	call	SKPNUL		; skip nulls and LF-after-CR
+	ret
+
+; Initialize the buffer descriptor fields, IY points to buffer descriptor.
+; Preserves BC.
+
+INIBD:	ld	l,(iy+BUFAD)
+	ld	h,(iy+BUFAD+1)
+	dec	hl
+	ld	(iy+BUFPTR),l	; set bufptr
+	ld	(iy+BUFPTR+1),h
+	ld	de,BUFSZ	; 512 (buffer size)
+	add	hl,de
+	ld	(iy+BUFEND),l	; set buffer last address
+	ld	(iy+BUFEND+1),h
+	ld	hl,-1
+	ld	(iy+BLKNO),l	; block number = -1
+	ld	(iy+BLKNO+1),h
+	ret
+
+; Parse and extract the program filename (ignore any device name, directory
+; and file extension). DE points to the input string, C contains the length.
+; If no string is passed (length is zero), set the name to the default
+; 'NONAME'. Store the result at PROGNAM. Since all registers are saved and
+; restored, on output DE still points to the start of the string and C still
+; contains the length.
+
+; TODO: move this to system-dependent module !!!
+
+NAMSET:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	a,c
+	or	a		; length zero?
+	jr	nz,ns1		; jump if not
+NONSET:	ld	de,NONAME	; otherwise use 'NONAME'
+	ld	c,6		; length = 6 chars
+	jr	ns4
+ns1:	push	de		; remember string address and length
+	push	bc
+ns2:	dec	c
+	jr	z,ns3
+	ld	a,(de)		; check for possible device name
+	inc	de
+	cp	':'
+	jr	nz,ns2
+	pop	hl		; found device name, discard old DE and BC
+	pop	hl
+	jr	ns4
+ns3:	pop	bc		; restore string address and length
+	pop	de
+ns4:	ld	a,(de)
+	cp	'['		; directory specification follows?
+	jr	nz,ns6		; if not, jump to process filename
+ns5:	dec	c		; otherwise skip it
+	jr	z,ns8
+	ld	a,(de)
+	inc	de
+	cp	']'
+	jr	nz,ns5
+ns6:	ld	hl,PROGNAM	; DE = PROGNAM (file name area)
+	ld	b,9		; max filename length = 9. chars
+ns7:	ld	a,(de)
+	cp	'.'		; dot found?
+	jr	z,ns11		; if yes, process extension
+	inc	de
+	cp	' '+1		; space or control char?
+	jr	c,ns10
+	dec	de
+	call	ISDIG
+	jr	nc,ns9
+	call	ISLETR
+	jr	c,ns8
+	and	5Fh		; convert to uppercase
+	jr	ns9
+ns8:	call	NONSET		; force name to 'NONAME'
+	rst	10h
+	db	1Bh		; and output error: illegal file specification
+
+ns9:	ld	(hl),a		; save char
+	inc	de
+	inc	hl
+	dec	b
+	jr	z,ns13
+ns10:	dec	c		; decrement length
+	jr	nz,ns7
+	inc	b
+	dec	b
+	jr	z,ns13
+ns11:	ld	a,9		; max filename length
+	sub	b
+	ld	c,a
+	ld	a,' '
+ns12:	ld	(hl),a		; fill remaining space with blanks
+	inc	hl
+	djnz	ns12
+	ret
+ns13:	ld	bc,9
+	ret
+
+NONAME:	db	'NONAME'
+
+; The following three functions are used mostly by virtual arrays.
+
+; IX = channel descriptor address
+; channel number is in T4
+
+; Read next block from file
+
+RDNXBL:	call	SAVREG
+	call	RWSET		; setup registers
+	inc	bc		; increment block number
+	ld	(iy+BLKNO),c
+	ld	(iy+BLKNO+1),b
+	call	FREAD		; initiate block read
+	jp	c,IOERR
+	call	FWAIT		; wait for I/O to complete
+	ret	nc		; return on success
+	jr	NEWVFB		; else create new block if virtual array
+
+; Read selected block ((ix+2)+BLKNO) from file
+
+RDVFBL:	call	SAVREG
+	call	RWSET		; setup registers
+	call	FREAD		; initiate block block
+	jp	c,IOERR
+	call	FWAIT		; wait for I/O to complete
+	ret	nc		; return on success
+NEWVFB:	ld	a,(ix+1)
+	or	a		; virtual array channel?
+	jp	p,IOERR		; -> I/O channel error if not
+	ex	de,hl		; else create new block
+	ld	bc,512
+clrbuf:	ld	(hl),0
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,clrbuf
+	set	1,(ix+1)	; set "modified" flag (0200h)
+	ret			; return success
+
+; Write current block to file
+
+WRVFBL:	call	SAVREG
+	call	RWSET		; setup registers
+	call	FWRITE		; initiate write operation
+	jp	c,IOERR
+	call	FWAIT		; wait for I/O to complete
+	ret	nc		; return on success
+	jp	IOERR		; purge all channels, show channel I/O error
+
+; Setup registers for file I/O operation
+
+RWSET:	ld	e,(ix+2)	; get buffer descriptor address
+	ld	d,(ix+3)
+	push	de
+	pop	iy		;  into IY
+	ld	l,(iy+BFDB)	; get FDB address into HL
+	ld	h,(iy+BFDB+1)
+	ld	c,(iy+BLKNO)	; get block number into BC
+	ld	b,(iy+BLKNO+1)
+	ld	e,(iy+BUFAD)	; get buffer address into DE
+	ld	d,(iy+BUFAD+1)
+	ret
+
+; Delete a file, the stack contains the FNB
+
+DELETE:	push	hl
+	ld	hl,4
+	add	hl,sp		; HL = nameblock on stack
+	call	FDELET		; delete file
+	jr	c,filerr
+	pop	de
+	pop	bc		; pop return address
+	ld	hl,(FNBSZ)
+	add	hl,sp
+	ld	sp,hl		; restore stack
+	push	bc		; restore return address
+	ex	de,hl		; restore HL
+	ret
+
+filerr:	cp	E.FNF
+	jr	z,efnf
+	cp	E.PERM
+	jr	z,epriv
+	cp	E.DSKF
+	jr	z,eroom
+	rst	10h
+	db	13h		; channel I/O error
+efnf:	rst	10h
+	db	19h		; file not found
+epriv:	rst	10h
+	db	3Ch		; privilege violation
+eroom:	rst	10h
+	db	39h		; not enough room
+
+; Rename a file, two FNBs are on stack: old name on top, new name below it.
+
+NAMETO:	push	hl
+	ld	hl,(FNBSZ)
+	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	add	hl,sp
+	ex	de,hl		; DE = old name FDB
+	ld	hl,4
+	add	hl,sp		; HL = new name FCB
+	call	FRENAM
+	jr	c,filerr
+	pop	de
+	pop	bc		; pop return address
+	ld	hl,(FNBSZ)
+	add	hl,hl		; *2
+	add	hl,sp
+	ld	sp,hl		; restore stack
+	push	bc		; restore return address
+	ex	de,hl		; restore HL
+	ret
+
+; Compare HL and DE, return CY if HL > DE
+
+CPHLDE:	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+; Compare DE and HL, return CY if DE > HL
+
+CPDEHL:	ld	a,h
+	cp	d
+	ret	nz
+	ld	a,l
+	cp	e
+	ret
+
+; Compare BC and HL, return CY if BC > HL
+
+CPBCHL:	ld	a,h
+	cp	b
+	ret	nz
+	ld	a,l
+	cp	c
+	ret
+
+; Compare BC and (IX), return CY if BC > (IX)
+
+CPIXBC:	ld	a,(ix+1)
+	cp	b
+	ret	nz
+	ld	a,(ix+0)
+	cp	c
+	ret
+
+; HL += A
+
+ADDHLA:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+; HL = -HL
+
+NEGHL:	ld	a,l
+	cpl
+	ld	l,a
+	ld	a,h
+	cpl
+	ld	h,a
+	inc	hl
+	ret
+
+; BC = -BC
+
+NEGBC:	ld	a,c
+	cpl
+	ld	c,a
+	ld	a,b
+	cpl
+	ld	b,a
+	inc	bc
+	ret
+
+; Return CY clear if char in A is a digit (0..9)
+
+ISDIG:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+; Return CY clear if character in A is alphabetic (A..Z or a..z).
+
+ISLETR:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret	nc
+	cp	'a'
+	ret	c
+	cp	'z'+1
+	ccf
+	ret
+
+; Index into table following call and execute the corresponding routine
+
+DISPAT:	add	a,a		; make address
+	ex	(sp),hl		; push HL, pop return address
+	call	ADDHLA		; index into table
+	ld	a,(hl)		; fetch routine address
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	(sp),hl		; restore HL, push routine address
+	ret			; execute routine
+
+	END	START

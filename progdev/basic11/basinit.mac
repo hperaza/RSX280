@@ -1,0 +1,140 @@
+	TITLE	BASIC-11 interpreter for Z80
+	SUBTTL	Initialization Routines
+
+	.Z80
+
+	; Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	public	INIT,SYSIOB
+
+	extrn	$INIT,DATIM,MSG,NAMSET,ERRMSG,ODEVTT,CPHLDE
+	extrn	$EXIT,SCRATCH,$MEMRY,CLRFNB,HEAD3
+
+;-----------------------------------------------------------------------
+
+; This module MUST be linked LAST.
+
+	cseg
+
+SYSIOB	equ	$		; this area will be used as I/O buffer
+				; for the system channel when loading
+				; and saving programs
+
+INIT:	call	$INIT		; returns top of memory in HL
+	ex	de,hl		; DE = memtop
+	ld	hl,($MEMRY)
+	inc	hl
+	res	0,l		; word-align, or else COMPILE will fail
+	ld	bc,256
+	add	hl,bc
+	ld	sp,hl		; place stack in low memory
+	push	de		; push memtop
+
+	; TODO: parse command line for a possible filename?
+
+	pop	hl		; get memtop into HL
+	ld	e,l		;  and DE
+	ld	d,h
+	ld	bc,BASDAT	; begin of data area
+	or	a
+	sbc	hl,bc		; get size of free memory into HL
+ini1:	xor	a
+	ld	(bc),a		; clear all available memory
+	inc	bc		;  including stack and data areas
+	dec	hl
+	ld	a,h
+	or	l
+	jr	nz,ini1
+	ld	(LIMIT),de	; save memtop into LIMIT
+
+	ld	hl,0
+	add	hl,sp
+	ld	(STK),hl	; save initial stack pointer
+	ex	de,hl
+	ld	hl,-150
+	add	hl,de
+	ld	(PDSIZE),hl
+
+	ex	de,hl		; buffer descriptor of system channel
+	ld	(SYSBUF),hl	;  is above stack on low memory
+	push	hl
+	pop	iy
+	ld	de,SYSIOB
+	ld	(iy+BUFAD),e	; set I/O buffer address of system channel
+	ld	(iy+BUFAD+1),d
+	ld	(iy+BUF2),e	; just in case, although system channel
+	ld	(iy+BUF2+1),d	;  never uses double-buffering
+	ld	de,BDSZ
+	add	hl,de		; file descriptor follows
+	ld	(iy+BFDB),l
+	ld	(iy+BFDB+1),h
+	ld	de,(FNBSZ)
+	add	hl,de		; point past end of system buffer descriptor
+	inc	hl		; word
+	res	0,l		;  align
+	ld	(CODE),hl	; set start of program code
+	call	CLRFNB		; clear FDB of system channel
+
+	ld	hl,(LIMIT)
+	ld	de,-40		; GOSUB max depth = 20
+	add	hl,de
+	ld	(PDL),hl
+	ld	(ARRAYS),hl
+	ld	de,-1000	; at least 1000 bytes
+	add	hl,de
+	ld	de,(CODE)
+	call	CPHLDE
+	jr	nc,nomem	; not enough memory, exit
+
+	call	ODEVTT		; set output to terminal
+	ld	a,72
+	ld	(WIDTH),a	; set terminal line width to 72.
+
+	ld	hl,0010h	; setup RST 10h (RST 2) trap vector
+	ld	(hl),0C3h
+	inc	hl
+	ld	de,ERRMSG
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+
+	ld	c,0
+	call	NAMSET		; set program filename to 'NONAME'
+	call	DATIM
+	ld	ix,HEAD3
+	ld	a,(ix+7)	; seconds
+	rlca
+	rlca
+	rlca
+	xor	(ix+6)
+	ld	e,a
+	ld	a,(ix+4)	; minutes
+	rlca
+	rlca
+	rlca
+	xor	(ix+3)
+	ld	d,a
+	ld	hl,(RNDCT)
+	add	hl,de
+	ld	(RNDCT),hl	; initialize the RANDOMIZE seed
+	jp	SCRATCH		; run the interpreter
+
+; not enough memory, print error message and exit
+
+nomem:	call	MSG
+	db	CR,LF,'NOT ENOUGH ROOM FOR BASIC',CR,LF,0
+	jp	$EXIT		; exit to system
+
+;-----------------------------------------------------------------------
+
+	org	INIT + BUFSZ
+
+	db	0
+
+	END

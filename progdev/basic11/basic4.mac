@@ -1,0 +1,773 @@
+	TITLE	BASIC-11 interpreter for Z80
+	SUBTTL	Additional functions
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	public	$TAB,$SYS,$RCO,$ABO,$TTYS,$CTC,$RCC,$RNDA,$RND
+	public	$ABS,$SGN,$BIN,$OCT,$LEN,$ASC,$CHR,$POS,$SEG,$VAL
+	public	$TRM,$STR,$PI,$INT,$DAT,$CLK
+
+	extrn	FPLD,NUMSGN,READY,FNDSTR,ODEVTT,SAVCHR,POPFAC
+	extrn	CPHLDE,$INIT,PSHFAC,CKCTLC,CCSTAT,ERRMSG,DATIM
+	extrn	CLOSALL,BYE,STROPR,STPR,OPRFP0,OPRFP,OPRINT
+	extrn	INTEVAL,INT,ITOF,MKSTR,SVAL,SCRATCH,DISPAT,RCTLO
+	extrn	MSGHL,MSG,MSG1,EVAL,CLRFAC,$EXIT,TTYLC,TTYUC,$TTGC
+	extrn	SIN,SQRT,ATAN,COS,EXP,ALOG,ALOG10
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+STRARG:	call	EVAL		; evaluate expression
+	jr	nc,argerr	; if numeric expr -> argument error
+	pop	bc		; swap the 2 top stack words
+	pop	de		; so we can return to the caller
+	push	bc
+	push	de
+	jr	RQRPAR		; require ')'
+
+NUMARG:	call	EVAL		; evaluate expression
+	jr	c,argerr	; if string expr -> argument error
+RQRPAR:	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token
+	ret	z
+snerr:	rst	10h
+	db	06h		; syntax error
+
+; Get 1-byte argument
+
+ARGB:	call	INTEVAL		; evaluate integer expression
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a
+	ret	z		; return if <= 255
+argerr:	rst	10h
+	db	00h		; argument error
+
+; --- SYS
+
+$SYS:	call	ARGB		; get 1-byte argument
+	ld	a,c
+	dec	a		; make argument base 0
+	jp	m,argerr	; if < 1 -> argument error
+	cp	6+1
+	jr	nc,argerr	; if > 6 -> argument error
+	call	DISPAT
+	dw	SYS1		; SYS(1) = get char
+	dw	argerr		; SYS(2) = argument error
+	dw	argerr		; SYS(3) = argument error
+	dw	SYS4		; SYS(4) = same as BYE
+	dw	argerr		; SYS(5) = argument error
+	dw	SYS6		; SYS(6) = ^C status
+	dw	SYS7		; SYS(7) = enable/disable TTY lowercase
+
+SYS1:	ld	bc,(IDEV)
+	push	bc
+	ld	bc,0
+	ld	(IDEV),bc
+s1:	call	$TTGC		; get char
+	jr	c,s1		; loop while not EOF
+	ld	c,a
+	ld	b,0
+	ld	(FAC2),bc
+	pop	bc
+	ld	(IDEV),bc
+	jr	s72		; return integer
+
+SYS4:	jp	BYE		; exit interpreter
+
+SYS6:	ld	bc,0
+	ld	(FAC2),bc
+	call	CCSTAT		; get ^C status
+	jr	nc,s72
+	ld	bc,1
+	ld	(FAC2),bc
+	jr	s72		; return integer
+
+SYS7:	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jr	nz,snerr	; syntax error if not
+	call	ARGB		; get 1-byte argument
+	ld	a,c
+	or	a		; 0?
+	jr	nz,s71
+	call	TTYLC		; enable TTY lowercase input
+	jr	s72
+s71:	dec	a		; 1?
+	jr	nz,argerr
+	call	TTYUC		; set TTY mode to uppercase
+s72:	call	RQRPAR		; require ')'
+	jp	OPRINT
+
+; --- RCTRLO
+
+$RCO:	call	RCTLO
+	jp	OPRFP0		; result is 0
+
+; --- ABORT
+
+$ABO:	call	ARGB		; get 1-byte argument
+	call	RQRPAR		; require ')'
+	ld	a,c		; argument is 0?
+	or	a
+	jr	z,abo0
+	dec	a		; argument is 1?
+	jp	nz,argerr
+	call	CLOSALL		; close all files
+	jp	SCRATCH		; clear program and variables
+
+abo0:	call	CLOSALL		; close all files
+	jp	READY		; go to immediate mode, display READY prompt
+
+; --- TTYSET
+
+$TTYS:	call	ARGB		; get 1-byte argument
+	inc	c
+	jp	nz,argerr	; only 255 accepted as 1st argument
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	nz,snerr
+	call	ARGB		; get 1-byte argument
+	ld	a,c
+	or	a
+	jr	z,ttys0		; ignore if 0
+	dec	a
+	ld	(WIDTH),a	; set terminal line witdh
+ttys0:	call	RQRPAR		; require ')'
+	jp	OPRFP0		; result is 0
+
+; --- CTRLC
+
+$CTC:	ld	bc,0
+	ld	(CCFLG),bc	; enable ^C break
+	call	CKCTLC		; check for ^C
+	jp	OPRFP0		; result is 0
+
+; --- RCTRLC
+
+$RCC:	ld	a,1
+	ld	(CCFLG),a	; disable ^C break
+	jp	OPRFP0		; result is 0
+
+; --- TAB
+
+$TAB:	call	INTEVAL		; evaluate integer expression
+	call	RQRPAR		; require ')'
+	ld	de,(FAC2)	; get TAB argument (new column) into DE
+	ld	a,d
+	or	a
+	jp	m,argerr	; error if negative
+	push	hl
+	ld	hl,(COLUMN)
+	ld	l,(hl)
+	ld	h,0		; get current column into HL
+	ex	de,hl		; DE = current, HL = new
+	or	a
+	sbc	hl,de
+	ex	de,hl
+	pop	hl
+	ret	c		; return if current >= new
+	ret	z
+tab1:	call	MSG1		; output space
+	db	' ',0
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,tab1		; loop
+	ret
+
+; --- RND
+
+$RNDA:	call	NUMARG		; evaluate numeric argument
+$RND:	ld	de,(RND2)
+	ld	bc,(RND1)
+	sla	e
+	rl	d
+	rl	c
+	rl	b
+	push	hl
+	ld	hl,(RND1)
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	ld	hl,(RND2)
+	add	hl,de
+	ex	de,hl
+	jr	nc,rn1
+	inc	bc
+rn1:	ld	hl,(RND2)
+	add	hl,bc
+	res	7,h
+	ld	(RND1),hl
+	ld	(RND2),de
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ld	a,129
+rn2:	sla	e
+	rl	d
+	rl	c
+	rl	b
+	jr	c,rn3
+	dec	a
+	jr	rn2
+rn3:	ld	e,d
+	ld	d,c
+	ld	c,b
+	ld	b,a
+	or	a		; so sign is always positive
+	rr	b
+	rr	c
+	rr	d
+	rr	e
+	push	bc
+	push	de
+	push	de
+	push	bc
+	call	POPFAC		; pop FP accum from stack
+	pop	bc		; restore stack
+	pop	bc
+	jp	OPRFP
+
+; --- ABS
+
+$ABS:	call	NUMARG		; evaluate numeric argument
+	call	ITOF
+	ld	ix,FAC1
+	res	7,(ix+1)	; clear sign bit
+	jp	OPRFP
+
+; --- SGN
+
+$SGN:	call	NUMARG		; evaluate numeric argument
+	ld	bc,0		; default is 0.0
+	ld	de,(FAC1)
+	ld	a,d
+	or	e
+	jr	nz,sgn1
+	ld	de,(FAC2)
+	ld	a,d
+	or	e
+	jr	z,sgn3
+sgn1:	ld	a,d
+	or	a
+	jp	p,sgn2
+	ld	bc,0C080h	; -1.0
+	jr	sgn3
+sgn2:	ld	bc,04080h	; +1.0
+sgn3:	call	CLRFAC		; clear FP accum
+	ld	(FAC1),bc
+	jp	OPRFP
+
+; --- BIN
+
+$BIN:	call	CLRFAC		; clear FP accum
+	call	FNDSTR		; evaluate string expression
+	push	hl
+	ld	hl,0
+	ld	a,c		; check length
+	or	a
+	jr	z,bin3
+bin1:	ld	a,(de)
+	inc	de
+	cp	' '		; space?
+	jr	z,bin2
+	add	hl,hl		; *2
+	jp	c,argerr
+	sub	'0'		; '0'
+	jr	z,bin2
+	dec	a
+	jp	nz,argerr
+	inc	hl
+bin2:	dec	c
+	jr	nz,bin1
+bin3:	ld	(FAC2),hl
+	pop	hl
+	call	RQRPAR		; require ')'
+	jp	OPRINT
+
+; --- OCT
+
+$OCT:	call	CLRFAC		; clear FP accum
+	call	FNDSTR		; evaluate string expression
+	push	hl
+	ld	hl,0
+	ld	a,c		; check length
+	or	a
+	jr	z,oct3
+oct1:	ld	a,(de)
+	inc	de
+	cp	' '
+	jr	z,oct2
+	add	hl,hl		; *2
+	jr	c,arger2
+	add	hl,hl		; *4
+	jr	c,arger2
+	add	hl,hl		; *8
+	jr	c,arger2
+	sub	'0'
+	jr	c,arger2
+	cp	7+1
+	jr	nc,arger2
+	or	l
+	ld	l,a
+oct2:	dec	c
+	jr	nz,oct1
+oct3:	ld	(FAC2),hl
+	pop	hl
+	call	RQRPAR		; require ')'
+	jp	OPRINT
+
+arger2:	rst	10h
+	db	00h		; argument error
+
+; --- LEN
+
+$LEN:	call	STRARG		; evaluate string argument
+	call	CLRFAC		; clear FP accum
+	pop	bc
+	inc	bc
+	ld	a,b
+	or	c
+	jp	z,OPRINT	; return if length 0 (FP accum already cleared)
+	dec	bc
+	ld	a,(bc)		; get length
+	ld	(FAC2),a
+	jp	OPRINT
+
+; --- ASC
+
+$ASC:	call	STRARG		; evaluate string argument
+	pop	bc
+	ld	a,b
+	and	c
+	inc	a		; BC = -1?
+	jr	z,arger3	; if yes -> argument error
+	ld	a,(bc)
+	dec	a		; length = 1?
+	jr	nz,arger3	; if not -> argument error
+	call	CLRFAC		; clear FP accum
+	inc	bc
+	inc	bc
+	inc	bc
+	ld	a,(bc)		; get char
+	ld	(FAC2),a	; store it in flt acc
+	jp	OPRINT
+arger3:	rst	10h
+	db	00h		; argument error
+
+; --- CHR$
+
+$CHR:	call	INTEVAL		; evaluate integer expression
+	call	RQRPAR		; require ')'
+	ld	bc,1		; length = 1 char
+	push	bc
+	ld	ix,BASDAT	; dummy address to copy from
+	call	MKSTR		; alloc string
+	pop	ix		; get string address
+	push	ix
+	ld	a,(FAC2)
+	ld	(ix+3),a	; store char
+	jp	STROPR
+
+; --- POS
+
+$POS:	call	EVAL		; evaluate expression (src string)
+	jp	nc,argerr	; if numeric expr -> argument error
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	nz,snerr
+	call	EVAL		; evaluate expression (search substring)
+	jp	nc,argerr	; if numeric expr -> argument error
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	nz,snerr
+	call	EVAL		; evaluate expression (starting index)
+	jp	c,argerr	; if string expr -> argument error
+	call	INT		; remove fractionary part from FP accum
+	call	RQRPAR		; require ')'
+	ld	(T4),hl
+	ld	bc,(FAC1)	; get starting pos
+	ld	a,b
+	or	a
+	jp	m,pos1		; jump if negative (assume 1)
+	or	c
+	jp	nz,pos8		; jump if not an integer
+	ld	bc,(FAC2)	; else get integer value
+	ld	a,b
+	or	a
+	jp	m,pos1
+	or	c
+	jr	nz,pos2		; jump if > 0
+pos1:	ld	bc,1		; else assume 1
+pos2:	ld	(T3),bc
+	ld	ix,0
+	add	ix,sp
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	ld	a,d		; null src string?
+	and	e
+	inc	a
+	jr	z,pos8		; return 0 if yes
+	ld	a,(de)		; else get its length
+	ld	e,a		;  into DE
+	ld	d,0
+	pop	bc
+	push	bc
+	ld	a,b		; null search string?
+	and	c
+	inc	a
+	jr	nz,pos3		; jump if not
+	push	hl
+	ld	hl,(T3)
+	call	CPHLDE
+	ld	c,l
+	ld	b,h
+	pop	hl
+	jr	nc,pos9		; return 1 if start <= src length
+	ld	c,e		; else adjust value
+	ld	b,d
+	inc	bc		; position is 1-based
+	jr	pos9		; and return
+
+pos3:	push	hl
+	ld	hl,(T3)
+	call	CPHLDE
+	pop	hl
+	jr	c,pos8		; return 0 if start > src length
+
+	pop	hl		; pop addr of search string
+	ld	c,(hl)
+	ld	b,0		; get length of search string
+	inc	hl		; skip header
+	inc	hl
+	inc	hl
+	push	hl
+	add	hl,bc		; add starting address
+	ld	(T2),hl		; store ptr to end of search string in T2
+	pop	bc		; point to start of search text
+
+	pop	hl		; pop addr of src string
+	inc	hl		; skip header
+	inc	hl
+	push	hl
+	inc	hl
+	add	hl,de		; obtain end address of src string
+	ld	(T1),hl		; store ptr to end of src string in T1
+
+	pop	de		; pop addr of src string+2 (index is 1-based)
+	ld	hl,(T3)
+	add	hl,de		; add start index, point to src text
+
+	ld	e,c
+	ld	d,b
+
+	ld	bc,(T3)
+
+pos4:	ld	a,(de)
+	cp	(hl)		; char matches?
+	inc	hl
+	jr	nz,pos7		; jump if yes to compare rest of string
+	push	hl		; remember this position
+	push	de
+	inc	de
+pos5:	push	hl
+	ld	hl,(T2)
+	call	CPHLDE		; end of search string reached?
+	pop	hl
+	jr	z,pos9		; substring found, return index
+	push	de
+	ld	de,(T1)
+	call	CPHLDE		; end of src string reached?
+	pop	de
+	jr	z,pos6		; exit inner loop if yes
+	ld	a,(de)
+	cp	(hl)		; else compare chars
+	inc	hl
+	inc	de
+	jr	z,pos5		; loop if equal
+pos6:	pop	de		; restore saved position
+	pop	hl
+pos7:	inc	bc		; else increase index
+	push	de
+	ld	de,(T1)
+	call	CPHLDE		; end of src string reached?
+	pop	de
+	jr	nz,pos4		; loop if not
+	ld	bc,0
+	jr	pos10		; else not found, return 0
+
+pos8:	ld	bc,0		; return 0
+pos9:	pop	de		; drop string pointers
+	pop	de
+pos10:	ld	(FAC2),bc	; store position
+	ld	bc,0
+	ld	(FAC1),bc	; as integer
+	ld	hl,(T4)
+	jp	OPRINT		; return result
+
+; --- SEG$
+
+$SEG:	call	EVAL		; evaluate expression
+	jp	nc,argerr	; if numeric expr -> argument error
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	nz,snerr	; if not -> syntax error
+	call	EVAL		; evaluate expression
+	jp	c,argerr	; if string expr -> argument error
+	call	INT		; remove fractionary part from FP accum
+	call	PSHFAC		; push FP accum (starting substring pos)
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	nz,snerr	; if not -> syntax error
+	call	EVAL		; evaluate expression
+	jp	c,argerr	; if string expr -> argument error
+	call	INT		; remove fractionary part from FP accum
+	call	RQRPAR		; require ')'
+	pop	bc		; FAC1 get starting substring pos
+	pop	de		; FAC2
+	ld	a,b
+	or	a
+	jp	m,seg1		; jump if negative
+	or	c
+	jr	nz,seg6		; return null if not zero (not an integer)
+	ld	a,d		; get integer
+	or	a
+	jp	m,seg1
+	or	e
+	jr	nz,seg2		; jump if > 0
+seg1:	ld	de,1		; else assume 1
+seg2:	ld	(T1),de
+	ld	bc,0		; default end pos
+	pop	de
+	push	de
+	ld	a,d
+	and	e
+	inc	a		; null string?
+	jr	z,seg7		; return if yes
+	ld	a,(de)
+	ld	c,a		; default end pos = end of string (length)
+	ld	b,0
+	ld	de,(FAC1)	; get end substring position
+	ld	a,d
+	or	a
+	jp	m,seg6		; return null string if negative
+	or	e
+	jr	z,seg3		; jump if zero (integer)
+	jr	seg4		; else use end of string
+seg3:	ld	de,(FAC2)	; get integer
+	ld	a,d
+	or	a
+	jp	m,seg6		; return null if <= 0
+	or	e
+	jr	z,seg6
+	push	hl
+	ld	l,c		;!!!write better!
+	ld	h,b
+	call	CPHLDE		; ensure end position is <= string length
+	pop	hl
+	jr	c,seg5		; if BC > DE
+seg4:	ld	e,c		; else adjust value
+	ld	d,b
+seg5:	push	hl
+	ld	hl,(T1)
+	call	CPHLDE		; ensure starting pos <= end pos
+	pop	hl
+	jr	c,seg6		; return null otherwise (if T1 > de)
+	ex	(sp),hl		; push HL
+	push	hl
+	ld	hl,(T1)
+	or	a
+	ex	de,hl
+	sbc	hl,de		; obtain substring length
+	inc	hl		; +1
+	push	de		; remember start
+	ld	ix,BASDAT	; dummy address
+	push	hl		; push length
+	call	MKSTR		; alloc space/store string in dynamic area
+	pop	de		; get start of substring
+	pop	hl		; and its length
+	pop	bc
+	add	hl,bc		; add starting address of src string
+	push	de		; replace start of string on stack
+	ld	a,(de)		; get length of dest string
+	ld	c,a
+	ld	b,0
+	inc	de		; point to start of text
+	inc	de
+	inc	de
+	inc	hl		; 2 since indexes are 1-based
+	inc	hl
+	ldir			; copy substring
+	pop	hl
+	ex	(sp),hl		; restore HL
+	jp	STPR		; store result
+
+seg6:	pop	bc
+	ld	bc,-1		; return null string
+	push	bc
+seg7:	jp	STROPR		; store result
+
+; --- VAL
+
+$VAL:	call	STRARG		; evaluate string argument
+	pop	de
+	push	de
+	ld	a,d
+	and	e
+	inc	a		; was -1?
+	jr	nz,val1		; branch if not
+	call	CLRFAC		; else clear FP accum
+	pop	af		; drop word
+	jp	OPRFP		; and return 0
+val1:	ld	ix,0
+	add	ix,sp
+	ld	a,(de)
+	inc	a
+	jr	z,arger1
+	ld	c,a
+	ld	b,0
+	push	bc		; push length twice
+	push	bc
+	call	MKSTR		; get string
+	pop	bc
+	inc	bc
+	inc	bc
+	ex	(sp),hl		; push HL, pop length
+	add	hl,bc
+	ex	de,hl
+	pop	hl		; restore HL
+	xor	a
+	ld	(de),a
+	pop	af		; drop word
+	push	de
+	inc	bc
+	call	SVAL
+	jr	c,arger1
+	push	bc
+	call	ITOF		; convert integer to real
+	pop	bc
+	ld	a,(bc)
+	or	a
+	jr	nz,arger1
+	pop	de
+	ld	a,c		;!!!CPDEBC
+	cp	e
+	jr	nz,arger1
+	ld	a,b
+	cp	d
+	jp	z,OPRFP
+arger1:	rst	10h
+	db	00h		; argument error
+
+; --- TRM$
+
+$TRM:	call	STRARG		; get string argument
+	ld	ix,0
+	add	ix,sp
+	pop	de		; get address of string into DE
+	push	de
+	inc	de
+	ld	a,d		; check for null string
+	or	e
+	jp	z,STROPR
+	dec	de
+	ld	a,(de)
+	ld	c,a		; get length of the string into BC
+	ld	b,0
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl
+	inc	de
+	inc	de
+	inc	de		; point to end of the string
+trm1:	dec	de		; backup one char
+	ld	a,(de)
+	cp	' '		; is a space?
+	jr	nz,trm2		; exit loop if not
+	dec	c		; else decrement length
+	jr	nz,trm1		; and loop
+	pop	bc
+	ld	bc,-1		; string became null
+	push	bc
+	jp	STROPR
+trm2:	push	bc		; push new size
+	call	MKSTR		; create new string
+	pop	bc
+	pop	af		; drop address of old string
+	push	bc
+	jp	STPR
+
+; --- STR$
+
+$STR:	call	NUMARG		; evaluate numeric argument
+	ld	bc,16		; max result length
+	push	bc
+	ld	ix,BASDAT	; dummy address
+	call	MKSTR		; alloc string
+	pop	de		; get string address into DE
+	push	de
+	inc	de
+	inc	de
+	inc	de
+	ld	(T2),de
+	ld	bc,0
+	ld	(T1),bc
+	call	NUMSGN
+	dw	SAVCHR
+	ld	ix,0
+	add	ix,sp
+	ld	bc,(T1)
+	push	bc		; push length
+	call	MKSTR
+	pop	bc
+	pop	de		; drop word
+	push	bc
+	jp	STPR
+
+; --- PI
+
+$PI:	ld	ix,PI		; IX = address of number 3.14159
+	call	FPLD		; store number into FP accum
+	jp	OPRFP
+
+PI:	dw	4149h,0FDAh	; 3.14159
+
+; --- INT
+
+$INT:	call	NUMARG		; evaluate numeric argument
+	call	INT		; remove fractionary part from FP accum
+	call	ITOF
+	jp	OPRFP
+
+; --- DAT$
+
+$DAT:	call	DATIM
+	ld	ix,DATPTR	; IX = &DATPTR
+	ld	bc,11
+	push	bc		; length = 11 chars (XX-XXX-XXXX)
+	call	MKSTR
+	jp	STROPR
+
+; --- CLK$
+
+$CLK:	call	DATIM
+	ld	ix,CLKPTR	; IX = &CLKPTR
+	ld	bc,8		; length = 8 chars (XX:XX:XX)
+	push	bc
+	call	MKSTR
+	jp	STROPR
+
+	END

@@ -1,0 +1,4051 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Immediate mode commands
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+	public	EDIT,CLVARS,GFIL,SCRATCH,OLD1,HEAD1,HEAD2,HEAD3
+	public	UPPACK
+
+	extrn	VERSION,CLRFAC,MSG,SAVREG,INITPG,CLOSYS,READY,LITEVAL
+	extrn	SKPEOL,SKPOBJ,CPHLDE,CPIXBC,RDBLK,WRBLK,DELETE,VARSIZ
+	extrn	FRESET,LINGET,OPNSYS,DATIM,CATALOG,DNPACK,ALLOC,VAL
+	extrn	NAMSET,PURGALL,DISPAT,ODEVTT,EXECUTE,BYE,NUMOUT,FILSPE
+	extrn	CHKFIL,SKPLIN,PUTCHR,ISDIG,CKCTLC,NUMB,SKPSYM,ISLETR
+	extrn	FPSTS,FPST,FILEA,CHAIN1,WRVFBL,RDNXBL,NEGHL,CHKBFP
+	extrn	CPDEHL,CPBCHL
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; The program jumps here after displaying the READY prompt
+
+EDIT:	call	LINGET		; get input line from terminal
+	jr	nc,EDITL0	; not EOF, jump
+	call	CLOSYS		; else close system channel 13
+EDIT1:	ld	hl,0
+	ld	(IDEV),hl	; reset input to terminal
+	ld	hl,(CODE)
+	ld	de,(EDITLN)
+	ld	a,d
+	or	e
+	jr	nz,edln		; jump to find line
+	ld	a,(CHNFLG)
+	or	a		; CHAIN or OVERLAY?
+	jr	nz,edit2	; start execution if yes
+	jp	READY		; else go to immediate mode
+
+edln:	call	SKPLIN		; go to next program line
+	jr	c,ulnerr	; jump if end of program reached
+	ex	de,hl
+	ld	a,(hl)		; else fetch line number into DE
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl
+	push	hl
+	ld	hl,(EDITLN)
+	call	CPHLDE
+	pop	hl
+	jr	c,edln		; loop until line >= EDITLN found
+	jr	z,edit2		; jump if line found
+	ld	a,(CHNFLG)
+	or	a		; CHAIN or OVERLAY?
+	jr	z,edit3		; jump if not
+
+ulnerr:	rst	10h
+	db	05h		; undefined line number
+
+edit2:	ld	a,(CHNFLG)
+	cp	2		; CHAIN?
+	jr	c,edit3		; jump if not
+	push	hl
+	call	DNPACK		; down-pack strings
+	call	INIRUN		; prepare to run program
+	pop	hl
+edit3:	xor	a
+	ld	(CHNFLG),a	; clear CHAIN/OVERLAY flag
+	ld	bc,0
+	ld	(EDITLN),bc
+	jp	EXECUTE
+
+EDITL0:	ld	hl,EDIT
+	push	hl		; push return address on stack (main loop)
+EDITL1:	call	TRAN		; translate (tokenize) line
+	push	hl		; push HL (points one char past end of line)
+	ld	de,LINE		; DE = begin of input buffer
+	or	a
+	sbc	hl,de
+	ex	(sp),hl		; tokenized line length now on stack
+	ex	de,hl
+	ld	a,(hl)		; get first char
+	inc	hl
+	or	a
+	jp	m,eimmed	; jump to exec line if a token
+	ld	b,a		; otherwise fetch word into BC, HI byte first
+	ld	a,(hl)
+	inc	hl
+	ld	c,a		; then LO-byte
+	and	01h		; odd number? (means this is a program line)
+	jr	z,eimmed	; jump to execute line if not (must be a var)
+	dec	bc		; BC = offset into line number table
+	ld	hl,(LINTAB)
+	add	hl,bc		; index into table, HL points to block
+	pop	de		; get length back into DE
+	push	de
+	ld	a,e		; tokenized line length is 3 (empty line)?
+	cp	3		;   (empty line = lineno,CR)
+	jr	z,editl2	; jump if yes to delete any existing line
+	ld	e,(hl)		; get line number from LINTAB into DE
+	inc	hl
+	ld	d,(hl)
+	dec	hl
+	push	hl
+	ld	hl,(HILINO)	; compare with highest line number
+	call	CPDEHL
+	pop	hl
+	jr	nc,DELLN	; if DE <= HILINO
+	ld	(HILINO),de	; set new highest line number
+	pop	hl		; get length
+	push	hl
+	call	NEGHL		; -length
+	ld	bc,(DEFTAB)	; DEFTAB follows CODE
+	dec	bc		; point to last program byte
+	ld	a,(bc)		; get it
+	or	a		; zero?
+	jp	nz,APNDLN	; append new line if not
+	dec	bc		; else backup one byte
+	jp	APNDLN		; append new line
+
+editl2:	pop	de		; drop tokenized line length
+	ld	de,0
+	push	de		; and replace it with zero length
+	inc	hl		; skip over line number
+	inc	hl
+	xor	a
+	ld	(hl),a		; clear second word in LINTAB entry
+	inc	hl		;  (invalidate line)
+	ld	(hl),a
+	dec	hl
+	dec	hl
+	dec	hl		; back to start of LINTAB entry
+	jr	DELLN		; jump to delete line
+
+eimmed:	pop	bc		; pop length
+	pop	af		; remove word from stack (return address?)
+	push	bc		; restore length
+	ld	bc,(IDEV)	; current read chan descr
+	ld	a,b
+	or	c		; reading from file (OLD command)?
+	jp	z,EXECLN	; execute line in not
+snerr:	rst	10h
+	db	06h		; else -> syntax error
+
+; Compare line numbers pointed to by IX and DE.
+; Returns CY if (IX) > DE.
+
+CMPLN:	inc	de
+	ld	a,(de)
+	cp	(ix+1)
+	dec	de
+	ret	nz
+	ld	a,(de)
+	cp	(ix+0)
+	ret
+
+; Replace, delete or insert program line
+
+DELLN:	push	hl		; get LINTAB address for this line
+	pop	ix		;  into IX
+	ld	hl,(CODE)	; HL = begin of program
+fndl1:	call	SKPLIN		; go to next line
+	ld	c,l		; remember address of line in BC
+	ld	b,h
+	jp	c,INSLIN	; jump if end of program
+	call	CMPLN		; else compare line numbers
+	jr	c,fndl1		; loop while (DE) < (IX)
+	jp	nz,INSLIN	; if different line number -> insert line
+
+	; fall thru		; else replace line
+
+; Replace line. Here with BC = addr of line to replace.
+
+	push	bc
+	call	SKPLIN		; go to next line, HL = addr of next line.
+	pop	bc
+
+	; first, delete any references to this line in PDL and DEFTAB
+
+	; if a line is changed which is referenced by the read pointer,
+	; an FN pointer or a GOSUB pointer, then that pointer must be
+	; cleared
+
+DELLIN:	ld	ix,(PDL)
+	ld	de,(GSBCTR)
+	ld	a,(ix)
+	and	(ix+1)
+	inc	a		; (ix) = 0FFFFh? (first entry in PDL)
+	jr	z,delln2	; skip if yes
+delln1:	inc	bc
+	call	CPIXBC
+	dec	bc
+	jr	c,delln2	; jump if (IX) <= BC [(IX) < BC+1]
+	push	de
+	ld	e,(ix)
+	ld	d,(ix+1)
+	call	CPDEHL
+	pop	de
+	jr	c,delln2	; or if (IX) > HL
+	xor	a
+	ld	(ix),a		; clear this entry
+	ld	(ix+1),a
+delln2:	inc	ix
+	inc	ix
+	ld	a,d
+	or	e
+	jr	z,delln3
+	dec	de
+	jr	delln1		; !!! was bgt ; loop while DE > 0
+
+delln3:	ld	ix,(DEFTAB)
+	inc	ix
+	inc	ix
+delln4:	push	hl
+	push	de
+	push	ix
+	pop	de
+	ld	hl,(LINTAB)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,delln6	; exit loop if IX >= LINTAB
+	inc	bc
+	call	CPIXBC
+	dec	bc
+	jr	c,delln5	; jump if (IX) <= BC [(IX) < BC+1]
+	push	de
+	ld	e,(ix)
+	ld	d,(ix+1)
+	call	CPDEHL
+	pop	de
+	jr	c,delln5	; or if (IX) > HL
+	xor	a
+	ld	(ix),a		; clear this entry
+	ld	(ix+1),a
+delln5:	inc	ix
+	inc	ix
+	inc	ix
+	inc	ix
+	jr	delln4		; loop
+
+delln6:	or	a
+	sbc	hl,bc		; obtain length [of block to delete?]
+	jr	insln1		; continue below
+
+; Insert line
+
+INSLIN:	ld	hl,0
+insln1:	pop	de
+	push	de		; get length into DE
+	or	a
+	sbc	hl,de		; HL -= length
+
+	; fix any references in PDL and DEFTAB for current line
+
+	ld	ix,(PDL)
+	ld	de,(GSBCTR)
+	ld	a,(ix)
+	and	(ix+1)
+	inc	a		; (IX) = 0FFFFh?
+	jr	z,insln3	; skip if yes
+insln2:	call	CPIXBC
+	jr	c,insln3	; skip if (IX) < BC
+	ex	de,hl
+	push	hl
+	ld	l,(ix)
+	ld	h,(ix+1)
+	or	a
+	sbc	hl,de
+	ld	(ix),l
+	ld	(ix+1),h	; (IX) -= HL (fixup address in PDL)
+	pop	hl
+	ex	de,hl
+insln3:	inc	ix
+	inc	ix
+	ld	a,d
+	or	e
+	jr	z,insln4
+	dec	de
+	jr	insln2		; if > 0 (check!)
+
+insln4:	ld	ix,(DEFTAB)
+	inc	ix
+	inc	ix
+insln5:	push	hl
+	push	de
+	push	ix
+	pop	de
+	ld	hl,(LINTAB)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,insln7	; exit loop if IX >= LINTAB
+	call	CPIXBC
+	jr	c,insln6	; skip if (IX) < BC
+	ex	de,hl
+	push	hl
+	ld	l,(ix)
+	ld	h,(ix+1)
+	or	a
+	sbc	hl,de
+	ld	(ix),l
+	ld	(ix+1),h	; (IX) -= HL (fixup DEFTAB address)
+	pop	hl
+	ex	de,hl
+insln6:	inc	ix
+	inc	ix
+	inc	ix
+	inc	ix
+	jr	insln5		; loop
+
+insln7:	ld	a,h		; check length difference
+	or	a
+	jp	m,APNDLN	; jump if < 0 (expand)
+	or	l
+	jp	z,apndl6	; jump if = 0 (same length as deleted)
+
+	; contract
+
+	pop	de		; get length into DE
+	push	de
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl		; dst in DE = BC + length
+	add	hl,de		; src in HL = BC + length + length2
+	push	bc
+	push	de
+	ex	de,hl
+	ld	hl,(DEFTAB)
+	or	a
+	sbc	hl,de
+	ld	c,l		; BC = block size
+	ld	b,h
+	ex	de,hl		; src in HL
+	pop	de		; dst in DE
+	ldir			; move program code down
+	pop	bc
+	dec	de
+	ld	a,(de)
+	or	a
+	jr	z,insln8
+	inc	de
+insln8:	bit	0,e		; even?
+	jr	z,insln9	; jump if yes
+	xor	a
+	ld	(de),a
+	inc	de		; word align
+insln9:	push	bc
+	push	hl
+	ld	hl,(SYMBOL)
+	ld	bc,(DEFTAB)
+	or	a
+	sbc	hl,bc
+	add	hl,de
+	ld	(SYMBOL),hl	; set new SYMBOL start address
+	ld	hl,(LINTAB)
+	or	a
+	sbc	hl,bc		; BC = DEFTAB
+	add	hl,de
+	ld	(LINTAB),hl	; set new LINTAB start address
+	ld	(DEFTAB),de
+	pop	hl
+	push	de
+	ex	de,hl
+	ld	hl,(LOFREE)
+	or	a
+	sbc	hl,de
+	ld	c,l		; BC = size of block to move
+	ld	b,h
+	ex	de,hl		; src in HL
+	pop	de		; dst in DE
+	ldir			; move data areas (DEFTAB..LOFREE) down
+	pop	bc
+	ld	(LOFREE),de	; set new LOFREE
+	jr	insl11
+insl10:	xor	a
+	ld	(de),a		; clear vacated string storage to zeroes
+	inc	de
+insl11:	call	CPHLDE
+	jr	c,insl10	; loop while DE < HL
+	jp	apndl6
+
+; Append new program line. Here with HL = -length.
+
+	; expand
+
+APNDLN:	ld	de,(DEFTAB)
+	dec	de
+	ld	a,(de)		; get last program byte
+	or	a		; zero?
+	jr	z,apndl1	; jump if yes
+	inc	de
+apndl1:	push	hl		; HL = -length
+	ex	de,hl
+	or	a
+	sbc	hl,de
+	push	hl
+	pop	ix		; IX = DEFTAB - HL = DEFTAB + length
+	inc	hl
+	res	0,l		; make it even
+	ld	de,(DEFTAB)
+	or	a
+	sbc	hl,de		; HL = IX - DEFTAB (corrected length)
+	ld	de,(LOFREE)
+	add	hl,de		; add LOFREE
+	ld	de,(HIFREE)
+	call	CPHLDE
+	jr	nc,apndl2	; jump if HL <= HIFREE
+ptberr:	rst	10h		; else error
+	db	10h		; program too big
+
+apndl2:	ld	de,(LOSTR)	; check to see that the space that will
+	call	CPHLDE		;  be used is not occupied by strings
+	jr	nc,apndl3	; if HL <= LOSTR
+	call	UPPACK		; no, move them up
+	ld	de,(LOSTR)	; try again
+	call	CPHLDE
+	jr	c,ptberr	; if HL > LOSTR -> program too big
+apndl3:	ld	de,(LOFREE)	; get old LOFREE into DE
+	ld	(LOFREE),hl	; set new LOFREE
+	push	bc		; push BC = old DEFTAB-1
+	push	de
+	push	hl
+	ld	hl,(DEFTAB)
+	or	a
+	ex	de,hl
+	sbc	hl,de
+	ld	c,l		; BC = size of block to move
+	ld	b,h
+	pop	de		; DE = dst
+	pop	hl		; HL = src
+	jr	z,apndl4	; jump if nothing to move
+	dec	hl
+	dec	de
+	lddr			; move data area (DEFTAB..LOFREE) up
+	inc	de
+apndl4:	ld	hl,(SYMBOL)
+	ld	bc,(DEFTAB)	; get DEFTAB into BC
+	or	a
+	sbc	hl,bc		; HL = SYMBOL - DEFTAB (size)
+	add	hl,de
+	ld	(SYMBOL),hl	; set new symbol table start
+	ld	hl,(LINTAB)
+	or	a
+	sbc	hl,bc		; BC still has DEFTAB
+	add	hl,de
+	ld	(LINTAB),hl	; set new LINTAB
+	ld	(DEFTAB),de	;  and DEFTAB
+	ex	de,hl		; restore HL
+	dec	hl
+	ld	(hl),0		; clear the possibly used filler
+	pop	bc		; pop old DEFTAB-1
+	pop	hl		; pop -length
+	push	bc
+	push	ix
+	pop	de		; DE <- IX
+	add	hl,de		; HL = IX - length
+	push	hl
+	or	a
+	sbc	hl,bc
+	ld	c,l		; BC = block size
+	ld	b,h
+	pop	hl		; HL = src, dst already in DE
+	jr	z,apndl5	; jump if nothing to move
+	dec	hl
+	dec	de
+	lddr			; move code up
+apndl5:	pop	bc
+
+apndl6:	ld	e,c		; DE = dst
+	ld	d,b
+	pop	bc		; pop line length
+	push	de		; remember starting dest addr
+	ld	a,b
+	or	c
+	jr	z,apndl7
+	ld	hl,LINE		; HL = src (begin of input buffer)
+	ldir			; copy the new line into the code
+apndl7:	pop	hl		; pop address of inserted line into HL
+	dec	hl
+apndl8:	call	SKPLIN		; find end of program line
+	ret	c		; return if end of program
+	push	hl
+	ld	bc,(CODE)
+	or	a
+	sbc	hl,bc		; obtain offset from start of CODE
+	inc	de		; skip over line number
+	inc	de
+	ex	de,hl
+	ld	(hl),e		; (DE+2) <- HL - CODE
+	inc	hl
+	ld	(hl),d		; store program line offset
+	pop	hl
+	jr	apndl8		; loop to fix all backpointers
+
+; Execute line
+
+EXECLN:	pop	bc		; pop length into BC
+	ld	hl,LINE		; HL = begin of input buffer
+	call	ODEVTT
+	ld	a,(hl)
+	cp	T.CMD		; direct statement follows?
+	jp	z,DIRECT	; execute direct statement if yes
+	push	hl
+	add	hl,bc
+	ld	de,(CODE)
+	call	CPDEHL
+	jp	nc,errlng	; error if HL >= CODE
+	ld	(hl),T.EOF	; add "end of program" token
+	ld	hl,0
+	ld	(CLMNTT),hl	; clear terminal column
+	pop	hl
+	jp	EXECUTE		; start execution
+
+;-----------------------------------------------------------------------
+
+; Translate input line
+
+TRAN:	ld	hl,LINE
+	ld	e,l		; HL,DE = begin of input buffer
+	ld	d,h
+tr1:	ld	a,(hl)
+	inc	hl
+	cp	CR		; CR?
+	jr	nz,tr1		; no, loop (find the end of string)
+	push	hl
+	or	a
+	sbc	hl,de		; compute length (note we have at least 1 char)
+	ld	c,l
+	ld	b,h
+  IF 0
+	ld	de,(CODE)	; DE = ptr to tokenized prog text @end of inp buf
+  ELSE
+	ld	de,LINE+134	;!!!
+  ENDIF
+	dec	de		; dest in DE
+	pop	hl
+	dec	hl		; src in HL
+	lddr			; move string to end of buffer
+	ex	de,hl
+	inc	hl		; src now in HL (string in hi-end)
+	inc	de		; dst now in DE (start of input buffer)
+tr2:	ld	(T2),de		; T2 = begin of input buffer
+	ld	bc,0
+	ld	(T3),bc
+trnxt:	xor	a
+	ld	(T1),a
+trnx1:	call	GETNB		; get next non-blank or CR character
+	cp	CR		; CR? (i.e. empty line?)
+	jr	nz,tr3		; no, process
+	ex	de,hl
+	ld	(hl),T.EOL	; otherwise set end of line
+	inc	hl
+	ret			; and return with HL = past end of tokenized line
+
+tr3:	cp	'.'		; '.' (???)
+	jp	z,xnum
+	cp	'?'		; shortcut for PRINT
+	jp	z,tr13
+	call	ISDIG		; digit?
+	jp	nc,xnum		; jump if yes
+	ld	ix,OPTBL	; operator table address
+	ld	a,(hl)
+	call	ISLETR		; is alphabetic?
+	jr	c,tr6		; jump if not
+	ld	bc,0
+	ld	(T3),bc
+	ld	ix,KWTBL	; if yes, use keyword table
+	ld	c,l		; BC = begin of line
+	ld	b,h
+
+tr4:	inc	bc		; find next ascii non-space character
+	ld	a,(bc)
+	cp	CR		; CR?
+	jr	z,tr5
+	cp	' '+1		; space or below?
+	jr	c,tr4		; yes, ignore
+tr5:	call	ISLETR		; is character alphabetic?
+	jp	c,xvar		; jump if not (no keyword matches)
+tr6:	ld	c,l
+	ld	b,h
+tr7:	ld	a,(bc)
+	inc	bc
+	call	ISLETR		; is alphabetic?
+	jr	c,tr8		; jump if not
+	and	5Fh		; convert to uppercase (!!!TODO: write this better)
+tr8:	cp	(ix)		; compare character to keyword
+	inc	ix
+	jr	z,tr7		; if matches, loop
+	dec	bc		; back to last unmatched character from input
+	dec	ix
+	ld	a,(ix)
+	or	a		; A = first unmatched keyword char
+	jp	z,xvar		; if zero, it was the end of the table:
+				;  jump if no matches found
+	jp	m,tr11		; maybe token value? jump if yes
+	ld	a,(bc)		; get last unmatched char again
+	inc	bc
+	cp	CR		; CR? end of line?
+	jr	z,tr9
+	dec	bc
+	ld	a,(bc)
+	inc	bc
+	cp	' '+1		; was the preceding char blank?
+	jr	c,tr7		; if yes, ignore it (note that this allows
+				; having spaces embedded inside keywords!)
+tr9:	dec	bc		; back one input word character
+	ld	a,(ix)
+	inc	ix
+	cp	' '		; space?
+	jr	z,tr7		; loop if yes
+tr10:	ld	a,(ix)
+	inc	ix
+	or	a		; token value?
+	jp	p,tr10		; no, skip remaining chars
+	jr	tr6		; and try next keyword
+
+tr11:	cp	T.STOP		; STOP/DEL
+	jr	nz,tr12
+	dec	de
+	ld	a,(de)
+	inc	de
+	cp	T.EQ		; previous token was a '=' ?
+	jp	z,xvar
+tr12:	push	de		; TODO: write this better!
+	push	ix
+	pop	hl
+	ld	de,CMDTBL	; direct statement table address
+	call	CPHLDE		; CY if IX > CMDTBL
+	pop	de
+	ld	l,c
+	ld	h,b
+	jr	nc,tr14		; jump if it was not a direct statement
+	ld	a,T.CMD
+	ld	(de),a		; insert "command" token
+	inc	de
+	ld	a,(ix)
+	ld	(de),a		; and follow with the token
+	inc	de
+	jr	tr15
+
+tr13:	ld	a,T.PRNT
+	ld	(de),a
+	inc	de
+	inc	hl
+	jp	trnxt
+
+tr14:	ld	a,(ix)
+	ld	(de),a		; store the token
+	inc	de
+	push	hl
+	push	de
+	push	ix		; !!!TODO: write this better
+	pop	de
+	ld	hl,KWTBL	; keyword table address
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	c,trystr	; jump if it was not a keyword
+	ld	a,(ix)
+	cp	T.REM		; REM
+	ld	c,0FFh		; do not compress spaces
+	jp	z,xlit
+	cp	T.DATA		; DATA
+	jr	z,xdata
+	cp	T.FN		; FN
+	jp	z,xfn
+	cp	T.NEXT		; NEXT
+	jp	z,xnext
+	cp	T.GSUB		; GOSUB
+	jr	z,xgoto
+	cp	T.GOTO		; GOTO
+	jr	z,xgoto
+	cp	T.THEN		; THEN
+	jr	z,xthen
+	cp	T.CALL		; CALL
+	jp	z,xcall
+	jp	trnxt
+
+tr15:	cp	T.SUB		; SUB
+	jr	nz,tr18		; jump if not
+xdata:	ld	c,a
+	ld	a,T.TEXT
+	ld	(de),a		; SUB or DATA: add "text" token
+	inc	de
+	call	CPHLDE
+	ld	a,c
+	jp	nc,errlng	; error -> line too long to translate
+tr16:	ld	a,(hl)
+	cp	CR		; CR?
+	jr	z,tr17
+	ld	(de),a		; no, copy the rest of the line unchanged
+	inc	hl
+	inc	de
+	jr	tr16		; loop
+tr17:	xor	a
+	ld	(de),a		; end it with a null char
+	inc	de
+	jp	trnxt
+
+tr18:	cp	T.REN		; RENAME
+	jp	c,trnxt		; jump if no file-related operation
+	ld	c,0		; compress spaces
+	jp	xlit		; store the rest of the line unchanged
+
+; process THEN token
+
+xthen:	ld	(T2),hl
+
+	; fall thru
+
+; process GOTO/GOSUB tokens
+
+xgoto:	ld	(T3),ix		; ??? to make it non-zero?
+	jp	trnxt
+
+; not a keyword, try string
+
+trystr:	ld	a,(ix)
+	cp	T.EOL		; '\' token
+	jp	z,tr2
+	cp	T.SNGQ		; ' token
+	ld	c,"'"
+	jr	z,xstr1
+	cp	T.DBLQ		; " token
+	jp	nz,trnxt
+	ld	c,'"'
+xstr1:	ld	a,T.TEXT
+	ld	(de),a		; add "text" token
+	inc	de
+	call	CPHLDE
+	jp	nc,errlng	; error -> line too long to translate
+xstr2:	ld	a,(hl)
+	cp	c		; delimiting quote char found?
+	jr	z,xstr3		; yes, end loop
+	cp	CR		; end of line?
+	jr	z,xstr5
+	ld	(de),a		; otherwise keep copying
+	inc	hl
+	inc	de
+	jr	xstr2		; loop
+xstr3:	xor	a
+	ld	(de),a		; append a zero char
+	inc	de
+	inc	hl
+	ld	a,c
+	cp	"'"		; ' char?
+	ld	a,T.SNGQ	; use ' token as the delimiting quote
+	jr	z,xstr4
+	ld	a,T.DBLQ	; else use " token
+xstr4:	ld	(de),a		; add the delimiting quote
+	inc	de
+	jp	trnxt
+
+; Unterminated string: replace the quote token + "text" token by a
+; "text" token followed by the quote.
+
+xstr5:	ld	l,e
+	ld	h,d
+	ld	(hl),0		; append a zero char
+	inc	hl
+	ld	(hl),T.EOL	; and a '\' token
+	inc	hl
+xstr6:	dec	de
+	ld	a,(de)
+	cp	T.TEXT		; search for the "text" token
+	jr	nz,xstr6
+	ld	a,c		; get quote char (still in C)
+	ld	(de),a		; replace the "text" token with the quote
+	dec	de
+	ld	a,T.TEXT
+	ld	(de),a		; and replace the quote token with a "text"
+	ret			; return with HL pointing after end of line
+
+; Process FN token
+
+xfn:	call	GETNB		; get next non-blank or CR character
+	call	ISLETR		; must be alphabetic (function name)
+	jr	c,badfn		; error if not
+	ld	c,a		; BC = function name
+	ld	b,0
+	inc	hl
+	res	5,c		; convert to uppercase
+	call	GETNB		; get next non-blank or CR character
+	cp	'$'		; string function?
+	jr	z,xfn1		; jump if yes, use '$' as second char of name
+	cp	'%'		; integer function?
+	jr	nz,xfn2		; jump if not
+xfn1:	ld	b,(hl)		; set second char of name (FN type)
+	inc	hl
+xfn2:	ld	a,(hl)		; get next char
+	cp	'('		; must be left parenthesis
+	jr	z,xfn3
+	dec	hl
+	jr	badfn		; else error
+xfn3:	push	hl
+	push	de
+	ld	de,(DEFTAB)	; scan DEFTAB
+xfn4:	ld	hl,(LINTAB)	; up to LINTAB
+	call	CPHLDE
+	jr	nc,xfn6		; exit loop if DE >= LINTAB
+	ld	a,(de)		; compare name
+	cp	c
+	jr	nz,xfn5
+	inc	de
+	ld	a,(de)
+	dec	de
+	cp	b
+	jr	z,xfn7		; found
+xfn5:	inc	de		; else skip this entry
+	inc	de
+	inc	de
+	inc	de
+	jr	xfn4		; loop
+xfn6:	push	bc		; function not found, push function name
+	ld	c,e		; BC = end of DEFTAB
+	ld	b,d
+	ld	de,4		; DE = size
+	call	MOVRGN		; alloc 4 bytes for FN table entry
+	ld	l,e
+	ld	h,d
+	pop	bc		; pop function name
+	ld	(hl),c		; store function name
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	ld	a,0FFh
+	ld	(hl),a		; followed by 0FFFFh
+	inc	hl
+	ld	(hl),a
+	ld	bc,4
+	ld	hl,(LINTAB)
+	add	hl,bc
+	ld	(LINTAB),hl	; update LINTAB
+	ld	hl,(SYMBOL)
+	add	hl,bc
+	ld	(SYMBOL),hl	; and SYMBOL start addresses
+xfn7:	ld	hl,(DEFTAB)
+	ex	de,hl
+	or	a
+	sbc	hl,de		; HL = DE - DEFTAB (FN offset into DEFTAB)
+	pop	de
+	ld	a,h
+	ld	(de),a		; store offset in translated line (note order)
+	inc	de
+	ld	a,l
+	ld	(de),a
+	inc	de
+	pop	hl		; restore input pointer
+	jp	trnxt		; and resume scanning
+
+badfn:	dec	hl
+	ld	(hl),'N'	; FN error
+	dec	hl
+	ld	(hl),'F'
+	dec	de
+	ld	c,0FFh		; do not compress spaces
+	jr	xlit		; store the rest of the line as text
+
+; Process CALL token
+
+xcall:	xor	a
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	inc	de
+	call	GETNB		; get next non-blank or CR character
+	cp	"'"
+	jr	z,xnext1
+	cp	'"'
+	jr	z,xnext1
+	ld	c,0		; compress spaces
+	jr	xlit		; store the rest of the line as text
+
+; Process NEXT token
+
+xnext:	xor	a
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	push	hl
+	ld	hl,9
+	add	hl,de
+	ex	de,hl
+	pop	hl
+xnext1:	call	CPHLDE
+	jr	nc,errlng	; -> line too long to translate
+	jp	trnxt
+
+errlng:	rst	10h
+	db	0Fh		; line too long to translate
+
+; Check for variable name
+
+xvar:	push	hl		;!!!TODO!!! write this better
+	push	de
+	push	ix
+	pop	hl
+	ld	de,OPTEND	; end of operator table?
+	call	CPHLDE
+	pop	de
+	pop	hl
+	ld	c,0FFh		; (do not compress spaces)
+	jr	z,xlit		; if yes, add the rest of the line unmodified
+	ld	(T4),hl		; otherwise it was alphabetic (var name?)
+	ld	a,(hl)		; get first character
+	inc	hl
+	and	5Fh		; convert to uppercase
+	ld	c,a
+	ld	b,0
+	call	GETNB		; get next non-blank or CR character
+	call	ISDIG		; number?
+	jr	nc,xvar2	; jump if yes
+	call	ISLETR		; is alphabetic?
+	jr	c,xv21		; jump if not
+	push	hl
+	ld	hl,(T2)
+	call	CPHLDE
+	pop	hl
+	jr	z,xv1
+	ld	a,(T1)
+	or	a
+	jr	z,xv21
+xv1:	ld	hl,(T4)
+	ld	c,0		; compress spaces
+xlit:	ld	a,T.TEXT
+	ld	(de),a		; add "text" token
+	inc	de
+	call	CPHLDE
+	jr	nc,errlng	; -> line too long to translate
+xlit1:	ld	a,(hl)
+	inc	hl
+	cp	CR		; CR
+	jr	z,xlit3
+	cp	'\'
+	jr	z,xlit3
+	cp	'('
+	jr	z,xlit3
+	cp	' '		; space
+	jr	nz,xlit2
+	inc	c		; check flag in C
+	dec	c		; zero?
+	jr	z,xlit1		; ignore (compress) spaces if yes
+xlit2:	ld	(de),a		; store char
+	inc	de
+	jr	xlit1		; continue until delimiter found
+xlit3:	xor	a
+	ld	(de),a		; end with a zero byte
+	inc	de
+	dec	hl
+	jp	trnxt
+
+; variable name of type letter + number (first char in C)
+
+xvar2:	ld	b,(hl)		; get second char
+	inc	hl
+xv21:	push	de
+	ld	de,(SYMBOL)	; DE = SYMBOL (ptr to variable area?)
+	push	hl		; allocate 2 words on the stack
+	call	GETNB		; get next non-blank or CR character
+xv22:	push	hl
+	ld	hl,(LOFREE)
+	call	CPHLDE		; end of variable area reached?
+	pop	hl		; (NC if DE >= LOFREE+1)
+	jp	nc,addvar	; (if DE > LOFREE) jump if yes (variable not found)
+	push	de
+	pop	ix
+	ex	de,hl
+	call	SKPSYM		; skip to next variable
+	ex	de,hl
+	dec	de
+	ld	a,(de)
+	cp	b		; same name?
+	inc	de
+	jr	nz,xv22		; no, keep searching
+	dec	de		;!!!TODO!!! write this better
+	dec	de
+	ld	a,(de)
+	cp	c
+	inc	de
+	inc	de
+	jr	nz,xv22		; no, keep searching
+	pop	af
+	push	hl		; remember this line position
+	ld	a,(ix+0)
+	and	03h
+	jr	z,xv24
+	ld	a,(hl)
+	cp	'$'		; '$'
+	jr	z,xv22		; loop if yes
+	cp	'%'		; '%'
+	jr	nz,xv23
+	bit	0,(ix+0)	; integer variable? (01h)
+	jr	z,xv22		; loop if not
+	inc	hl
+	jr	xv25
+
+xv23:	bit	0,(ix+0)	; integer variable? (01h)
+	jr	nz,xv22		; loop if yes
+	jr	xv25
+
+xv24:	ld	a,(hl)
+	cp	'$'		; '$'
+	jr	nz,xv22		; loop if not
+	inc	hl
+xv25:	call	GETNB		; get next non-blank or CR character
+	cp	'('		; '('
+	inc	hl
+	jr	z,xarray
+	dec	hl
+	ld	a,(ix+0)
+	and	0Ch
+	jr	z,xarr1		; loop if bits not set
+xv26:	pop	hl		; restore saved position
+	push	hl
+	jp	xv22		; loop
+
+; process array
+
+xarray:	ld	a,(ix+0)
+	and	0Ch		; array?
+	jr	z,xv26		; jump if not
+xarr1:	pop	bc		; drop saved line position
+	push	ix
+	pop	bc		; get variable address into BC
+	jp	addv6
+
+; variable not found, create a new one
+
+addvar:	pop	af		; drop saved line position
+	push	ix		; push variable address
+	push	hl
+	ld	hl,10
+	add	hl,de
+	ex	de,hl
+	ld	hl,(LOSTR)
+	call	CPDEHL
+	pop	hl
+	jr	nc,addv1	; if DE <= LOSTR
+	call	UPPACK		; pack strings towards high memory
+	push	hl
+	ld	hl,(LOSTR)
+	call	CPDEHL
+	pop	hl
+	jp	c,ptberr	; if DE > LOSTR -> program too big
+addv1:	push	hl
+	ld	hl,(HIFREE)
+	call	CPDEHL
+	pop	hl
+	jp	c,ptberr	; if DE > HIFREE -> program too big
+	push	hl
+	ld	hl,-10
+	add	hl,de
+	ex	de,hl
+	pop	hl
+	xor	a
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	dec	de
+	ld	a,(hl)
+	cp	'$'		; '$'
+	jr	z,addv3		; jump if string
+	cp	'%'		; '%'
+	jr	z,addv2		; jump if integer
+	ld	a,(de)
+	set	1,a		; 02h
+	ld	(de),a
+	jr	addv4
+addv2:	ld	a,(de)
+	set	0,a		; 01h
+	ld	(de),a
+addv3:	inc	hl
+addv4:	call	GETNB		; get next non-blank or CR character
+	inc	de
+	inc	de
+	xor	a
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	dec	de
+	dec	de
+	dec	de
+	call	CLRFAC		; clear FP accum
+	ld	ix,4
+	add	ix,de		; IX = push address to store number
+	call	FPST		; store FP accum (clear variable)
+	ld	a,(hl)
+	cp	'('		; '(' (array)?
+	jr	nz,addv5	; jump if not
+	inc	hl		; else skip it
+	ld	a,(de)
+	set	2,a		; and set array bit (04h)
+	ld	(de),a
+addv5:	pop	af
+	push	de		; replace variable address on the stack
+	ex	de,hl
+	call	SKPSYM		; skip to end of variable
+	ex	de,hl
+	ld	(LOFREE),de	; set new end of symbol table
+	dec	de
+	ld	a,b		; store variable name
+	ld	(de),a
+	dec	de
+	ld	a,c
+	ld	(de),a
+	pop	bc		; pop saved variable address
+	ld	a,(bc)		; check type again
+	and	0Ch		; array?
+	jr	nz,addv6	; jump if yes
+	ld	a,(bc)
+	and	03h		; string?
+	jr	nz,addv6	; jump if not
+	inc	bc
+	inc	bc
+	ld	a,0FFh
+	ld	(bc),a		; store -1 (init to null string)
+	inc	bc
+	ld	(bc),a
+	dec	bc
+	dec	bc
+	dec	bc
+addv6:	ld	a,0FFh
+	ld	(T1),a		; non-zero
+	push	hl
+	ld	l,c
+	ld	h,b
+	ld	bc,(SYMBOL)
+	or	a
+	sbc	hl,bc
+	ld	c,l		; BC -= SYMBOL
+	ld	b,h
+	pop	hl
+	pop	de
+addv7:	ld	a,b
+	ld	(de),a		; store offset: HI-byte first
+	inc	de
+	ld	a,c
+	ld	(de),a		; then LO-byte
+	inc	de
+	call	CPHLDE
+	jp	nc,errlng	; if DE > HL -> line too long to translate
+	jp	trnx1		; loop
+
+; Process number
+
+xnum:	push	hl		; push HL
+	call	VAL		; get number into FAC1,FAC2
+	jr	nc,xn1		; jump if OK
+	pop	hl		; otherwise restore HL
+	ld	c,0FFh		; (do not compress spaces)
+	jp	xlit		; and store rest of line unchanged
+xn1:	pop	bc		; restore stack
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jp	nz,xn9		; jump if not an integer
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a
+	jp	m,xn9		; jump if a negative integer
+	push	hl
+	ld	hl,LINE		; are we at the start of input buffer? (-> line #)
+	call	CPHLDE
+	pop	hl
+	jr	z,xprgln	; jump if yes
+	ld	bc,(T3)
+	ld	a,b
+	or	c
+	jr	nz,pln1
+	call	GETNB		; get next non-blank or CR character
+	cp	'%'		; '%' (explicit integer)?
+	jr	z,xn4
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a		; FAC2 > 255?
+	jr	nz,xn3
+xn2:	ld	a,T.LBYT
+	ld	(de),a		; store a "byte literal" token
+	inc	de
+	jr	xn7		; and store a byte value following it
+xn3:	ld	a,T.LINT
+	ld	(de),a		; store a "word literal" token
+	inc	de
+	jr	xn6		; and store a two byte value following it 
+xn4:	inc	hl
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a		; FAC2 > 255?
+	jr	nz,xn5
+	ld	a,0FBh		; T.L???
+	ld	(de),a
+	inc	de
+	jr	xn7
+xn5:	ld	a,T.LFLT
+	ld	(de),a
+	inc	de
+xn6:	ld	bc,(FAC2)	;;; may be redundant
+	ld	a,b
+	ld	(de),a		; store integer: HI-byte first
+	inc	de
+xn7:	ld	bc,(FAC2)	;;; may be redundant
+	ld	a,c
+	ld	(de),a		; then LO-byte
+	inc	de
+xn8:	call	CPHLDE
+	jp	nc,errlng	; -> line too long to translate
+	jp	trnxt		; loop to continue processing
+
+xn9:	ld	a,0FFh		; T.????
+	ld	(de),a
+	inc	de
+	push	de		; get address to store number
+	pop	ix		;  into IX
+	call	FPSTS		; store FP accum swapping bytes
+	inc	de
+	inc	de
+	inc	de
+	inc	de		; DE += FP number length
+	jr	xn8
+
+; input line begins with number (program line number):
+
+xprgln:	ld	bc,(T2)
+	inc	bc
+	inc	bc
+	ld	(T2),bc
+pln1:	ld	bc,(FAC2)
+	ld	a,b
+	or	c		; number equals 0?
+	jr	z,xn2		; jump if yes (simply store the value)
+	push	hl
+	push	de
+	ld	de,(LINTAB)	; DE = LINTAB
+pln2:	ld	hl,(SYMBOL)	; DE >= SYMBOL?
+	call	CPHLDE
+	jr	nc,pln5		; jump if yes (line not found)
+	ld	hl,(FAC2)
+	ld	a,(de)
+	cp	l		; same line number?
+	jr	nz,pln3
+	inc	de
+	ld	a,(de)
+	cp	h
+	dec	de
+	jr	z,pln4		; jump if yes (line found)
+pln3:	inc	de		; DE = next block
+	inc	de
+	inc	de
+	inc	de
+	jr	pln2
+pln5:	ld	c,e		; BC = DE
+	ld	b,d
+	ld	de,4		; DE = 4 (size)
+	call	MOVRGN		; alloc 4 bytes for line number entry
+	ld	bc,(FAC2)
+	ex	de,hl
+	ld	(hl),c		; store the line number
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	xor	a
+	ld	(hl),a		; clear the next word
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(SYMBOL),hl	; set new SYMBOL pointer
+	ex	de,hl
+	dec	de		; back to begin of block
+	dec	de
+	dec	de
+	dec	de
+pln4:	ld	hl,(LINTAB)
+	ex	de,hl		; DE now in HL
+	or	a
+	sbc	hl,de		; HL -= LINTAB (offset from LINTAB)
+	inc	hl		; make HL odd, 0 means deleted line
+	ld	c,l
+	ld	b,h
+	pop	de
+	pop	hl
+	jp	addv7		; go to store offset
+
+; BC = start address of region to move, DE = size
+
+MOVRGN:	push	de
+	ld	hl,(LOFREE)	; Note: DO NOT push LOFREE here to avoid
+				;  subtraction below, since UPPACK may take
+				;   it for a valid string address and then
+				;    modify it.
+	add	hl,de		; HL = LOFREE + size
+	ld	de,(LOSTR)
+	call	CPHLDE		; HL <= LOSTR?
+	jr	nc,mvrg1	; branch if yes (if HL <= LOSTR)
+	call	UPPACK		; uppack strings
+	ld	de,(LOSTR)
+	call	CPHLDE		; HL > LOSTR?
+	jp	c,ptberr	; error -> program too big
+mvrg1:	ld	de,(HIFREE)
+	call	CPHLDE		; HL > HIFREE?
+	jp	c,ptberr	; error -> program too big
+	ld	(LOFREE),hl	; set new LOFREE
+	pop	de
+	push	hl
+	or	a
+	sbc	hl,de		; HL = src (old LOFREE)
+	pop	de		; DE = dst (new LOFREE)
+	push	hl
+	or	a
+	sbc	hl,bc		; obtain length
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ld	a,b
+	or	c
+	jr	z,mvrg2		; if nothing to move
+	dec	hl
+	dec	de
+	lddr
+	inc	hl
+mvrg2:	ex	de,hl		; return with DE = start address
+	ret
+
+; Get next non-blank or CR character. HL points to source line.
+
+GETNB:	ld	a,(hl)
+	cp	CR		; CR?
+	ret	z
+	cp	' '+1		; blank? (space or below)
+	ret	nc
+	inc	hl
+	jr	GETNB
+
+;-----------------------------------------------------------------------
+
+; Pack strings towards high memory.
+
+UPPACK:	call	SAVREG		; save BC,DE,HL,IX,YY
+	ld	de,0
+	push	de		; push a zero
+	ld	ix,0
+	add	ix,sp		; IX points to length on stack
+	ld	hl,(HISTR)	; HL = HISTR
+	ld	bc,(HIFREE)	; BC = HIFREE
+	ld	(HISTR),bc	; set HISTR = HIFREE
+	jr	upk3
+
+upk1:	pop	hl
+	jr	upk3
+
+upk2:	pop	de		; drop old length
+	dec	hl
+	ld	e,(hl)		; get string length into DE
+	ld	d,0
+	push	de		; push new length
+	ld	a,e
+	or	a
+	jr	nz,upk4		; jump if not zero
+upk3:	ld	de,(LOSTR)
+	call	CPHLDE		; CY if HL > (LOSTR)
+	jr	c,upk2		; loop while HL > (LOSTR)
+	ld	(LOSTR),bc
+	pop	af
+	ret
+
+; Note: assumes stack addresses are even!
+
+upk4:	ld	a,l		; HL -= length
+	sub	(ix+0)
+	ld	l,a
+	ld	a,h
+	sbc	a,(ix+1)
+	ld	h,a
+	dec	hl
+	ld	e,(hl)		;!!!note order - get back pointer
+	dec	hl
+	ld	d,(hl)
+	dec	hl
+	bit	0,e		; odd number? (offset to variable)
+	jr	z,upk5		; jump if not
+	dec	de		; fix offset
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,de		; index into symbol table
+	ex	de,hl		; get address of variable into DE
+	pop	hl
+upk5:	push	hl		;!!!see DNPACK
+	ld	hl,(PDL)
+	call	CPHLDE
+	jr	nc,upk1		; quit if DE >= PDL (var addr >= PDL)
+	ld	hl,(ARRAYS)
+	call	CPHLDE
+	jr	nc,upk1		; quit if DE >= ARRAYS
+	ld	hl,(HIFREE)
+	call	CPHLDE
+	jr	nc,upk6		; do if DE >= HIFREE
+	ld	hl,(LOFREE)
+	call	CPHLDE
+	jr	nc,upk1		; quit if DE >= LOFREE
+	ld	hl,(SYMBOL)
+	call	CPHLDE
+	jr	nc,upk6		; do if DE >= SYMBOL
+	ld	hl,(STK)
+	call	CPHLDE
+	jr	nc,upk1		; quit if DE >= STK
+	push	ix
+	pop	hl
+	call	CPHLDE
+	jr	c,upk1		; quit if DE < SP
+upk6:	pop	hl
+	ld	a,(ix+0)
+	add	a,4
+	ld	(ix+0),a
+	ld	a,(ix+1)
+	adc	a,0
+	ld	(ix+1),a	; len += 4
+
+	ld	a,(de)
+	cp	l
+	jp	nz,upk3		; quit if HL <> (DE)
+	inc	de
+	ld	a,(de)
+	cp	h
+	dec	de
+	jp	nz,upk3		; quit
+
+	ld	a,(ix+0)
+	add	a,l
+	ld	l,a
+	ld	a,(ix+1)
+	adc	a,h
+	ld	h,a		; HL += len
+
+	ld	a,(de)
+	sub	l
+	ld	(de),a
+	inc	de
+	ld	a,(de)
+	sbc	a,h
+	ld	(de),a		; (DE) -= HL
+	dec	de
+
+	ld	a,(de)
+	add	a,c
+	ld	(de),a		; store new address in var block
+	inc	de
+	ld	a,(de)
+	adc	a,b
+	ld	(de),a		; (DE) += BC
+
+	ld	e,c		; DE = dst
+	ld	d,b
+	pop	bc		; BC = len (here always > 0)
+	push	bc
+	dec	hl
+	dec	de
+	lddr
+	inc	de
+	ld	c,e		; BC = dst - len - 1
+	ld	b,d
+	jp	upk3
+
+;-----------------------------------------------------------------------
+
+; Prepare to run program
+
+INIRUN:	call	PURGALL		; purge all channels
+	ld	b,13		; channel 13
+irun1:	ld	l,b		; get channel number into HL
+	ld	h,0
+	call	FILEA		; get channel descriptor address
+	xor	a
+	ld	(ix),a		; clear flags
+	ld	(ix+1),a
+	djnz	irun1		; loop until all channel flags cleared
+	ld	(COMN),a	; clear COMMON variables
+	ld	hl,0
+	push	hl		; push 0
+irun2:	ld	hl,(CODE)
+irun3:	ld	(CPSAVE),hl
+	ld	a,(hl)		; get program byte
+	inc	hl
+	or	a		; token?
+	jp	m,irun4		; jump if yes
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+irun4:	ld	c,a
+	ex	(sp),hl		;!!!TODO!!! write this better
+	ld	a,h		;!!!(don't use stack?)
+	or	l
+	ex	(sp),hl
+	ld	a,c
+	jr	nz,irun5
+	cp	T.COMN		; COMMON
+	jr	z,DIMCOM
+	jr	irun6
+irun5:	cp	T.DIM		; DIM
+	jr	z,DIMCOM
+	cp	T.DEF		; DEF
+	jp	z,INIDEF
+irun6:	cp	T.EOF		; "end of program" token
+	jr	z,ENDP
+	dec	hl
+irun7:	call	SKPEOL		; find end of statement (or program line)
+	jr	irun3		; loop
+
+; end of program
+
+ENDP:	pop	bc		; pop 0/non-zero
+	ld	a,b
+	or	c
+	ld	hl,(CODE)
+	ret	nz		; return to start execution
+	ld	hl,$
+	push	hl		; push non-zero
+	jr	irun2		; loop
+
+; DIM or COMMON
+
+DIMCOM:	ld	bc,0
+	push	bc		; push 0 [!!!TODO: use external var?]]]
+	push	af		; push token
+dc1:	ld	a,(hl)
+	inc	hl
+	cp	T.FILN		; '#' token
+	jr	nz,dc2		; jump if not
+	pop	af
+	push	af		; check saved token
+	cp	T.DIM		; DIM?
+	jp	nz,snerr	; if not -> syntax error
+	call	LDINT		; get the file number into BC
+	pop	af
+	inc	sp
+	inc	sp
+	push	bc		; replace 2nd word on stack
+	push	af
+	push	hl		; save HL
+	ld	l,c		; HL = channel number
+	ld	h,b
+	call	FILEA		; get channel descriptor address
+	ld	a,(ix+1)	; check flags
+	or	a
+	jp	m,viuerr	; if MSB set -> error: virtual array chan in use
+	set	7,(ix+1)	; set "block mode" or "binary" flag
+	pop	hl		; restore HL
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token must follow
+	jr	nz,ilderr	; else -> illegal dim
+	ld	a,(hl)		; get next byte (var name)
+	inc	hl
+dc2:	or	a
+	jp	m,snerr		; if token -> syntax error
+	ld	d,a		; !!!note order
+	ld	e,(hl)		; DE = variable name
+	inc	hl
+	ld	ix,(SYMBOL)
+	add	ix,de		; index into symbol table
+	ld	iy,0
+	add	iy,sp		;!!!write better!
+	ld	a,(iy+2)
+	or	(iy+3)
+	jr	z,dc3
+	res	2,(ix+0)	; 04h
+	set	3,(ix+0)	; 08h
+dc3:	ld	a,(ix+0)
+	and	0Ch		; array?
+	jr	nz,dc4		; jump if yes
+	pop	af
+	push	af		; else check saved token
+	cp	T.DIM		; DIM?
+	jp	z,snerr		; if yes -> syntax error
+	ld	a,(ix+1)
+	or	a		; else must be COMMON
+	jp	nz,dc14		; jump if existing
+	jp	dc11		; jump if new
+
+ilderr:	rst	10h
+	db	09h		; illegal DIM
+
+viuerr:	rst	10h
+	db	0Ah		; virtual array channel already in use
+
+dc4:	call	GETDIM		; get first dimension into SS2MAX
+	jr	nc,dc5		; jump if < 32767
+	set	4,(ix+0)	; 10h
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; require ')' (only one dimension allowed then)
+	jr	z,dc6
+	rst	10h
+	db	09h		; illegal DIM
+dc5:	res	4,(ix+0)	; 10h
+	ld	bc,(SS2MAX)
+	ld	(SS1MAX),bc	; move first dimension to SS1MAX
+	ld	bc,-1
+	ld	(SS2MAX),bc	; default is no second dimension
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token
+	jr	z,dc6
+	cp	T.COM		; ',' token
+	jp	nz,snerr	; -> syntax error
+	call	LDINT		; get second dimension
+	ld	(SS2MAX),bc	;  into SS2MAX
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token
+	jp	nz,snerr	; -> syntax error
+dc6:	ld	iy,0
+	add	iy,sp
+	ld	a,(iy+2)	;!!!write better!
+	or	(iy+3)
+	jr	z,dc9
+	ld	bc,(SS1MAX)
+	ld	(ix+4),c	; set first dimension
+	ld	(ix+5),b
+	ld	bc,(SS2MAX)
+	ld	(ix+6),c	; set second dimension
+	ld	(ix+7),b
+	ld	a,(ix+2)
+	or	a
+	jr	nz,ilderr	; -> illegal dim
+	ld	a,(iy+2)	;!!!write better!
+	ld	(ix+2),a
+	ld	a,(hl)
+	cp	T.EQ		; '=' token (string length specified)?
+	jr	nz,dc8		; jump if not (use default = 16)
+	inc	hl
+	call	LDINT		; get the string length into BC
+	ld	a,b
+	or	a		; length > 255?
+	jr	nz,stlerr	; if yes -> error
+dc7:	ld	(ix+3),c	; set item length
+	inc	hl
+	jr	dc13
+dc8:	ld	bc,16		; default virtual array string length
+	jr	dc7		; loop
+
+stlerr:	rst	10h
+	db	1Fh		; string too long
+
+dc9:	ld	a,(ix+2)
+	or	(ix+3)
+	jr	z,dc10
+	pop	af 		; get saved token
+	push	af
+	cp	T.COMN		; COMMON
+	jr	nz,ilder1	; -> illegal DIM
+	ld	bc,(SS1MAX)
+	ld	a,c
+	cp	(ix+4)
+	jr	nz,ilder1	; -> illegal DIM
+	ld	a,b
+	cp	(ix+5)
+	jr	nz,ilder1	; -> illegal DIM
+	ld	bc,(SS2MAX)
+	ld	a,c
+	cp	(ix+6)
+	jr	nz,ilder1	; -> illegal DIM
+	ld	a,b
+	cp	(ix+7)
+	jr	nz,ilder1	; -> illegal DIM
+	jr	dc15
+
+dc10:	push	ix
+	call	ALLOC
+	pop	ix
+	pop	af 		; get saved token
+	push	af
+	cp	T.COMN		; COMMON
+	jr	nz,dc12
+dc11:	ld	a,(COMN)
+	inc	a
+	ld	(COMN),a
+	jr	z,tmcerr	; if > 255 -> too many items in COMMON
+	ld	(ix+1),a
+dc12:	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	z,dc1		; loop to process next item
+dc13:	dec	hl
+	ld	a,(hl)
+	cp	T.EOL		; '\' token
+	jp	nz,snerr	; -> syntax error
+	inc	hl
+	pop	bc		; restore stack
+	pop	bc
+	jp	irun3		; clear program and vars except COMMON
+
+dc14:	pop	af
+	push	af
+	cp	T.COMN		; COMMON?
+	jr	nz,ilder1	; error if not
+dc15:	ld	a,(COMN)
+	inc	a		; increase COMMON index
+	ld	(COMN),a
+	cp	(ix+1)		; must match the value stored in the variable
+	jr	z,dc12
+	rst	10h
+	db	0Bh		; COMMON out of order
+
+; DEF
+
+INIDEF:	ld	a,(hl)
+	inc	hl
+	cp	T.FN		; FN?
+	jp	nz,snerr	; if not -> syntax error
+	call	INIFN		; else initialize FN
+	jp	irun7
+
+ilder1:	rst	10h
+	db	09h		; illegal DIM
+
+; Initialize FN
+
+INIFN:	ld	d,(hl)		; get offset, note order
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	ix,(DEFTAB)
+	add	ix,de		; index into DEFTAB
+	ld	a,(hl)
+	inc	hl
+	cp	T.LPAR		; '(' token
+	jp	nz,snerr	; -> syntax error
+	ld	a,(ix+2)
+	and	(ix+3)
+	inc	a		; [IX+2] = -1?
+	jr	nz,fdferr	; -> function already defined
+	ld	(ix+2),l	; store pointer to function code
+	ld	(ix+3),h
+	ret
+
+; Get integer into BC (virtual array file#, dim size or string length)
+
+LDINT:	ld	a,(hl)
+	inc	hl
+	cp	T.TEXT+1
+	jr	c,ilder1	; if <= T.TEXT (if < T.TEXT-1) -> illegal DIM
+	call	LITEVAL		; load the "tokenized" number into FP accum
+	ld	bc,(FAC1)	; integer number?
+	ld	a,b
+	or	c
+	jr	nz,ilder1	; error if not -> illegal DIM
+	ld	bc,(FAC2)
+	ret
+
+tmcerr:	rst	10h
+	db	0Dh		; too many items in COMMON
+
+fdferr:	rst	10h
+	db	0Eh		; function already defined
+
+GETDIM:	ld	a,(hl)
+	inc	hl
+	cp	T.TEXT+1
+	jr	nc,gtdm1	; if > T.TEXT (if >= T.TEXT+1)
+	rst	10h
+	db	09h		; illegal DIM
+gtdm1:	call	LITEVAL		; load the "tokenized" number into FP accum
+	ld	bc,(FAC2)
+	ld	(SS2MAX),bc
+	ld	bc,(FAC1)
+	ld	(SS1MAX),bc	; in case dimension is > 32767
+	ld	a,b
+	or	a
+	jp	p,gtdm2
+	rst	10h
+	db	09h		; illegal DIM
+gtdm2:	scf
+	or	c
+	ret	nz		; return with CY set if dimension > 32767
+	xor	a		; else return with CY clear
+	ret
+
+;-----------------------------------------------------------------------
+
+; Clear program and variables, except COMMON.
+
+CLPGVR:	push	hl
+	ld	hl,0
+	ld	(CPSAVE),hl
+	pop	hl
+	ld	a,(COMN)
+	or	a		; any COMMON variables?
+	jp	z,ini1		; jump if not
+	call	CLRPRG		; clear program code
+	ld	de,0
+	ld	(HILINO),de
+	ld	de,(SYMBOL)	; DE = start of old symbol tab;e
+	ld	(SYMBOL),hl	; set start of new symbol table
+	ld	(LINTAB),hl	; clear line numbers
+	ld	(DEFTAB),hl	; clear user function table
+	ld	bc,(ARRAYS)	; BC = start of array area
+	ex	de,hl		; DE = start of new, HL = start of old
+clpv1:	push	de		;!!!write better!
+	ld	de,(LOFREE)
+	call	CPDEHL
+	pop	de
+	jr	c,clpv2		; if HL < LOFREE
+	ld	(LOFREE),de	; set start of free memory
+	ld	(HIFREE),bc	; set top of free memory
+	call	UPPACK
+	ret
+
+clpv2:	push	hl
+	pop	ix
+	ld	a,(ix+1)	; check variable from old region
+	or	a		; COMMON index = 0?
+	jr	z,clpv5		; skip it if yes
+
+	bit	2,(hl)		; array? (04h)
+	jr	z,clpv3		; jump if not
+	push	hl
+	ld	l,(ix+2)	; !!!write better!
+	ld	h,(ix+3)
+	call	CPBCHL
+	pop	hl
+	jr	nc,clpv4	; if (ix+2:3) >= BC [current HIFREE]
+	ld	c,(ix+2)
+	ld	b,(ix+3)	; save new HIFREE
+	jr	clpv4
+
+clpv3:	ld	a,(hl)
+	and	03h
+	jr	nz,clpv4	; jump if not string
+	push	de
+	push	hl
+	inc	de
+	inc	de
+	ex	de,hl
+	ld	de,(SYMBOL)
+	or	a
+	sbc	hl,de
+	inc	hl
+	ex	de,hl		; DE = HL-(SYMBOL)+1 = new offset to variable
+	pop	hl
+	push	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)		; get old string address into HL
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	inc	hl		; skip length
+	ld	(hl),d		; set new string backpointer, note order!
+	inc	hl
+	ld	(hl),e
+	pop	hl
+	pop	de
+clpv4:	push	bc
+	call	VARSIZ		; BC = len
+	ldir			; copy variable to new location
+	pop	bc
+	jp	clpv1
+
+clpv5:	call	SKPSYM		; skip to next variable
+	jp	clpv1
+
+CLRPRG:	ld	hl,(CODE)	; HL = start of code area
+	ld	(hl),T.EOL	; '\' token
+	inc	hl
+	ld	(hl),T.EOL	; '\' token
+	inc	hl
+	ld	(hl),T.EOF	; "end of program" token
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Clear program memory and variables, reset filename to 'NONAME', etc.
+
+INISCR:	call	INITPG
+	ld	c,0		; clear C (length, see NAMSET)
+	call	NAMSET		; set filename to 'NONAME'
+ini1:	ex	de,hl		; save HL
+	call	CLRPRG		; clear program code
+	ld	(SYMBOL),hl	; set start of symbol table
+	ld	(LINTAB),hl	; clear line numbers table
+	ld	(DEFTAB),hl	; clear user FN table
+	ld	(LOFREE),hl	; set start of free memory
+	ld	hl,0
+	ld	(HILINO),hl	; clear highest line number
+	ex	de,hl		; restore HL
+CLVARS:	call	PURGALL		; purge all channels
+	push	hl		; push HL
+	ld	hl,(SYMBOL)
+clrv1:	ld	de,(LOFREE)
+	call	CPDEHL
+	jr	nc,clrv7
+	ld	a,(hl)
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	ld	c,a
+	and	0Ch		; array?
+	ld	a,c
+	jr	nz,clrv6	; jump if yes
+	cp	1		;; write     !!!
+	jr	c,clrv5		;;  this     !!! ; jump if string
+	jr	z,clrv3		;;   better  !!! ; jump if integer
+	ld	b,1		; float words - 1
+clrv2:	ld	(hl),0		; clear float
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	djnz	clrv2		; loop
+clrv3:	ld	(hl),0		; clear integer
+	inc	hl
+	ld	(hl),0
+	inc	hl
+clrv4:	inc	hl
+	inc	hl
+	jr	clrv1		; loop
+
+clrv5:	ld	(hl),0FFh	; -1 (null string)
+	inc	hl
+	ld	(hl),0FFh
+	inc	hl
+	jr	clrv4
+
+clrv6:	dec	hl
+	dec	hl
+	res	3,(hl)		; 08h clear .VARY virtual array
+	set	2,(hl)		; 04h set .ARY resident array
+	inc	hl
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	ld	(hl),0
+	inc	hl
+	ld	de,6
+	add	hl,de
+	jr	clrv1		; loop
+
+clrv7:	ld	hl,(ARRAYS)
+	ld	(HIFREE),hl
+	ld	hl,(LOFREE)
+	ld	(LOSTR),hl
+	ld	(HISTR),hl
+	xor	a
+	ld	(COMN),a
+	pop	hl		; pop HL
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set program name and open the file for write (SAVE and COMPILE commands)
+; C = 0 for default extension .BAS (text file), 80h for .BAC (binary)
+
+GFIL:	push	bc
+	call	CHKFIL		; skip tokens and find string end
+	ld	(HLSAVE),hl
+	jr	nz,gf21		; jump if file name specified
+	ld	de,PROGNAM	; otherwise use old name
+	ld	c,0		; find out length of old name
+	push	de
+gf1:	ld	a,(de)
+	inc	de
+	cp	' '		; space?
+	jr	z,gf2
+	inc	c		; incr length
+	ld	a,b
+	cp	9		; max filename length = 9 chars (RSX)
+	jr	nz,gf1
+gf2:	pop	de
+gf21:	pop	hl		; pop saved BC
+	ld	a,l		; "COMPILE"?
+	or	a
+	jr	z,gf3		; use .BAS extension if not
+	call	FILSPE		; push filename block on stack
+	db	'BAC'
+	jr	gf4
+gf3:	call	FILSPE		; push filename block on stack
+	db	'BAS'
+gf4:	ld	bc,0
+	ld	(T2),bc
+;;	ld	(HLSAVE),hl	; save HL (can't use stack since it contains
+;;				;  the filename block)
+	ld	a,l		; get text/binary bits
+	or	20h		; add file write mode bits
+	ld	b,a		; note C is already zero
+	call	OPNSYS		; open the file
+	ld	(ODEV),ix	; set channel descriptor for write operations
+	ld	hl,(HLSAVE)	; restore HL
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- SCR
+
+SCRATCH:ld	sp,(STK)	; restore stack pointer from saved SP
+	call	INISCR		; clear program and variables, filename, etc.
+	call	FRESET		; perform a system reset
+	jp	READY		; reset terminal, display prompt, etc.
+
+; Load a program into memory (used by OLD and CHAIN).
+; Continue execution in case of CHAIN.
+
+OLD1:	ld	(HLSAVE),hl	; save HL
+	ld	hl,0
+	add	hl,sp		; HL = src
+	ex	de,hl
+	ld	hl,(FNBSZ)
+	ld	c,l		; BC = len
+	ld	b,h
+	call	NEGHL
+	add	hl,de
+	ld	sp,hl		;### alloc second FNB on stack
+	ex	de,hl		; DE = dst
+	ldir			;### duplicate FNB
+	ld	bc,0		; clear channel mode flags
+	ld	(T3),bc		; read operation in OPNSYS
+	ld	bc,8000h	;### set binary mode (we'll try compiled pgm first)
+	call	OPNSYS		; open the file
+	ld	(IDEV),ix	; set read channel descr
+	ld	hl,(HLSAVE)	; restore HL
+	ld	a,(CHNFLG)
+	cp	2		; CHAIN?
+	call	nc,CLPGVR	; clear pgm and vars (except COMMON) if yes
+	call	GETPGM		; try loading a compiled program
+	jr	c,old2
+	ld	hl,(FNBSZ)
+	add	hl,sp
+	ld	sp,hl		;### remove the extra FNB
+	ld	hl,(LOFREE)
+	ld	(LOSTR),hl
+	ld	(HISTR),hl
+	call	INITPG
+	jp	EDIT1
+
+old2:	ld	bc,0		;### clear channel mode flags (text mode)
+	call	OPNSYS		;### close and reopen the file in text mode
+	call	LINGET		;### get line from file
+	jp	EDITL0		; try tokenizing the input file
+
+;-----------------------------------------------------------------------
+
+; Execute direct statement following the "command" token
+
+DIRECT:	inc	hl		; point to next token
+	ld	a,(hl)
+	sub	80h		; subtract token offset
+	call	DISPAT		; execute direct statement from table below
+	dw	CLEAR		; CLEAR
+	dw	SCRATCH		; SCR
+	dw	LENGTH		; LENGTH
+	dw	RESEQ		; RESEQ
+	dw	BYE		; BYE
+	dw	LIST		; LIST
+	dw	LISTNH		; LISTNH
+	dw	DEL		; DEL
+	dw	SUB		; SUB
+	dw	RENAME		; RENAME
+	dw	NEW		; NEW
+	dw	APPEND		; APPEND
+	dw	OLD		; OLD
+	dw	RUN		; RUN
+	dw	RUNNH		; RUNNH
+	dw	SAVE		; SAVE
+	dw	COMPIL		; COMPILE
+	dw	REPLACE		; REPLACE
+	dw	UNSAVE		; UNSAVE
+	dw	CATALOG		; CAT
+
+; --- LENGTH
+
+LENGTH:	call	MSG
+	db	LF,0		; line feed
+	call	UPPACK
+	ld	hl,(LOSTR)
+	ld	de,(LOFREE)
+	or	a
+	sbc	hl,de
+	ex	de,hl
+	ld	hl,(ARRAYS)
+	ld	bc,(CODE)
+	or	a
+	sbc	hl,bc		; subtract begin of prog text addr
+	dec	hl
+	dec	hl
+	dec	hl		; subtract 4 (EOL,EOL,EOF,0)
+	dec	hl		;  to obtain total length
+	or	a
+	sbc	hl,de		; subtract free space, result in HL
+	call	PRVAL
+	db	' USED, ',0
+	ex	de,hl		; free space in HL
+	call	PRVAL
+	db	' FREE',CR,LF,0
+	jp	READY		; display READY prompt
+
+PRVAL:	call	CLRFAC		; clear FP accum
+	ld	(FAC2),hl	; store value in integer part of FP accum
+	call	NUMOUT		; output number
+	jp	MSG		; and display message
+
+; --- CLEAR
+
+CLEAR:	call	FRESET		; reset disk system
+	call	CLVARS
+	jp	READY		; display READY prompt
+
+; --- APPEND
+
+APPEND:	call	OLDFN		; get filename string
+	xor	a
+	ld	(CHNFLG),a	; clear CHAIN/OVERLAY flag
+	call	FILSPE		; make filename block
+	db	'BAS'
+	jp	OLD1
+
+; --- OLD
+
+OLD:	call	INISCR		; clear program and variables, filename, etc.
+	call	OLDFN		; get filename string
+	call	NAMSET		; set program filename
+	call	FILSPE		; make filename block
+	db	'BAC'
+	jp	OLD1
+
+OLDFN:	call	CHKFIL		; name specified?
+	ret	nz		; return if yes
+	call	MSG		; else ask user
+	db	'OLD ',0
+	jp	GETFN		; display prompt and get file name
+
+; --- NEW
+
+NEW:	call	INISCR		; clear program and variables, filename, etc.
+
+; --- RENAME
+
+RENAME:	call	CHKFIL
+	jr	nz,ren1		; jump if name specified
+	call	MSG
+	db	'NEW ',0
+	call	GETFN		; display prompt and get file name
+ren1:	call	NAMSET		; set program filename
+	jp	READY
+
+; --- UNSAVE
+
+UNSAVE:	call	CHKFIL
+	jr	nz,uns1		; name is mandatory
+	rst	10h
+	db	1Bh		; illegal file specification
+uns1:	call	FILSPE		; make filename block
+	db	'BAS'
+	call	DELETE		; delete the file
+	jp	READY		; display READY prompt
+
+; --- REPLACE
+
+REPLACE:ld	bc,-1
+	ld	(T3),bc		; replace operation in OPNSYS
+	jr	sav1
+
+; --- SAVE
+
+SAVE:	ld	bc,1
+	ld	(T3),bc		; write operation in OPNSYS
+sav1:	ld	c,0		; text mode, .BAS extension
+	call	GFIL		; set program name, open the file, etc.
+lstall:	call	LSTPGM		; list the program
+	call	CLOSYS		; close channel 13
+	jp	READY		; display READY prompt
+
+; --- LIST
+
+LIST:	call	HEADER		; output header
+
+; --- LISTNH
+
+LISTNH:	inc	hl
+	ld	a,(hl)
+	cp	T.EOL		; '\' token? (i.e. no arguments)
+	jr	z,lstall	; if yes -> list the whole program
+	call	GETRLN		; else get range(s) of lines to list
+	pop	bc
+	push	bc		; dup saved SP
+	push	bc		; use as start pointer to range list
+list1:	pop	de
+	dec	de
+	dec	de
+	dec	de
+	dec	de
+	push	de		; point to next range
+	push	hl
+	ld	hl,2
+	add	hl,sp
+	ex	de,hl
+	call	CPHLDE
+	pop	hl
+	jr	nc,list3	; exit loop when (SP) <= SP
+	call	MSG
+	db	LF,0
+	pop	ix
+	push	ix
+	call	LADR		; convert line range on stack to addresses
+	jr	c,list1		; loop if no lines found
+	ld	l,(ix+0)	; get address of start line into HL
+	ld	h,(ix+1)
+list2:	call	CKCTLC		; ^C detected?
+	jr	c,list3		; exit loop if yes
+	push	hl
+	pop	iy
+	ld	ix,PUTCHR
+	call	LISTL		; list a line
+	push	iy
+	pop	hl
+	pop	ix		; get pointer to current range back into IX
+	push	ix
+	ld	e,(ix+2)	; get address of end line
+	ld	d,(ix+3)
+	call	CPDEHL
+	jr	c,list2		; loop while HL < end line
+	jr	list1		; jump to process next range
+list3:	pop	bc
+	pop	hl
+	ld	sp,hl
+	jp	READY
+
+; --- DEL
+
+DEL:	inc	hl
+	call	GETRLN		; get range of lines
+	pop	bc
+	push	bc
+	push	bc		; dup
+del1:	pop	de
+	dec	de
+	dec	de
+	dec	de
+	dec	de
+	push	de
+	ld	hl,0
+	add	hl,sp
+	ex	de,hl
+	call	CPHLDE
+	jr	nc,list3	; exit if (SP) <= SP
+	pop	ix
+	push	ix
+	call	CADR
+	jr	c,del1		; loop
+	ld	c,(ix+0)
+	ld	b,(ix+1)
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	de,del1
+	push	de		; push return address
+	ld	de,0
+	push	de		; push length = 0 to delete line
+	jp	DELLIN		; delete line
+
+LARG:	pop	iy		; return address in IY
+larg1:	ld	a,(de)		; check word from table
+	and	1		; LSB set?
+	jr	z,larg2		; jump if yes
+	jp	(iy)		; else return to caller
+larg2:	ld	a,(de)		; get word from table into BC
+	ld	c,a
+	inc	de
+	ld	a,(de)
+	ld	b,a
+	inc	de
+	or	a
+	jp	p,larg3		; jump if >= 0
+	push	hl
+	ld	hl,0		; else push a 0
+	ex	(sp),hl
+larg3:	call	PSHARG		; push argument onto stack (0 if not present)
+	jr	nc,larg5	; jump if argument present
+	ld	a,b		; check word from table
+	or	a
+	jp	p,larg4		; jump if >= 0
+	inc	(ix+2)		; else incr byte on 2nd word of stack
+larg4:	ld	a,(de)
+	ld	(ix+0),a	; store default value from table
+	inc	de
+	ld	a,(de)
+	ld	(ix+1),a
+	dec	de
+larg5:	ld	a,(ix+1)
+	or	a
+	jp	m,snerr1	; if negative -> syntax error
+	inc	de		; go to next word in table
+	inc	de
+	ld	a,c		; check low byte of old word from table
+	or	a
+	jp	p,larg9		; jump if >= 0
+	ld	a,(hl)
+	cp	T.MIN		; else chack for a range ('-' token)
+	jr	nz,larg6
+	inc	hl
+	ld	a,b
+	or	a
+	jp	p,larg6
+	inc	(ix+3)
+larg6:	call	PSHARG		; push argument onto stack
+	jr	nc,larg8	; jump if argument present
+	ld	a,b
+	or	a
+	jp	p,larg7
+	set	1,(ix+4)	; 02h
+larg7:	ld	a,(de)
+	ld	(ix+0),a	; store default value for this argument
+	inc	de
+	ld	a,(de)
+	ld	(ix+1),a
+	dec	de
+larg8:	ld	a,(ix+1)
+	or	a
+	jp	m,snerr1	; -> syntax error
+	inc	de
+	inc	de
+larg9:	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token?
+	jr	z,larg1		; loop if yes to process next argument
+	dec	hl
+	cp	T.EOL		; '\' token
+	jr	z,larg1		; loop if yes to setup defaults
+snerr1:	rst	10h
+	db	06h		; else -> syntax error
+
+PSHARG:	pop	ix		; push word, move ret address
+	push	ix
+	push	ix
+	ld	ix,2		; point to word above return address
+	add	ix,sp
+	xor	a
+	ld	(ix+0),a	; clear pushed word
+	ld	(ix+1),a
+	ld	a,(hl)		; see what we have
+	cp	T.LBYT		; byte value?
+	jr	z,psh1		; jump if yes
+	cp	T.LINT		; integer?
+	scf
+	ret	nz		; return with CY set if not
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+1),a	; store word value, note order!!!
+psh1:	inc	hl
+	ld	a,(hl)
+	inc	hl
+	ld	(ix+0),a	; store byte value
+	or	a
+	ret
+
+; Get range of lines
+
+GETRLN:	pop	bc
+	ld	(T1),bc		; save return address
+	ld	ix,0
+	add	ix,sp
+	ld	(T2),ix		; and stack pos
+gtr1:	ld	de,RNGTBL
+	call	LARG
+	ld	ix,0		;!!!may not be necessary
+	add	ix,sp		;!!!
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	push	hl
+	ld	hl,0103h
+	call	CPHLDE
+	pop	hl
+	jp	z,snerr		; -> syntax error
+	push	hl
+	ld	hl,3
+	call	CPHLDE
+	pop	hl
+	jp	z,snerr		; if equal -> syntax error
+	jr	nc,gtr2		; if (ix+4:5) > 3
+	pop	bc		; drop word
+	ld	a,(ix+2)	; copy top over top+1 (end line = start line)
+	ld	(ix+4),a	;  (i.e. single line, not a range)
+	ld	a,(ix+3)
+	ld	(ix+5),a
+	jr	gtr3
+
+gtr2:	pop	bc
+	ld	(ix+4),c	; store end line number
+	ld	(ix+5),b
+gtr3:	ld	a,(hl)
+	cp	T.EOL		; end of line?
+	jr	nz,gtr1		; if not, loop to get next range of lines
+	ld	bc,(T2)
+	push	bc		; push saved stack pos
+	ld	bc,(T1)
+	push	bc		; restore return address
+	ret
+
+RNGTBL:	dw	8080h
+	dw	0000h		; default min line
+	dw	7FFFh		; default max line
+	dw	0001h		; end of table
+
+CADR:	ld	iy,CSUBR
+	jr	la1
+
+LADR:	ld	iy,LSUBR
+la1:	ld	hl,(CODE)
+	inc	hl
+la2:	call	SKPLIN		; go to next line
+	ret	c
+	inc	de		;!!!write better!
+	ld	a,(de)
+	dec	de
+	cp	(ix+1)
+	jr	c,la2		; loop if (DE) < (IX) (not there yet)
+	jr	nz,la3
+	ld	a,(de)
+	cp	(ix+0)
+	jr	c,la2		; loop
+la3:	ld	(ix+0),l	; save address of code for this line
+	ld	(ix+1),h
+la4:	inc	de
+	ld	a,(de)
+	ld	c,a
+	dec	de
+	ld	a,(ix+3)
+	cp	c
+	jr	c,la6		; if (DE) > (IX+2:3)
+	jr	nz,la5
+	ld	a,(de)
+	ld	c,a
+	ld	a,(ix+2)
+	cp	c
+	jr	c,la6
+la5:	jp	(iy)		; jump to routine
+
+CSUBR:	inc	de
+	inc	de
+	xor	a
+	ld	(de),a
+	inc	de
+	ld	(de),a
+	dec	de
+	dec	de
+	dec	de
+LSUBR:	call	SKPLIN		; go to next line
+	jr	nc,la4
+la6:	ld	a,(ix+0)
+	cp	l
+	jr	nz,la7
+	ld	a,(ix+1)
+	cp	h
+	scf
+	ret	z
+la7:	ld	(ix+2),l
+	ld	(ix+3),h
+	or	a
+	ret
+
+; --- RUN
+
+RUN:	call	CHKFIL		; filename given?
+	jr	nz,ldrun	; if yes, load and run program
+	call	HEADER		; output header
+	jr	run1
+
+; --- RUNNH
+
+RUNNH:	call	MSG
+	db	LF,0
+	call	CHKFIL		; filename given?
+	jr	nz,ldrun	; if yes, load and run program
+run1:	call	INITPG
+	call	CLVARS		; CLEAR
+	call	INIRUN		; prepare to run program
+	call	CKCTLC		; check for ^C
+	jp	EXECUTE
+
+ldrun:	xor	a
+	ld	(COMN),a
+	jp	CHAIN1
+
+; Output header consisting of file name, current date and current time
+
+HEADER:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,PROGNAM	; src
+	ld	de,HEAD1	; dst
+	ld	bc,9		; !!! 8 for CP/M
+	ldir			; copy file name
+	call	DATIM
+	call	MSG
+	db	CR,LF,LF
+HEAD1:	db	'NONAME       ',0
+	call	MSG
+HEAD2:	db	'XX-XXX-XXXX  '
+HEAD3:	db	'XX:XX:XX'
+	db	CR,LF,LF,0
+	ret
+
+; Prompt and get file name
+
+GETFN:	call	MSG
+	db	'FILE NAME--',0
+	call	LINGET		; get line from terminal
+	ld	hl,LINE		; HL = begin of input buffer
+	ld	e,l
+	ld	d,h
+gtfn1:	ld	a,(hl)
+	inc	hl
+	cp	CR		; CR?
+	jr	nz,gtfn1	; no, keep looking
+gtfn2:	or	a
+	sbc	hl,de
+	dec	hl
+	ld	c,l		; string length in C
+	ld	b,h
+	ld	a,b
+	or	c
+	ret	nz
+	ld	de,DEFNAM	; if 0, use default name
+	ld	c,6
+	ret
+
+DEFNAM:	db	'NONAME'
+
+;-----------------------------------------------------------------------
+
+; List the program
+
+LSTPGM:	ld	iy,(CODE)	; IY = begin of tokenized program
+	inc	iy		; skip the first two bytes
+	inc	iy
+	ld	ix,PUTCHR	; get output routine address on IX
+lstp1:	call	CKCTLC		; ^C detected?
+	ret	c		; return if yes
+	call	LISTL		; list a line
+	jr	nc,lstp1	; continue until end of program reached
+	ret
+
+LISTL:	ld	a,(iy)		; get byte from program area
+	inc	iy
+	or	a
+	jp	p,lstl19	; jump if not a token
+	cp	T.EOL		; '\' token?
+	jp	z,lstl10
+	cp	T.EOF		; "end of program" token?
+	jr	nz,lstl1
+	scf			; return with CY set if yes
+	ret
+
+lstl1:	cp	T.TEXT		; >= text token? (i.e. number, etc.)
+	jp	nc,lstl16	; jump if yes
+	cp	T.CMD		; direct statement follows?
+	ld	hl,OPTBL	; HL = operator table address
+	jr	nz,lstl2	; jump if not
+	ld	a,(iy)		; otherwise get the next token value
+	inc	iy
+	ld	hl,CMDTBL	; HL = direct statement table address
+lstl2:	ld	c,a		; save token in C
+lstl3:	ld	e,l		; and starting text address in DE
+	ld	d,h
+lstl4:	ld	a,(hl)		; get byte from table
+	inc	hl
+	or	a
+	jp	p,lstl4		; skip text
+	cp	c		; same token value?
+	jr	nz,lstl3	; try next if not
+	cp	T.GOTO		; token was a GOTO?
+	jr	z,lstl5
+	cp	T.GSUB		; a GOSUB?
+	jr	nz,lstl6
+lstl5:	ld	a,T.EOL
+	cp	(iy-4)
+	jr	z,lstl6
+	cp	(iy-2)
+	jr	z,lstl6
+	ld	a,' '
+	call	JPIX		; display a space
+lstl6:	ld	a,(de)		; get character from table (token name)
+	inc	de
+	or	a
+	jp	m,lstl7		; if end of name, exit loop
+	jr	z,lstl6		; ignore zeros (end of table) ???
+	call	JPIX		; display character
+	jr	lstl6		; loop
+lstl7:	ld	hl,CMDTBL+1	; direct statement table address
+	call	CPHLDE
+	jp	nc,LISTL
+	dec	iy
+	ld	a,(iy)
+	cp	T.NEXT
+	jr	z,lstl8
+	cp	T.CALL		; CALL
+	jr	z,lstl9
+	cp	T.FN		; FN?
+	inc	iy
+	jr	nz,LISTL	; loop if not
+	ld	d,(iy)		; note order!
+	inc	iy
+	ld	e,(iy)
+	inc	iy
+	ld	hl,(DEFTAB)
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	call	JPIX		; display char
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jp	z,LISTL
+	jr	lstl15		; output char and continue
+lstl8:	ld	de,7
+	add	iy,de
+lstl9:	ld	de,4
+	add	iy,de
+	jp	LISTL		; loop
+
+; '\' token
+
+lstl10:	ld	a,(iy)		; get next char
+	or	a		; token?
+	jp	p,lstl12	; jump if not
+	cp	T.EOF		; "end of program" token?
+	jr	nz,lstl13	; jump if not
+lstl11:	ld	a,CR		; display a CRLF
+	call	JPIX
+	ld	a,LF
+	call	JPIX
+	or	a		; return with CY clear
+	ret
+
+lstl12:	ld	d,(iy)
+	ld	e,(iy+1)
+	bit	0,e
+	jr	nz,lstl11
+lstl13:	ld	a,' '		; Prevent "REM...\" from growing by one
+	cp	(iy-3)		; space every time the program is saved
+	call	nz,JPIX
+	ld	a,'\'		; output separator
+	call	JPIX
+lstl14:	ld	a,' '		; output a space
+lstl15:	call	JPIX
+	jp	LISTL		; continue
+
+lstl16:	jr	nz,lstl18	; jump if not "text" token
+lstl17:	ld	a,(iy)		; get char
+	inc	iy
+	or	a
+	jp	z,LISTL		; loop to continue listing if end of string
+	call	JPIX		; display the byte as-is
+	jr	lstl17		; and loop until the whole string is printed
+
+lstl18:	push	af		; remember token
+	push	iy
+	ex	(sp),hl		; push HL, pop ptr to program line
+	call	LITEVAL		; load the "tokenized" number into FP accum
+	ex	(sp),hl		; push new ptr, restore HL
+	pop	iy		; update IY
+	push	ix
+	pop	bc
+	call	NUMB		; output number
+	pop	af
+	cp	T.LBYT		; was it an "explicit" integer?
+	jp	nc,LISTL	; jump if not
+	ld	a,'%'		; otherwise display a trailing '%'
+	call	JPIX
+	jp	LISTL		; continue
+
+lstl19:	ld	d,a		; note order!
+	ld	e,(iy)
+	inc	iy
+	bit	0,e		; bit 0 set (odd number)?
+	jr	z,lstl20	; no -> output variable name
+	dec	de		; points to a line number otherwise
+	ld	hl,(LINTAB)
+	add	hl,de
+	call	CLRFAC		; clear FP accum
+	ld	a,(hl)		; fetch number from list
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(FAC2),hl
+	push	ix
+	pop	bc
+	call	NUMB		; output the line number
+	ld	a,(iy)
+	cp	T.EOL		; '\' token?
+	jp	z,LISTL		; if yes -> continue
+	cp	T.COM		; ',' token?
+	jr	nz,lstl14	; if not, output a space and continue
+	jp	LISTL		; continue
+
+lstl20:	ld	hl,(SYMBOL)
+	add	hl,de
+	push	hl		; save HL
+	call	SKPSYM		; skip to next variable
+	dec	hl
+	dec	hl
+	ld	a,(hl)
+	inc	hl
+	call	JPIX		; display first letter of variable name
+	ld	a,(hl)
+	inc	hl
+	or	a
+	call	nz,JPIX		; if a number follows, display it
+	pop	hl		; restore HL
+	ld	a,(hl)
+	and	3
+	jr	nz,lstl21
+	ld	a,'$'		; display a trailing '$' for string variables
+	call	JPIX
+	jr	lstl22
+
+lstl21:	and	1
+	jr	z,lstl22
+	ld	a,'%'
+	call	JPIX		; display a trailing '%'
+lstl22:	ld	a,(hl)
+	and	0Ch
+	jp	z,LISTL
+	ld	a,'('
+	jp	lstl15		; output '(' and continue
+
+JPIX:	jp	(ix)
+
+;-----------------------------------------------------------------------
+
+; --- SUB
+
+SUB:	inc	hl
+	inc	hl
+	call	GETINT		; get and validate line number
+	push	bc		; push line number
+	push	bc		;  twice for LADR
+	ld	ix,0
+	add	ix,sp
+	push	de
+	call	LADR		; find line addresses (current, next)
+	jp	c,suberr	; -> substitute error
+	call	DNPACK		; down-pack strings
+	ld	ix,(HISTR)	; use HISTR as substitution buffer
+	push	ix
+	pop	de
+	push	hl
+	ld	hl,10
+	add	hl,de		; at least 10 bytes
+	ex	de,hl
+	ld	hl,(HIFREE)
+	call	CPHLDE
+	pop	hl
+	jp	nc,suberr	; else (if DE >= HIFREE) -> substitute error
+	ld	(ix+0),e	; store start address of search substring
+	ld	(ix+1),d
+	inc	ix
+	inc	ix
+	pop	hl
+sub1:	ld	a,(hl)
+	inc	hl
+	cp	' '		; space?
+	jr	z,sub1		; skip of yes
+	ld	c,a		; first non-blank char is delimiter
+	or	a
+	jp	z,suberr	; if end of command -> substitute error
+sub2:	push	hl
+	ld	hl,(HIFREE)
+	call	CPHLDE
+	pop	hl
+	jp	nc,suberr	; error if out of space
+	ld	a,(hl)
+	cp	c		; next delimiter found?
+	jr	z,sub3		; exit loop if yes
+	ld	(de),a		; else copy search substring
+	inc	hl
+	inc	de
+	or	a
+	jr	nz,sub2		; loop
+	jp	suberr		; no closing delim found -> substitute error
+sub3:	inc	hl		; skip 2nd delimiter
+	push	hl
+	ld	l,(ix-2)
+	ld	h,(ix-1)
+	call	CPHLDE		; null search string?
+	pop	hl
+	jp	z,suberr	; error if yes
+	ld	(ix+0),e	; store start address of replacement substring
+	ld	(ix+1),d
+	inc	ix
+	inc	ix
+sub4:	push	hl
+	ld	hl,(HIFREE)
+	call	CPHLDE
+	pop	hl
+	jp	nc,suberr
+	ld	a,(hl)
+	inc	hl
+	cp	c		; delimiter?
+	jr	z,sub6		; exit loop if yes
+	dec	hl
+	or	a		; end of command?
+	jr	z,sub5		; exit loop as well
+	ld	(de),a		; else store replacement substring
+	inc	hl
+	inc	de
+	jr	sub4		; loop
+
+sub5:	ld	a,0		; flag = 0 means no 3rd delim
+	jr	sub7
+
+sub6:	ld	a,-1		; flag <> 0 means 3rd delim present
+sub7:	push	af		; push flag
+	ld	(ix+0),e
+	ld	(ix+1),d
+	inc	ix
+	inc	ix
+	ld	bc,LINE
+	ld	(ix+0),c	; save begin of input buffer
+	ld	(ix+1),b
+	inc	ix
+	inc	ix
+	pop	af		; pop flag
+	or	a		; 3rd delim found?
+	ld	bc,1		; default counter value = 1
+	jr	z,sub9		; jump if not
+sub8:	ld	a,(hl)
+	inc	hl
+	cp	' '		; space?
+	jr	z,sub8		; skip it
+	dec	hl
+	or	a		; end of command?
+	call	nz,GETINT	; get counter if not, else use default (BC still = 1)
+sub9:	ld	(ix+0),c	; store it
+	ld	(ix+1),b
+	inc	ix
+	inc	ix
+	pop	iy		; get pointer to program code into IY
+	ld	ix,LSTSUB
+	call	LISTL		; 'list' the old line into the LINE buffer
+	ld	ix,(HISTR)
+	ld	hl,LINE		; HL = begin of input buffer
+sub10:	call	FNDSTR		; find search substring
+	jp	c,sub16		; jump if not found
+	ld	c,(ix+8)
+	ld	b,(ix+9)
+	dec	bc		; else decrement counter [!!!1-byte is OK]
+	ld	(ix+8),c
+	ld	(ix+9),b
+	ld	a,b
+	or	c
+	jr	nz,sub10	; loop while not zero
+	push	hl
+	ld	e,(ix+0)	; DE = (ix+0:1)
+	ld	d,(ix+1)
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	add	hl,hl		;!!!could overflow!better 2 subtracts?
+	ex	de,hl
+	or	a
+	sbc	hl,de		;      -2*(ix+2:3)
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	add	hl,de		;      +(ix+4:5)
+	ex	de,hl
+	ld	(ix+0),e	; (ix+0:1) = DE = difference in size
+	ld	(ix+1),d
+	ld	a,d
+	or	a
+	jp	m,sub12		; jump if negative (resulting line shorter)
+	or	e
+	jr	z,sub14		; jump if zero (same length as before)
+
+	; expand line
+
+	ex	(sp),hl
+	add	hl,de
+	ex	(sp),hl		; (SP = saved HL) += DE -> start of blk to move
+	ld	c,(ix+6)
+	ld	b,(ix+7)
+	ex	de,hl
+	add	hl,bc		; DE += (end LINE ptr) -> end of blk to move
+	ld	de,(CODE)
+	call	CPHLDE
+	ex	de,hl
+	jr	c,suberr	; if DE > CODE -> substitute error
+sub11:	pop	hl
+	push	hl
+	call	CPHLDE
+	jr	z,sub14
+	dec	bc		;!!!TODO: use lddr
+	dec	de
+	ld	a,(bc)
+	ld	(de),a
+	jr	sub11		; loop
+
+suberr:	rst	10h
+	db	08h		; substitute error
+
+	; contract line
+
+sub12:	pop	hl
+	ex	de,hl
+	add	hl,de
+	ex	de,hl
+	push	de
+sub13:	push	de
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	call	CPHLDE
+	pop	de
+	jr	z,sub14		; exit loop when HL = end LINE ptr
+	ld	a,(hl)
+	ld	(de),a
+	inc	hl
+	inc	de
+	jr	sub13		; loop
+
+	; copy replacement substring
+
+sub14:	ld	l,(ix+4)	; HL = end of replac. substring + 1
+	ld	h,(ix+5)
+	pop	de
+sub15:	push	de
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	call	CPHLDE
+	pop	de
+	jr	nc,sub17	; if HL <= start of replac. substring
+	dec	hl
+	dec	de
+	ld	a,(hl)		;!!!TODO: use ldir or lddr!
+	ld	(de),a
+	jr	sub15		; loop
+
+sub16:	xor	a
+	ld	(ix+0),a	; clear size difference
+	ld	(ix+1),a
+sub17:	ld	a,(ix+0)
+	add	a,(ix+6)
+	ld	(ix+0),a	; (ix+0:1) = new end LINE address
+	ld	a,(ix+1)
+	adc	a,(ix+7)
+	ld	(ix+1),a
+	ld	hl,LINE		; HL = begin of input buffer
+sub18:	ld	e,(ix+0)
+	ld	d,(ix+1)
+	call	CPDEHL
+	jr	nc,sub19	; if HL >= (ix)
+	ld	a,(hl)
+	inc	hl
+	call	PUTCHR		; display new line
+	jr	sub18		; loop
+sub19:	ld	hl,LINE		; HL = begin of input buffer
+sub20:	ld	a,(hl)
+	inc	hl
+	cp	' '		; space?
+	jr	z,sub20		; skip it
+	dec	hl
+	call	ISDIG		; digit?
+	jr	c,suberr	; if not -> substitute error
+	pop	bc
+	ld	bc,READY	; push addr of immediate mode loop on stack
+	push	bc
+	jp	EDITL1		; translate and enter new line
+
+GETINT:	push	hl
+	call	VAL		; get number into FP accum
+	ex	de,hl
+	pop	hl
+	jp	c,suberr	; if bad number -> substitute error
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jp	nz,suberr	; if not an integer -> substitute error
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a
+	jp	m,suberr	; -> substitute error
+	or	c
+	jp	z,suberr	; if =< 0 -> substitute error (check!)
+	ret
+
+FNDSTR:	ld	e,l		; remember text position
+	ld	d,h
+	ld	c,(ix+0)	; BC = start of search substring
+	ld	b,(ix+1)
+fstr1:	push	de
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	call	CPDEHL
+	pop	de
+	ccf
+	ret	c		; return CY if HL >= end of LINE
+	ld	a,(bc)
+	cp	(hl)		; characters match?
+	inc	bc
+	inc	hl
+	jr	nz,fstr2	; jump if not
+	push	hl
+	push	de
+	ld	l,(ix+2)	;!!!better use a trailing null or char counter
+	ld	h,(ix+3)
+	ld	e,c
+	ld	d,b
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	c,fstr1		; loop while BC < start of replac. substring
+	ret
+
+fstr2:	ld	l,e
+	ld	h,d
+	inc	hl
+	jr	FNDSTR
+
+LSTSUB:	push	ix
+	push	de
+	ld	ix,(HISTR)
+	ld	e,(ix+6)	; get pointer to LINE buffer into DE
+	ld	d,(ix+7)
+	ld	(de),a		; store char
+	inc	de		; advance pointer
+	ld	(ix+6),e
+	ld	(ix+7),d
+	push	hl
+	ld	hl,(CODE)
+	call	CPHLDE		; ckeck for buffer overflow
+	pop	hl
+	jp	nc,suberr	; -> substitute error
+	pop	de
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- RESEQ
+
+RESEQ:	inc	hl
+	ld	de,RSQTBL
+	call	LARG		; push arguments on stack
+	ld	hl,(LINTAB)	; HL = begin of line number table
+	ld	de,(SYMBOL)	; DE = end of line number table
+rsq1:	inc	hl
+	inc	hl
+	call	CPDEHL
+	jr	nc,rsq2		; exit loop when HL >= DE
+	res	0,(hl)		; clear low bit (make all offsets even)
+	inc	hl
+	inc	hl
+	jr	rsq1		; loop
+
+rsq2:	ld	hl,(CODE)
+rsq3:	call	rsq30		; get next line number
+	jr	c,rsq4		; exit loop when end of program is reached
+	inc	bc
+	push	hl
+	ld	hl,(LINTAB)
+	add	hl,bc
+	set	0,(hl)		; set low bit (make offset even)
+	pop	hl
+	jr	rsq3		; loop
+
+; TODO: use T1..T4 instead of stack?
+
+rsq4:	ld	bc,0
+	push	bc		; 6
+	push	bc		; 4
+	push	bc		; 2
+	push	bc		; 0
+	ld	ix,0
+	add	ix,sp
+	ld	hl,(LINTAB)
+rsq5:	call	CPDEHL
+	jp	nc,rsq14	; exit loop when HL >= DE
+	inc	hl
+	inc	hl
+	bit	0,(hl)		; low bit set?
+	dec	hl
+	dec	hl
+	jr	nz,rsq6
+	xor	a
+	ld	(hl),a		; line not referenced, ensure backptr is clear
+	inc	hl
+	ld	(hl),a
+	dec	hl
+rsq6:	jp	z,rsq13		; skip line if not (line not referenced)
+	push	hl
+	push	de
+	ld	e,(hl)		;!!!write better!
+	inc	hl
+	ld	d,(hl)
+	ld	l,(ix+12)	; start line number
+	ld	h,(ix+13)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,rsq9		; if (HL) >= (SP+12) [start line #]
+	inc	hl
+	inc	hl
+	res	0,(hl)		; clear low bit if yes to ignore this line
+	dec	hl
+	dec	hl
+	ld	a,(ix+3)
+	or	a
+	jr	nz,rsq7
+	inc	(ix+3)
+	jr	rsq8
+rsq7:	push	hl
+	push	de
+	ld	a,(hl)		;!!!write better!
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	e,(ix+6)	; current max
+	ld	d,(ix+7)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,rsq13	; skip if (HL) <= (SP+6)
+rsq8:	ld	a,(hl)
+	ld	(ix+6),a	; keep max in (SP+6)
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+7),a
+	dec	hl
+	jr	rsq13		; skip
+rsq9:	push	hl
+	push	de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	e,(ix+10)	; end line number
+	ld	d,(ix+11)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	c,rsq10		; jump if (HL) > (SP+10) [end line #]
+	inc	bc		; count lines to process
+	jr	rsq13
+rsq10:	inc	hl
+	inc	hl
+	res	0,(hl)		; clear low bit, do not process this line
+	dec	hl
+	dec	hl
+	ld	a,(ix+2)
+	or	a
+	jr	nz,rsq11
+	inc	(ix+2)
+	jr	rsq12
+rsq11:	push	hl
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	pop	de
+	pop	hl
+	jr	nc,rsq13	; jump if (HL) >= (SP+4)
+rsq12:	ld	a,(hl)
+	ld	(ix+4),a	; keep min in (SP+4)
+	inc	hl
+	ld	a,(hl)
+	ld	(ix+5),a
+	dec	hl
+rsq13:	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	jp	rsq5		; loop
+
+rsq14:	ld	a,b		; any valid lines?
+	or	c
+	jp	z,rsq24		; jump if not
+	ld	a,(ix+16)
+	or	a
+	jr	z,rsq15
+	ld	a,(ix+6)	; get 1st new line number
+	add	a,(ix+8)	; add step value
+	ld	(ix+14),a	; save as current new line number
+	ld	a,(ix+7)
+	adc	a,(ix+9)
+	ld	(ix+15),a
+	jp	pe,rsqerr	; on overflow -> resequence error
+rsq15:	ld	a,(ix+3)
+	or	a
+	jr	z,rsq16
+	push	hl
+	push	de
+	ld	l,(ix+14)
+	ld	h,(ix+15)
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,rsqerr	; if (SP+14) <= (SP+6)
+rsq16:	ld	l,(ix+14)
+	ld	h,(ix+15)
+	pop	af
+	push	bc		; save number of valid lines (SP+0)
+
+	; ensure we can renumber without running into overflow
+
+rsq17:	dec	bc
+	ld	a,b
+	or	c
+	jr	z,rsq18		; exit loop when all lines processed
+	ld	a,l
+	add	a,(ix+8)	; add step value
+	ld	l,a
+	ld	a,h
+	adc	a,(ix+9)
+	ld	h,a
+	jp	po,rsq17	; loop if no overflow
+rsqerr:	call	rsq25		; fix lo-bits before displaying error
+	rst	10h
+	db	07h		; resequence error
+
+	; ensure new range will not overlap existing lines
+
+rsq18:	ld	a,(ix+2)
+	or	a
+	jr	z,rsq19
+	push	de
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	call	CPDEHL
+	pop	de
+	jr	nc,rsqerr	; if HL >= (SP+4) -> resequence error
+
+	; do the actual renumbering, start by finding the lowest
+	; unprocessed line
+
+rsq19:	ld	bc,0
+	ld	hl,(LINTAB)
+rsq20:	call	CPDEHL
+	jr	nc,rsq23	; exit loop when HL >= DE
+	inc	hl
+	inc	hl
+	bit	0,(hl)		; low bit set?
+	dec	hl
+	dec	hl
+	jr	z,rsq22		; skip if not - line already processed
+	ld	a,b
+	or	c
+	jr	z,rsq21
+	;;inc	hl		;;!!!we know (BC) <> (HL) (no duplicated lines)
+	call	CMPLN2
+	;;dec	hl
+	jr	c,rsq22		; jump if (BC) <= (HL) [(BC) < (HL)+1]
+rsq21:	ld	c,l		; BC = address of lowest (unprocessed)
+	ld	b,h		;      line number
+rsq22:	inc	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	jr	rsq20		; loop
+
+	; now renumber that line
+
+rsq23:	ld	a,(ix+14)	; store new line number into (BC)
+	ld	(bc),a
+	inc	bc
+	ld	a,(ix+15)
+	ld	(bc),a
+	inc	bc
+	ld	a,(ix+14)
+	add	a,(ix+8)	; add step value
+	ld	(ix+14),a
+	ld	a,(ix+15)
+	adc	a,(ix+9)
+	ld	(ix+15),a
+	ld	a,(bc)
+	res	0,a		; clear lo-bit (done with this line)
+	ld	(bc),a
+	pop	bc		; (SP+0)
+	dec	bc		; decr line # count (# of valid lines)
+	push	bc
+	ld	a,b
+	or	c
+	jr	nz,rsq19	; loop to find next line
+
+	; all done, update HILINO and fix lo-bits
+	; The last relies on the fact that if the address is incorrect
+	; (i.e. lo-bit cleared when it should be set), it will point
+	; to the preceding end-of-line token, which is a negative byte.
+	; Otherwise (if correct), it will point to the hi-byte of the
+	; table offset, which is always positive.
+
+rsq24:	ld	hl,18
+	add	hl,sp
+	ld	sp,hl		; 18. restore stack
+	ld	hl,READY
+	push	hl		; push addr of immediate mode loop
+rsq25:	ld	hl,0
+	ld	(HILINO),hl
+	ld	hl,(LINTAB)
+rsq26:	call	CPDEHL
+	jr	nc,rsq31	; return when HL >= DE
+	push	hl
+	push	de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	hl,(HILINO)
+	ex	de,hl		; DE = HILINO, HL = (HL)
+	call	CPHLDE
+	jr	nc,rsq27	; jump if (HL) <= HILINO
+	ld	(HILINO),hl	; else set HILINO to (HL)
+rsq27:	pop	de
+	pop	hl
+	inc	hl
+	inc	hl
+	res	0,(hl)
+	ld	a,(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	jr	z,rsq26		; loop if backpointer is null (unused line)
+	dec	hl
+	dec	hl
+	ld	c,(hl)		; get backpointer into BC
+	inc	hl
+	ld	b,(hl)
+	dec	hl
+	push	hl
+	ld	hl,(CODE)	; add CODE start address, HL points to code
+	add	hl,bc
+	ld	a,(hl)		; check code byte
+	pop	hl
+	or	a		; positive?
+	jp	p,rsq28		; jump if yes, address is correct
+	inc	bc		; else fix backpointer
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	dec	hl
+rsq28:	inc	hl
+	inc	hl
+	jr	rsq26		; loop
+
+RSQTBL:	dw	8000h
+	dw	0000h
+	dw	0080h
+	dw	0000h		; default start line is begin of program
+	dw	7FFFh		; end line is end of program
+	dw	0000h
+	dw	000Ah		; default step value
+	dw	0001h		; end of list
+
+rsq29:	call	SKPOBJ		; skip token and its arguments
+rsq30:	ld	a,(hl)		; get next byte
+	inc	hl
+	ld	b,a		; note order!
+	or	a
+	jp	m,rsq32		; branch if a token
+	ld	c,(hl)
+	inc	hl
+	bit	0,c		; even?
+	jr	z,rsq30		; loop if yes
+rsq31:	ret
+rsq32:	dec	hl
+	cp	T.EOF		; "end of program" token?
+	jr	nz,rsq29	; loop if not
+	scf
+	ret
+
+; Compare line numbers pointed to by (BC) and (HL).
+; Returns CY if (HL) > (BC).
+
+CMPLN2:	inc	bc
+	inc	hl
+	ld	a,(bc)
+	cp	(hl)
+	dec	hl
+	dec	bc
+	ret	nz
+	ld	a,(bc)
+	cp	(hl)
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- COMPILE
+
+; Note: assumes CODE and data areas are word-aligned!
+
+COMPIL:	ld	bc,2
+	ld	(T3),bc
+	push	hl
+	ld	hl,(CODE)
+comp1:	ld	a,(hl)
+	cp	T.EOF		; "end of program" token?
+	jr	z,comp3		; jump if yes
+	cp	T.CALL		; CALL?
+	jr	nz,comp2	; jump if not
+	inc	hl
+	xor	a
+	ld	(hl),a		; clear the next three bytes
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	jr	comp1		; loop
+comp2:	call	SKPOBJ		; skip the token and its arguments
+	jr	comp1		; loop
+
+comp3:	pop	hl
+	call	CLVARS		; CLEAR
+	ld	c,80h		; binary mode, .BAC extension (see GFIL)
+	call	GFIL		; set program name, open the file, etc.
+	call	SAVPGM		; save the tokenized program
+	call	CLOSYS		; close channel 13
+	jp	READY		; display READY prompt
+
+SAVPGM:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,(ODEV)	; HL = channel descriptor for output operations
+	ld	a,h
+	or	l
+	jr	nz,spgm1
+	rst	10h
+	db	1Bh		; if zero error -> illegal file specification
+
+spgm1:	push	hl
+	pop	ix
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc
+	pop	iy		;### IY = buffer descriptor address
+	ld	c,(iy+BLKNO)
+	ld	b,(iy+BLKNO+1)
+	inc	bc		;### start at block 0 (for write function)
+	ld	(iy+BLKNO),c
+	ld	(iy+BLKNO+1),b
+	call	WRSGN		;### write compiled file signature
+	ld	de,0		; DE = checksum
+	ld	hl,WSEGTB	; HL = segment address table
+spgm2:	ld	c,(hl)		; fetch first address (start of segment)
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	a,b
+	and	c
+	inc	a		; end of table?
+	ret	z		; return if yes
+	push	de
+	ld	e,(hl)		; get second address (end of segment)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	(sp),hl		; pop checksum, push table pointer
+	push	hl		; push checksum
+	ld	l,c
+	ld	h,b
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get contents of first location (start)
+	ex	de,hl		;  into DE
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; get contents of second location (end)
+	or	a
+	sbc	hl,de		; HL = size of segment in bytes
+	srl	h
+	rr	l		; size in words
+	ld	c,l
+	ld	b,h
+	call	WRWORD		; store size in file
+	ex	de,hl		; HL = start of segment
+	pop	de		; pop checksum
+spgm3:	dec	bc		; decrement count
+	ld	a,b
+	or	a
+	jp	m,spgm4		; exit loop when all words are copied
+	push	bc
+	ld	c,(hl)		; get word from segment
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ex	de,hl
+	add	hl,bc		; update checksum
+	ex	de,hl
+	call	WRWORD		; save word to file
+	pop	bc
+	jr	spgm3		; loop
+spgm4:	ld	c,e		; get checksum word into BC
+	ld	b,d
+	call	WRWORD		; save it to file
+	pop	hl		; pop table pointer
+	jr	spgm2		; continue for the next table entries
+
+; Segments table, for write operation
+
+WSEGTB:	dw	DEFTAB,LINTAB	; FN table limits
+	dw	LINTAB,SYMBOL	; line number table limits
+	dw	SYMBOL,LOFREE	; symbol table limits
+	dw	CODE,DEFTAB	; program code limits
+	dw	-1
+
+; Load a compiled program
+
+GETPGM:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,(IDEV)	; HL = read channel descriptor
+	ld	a,h
+	or	l
+	jr	nz,gtpg1
+	rst	10h
+	db	1Bh		; if zero -> illegal file specification
+
+gtpg1:	push	hl
+	pop	ix
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc
+	pop	iy		;### IY = buffer descriptor address
+	call	CHKSGN		;### read signature into input buffer
+	ret	c		;### return with error on signature mismatch
+	call	FFNDCR		; skip next bytes until we find a CR
+	ld	bc,0		; segment size = 0
+	call	MOVEUP		; move data areas to high memory
+	ld	de,0		; checksum
+	ld	hl,RSEGTB	; HL = segment address table
+gtpg2:	ld	c,(hl)		; get address into BC
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	a,(hl)
+	inc	hl
+	and	(hl)
+	dec	hl
+	inc	a		; end of table?
+	jr	z,gtpg4		; exit loop if yes
+	push	hl
+	ld	l,c
+	ld	h,b
+	ld	a,(hl)		; get contents of location
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	RDWORD		; read word from file (segment length in words)
+	push	hl
+	push	de
+	add	hl,bc
+	add	hl,bc		; add seg length in bytes to seg start addr
+	ex	de,hl
+	ld	hl,(T1)
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,bigerr	; if >= T1 -> program too big
+	call	LDSEG		; load segment
+	ld	c,l
+	ld	b,h
+	pop	hl
+	push	de
+	ld	e,(hl)		; fetch next address from table
+	inc	hl
+	ld	d,(hl)
+	dec	hl
+	ld	a,d
+	and	e
+	inc	a		; end of table?
+	jr	z,gtpg3		; jump if yes
+	ex	de,hl
+	ld	(hl),c		; else update start address of next segment
+	inc	hl
+	ld	(hl),b
+	dec	hl
+	ex	de,hl
+gtpg3:	pop	de
+	call	RDWORD		; read word from file (checksum)
+	ex	de,hl
+	call	CPBCHL		; compare with computed value
+	ex	de,hl
+	jr	nz,ckserr	; if not same -> checksum error
+	jr	gtpg2		; loop until all segments (but code) loaded
+
+gtpg4:	call	FIXCOM		; fix COMMON
+	call	RDWORD		; read word from file (segment size in words)
+	call	MOVEUP		; make space for code segment and update ptrs
+	ld	hl,(CODE)
+	call	LDSEG		; load program code segment
+	call	RDWORD		; read word from file (checksum)
+	ex	de,hl
+	call	CPBCHL		; compare with computed value
+	ex	de,hl
+	jr	nz,ckserr	; if not same -> checksum error
+	ld	hl,(CODE)
+gtpg5:	call	SKPLIN		; go to next line
+	ccf
+	ret	nc
+	ex	de,hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(HILINO),hl	; find highest line number
+	ex	de,hl
+	jr	gtpg5		; loop
+
+bigerr:	call	INISCR		; clear program and variables, filename, etc.
+	rst	10h
+	db	10h		; program too big
+
+; Load segment. HL = start address, BC = size in words, DE = partial checksum
+
+LDSEG:	dec	bc
+	ld	a,b
+	or	a
+	ret	m
+	push	bc
+	call	RDWORD		; read word from file
+	ex	de,hl
+	add	hl,bc		; add to checksum
+	ex	de,hl
+	ld	(hl),c		; store in segment
+	inc	hl
+	ld	(hl),b
+	inc	hl
+	pop	bc
+	jr	LDSEG		; loop
+
+ckserr:	call	INISCR		; clear program and variables, filename, etc.
+	rst	10h
+	db	11h		; checksum error in compiled program
+
+; Segments table, for read operation
+
+RSEGTB:	dw	DEFTAB		; FN table
+	dw	LINTAB		; line number table
+	dw	SYMBOL		; symbol table
+	dw	LOFREE		; program code
+	dw	-1
+
+; Move data areas to high memory
+
+MOVEUP:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	hl,(LOSTR)
+	ld	de,(HISTR)
+	call	CPHLDE		; any strings in memory?
+	ld	de,(HIFREE)	; use HIFREE if not
+	jr	z,mvup1
+	ld	de,(LOSTR)	; use LOSTR if yes
+	res	0,e		;  word-align (towards low core)
+mvup1:	ld	a,b		; segment size given?
+	or	c
+	jr	nz,mvup3	; jump if yes
+	ld	(T2),de
+	ld	hl,(LOFREE)
+	ld	c,e
+	ld	b,d
+	ld	de,(SYMBOL)
+mvup2:	dec	hl
+	dec	bc
+	ld	a,(hl)
+	ld	(bc),a		; move HIFREE/LOSTR <- LOFREE..SYMBOL
+	call	CPHLDE
+	jr	c,mvup2		; loop while HL > SYMBOL
+	ld	(T1),bc		; store top of available memory
+	ret
+
+; Make space for code segment after DEFTAB, LINTAB and SYMBOL tables have
+; been loaded. BC = new code size in words (*2 = bytes)
+
+mvup3:	ld	hl,(CODE)
+	push	bc
+	ld	bc,(DEFTAB)
+	or	a
+	sbc	hl,bc		; HL = CODE - DEFTAB = -old code size
+	pop	bc
+	add	hl,bc		; HL = new code size - old code size
+	add	hl,bc		;    = relocation offset
+	ld	c,l
+	ld	b,h		; relocation offset now in BC
+	ld	hl,(LOFREE)	; LOFREE contains end addr of loaded segments
+	add	hl,bc		; add reloc offset to get new end addr
+	ex	de,hl
+	call	CPHLDE		; compare with old de (HIFREE or LOSTR)
+	jr	nc,bigerr	; if new end >= HIFREE/LOSTR -> program too big
+	ld	hl,(LOFREE)	; new end in DE, old end in HL
+mvup4:	dec	hl
+	dec	de
+	ld	a,(hl)
+	ld	(de),a		; move segments up
+	push	de
+	ld	de,(DEFTAB)
+	call	CPHLDE
+	pop	de
+	jr	c,mvup4		; loop while HL > DEFTAB
+	ld	hl,RSEGTB	; now fixup pointers
+mvup5:	ld	e,(hl)		; fetch address from table
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,d
+	and	e
+	inc	a		; end of table?
+	ret	z		; return if yes
+	push	hl
+	ex	de,hl
+	ld	e,(hl)		; get location contents
+	inc	hl
+	ld	d,(hl)		;!!!write better!
+	ex	de,hl
+	add	hl,bc		; add reloc offset
+	ex	de,hl
+	ld	(hl),d		; set new pointer
+	dec	hl
+	ld	(hl),e
+	pop	hl
+	jr	mvup5		; loop
+
+; Fix COMMON variables
+
+FIXCOM:	call	SAVREG		; save BC,DE,HL,IX,IY
+	ld	a,(COMN)
+	or	a		; any COMMON variables?
+	ret	z		; return if not
+	ld	de,(T1)		; get top of available memory into DE
+fxcm1:	ld	hl,(T2)
+	call	CPHLDE
+	ret	nc		; return if DE >= T2
+	ld	bc,(SYMBOL)
+fxcm2:	ld	a,(bc)
+	ex	de,hl
+	cp	(hl)
+	ex	de,hl
+	jr	nz,fxcm4
+	ld	l,c
+	ld	h,b
+	call	SKPSYM		; skip to next variable
+	dec	hl
+	dec	hl
+	push	hl
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	(sp),hl		; push (HL), restore HL
+	or	a
+	sbc	hl,bc
+	add	hl,de
+	ex	de,hl
+	ex	(sp),hl		; push DE, pop (HL)
+	ex	de,hl
+	push	de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CPHLDE		; compare (HL) with saved (HL)
+	pop	de		; restore DE
+	inc	hl
+	inc	hl
+	jr	nz,fxcm4
+fxcm3:	ld	a,(de)
+	ld	(bc),a
+	inc	de
+	inc	bc
+	ld	a,(de)
+	ld	(bc),a
+	inc	de
+	inc	bc
+	call	CPHLDE
+	jr	c,fxcm3		; if DE < HL
+	jr	fxcm1		; loop
+fxcm4:	ld	l,c
+	ld	h,b
+	call	SKPSYM		; skip to next variable
+	push	de
+	ld	de,(LOFREE)
+	call	CPDEHL
+	pop	de
+	jr	nc,fxcm5	; if HL >= LOFREE
+	ld	c,l
+	ld	b,h
+	jr	fxcm2
+fxcm5:	ex	de,hl
+	call	SKPSYM		; skip to next variable
+	ex	de,hl
+	jr	fxcm1		; loop
+
+; Check for compiled file signature. Return with CY set if not found.
+
+CHKSGN:	call	RDNXBL		;### read next block (binary mode)
+				;### TODO: check errors (see RDWORD)
+	ld	e,(iy+BUFAD)	; DE = begin of buffer
+	ld	d,(iy+BUFAD+1)
+	ld	hl,VERSION	; version string
+ck2:	ld	a,(de)
+	cp	(hl)		; compare bytes
+	scf
+	ret	nz		; return with error if they don't match
+	inc	hl
+	inc	de
+	ld	a,(de)
+	cp	'-'		; compare only the major version number
+	jr	nz,ck2
+	ret			; return with CY clear
+
+; Position the file pointer after the compiled file signature
+; (skip bytes until we find a CR)
+
+FFNDCR:	ld	e,(iy+BUFAD)	; BC = buffer address
+	ld	d,(iy+BUFAD+1)
+	ld	c,0
+set1:	ld	a,(de)
+	inc	c
+	cp	CR		; skip bytes until we find a CR
+	jr	z,set2
+	inc	de
+	jr	set1
+set2:	bit	0,c		; next read is word-aligned
+	jr	z,set3
+	inc	de
+set3:	ld	(iy+BUFPTR),e	; set new bufptr
+	ld	(iy+BUFPTR+1),d
+	ret
+
+; Read a word from file
+; IX = channel descriptor address
+; IY = buffer descriptor address
+; Return the word read in BC
+
+RDWORD:	push	hl
+	push	de
+	call	CHKBFP
+	jr	nz,rdw1
+;;;	call	RDBLK		; read block
+	call	RDNXBL		;### read next block (binary mode)
+	ld	e,(iy+BUFAD)	;###
+	ld	d,(iy+BUFAD+1)
+	dec	de		;###
+	ld	(iy+BUFPTR),e
+	ld	(iy+BUFPTR+1),d
+	jr	nc,rdw1		; branch on success (no error)
+	call	INISCR		; clear program and variables, filename, etc.
+	rst	10h
+	db	12h		; illegal end of file in compiled program
+rdw1:	ld	l,(iy+BUFPTR)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	(iy+BUFPTR),l
+	ld	(iy+BUFPTR+1),h
+	pop	de
+	pop	hl
+	ret
+
+; Write word to file
+; BC = word to write
+; IX = channel descriptor address
+; IY = buffer descriptor address
+
+WRWORD:	push	hl
+	push	de
+	call	CHKBFP
+	jr	nz,wrw1
+;;;	call	WRBLK		; write block
+	call	WRVFBL		;### write block (binary mode)
+	ld	e,(iy+BUFAD)	;###
+	ld	d,(iy+BUFAD+1)
+	dec	de		;###
+	ld	(iy+BUFPTR),e
+	ld	(iy+BUFPTR+1),d
+	ld	e,(iy+BLKNO)
+	ld	d,(iy+BLKNO+1)
+	inc	de		;### advance block pointer
+	ld	(iy+BLKNO),e
+	ld	(iy+BLKNO+1),d
+wrw1:	ld	l,(iy+BUFPTR)
+	ld	h,(iy+BUFPTR+1)
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	ld	(iy+BUFPTR),l
+	ld	(iy+BUFPTR+1),h
+	set	1,(ix+1)	;### set "modified" flag for close function
+	pop	de
+	pop	hl
+	ret
+
+; Write compiled file header (signature)
+
+WRSGN:	ld	hl,VERSION	; version string
+	ld	e,(iy+BUFAD)
+	ld	d,(iy+BUFAD+1)	; DE = start of buffer
+	ld	c,0
+ws1:	ld	a,(hl)
+	ld	(de),a		; save character from version string
+	inc	hl
+	inc	de
+	inc	c
+	or	a
+	jr	nz,ws1
+	dec	de
+	ld	a,CR
+	ld	(de),a		; store a CR
+	bit	0,c		; make sure next section begins at
+	jr	z,ws2		;  an even address
+	inc	de
+	xor	a
+	ld	(de),a		; pad with a null byte if necessary
+ws2:	ld	(iy+BUFPTR),e
+	ld	(iy+BUFPTR+1),d	; BUFPTR always points to last byte written
+	ret
+
+;-----------------------------------------------------------------------
+
+OPTBL:	db	'+',		T.PLS
+	db	'-',		T.MIN
+	db	'*',		T.MUL
+	db	'/',		T.DIV
+	db	'^',		T.PWR
+	db	'(',		T.LPAR
+	db	')',		T.RPAR
+	db	'\',		T.EOL
+	db	'&',		T.CONC
+	db	';',		T.SEM
+	db	',',		T.COM
+	db	'<=',		T.LE
+	db	'=<',		T.LE
+	db	'>=',		T.GE
+	db	'=>',		T.GE
+	db	'<>',		T.NE
+	db	'><',		T.NE
+	db	'<',		T.LT
+	db	'>',		T.GT
+	db	'=',		T.EQ
+	db	'"',		T.DBLQ
+	db	"'",		T.SNGQ
+	db	':',		T.COLN
+	db	'#',		T.FILN
+	db	'[',		T.LPAR
+	db	']',		T.RPAR
+OPTEND:	db	0
+
+KWTBL:	db	'IF END #',	T.IFE
+	db	'LET ',		T.LET
+	db	'IF ',		T.IF
+	db	'GO TO ',	T.GOTO
+	db	'ON ',		T.ON
+	db	' FOR INPUT',	T.FINP
+	db	' FOR OUTPUT',	T.FOUT
+	db	'FOR ',		T.FOR
+	db	' TO ',		T.TO
+	db	'NEXT ',	T.NEXT
+	db	' THEN ',	T.THEN
+	db	' STEP ',	T.STEP
+	db	'GOSUB ',	T.GSUB
+	db	'RETURN',	T.RET
+	db	'INPUT ',	T.INP
+	db	'LINPUT ',	T.LINP
+	db	'PRINT ',	T.PRNT
+	db	'USING ',	T.USNG
+	db	'REM',		T.REM
+	db	'DEF ',		T.DEF
+	db	'READ ',	T.READ
+	db	'DATA ',	T.DATA
+	db	'CALL ',	T.CALL
+	db	'FN',		T.FN
+	db	'PI',		T.PI
+	db	'SYS(',		T.SYS
+	db	'RCTRLO',	T.RCO
+	db	'ABORT(',	T.ABO
+	db	'TTYSET(',	T.TTYS
+	db	'CTRLC',	T.CC
+	db	'RCTRLC',	T.RCC
+	db	'RND(',		T.RNDP
+	db	'RND',		T.RND
+	db	'SIN(',		T.SIN
+	db	'COS(',		T.COS
+	db	'SQR(',		T.SQR
+	db	'ATN(',		T.ATN
+	db	'EXP(',		T.EXP
+	db	'LOG(',		T.LOG
+	db	'LOG10(',	T.LG10
+	db	'ABS(',		T.ABS
+	db	'INT(',		T.INT
+	db	'SGN(',		T.SGN
+	db	'TAB(',		T.TAB
+	db	'BIN(',		T.BIN
+	db	'OCT(',		T.OCT
+	db	'CHR$(',	T.CHR
+	db	'LEN(',		T.LEN
+	db	'ASC(',		T.ASC
+	db	'POS(',		T.POS
+	db	'SEG$(',	T.SEG
+	db	'VAL(',		T.VAL
+	db	'TRM$(',	T.TRM
+	db	'DAT$',		T.DAT
+	db	'CLK$',		T.CLK
+	db	'STR$(',	T.STR
+	db	'OPEN ',	T.OPEN
+	db	'CLOSE ',	T.CLSE
+	db	'CHAIN ',	T.CHN
+	db	'OVERLAY ',	T.OVL
+	db	' AS FILE ',	T.ASF
+	db	'KILL ',	T.KILL
+	db	'NAME ',	T.NAME
+	db	' RECORDSIZE ',	T.RCSZ
+	db	' FILESIZE ',	T.FSZ
+	db	' MODE ',	T.MODE
+	db	' DOUBLE BUF',	T.DBUF
+	db	' LINE ',	T.LINE
+	db	'DIM ',		T.DIM
+	db	'COMMON ',	T.COMN
+	db	'RANDOMIZE',	T.RDMZ
+	db	'RESTORE ',	T.RES
+	db	'RESET ',	T.RST
+	db	'STOP',		T.STOP
+	db	'END',		T.END
+
+CMDTBL:	db	'UNSAVE',	T.UNS
+	db	'RENAME',	T.REN
+	db	'NEW',		T.NEW
+	db	'REPLACE',	T.RPLC
+	db	'DEL',		T.DEL
+	db	'SUB',		T.SUB
+	db	'LISTNH',	T.LNH
+	db	'RUNNH',	T.RNH
+	db	'LIST',		T.LIST
+	db	'RUN',		T.RUN
+	db	'SAVE',		T.SAVE
+	db	'COMPILE',	T.CMPL
+	db	'APPEND',	T.APND
+	db	'OLD',		T.OLD
+	db	'SCR',		T.SCR
+	db	'CLEAR',	T.CLR
+	db	'LENGTH',	T.LENG
+	db	'BYE',		T.BYE
+	db	'RESEQ',	T.RSEQ
+	db	'CAT',		T.CAT
+	db	0
+
+	END

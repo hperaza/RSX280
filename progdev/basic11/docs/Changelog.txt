@@ -1,0 +1,482 @@
+Changelog
+---------
+
+06/12/16
+
+- Working on a BASIC-11-compatible Z80 BASIC interpreter, based on a
+  disassembly of DEC's BASIC-11.
+
+
+07/12/16
+
+- Main loop works
+
+- Error trapping works
+
+- Tokenizer half done
+
+
+08/12/16
+
+- BYE, LENGTH, and maybe other immediate-mode commands can be executed.
+
+- Decimal output routine half done.
+
+
+09/12/16
+
+- Decimal output is now working OK.
+
+- Floating point package now in a separate file.
+
+
+10/12/16
+
+- Number parsing done, seems to be working OK.
+
+- More work on tokenizer.
+
+- Listing of program mostly done (not tested).
+
+
+11/12/16
+
+- Lines can now be entered, deleted and replaced (code needs optimization!)
+
+- Program can be LISTed.
+
+
+12/12/16
+
+- Variables names are now processed.
+
+
+13/12/16
+
+- Added '?' as shortcut for PRINT.
+
+- FN functions are now correctly translated.
+
+- Tokenizer now complete?
+
+- Simple programs can be run (simple statements, no expr. eval, etc.)
+
+
+14/12/16
+
+- More work on EVAL
+
+- More work on PRINT, now simple expressions (e.g. PI) can be printed.
+
+- PRINT now processes ';' and ',' separators.
+
+- GOTO done.
+
+- GOSUB/RETURN done, subroutines now work.
+
+- Fixed bugs of decimal output routine.
+
+
+15/12/16
+
+- More work on EVAL
+
+- More work on FPMP ($POLSH, $UNPOL, $IR, $RI, $INTR)
+
+- INT, ABS, SYS, ABORT functions now work.
+
+- Working on SAVE command.
+
+
+16/12/16
+
+- Fixed bugs in ASCII to FP conversion.
+
+- Working on file I/O.
+
+- Terminal input now buffered.
+
+- Programs can now be loaded via OLD command.
+
+
+17/12/16
+
+- Working on string support.
+
+- PRINT can already output static strings.
+
+- Functions CHR$, ASC, LEN, TTYSET, SGN, BIN, OCT, STR$, TRM$, DAT$ and
+  CLK$ now work.
+
+
+18/12/16
+
+- Working on variable support.
+
+- Numbers can be assigned to scalar numeric variables.
+
+- Working on FOR loops.
+
+- Working on IF conditionals.
+
+- SQR function now works (code is anything but optimal!).
+
+
+19/12/16
+
+- Optimized SQR a bit
+
+- Working on FP addition/subtraction.
+
+
+20/12/16
+
+- Addition now works.
+
+
+21/12/16
+
+- Fixed ASCII to float conversion bugs.
+
+- Subtraction now works.
+
+- FOR loops now work, but there is a problem with the FP comparison, since
+  it runs up to limit-1.
+
+
+22/12/16
+
+- Fixed ASCII to float conversion bugs.
+
+- Fixed subtraction bug for 0+/-n case, which affected FP comparison.
+
+- FOR loops now work correctly.
+
+- IF conditionals with numeric arguments now work.
+
+- Working on INPUT support.
+
+- VAL function now works.
+
+- CAT command now works.
+
+- Working on FN support: functions with a numeric arguments now work.
+
+
+23/12/16
+
+- Fixed dynamic string storage bugs.
+
+- Finished garbage collection routines.
+
+- String concatenation now works.
+
+- FN string functions now work.
+
+
+24/12/16
+
+- FP multiplication and division done.
+
+- Fixed bug in real-to-integer conversion.
+
+- SIN and COS functions now work.
+
+- String comparison now works.
+
+
+25/12/16
+
+- Fixed null string variable bug.
+
+- Fixed LINPUT string length problem.
+
+- Working on array support.
+
+- Both string and numeric arrays now work.
+
+- Fixed a bug in READ/DATA processing.
+
+- EXP, LOG and LOG10 functions now work.
+
+
+26/12/16
+
+- Working on exponentiation.
+
+- Fixed real to integer conversion of negative values (improper signed
+  comparison).
+
+- Exponentiation with real base and integer exponent now works.
+
+- Exponentiation with real base and real exponent now works.
+
+- Exponentiation with integer base and integer exponent now works.
+
+- ATN function now works.
+
+- Fixed unary minus with integer values bug.
+
+
+27/12/16
+
+- SEG$ and POS functions now work.
+
+- Fixed READ bug when reading quoted strings from a DATA statement.
+
+
+28/12/16
+
+- Fixed delete line bug that crashed the interpreter.
+
+- Fixed backpointer on string array elements.
+
+- Fixed initialization problem that affected dynamic storage packing routines
+  (stack and array addresses must be even!).
+
+
+29/12/16
+
+- Integer divide routine.
+
+- Increased stack space from 128 to 256.
+
+- Finished ON statement.
+
+- Fixed a bug in numeric comparison routine that caused stack overflow.
+
+- TREK100.BAS now runs correctly.
+
+- Added proper ^C detection for CP/M.
+
+- INPUT #0 no longer freezes BASIC.
+
+- Working on file I/O support, files can be already read/written.
+
+- File operations now use random record read/write under CP/M.
+
+- SAVE command now works.
+
+
+30/12/16
+
+- LIST command now accepts one or more ranges of lines.
+
+- CHAIN and OVERLAY commands are working.
+
+- Working on PRINT USING, string formatting options (LERC) now work.
+
+
+30/12/16
+
+- PRINT USING numeric format now works.
+
+- Working on virtual array support.
+
+- Implemented CP/M ^O/^S/^Q control.
+
+- RCTRLO function now works.
+
+- SYS(7,0) and SYS(7,1) now enable/disable lowercase input.
+
+- RCTRLC, CTRLC and SYS(6) also work.
+
+
+01/01/17
+
+- RESEQ command now works.
+
+- DEL command now works.
+
+- UNSAVE and KILL commands now work.
+
+- NAME...TO command now works.
+
+- More work on virtual array support.
+
+- String virtual arrays work, but there are bugs affecting strings that
+  cross block boundaries.
+
+- Fixed multiline-single-format PRINT USING bug.
+
+
+02/01/17
+
+- Fixed virtual array string crossing blocks bug.
+
+- Integer virtual arrays now work.
+
+- Float virtual arrays now work.
+
+- Fixed large virtual arrays bug.
+
+- SUB command now works.
+
+- Working on 'compiled' program support.
+
+- Compiled files can be already saved and loaded.
+
+- At this point all the original functionality is now implemented, but not
+  fully tested and the code is not optimized.
+
+
+03/01/17
+
+- Ensure CODE pointer is word-aligned, else COMPILE will save invalid files!
+
+- Can now read BAC files saved in RT-11 and/or RSX-11M with the V02-03 version
+  of BASIC-11.
+
+- Code cleanup.
+
+
+04/01/17
+
+- Code cleanup.
+
+- Fixed REM...\ SAVE bug.
+
+
+05/01/17
+
+- Code cleanup.
+
+- Fixed default dimension of two-dimensioned arrays.
+
+
+07/01/17
+
+- Code cleanup.
+
+- Use ldir/lddr for block transfers.
+
+- Fixed bug in COMMON support.
+
+
+08/01/17
+
+- Code cleanup.
+
+- Fixed bug in passing string arguments to FN user functions.
+
+
+09/01/17
+
+- Code cleanup.
+
+- Fixed bug in COMMON string support.
+
+- Preliminary RSX-180 version (no file I/O yet).
+
+
+10/01/17
+
+- Code cleanup.
+
+- Fixed bug in RESTORE that caused PDL corruption.
+
+
+12/01/17
+
+- Code cleanup.
+
+- Moved stack to lower memory, else string packing routines may fail in
+  certain cases.
+
+- Fixed return value of POS function when null search string is specified.
+
+
+15/01/17
+
+- Code cleanup.
+
+- Better separation of system-dependent variables and routines.
+
+- CAT command now works under RSX180.
+
+- Files can be loaded under RSX180.
+
+
+17/01/17
+
+- Fixed an obscure string handling bug that caused the interpreter to crash
+  in certain cases.
+
+
+19/01/17
+
+- File create/write support under RSX180.
+
+
+19/02/17
+
+- Fixed a bug in EXP() function that affected precision.
+
+- Fixed a bug in floating point exponentiation that caused the interpreter
+  to crash when exponent was larger than 255.
+
+
+16/02/18
+
+- Display correct date and time if running under CP/M 3 or MP/M.
+
+
+18/03/18
+
+- Now using IO.RVB/WVB for file I/O under RSX180.
+
+
+13/05/18
+
+- Ensure tokenized program code starts at a word boundary.
+
+
+01/11/18
+
+- Optimized the $DVI integer routine, fixing a bug in the process.
+
+
+28/04/18
+
+- Fixed a bug in RLSBUF routine.
+
+
+04/09/19
+
+- CAT command:
+  * default to *.*;* if only directory name is specified under RSX180.
+  * display device and directory name at the top of the directory listing.
+
+
+29/12/19
+
+- CP/M file I/O functions now return the same error code as the RSX180 ones.
+
+- RSX180 version:
+  * fixed a bug in the filename parsing routine that caused version numbers
+    to be ignored.
+  * the file delete routine is now working (file version must be explicit).
+  * the file rename routine is also working (file version must be explicit
+    as well.)
+  * I/O error reporting is now more specific.
+
+
+23/02/20
+
+- REPLACE command now working as expected.
+
+
+18/04/20
+
+- Implemented double-buffering (DOUBLE BUF option of OPEN statement) for
+  file read operations.
+
+
+19/04/20
+
+- Implemented double-buffering (DOUBLE BUF option of OPEN statement) for
+  file write operations.
+
+- Initialize the RANDOMIZE seed from the current time.
+
+

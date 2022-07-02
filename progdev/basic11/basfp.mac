@@ -1,0 +1,2968 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Floating Point Math Package
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	public	FPSTS,PSHFAC,POPFAC,FPLDS,FPLD,FPST,FPINT
+	public	ADDSTK,SUBSTK,FIXUP,EXPF,NUMCNV,NUMOUT,NUMB
+	public	NUMSGN,VAL,$FPUSH,$FPOP,$FPSH1,$IPUSH,$IPOP
+	public	$ICOPY,$CALL,DIMUL,$MLI,$DVI,XII$,XFF$
+	public	XFI$,CLRFAC,$POLSH,$UNPOL,$NEXT,$SBR,$ADR,$MLR
+	public	$DVR,$INTR,$IR,$RI,SIN,COS,ATAN,EXP,ALOG,ALOG10
+	public	SQRT,SETFLG
+
+	extrn	SAVREG,PUTCHR,CPHLDE,SAVCHR,SKIPBL,ISDIG,DISPAT
+	extrn	INT,ITOF,NEGHL,NEGBC,CPDEHL
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Clear floating point accumulator. Preserves all registers including A.
+
+CLRFAC:	push	hl
+	ld	hl,0
+	ld	(FAC1),hl
+	ld	(FAC2),hl
+	pop	hl
+	ret
+
+; Push floating point accumulator onto stack. Destroys BC.
+
+PSHFAC:	pop	bc
+	push	hl
+	ld	hl,(FAC2)
+	ex	(sp),hl
+	push	hl
+	ld	hl,(FAC1)
+	ex	(sp),hl
+	push	bc
+	ret
+
+; Pop floating point accumulator from stack. Destroys BC.
+
+POPFAC:	pop	bc
+	ex	(sp),hl
+	ld	(FAC1),hl
+	pop	hl
+	ex	(sp),hl
+	ld	(FAC2),hl
+	pop	hl
+	push	bc
+	ret
+
+; Load FP accum (IX = address of number) swapping bytes.
+
+FPLDS:	push	hl
+	ld	h,(ix+0)	; get number (note order)
+	ld	l,(ix+1)
+	ld	(FAC1),hl	; store it into FP accum
+	ld	h,(ix+2)
+	ld	l,(ix+3)
+	ld	(FAC2),hl
+	pop	hl
+	ret
+
+; Store FP accum to the address passed on IX swapping bytes.
+
+FPSTS:	push	hl
+	ld	hl,(FAC1)	; get number from FP accum
+	ld	(ix+0),h	; store it (note order)
+	ld	(ix+1),l
+	ld	hl,(FAC2)
+	ld	(ix+2),h
+	ld	(ix+3),l
+	pop	hl
+	ret
+
+; Load FP accum (IX = address of number).
+
+FPLD:	push	hl
+	ld	l,(ix+0)	; get number
+	ld	h,(ix+1)
+	ld	(FAC1),hl	; store it into FP accum
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	(FAC2),hl
+	pop	hl
+	ret
+
+; Store FP accum to the address passed on IX.
+
+FPST:	push	hl
+	ld	hl,(FAC1)	; get number from FP accum
+	ld	(ix+0),l	; store it
+	ld	(ix+1),h
+	ld	hl,(FAC2)
+	ld	(ix+2),l
+	ld	(ix+3),h
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Convert FP acc to integer in range -255...+255 (for exponentiation).
+; Returns CY set on success.
+
+FPINT:	ld	bc,(FAC2)
+	ld	a,b
+	or	c
+	ret	nz		; return with CY clear
+	push	hl
+	ld	hl,(FAC1)
+	push	hl
+	call	INT		; remove fractionary part from FP accum
+	ld	hl,(FAC2)
+	ld	a,h
+	or	a		; > 255? (signed)
+	jp	m,fpi1
+	jr	nz,fpi2
+fpi1:	push	de
+	ld	de,-255
+	or	a
+	sbc	hl,de		; M if (FAC2) < DE
+	pop	de
+	jp	m,fpi2		; jump if FAC2 < -255 [< 0FF01h -> <= FF00]
+	call	ITOF		; convert integer to real
+	pop	hl		; pop FAC1
+	push	de
+	ld	de,(FAC1)
+	call	CPHLDE
+	pop	de
+	jr	z,fpi3
+	push	hl
+fpi2:	pop	hl
+	ld	(FAC1),hl
+	ld	hl,0
+	ld	(FAC2),hl
+	pop	hl
+	or	a
+	ret
+
+fpi3:	call	INT		; remove fractionary part from FP accum
+	pop	hl
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Add the number on the stack to FP accum, place result on FP accum.
+; First word on the stack is CLCMOD, numbers are above it.
+
+; Returns flags according to the sign of result.
+
+ADDSTK:	pop	iy		; IY = return address
+adds1:	call	FIXUP
+	jp	m,addint	; jump if integer
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$ADR		; add numbers
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+	push	hl
+	ld	hl,(FAC1)
+	call	SETFLG		; set flags according to sign of result
+	pop	hl
+	jp	(iy)		; return to caller
+
+addint:	pop	af		; drop FAC1
+	ex	(sp),hl
+	push	de
+	ld	de,(FAC2)
+	or	a
+	adc	hl,de		; add hl,de does not set overflow bit
+	ld	(FAC2),hl
+	pop	de
+	pop	hl
+	jp	po,addret	; bvc
+	rst	10h
+	db	2Fh		; integer overflow
+	push	hl
+	ld	hl,0
+	ld	(FAC2),hl
+	pop	hl
+	xor	a		; clear flags
+addret:	jp	(iy)		; return to caller
+
+SETFLG:	ld	a,h
+	or	l
+	ret	z		; Z
+	ld	a,h
+	or	a
+	ret			; P/M
+
+; Subtract the number on the stack from the FP accum, place result on
+; FP accum. First word on stack is CLCMOD, number is above it.
+
+SUBSTK:	pop	iy		; IY = return address
+	push	ix
+	ld	ix,2		; 2 = to point above saved IX
+	add	ix,sp
+	ld	a,(ix+2)
+	or	(ix+3)		; integer?
+	jr	z,subint	; jump if yes
+	ld	a,(ix+3)	; else is a float
+	add	a,80h		; change sign of float
+	ld	(ix+3),a
+	pop	ix
+	jr	adds1		; jump to add numbers
+
+subint:	push	hl
+	push	de
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	ld	hl,0
+	or	a
+	sbc	hl,de		; change integer sign, use sbc to detect ovfl
+	ld	(ix+4),l
+	ld	(ix+5),h
+	pop	de
+	pop	hl
+	pop	ix
+	jp	po,adds1	; bvc - jump to add numbers
+	rst	10h
+	db	2Fh		; integer overflow
+	push	ix
+	ld	ix,2
+	add	ix,sp
+	xor	a
+	ld	(ix+4),a
+	ld	(ix+5),a
+	pop	ix
+	jp	adds1		; jump to add numbers
+
+FIXUP:	pop	ix		; IX = return address
+	ex	(sp),hl		; check CLCMOD on stack
+	ld	a,h
+	or	a
+	ex	(sp),hl
+	jp	m,fix1		; jump if integer
+	call	ITOF		; else convert integer to real
+	jr	fix2
+
+fix1:	push	hl
+	ld	hl,(CLCMOD)
+	ld	a,h
+	or	a		; check current CLCMOD
+	pop	hl
+	jp	m,fix2		; jump if integer
+	pop	af		; drop CLCMOD
+	pop	af		; drop FAC1
+	call	$POLSH		; enter polish mode
+	dw	$IR		; integer to real
+	dw	$UNPOL		; leave polish mode
+	push	hl
+	ld	hl,1
+	ex	(sp),hl		; push CLCMOD = 1 (real)
+fix2:	ex	(sp),hl
+	call	SETFLG		; set flags according to CLCMOD
+	pop	hl
+	jp	(ix)		; return to caller
+
+;-----------------------------------------------------------------------
+
+; Multiply IX(0:3) by 10.
+
+MUL10:	push	hl
+	push	de
+	push	bc
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	b,2
+	call	SHL32		; *4
+	ld	a,(ix+2)
+	add	a,e
+	ld	(ix+2),a
+	ld	a,(ix+3)
+	adc	a,d
+	ld	(ix+3),a
+	ld	a,(ix+0)
+	adc	a,l
+	ld	(ix+0),a
+	ld	a,(ix+1)
+	adc	a,h
+	ld	(ix+1),a	; +1 -> *5
+	ld	b,1
+	call	SHL32		; *2 -> *10.
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Divide IX(0:3) by 10.
+
+DIV10:	push	hl
+	push	de
+	push	bc
+	ld	b,28
+dv10a:	ld	e,(ix+0)
+	ld	d,(ix+1)
+	ld	hl,5000h
+	call	CPHLDE
+	ccf
+	jr	nc,dv10b
+	ld	hl,-5000h
+	add	hl,de
+	ld	(ix+0),l
+	ld	(ix+1),h
+dv10b:	rl	(ix+2)
+	rl	(ix+3)
+	rl	(ix+0)
+	rl	(ix+1)
+	djnz	dv10a
+	ld	a,(ix+1)
+	and	0Fh
+	ld	(ix+1),a
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Shift IX(0:3) left B times
+
+SHL32:	sla	(ix+2)
+	rl	(ix+3)
+	rl	(ix+0)
+	rl	(ix+1)
+	djnz	SHL32
+	ret
+
+; Shift IX(0:3) right B times
+
+SHR32:	srl	(ix+1)		; note hi-bit set to 0
+	rr	(ix+0)
+	rr	(ix+3)
+	rr	(ix+2)
+	djnz	SHR32
+	ret
+
+; Add A to IX(0:3)
+
+ADD32:	add	a,(ix+2)
+	ld	(ix+2),a
+	ret	nc
+	inc	(ix+3)
+	ret	nz
+	inc	(ix+0)
+	ret	nz
+	inc	(ix+1)
+	ret
+
+;-----------------------------------------------------------------------
+
+; ASCII to float conversion. HL = input string, result in FP accum.
+
+VAL:	push	ix
+	push	de
+	ld	(T4),de
+	ld	bc,0
+	call	CLRFAC		; clear FP accum
+	ld	ix,FAC1		; IX = address of FAC1 (FP accum)
+
+newdig:	call	SKIPBL		; skip blanks
+	call	ISDIG		; digit?
+	jr	c,notdig	; jump if not - check for dot
+	ld	e,(ix+0)
+	ld	d,(ix+1)
+	push	hl
+	ld	hl,1999h	; if high word greater than this, then
+	call	CPHLDE		;  can fit another digit in 32 bits
+	pop	hl
+	jr	c,canfit	; if FAC1 < 1999h [!!!check! was 1998h?]
+	inc	hl		; point to next char
+	ld	a,b		; can't fit digits in mantissa, but is after
+	or	a		;  point, so needn't count them
+	jp	m,newdig	;;; if < 0
+	inc	bc		; can't fit digits in mantissa, so
+	jr	newdig		;  must keep track of trailing zeroes
+
+canfit:	call	MUL10		; multiply FP accum * 10
+	ld	a,(hl)
+	inc	hl
+	sub	'0'
+	call	ADD32		; add in the digit
+	ld	a,b
+	or	c
+	jr	z,newdig	; fits in mantissa
+	inc	bc		; fits in mantissa, but after point,
+	jr	newdig		;  so count decimal places
+
+notdig:	cp	'.'		; decimal point?
+	jr	nz,notdot	; jump if not
+	inc	hl
+	ld	a,b		; check digit count
+	or	a		; negative? (dot already seen)
+	jp	m,retc		;;; if < 0 - return with CY set
+	or	c		; zero?
+	jr	nz,dotign	;;; if > 0
+	ld	bc,8000h	; dot comes after short number, so get
+	jr	newdig		;  ready to count decimal places
+
+dotign:	call	SKIPBL		; skip blanks
+	cp	'.'		; dot?
+	jp	z,retc		; if yes, return with CY set
+	call	ISDIG		; digit?
+	jr	c,notdot	; exit loop if not
+	inc	hl
+	jr	dotign		; ignore extra digits
+
+notdot:	push	bc
+	ld	a,b
+	or	a
+	jp	p,pos1		;;; if >= 0
+	and	7Fh		; if < 0, clear hi-bit
+	ld	b,a
+	call	NEGBC		;  and negate value
+pos1:	ld	de,LINE
+	push	hl
+	ld	hl,(T4)		; if it's the first thing on the line it
+	call	CPHLDE		;  must be a line number, so 'E' is illegal
+	pop	hl
+	jr	z,noexp
+	ld	a,(hl)
+	cp	'E'		; 'E' or 'e' exponent?
+	jr	z,expon
+	cp	'e'
+	jr	z,expon
+noexp:	ex	(sp),hl
+	ld	a,h		; set flags from value on stack
+	or	l
+	pop	hl		; then drop it
+	jp	nz,eexp1
+	ld	a,(ix+0)
+	or	(ix+1)
+	jp	nz,eexp1
+	ld	a,(ix+3)
+	or	a
+	jp	m,eexp1		;;; if < 0
+	pop	de
+	pop	ix
+	ret			; note CY is clear
+
+; Process exponent
+
+expon:	ld	(T4),bc
+	pop	bc
+	ld	b,2		; exponent is 2 digits max
+	ld	c,0		; initial exponent value
+	ld	e,c		; sign = positive
+	inc	hl
+	call	SKIPBL		; skip blanks
+	cp	'+'		; plus?
+	inc	hl
+	jr	z,expdig
+	dec	hl
+	cp	'-'		; minus?
+	jr	nz,expdig
+	inc	hl
+	ld	e,80h		; sign = negative
+expdig:	call	SKIPBL		; skip blanks
+	call	ISDIG		; digit?
+	jr	c,edone		; jump if not
+	dec	b
+	jp	m,retc		; return with CY set
+	push	af
+	ld	a,c
+	add	a,a		; *2
+	add	a,a		; *4
+	add	a,c		; *5
+	add	a,a		; *10
+	ld	c,a
+	pop	af
+	sub	'0'		; convert to binary
+	add	a,c		; add digit to exponent
+	ld	c,a
+	inc	hl
+	jr	expdig		; loop
+
+edone:	ld	a,b
+	cp	2
+	jp	z,retc		; return with CY set
+	ld	b,0
+	ld	a,e
+	or	a
+	jr	z,epos		; if exponent sign is positive
+	ld	a,c
+	neg
+	ld	c,a
+	ld	b,0FFh		; exponent in BC
+epos:	push	hl
+	ld	hl,(T4)
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	pop	hl
+	jr	eexp1
+
+eexp1:	ld	de,009Fh
+	ld	a,(ix+0)
+	or	(ix+1)
+	jr	z,eexp3
+	ld	a,(ix+1)
+	or	a
+	jp	p,eexp2
+	push	bc
+	ld	b,1
+	call	SHR32		; >> 1
+	pop	bc
+	inc	de
+eexp2:	bit	6,(ix+1)	; normalize
+	jr	nz,eexp4
+	push	bc
+	ld	b,1
+	call	SHL32		; << 1
+	pop	bc
+	dec	de
+	jr	eexp2		; loop
+
+eexp3:	ld	a,(ix+2)
+	or	(ix+3)
+	jr	nz,eexp2
+	or	a
+	pop	de
+	pop	ix
+	ret
+
+eexp4:	ld	a,b
+	or	c
+	jr	z,eexp7
+	ld	a,b
+	or	a
+	jp	m,eexp5
+	push	bc
+	ld	b,4
+	call	SHR32		; >> 4
+	pop	bc
+	inc	de
+	inc	de
+	inc	de
+	inc	de
+	call	MUL10		; *10
+	dec	bc
+	jr	eexp2
+eexp5:	call	DIV10
+	inc	bc
+	jr	eexp2
+
+eexp6:	push	bc
+	ld	b,1
+	call	SHR32		; >> 1
+	pop	bc
+eexp7:	ld	a,(ix+1)
+	and	0FEh
+	jr	nz,eexp6	; loop
+	ld	a,d
+	or	a
+	jp	m,retc		;;; if <= 0
+	or	e
+	jr	z,retc
+	ld	a,d
+	or	a
+	jr	nz,retc		;;; if > 255
+	ld	(ix+1),e	; store exponent
+	push	bc
+	ld	b,1
+	call	SHR32
+	pop	bc
+	pop	de
+	pop	ix
+	or	a
+	ret
+
+retc:	pop	de
+	pop	ix
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Output exponent (value in C)
+
+EXPF:	ld	a,'E'		; 'E'
+	call	JPHL
+	ld	b,'+'		; '+'
+	ld	a,c
+	or	a
+	jp	p,ef1
+	neg
+	ld	c,a
+	ld	b,'-'		; '-'
+ef1:	ld	a,b
+	call	JPHL		; output exponent sign
+	ld	a,c
+	ld	b,'0'
+ef2:	sub	10		; divide by 10 by subtract and count
+	jr	c,ef3
+	inc	b
+	jr	ef2
+ef3:	ld	c,a		; save remainder - 10
+	ld	a,b
+	call	JPHL		; output first digit (quotient)
+	ld	a,c
+	add	a,'9'+1
+JPHL:	jp	(hl)		; output second digit (remainder)
+
+NUMCNV:	push	ix
+	call	PSHFAC		; push FP accum on stack
+	ld	de,0		; DE = decimal exponent
+	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+0)	; check FAC1
+	or	(ix+1)
+	jr	nz,numflt	; jump if not zero (floating point value)
+	ld	c,31		; else is integer, C = binary exponent
+	ld	a,(ix+2)	; check FAC2
+	or	(ix+3)
+	jr	nz,nshft	; process below if not zero
+	jp	nskip		; else skip processing
+
+numflt:	ld	c,(ix+0)
+	ld	b,(ix+1)
+	sla	c		; get all exponent bits into hi-byte (B)
+	rl	b
+	ld	a,b
+	sub	79h		; bias is 80h [bias-7]
+	ld	c,a
+	ld	(ix+1),0
+	ld	a,(ix+0)
+	and	7Fh		; clear exponent bits
+	or	80h		; set the implicit mantissa bit
+	ld	(ix+0),a
+nshft:	dec	c
+	ld	b,1
+	call	SHL32		; << 1
+nnorm:	bit	6,(ix+1)
+	jr	z,nshft
+	ld	a,c
+	or	a
+	jp	m,nnorm1	;;; probably not necessary
+	jr	nz,numbig	; (was bgt numbig)
+nnorm1:	ld	b,4
+	call	SHR32		; >> 4
+	inc	c
+	inc	c
+	inc	c
+	inc	c
+	call	MUL10		; *10
+	dec	de		; decrement decimal exponent
+	jr	nnorm		; loop
+
+numbig:	ld	a,c
+	cp	4+1
+	jp	m,numok		; if C <= 4 (C < 4+1)
+numdiv:	call	DIV10		; /10
+	inc	de		; increment decimal exponent
+	jr	nnorm		; loop
+
+numaln:	inc	c
+	ld	b,1
+	call	SHR32		; >> 1
+numok:	ld	a,c
+	cp	4
+	jp	m,numaln	; loop while C < 4
+	push	hl
+	push	de
+	ld	e,(ix+0)	; FAC1 (high order mantissa)
+	ld	d,(ix+1)
+	ld	hl,5000h
+	call	CPHLDE
+	pop	de
+	pop	hl
+	jr	nc,numdiv	; loop if FAC1 >= 5000h
+	ld	a,(ix+2)	; FAC2
+	add	a,0A8h		; rounding (+02A8h)
+	ld	(ix+2),a
+	ld	a,(ix+3)
+	adc	a,02h
+	ld	(ix+3),a
+	jr	nc,nskip
+	push	de
+	ld	e,(ix+0)	; FAC1
+	ld	d,(ix+1)
+	inc	de
+	ld	(ix+0),e
+	ld	(ix+1),d
+	push	hl
+	ld	hl,5000h
+	call	CPHLDE
+	pop	hl
+	pop	de
+	jr	c,nskip
+	ld	(ix+0),0
+	ld	(ix+1),80h
+	ld	(ix+2),0
+	ld	(ix+3),0
+	inc	de
+nskip:	push	hl
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	ld	(hl),e		; store decimal exponent
+	inc	hl
+	ld	(hl),d
+	dec	hl
+	ld	bc,(T3)
+	or	a
+	sbc	hl,bc
+ndig:	ld	a,(ix+1)
+	rra
+	rra
+	rra
+	and	0Fh
+	add	a,'0'		; convert to ASCII
+	ld	(hl),a		; store digit
+	inc	hl		; advance pointer
+	ld	a,(ix+1)
+	and	07h
+	ld	(ix+1),a
+	call	MUL10		; *10
+	dec	bc
+	ld	a,b
+	or	a
+	jp	m,ndone
+	or	c
+	jr	nz,ndig		; loop (!!!bgt)
+ndone:	pop	hl
+	inc	sp		; drop FP
+	inc	sp
+	inc	sp
+	inc	sp
+	pop	ix
+	ret
+
+; Output FP accum as decimal number on TT or file
+
+NUMOUT:	call	SAVREG		; save AF,BC,DE,HL
+	ld	hl,PUTCHR	; TT char output routine address in HL
+	jr	num1
+
+; Output FP accum as decimal number, BC = char output routine address
+
+NUMB:	call	SAVREG		; save AF,BC,DE,HL
+	ld	l,c
+	ld	h,b
+num1:	ld	de,6
+	ld	(T3),de
+	jr	numstt
+
+; char output routine address follows the call
+
+NUMSGN:	ld	de,6
+	ld	(T3),de
+	ex	(sp),hl		; get routine char output address into HL
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ex	(sp),hl
+	call	SAVREG		; save AF,BC,DE,HL
+	ex	de,hl
+	ld	de,(FAC1)
+	ld	a,d
+	or	e
+	jr	z,numfix	; if FAC1 is 0, FAC2 contains integer value
+	ld	a,d
+	or	a
+	jp	p,numpos
+	add	a,80h		; make positive
+	ld	d,a
+	ld	(FAC1),de
+	jr	numneg
+numfix:	ld	de,(FAC2)
+	ld	a,d
+	or	a
+	jp	p,numpos
+	push	hl
+	ld	hl,0
+	sbc	hl,de		; HL = -DE
+	ld	(FAC2),hl
+	pop	hl
+	jp	po,numneg	; jump if no overflow
+	call	CLRFAC		; clear FP accum
+	ld	de,4800h
+	ld	(FAC1),de
+numneg:	ld	a,'-'
+	jr	numprs
+numpos:	ld	de,SAVCHR	; don't output blank for STR$
+	call	CPHLDE
+	jr	z,numstt
+	ld	a,' '
+numprs:	call	JPHL
+numstt:	ld	ix,0
+	push	ix
+	add	ix,sp
+	ex	de,hl		; save HL
+	ld	hl,0
+	add	hl,sp
+	ld	bc,(T3)
+	or	a
+	sbc	hl,bc
+	ld	sp,hl
+	ex	de,hl		; restore HL
+	call	NUMCNV
+	ld	e,(ix+0)	; get decimal exponent (since |DE| < 38, we
+	ld	iy,0		;  can use only one byte)
+	add	iy,sp
+	ld	a,(iy)
+	cp	'0'
+	jr	nz,nskpl0
+	call	JPHL
+	jr	numret
+nskpl0:	ld	a,e
+	cp	-2
+	jp	m,numfm1	; if DE < -2
+	jr	z,numfm2	; if DE == -2
+	ld	bc,(T3)		; same for T3, we can use only 1 byte
+	ld	a,e
+	cp	c
+	jp	m,numfm3	; if DE < T3 (!!!was blt)
+numfm1:	ld	a,(iy)
+	inc	iy
+	call	JPHL
+	ld	a,'.'
+	call	JPHL		; output decimal point
+	ld	bc,(T3)
+	dec	c
+numpl1:	ld	a,(iy)
+	inc	iy
+	call	JPHL
+	dec	c
+	jr	nz,numpl1	; (was bgt !!!)
+	ld	c,e
+	call	EXPF		; output exponent
+	jr	numret
+numfm2:	ld	a,'.'
+	call	JPHL		; output decimal point
+	ld	a,'0'
+	call	JPHL		; output a zero
+numfm3:	ld	bc,(T3)
+	push	ix
+numpl3:	dec	ix
+	ld	a,(ix)
+	cp	'0'
+	jr	nz,num4
+	dec	c
+	jr	numpl3
+num4:	pop	ix
+	ld	a,e
+	cp	c
+	jp	m,num5		; if C > E (!!!was bgt)
+	ld	c,e
+	inc	c
+num5:	inc	e
+	inc	e
+num6:	dec	e
+	jr	nz,num7
+	ld	a,'.'
+	call	JPHL		; output decimal point
+num7:	ld	a,(iy)
+	inc	iy
+	call	JPHL
+	dec	c		; assuming started > 1!
+	jr	nz,num6
+numret:	ld	sp,ix
+	inc	sp		; no 'pop ix'?
+	inc	sp
+	ret
+
+;-----------------------------------------------------------------------
+
+; Enter polish mode
+
+$POLSH:	ld	(BCSAVE),bc
+	ld	(DESAVE),de
+	ld	(HLSAVE),hl
+	ld	(IXSAVE),ix
+	ld	(IYSAVE),iy
+$POL:	pop	iy		; get pointer to function list
+$NEXT:	ld	l,(iy+0)
+	ld	h,(iy+1)
+	inc	iy
+	inc	iy
+	jp	(hl)
+
+; Leave polish mode
+
+$UNPOL:	push	iy		; push return address
+	ld	bc,(BCSAVE)
+	ld	de,(DESAVE)
+	ld	hl,(HLSAVE)
+	ld	ix,(IXSAVE)
+	ld	iy,(IYSAVE)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Polish mode: convert real (on stack) to integer (on stack)
+
+$RI:	pop	bc		; get floating point number
+	pop	de		; into BC:DE (BC = exp & hifrac, DE = lofrac)
+	ld	h,0
+	sla	c
+	rl	b		; get sign bit into CY
+	rr	h		; then into MSB of H
+	scf
+	rr	c		; push implicit bit into mantissa
+	ld	l,b		; get exponent into L
+	ld	b,0		; leave BC only with the fraction
+	ld	a,l
+	or	a
+	jp	p,ri1
+	cp	145		; exponent <= 145? (128 + 17)
+	jr	c,ri3		; jump if yes
+iovf:	call	FPERR		; otherwise error
+	db	05h		; integer overflow
+ri1:	ld	bc,0
+	jr	ri5
+ri2:	sla	e		; shift fraction left
+	rl	d
+	rl	c
+	rl	b
+	dec	l
+ri3:	ld	a,136
+	cp	l		; until exponent <= 136 (128 - 8)
+	jp	m,ri2
+	jr	z,ri4
+	inc	l
+	sra	b
+	rr	c
+	ld	a,b
+	or	c
+	jr	nz,ri3
+ri4:	ld	a,h
+	or	a
+	jp	p,ri5
+	call	NEGBC
+ri5:	ld	a,b
+	or	c
+	jr	z,ri6
+	ld	l,0		; HL = 0000h/8000h (+/-)
+	add	hl,bc
+	ld	a,h
+	or	a
+	jp	m,iovf		; overflow
+ri6:	push	bc		; push result on stack
+	jp	$NEXT
+
+; Polish mode: convert integer (on stack) to real (on stack)
+
+$IR:	ld	ix,0
+	push	ix		; push a zero
+	add	ix,sp
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	a,h		; check integer on stack
+	or	l
+	jr	z,ir4		; if zero, return (already on stack)
+	ld	a,h
+	or	a
+	jp	p,ir1		; if > 0, jump (CY = 0)
+	call	NEGHL		; if < 0, negate it
+	scf			; set CY (negative sign flag)
+ir1:	push	af		; save the sign bit on the stack
+	ld	b,144		; initial exponent value (144 = 128 + 16)
+	ld	(ix+2),0
+ir2:	add	hl,hl		; shift left and decrement exponent
+	jr	c,ir3		; until a "1" bit is shifted out
+	dec	b
+	jr	ir2
+ir3:	ld	(ix+3),l
+	ld	l,h
+	ld	h,b
+	pop	af		; pop the sign bit into CY
+	rr	h		; then into HL
+	rr	l
+	rr	(ix+3)
+	ld	(ix+0),l
+	ld	(ix+1),h
+ir4:	jp	$NEXT
+
+;-----------------------------------------------------------------------
+
+; Mantissa 2 in BHL, mantissa 1 in CDE
+; exp 2 in (ix+0), exp 1 in (ix+1)
+
+; for 'A+/-B' top of stack has B, A is above it
+; e.g. PI+5 => SP-> A0 41 00 00  49 41 DA 0F
+;                    B     L  H   C     E  D
+;                                e2 e1 s2 s1
+
+$SBR:	pop	hl
+	ld	bc,8000h
+	add	hl,bc		; change sign
+	push	hl
+$ADR:	pop	bc		; pop 2nd number
+	pop	hl
+	ld	ix,0		; leave last 2 words on stack to store
+	add	ix,sp		;  exponent info
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	ld	a,b
+	ld	b,c		; mantissa 2 in BHL
+	ld	c,(ix+0)	; mantissa 1 in CDE
+	ld	(ix+0),a	; exp 2 in (ix+0), exp 1 in (ix+1)
+	xor	a
+	ld	(ix+2),a	; sign of 2
+	ld	(ix+3),a	; sign of 1
+
+	sla	b
+	rl	(ix+0)		; shift out sign bit of 2nd #, check exponent
+	jp	z,add5		; return if zero, nothing to do (result is 1st)
+	rr	(ix+2)		; shift sign bit into (ix+2)
+
+	sla	c
+	rl	(ix+1)		; shift out sign bit of 1st #, check exponent
+	jr	z,add6		; if zero, result is 2nd #
+	rr	(ix+3)		; shift sign bit into (ix+3)
+
+	scf
+	rr	b		; get implicit mantissa bit into B
+	scf
+	rr	c		; same for C
+
+	ld	a,(ix+0)
+	sub	(ix+1)		; subtract exponents
+	ld	(ix+0),a
+	jp	z,add10		; jump if same (no denormalization)
+	jp	m,add1		; jump if exp2 < exp1 (denormalize 2)
+
+	add	a,(ix+1)
+	ld	(ix+1),a	; (ix+0) now exp 2
+
+	xor	a
+	sub	(ix+0)
+	ld	(ix+0),a	; negate difference
+
+	ld	a,(ix+2)	; swap exponent signs
+	push	af
+	ld	a,(ix+3)
+	ld	(ix+2),a
+	pop	af
+	ld	(ix+3),a
+
+	ld	a,b		; swap mantissas
+	ld	b,c
+	ld	c,a
+	ex	de,hl
+
+add1:	ld	a,-9
+	cp	(ix+0)		; -9. check exponent difference
+	jp	m,add9		; jump if -9 < A (A >= -8)
+
+	ld	a,(ix+0)
+	add	a,16		; A += 16
+	ld	(ix+0),a
+	jp	p,add8		; if >= 0 (A >= -16)
+
+	add	a,8		; A += 8
+	ld	(ix+0),a
+	jp	p,add7		; if >= 0 (A >= -24)
+
+	; exp diff > 24, one of the numbers is lost, return
+
+add2:	sla	e		; shift mantissa 1 bit left
+	rl	d		;  (shifts out the implicit bit)
+	rl	c
+add3:	ld	b,(ix+1)	; get exponent
+	rl	(ix+3)		; get the sign bit into CY
+	rr	b		; shift the sign bit in, shift exponent
+	rr	c		; and restore fraction
+	rr	d
+	rr	e		; BCDE contains the result
+
+add4:	; store result
+
+	ld	(ix+0),c
+	ld	(ix+1),b
+	ld	(ix+2),e
+	ld	(ix+3),d
+	jp	$NEXT
+
+add5:	ld	b,(ix+1)
+	jr	add4
+
+add6:	ld	c,b
+	ld	b,(ix+0)
+	rl	(ix+2)		; get sign bit of 2nd # into CY
+	rr	b		; shift sign bit back in
+	rr	c		; get lo-bit of exp into 1st bit of mantissa
+	ex	de,hl		; return 2nd number in BCDE
+	jr	add4
+
+	; exp diff <= 24
+
+add7:	ld	l,h		; shift fraction right 8 bits
+	ld	h,b
+	ld	b,0
+
+	; exp diff <= 16
+
+add8:	ld	l,h		; shift fraction right 8 bits
+	ld	h,b
+	ld	b,0
+
+	ld	a,(ix+0)
+	sub	8
+	ld	(ix+0),a	; exp diff -= 8
+
+	; exp diff <= 8
+
+add9:	srl	b		; denormalize
+	rr	h
+	rr	l
+	inc	(ix+0)
+	jp	m,add9		; loop while (ix+0) < 0
+	rl	(ix+0)
+	ld	a,(ix+0)
+	add	a,l
+	ld	l,a
+	ld	a,0
+	adc	a,h
+	ld	h,a
+	ld	a,0
+	adc	a,b
+	ld	b,a
+add10:	ld	a,(ix+2)
+	cp	(ix+3)		; compare exponent signs
+	jr	nz,add11	; jump if not equal (substract)
+
+	; addition
+
+	ex	de,hl		; add mantissas CDE += BHL
+	add	hl,de
+	ex	de,hl
+	ld	a,c
+	adc	a,b
+	ld	c,a
+	jr	nc,add2		; if no overflow into 24th bit, return
+
+	inc	(ix+1)		; inc exponent
+	jr	z,fpovf		; -> overflow
+
+	ld	a,(ix+0)
+	sbc	a,0		; CY still set from above
+	ld	(ix+0),a
+	ld	a,e
+	adc	a,0
+	ld	e,a
+	ld	a,d
+	adc	a,0
+	ld	d,a
+	jp	nc,add3		; note that the fraction has shifted out the implicit bit
+
+	ld	a,c
+	adc	a,0
+	ld	c,a
+	ld	a,(ix+1)
+	adc	a,0		; inc exponent on carry
+	ld	(ix+1),a
+	jp	nc,add3
+
+fpovf:	call	FPERR
+	db	00h		; floating overflow
+ret0:	ld	bc,0
+	ld	de,0
+	jp	add4		; return
+
+	; subtraction
+
+add11:	ex	de,hl
+	or	a
+	sbc	hl,de		; subtract mantissas CDE -= BHL
+	ex	de,hl
+	ld	a,c
+	sbc	a,b
+	ld	c,a
+	jr	c,add14		; jump on borrow (was bmi)
+	jp	m,add2		; return if hi-bit of mantissa is set
+	ld	a,(ix+1)	; dec exponent
+	sub	1		;  note sub and not dec to detect borrow
+	ld	(ix+1),a
+	jr	c,fpundf	; if <= 0 -> underflow
+	jr	z,fpundf
+	sra	(ix+0)	;srl?
+	rl	e
+	rl	d
+	rl	c
+	jr	z,add15
+add12:	ld	a,c
+	or	a
+	jp	m,add2		; return
+	sla	e		; normalize
+	rl	d
+	rl	c
+	ld	a,(ix+1)	; dec exponent
+	sub	1		;  note sub and not dec to detect borrow
+	ld	(ix+1),a
+add13:	jr	nc,add12	; loop
+fpundf:	call	FPERR
+	db	01h		; floating underflow
+	jr	ret0		; return zero
+
+add14:	ld	a,(ix+2)	; swap exponent signs
+	push	af
+	ld	a,(ix+3)
+	ld	(ix+2),a
+	pop	af
+	ld	(ix+3),a
+	xor	a		; make mantissa positive
+	sub	e
+	ld	e,a
+	ld	a,0
+	sbc	a,d
+	ld	d,a
+	ld	a,0
+	sbc	a,c
+	ld	c,a
+	jr	z,add15
+	jp	p,add12		; jump to normalize result
+add15:	ld	a,d
+	or	e
+	ld	b,0
+	jp	z,add4		; return if zero (C is already 0)
+	ld	a,d
+	or	a
+	jr	z,add16
+	ld	c,d		; shift fraction left 8 bits
+	ld	d,e
+	ld	e,0
+	ld	a,(ix+1)
+	sub	8
+	ld	(ix+1),a
+	jr	add13		; normalize
+
+add16:	ld	c,e		; shift fraction left 16 bits
+	ld	de,0
+	ld	a,(ix+1)
+	sub	16
+	ld	(ix+1),a
+	jr	add13		; normalize
+
+;-----------------------------------------------------------------------
+
+; Push FP accum on the stack
+
+$FPUSH:	call	PSHFAC		; push FP accum on stack
+	jp	$NEXT
+
+; Pop FP accum from stack and leave polish mode
+
+$FPOP:	call	POPFAC		; pop FP accum from stack
+	jp	$UNPOL		; and leave polish mode
+
+; Push 1.0 on stack
+
+$FPSH1:	ld	hl,0000h
+	push	hl
+	ld	hl,4080h
+	push	hl		; push 1.0
+	jp	$NEXT
+
+; Push integer from FAC2 on the stack
+
+$IPUSH:	ld	hl,(FAC2)
+	push	hl		; push integer on stack
+	jp	$NEXT
+
+; Pop integer from stack into FAC2
+
+$IPOP:	call	CLRFAC		; clear FP accum
+	pop	hl
+	ld	(FAC2),hl	; pop integer from stack
+	jp	$UNPOL		; and leave polish mode
+
+; Replace integer on stack with integer in FAC2
+
+$ICOPY:	pop	hl		; drop old
+	ld	hl,(FAC2)
+	push	hl		; push new
+	jp	$NEXT
+
+; Wrapper for calling SIN/COS/ATAN/LOG/LOG10/EXP/SQRT functions in polish
+; mode.
+
+$CALL:	ld	ix,0
+	add	ix,sp
+	ld	hl,(DESAVE)
+	call	JPHL
+	pop	bc		; drop original argument
+	pop	bc
+	ld	(FAC1),hl
+	ld	(FAC2),de
+	jp	$NEXT
+
+;-----------------------------------------------------------------------
+
+; 16-bit * 32-bit multiplication with 32-bit result
+
+DIMUL:	ld	bc,(FAC1)
+	ld	a,b
+	or	a
+	jp	p,dm1		; array index cannot be negativa
+dmsoob:	rst	10h
+	db	22h		; subscript out of bounds
+dm1:	ld	hl,(FAC2)
+	push	hl
+	ld	ix,0
+	add	ix,sp
+	ld	de,0
+	ld	hl,0
+	ld	a,b
+	or	c
+	jr	z,dm3		; jump if integer
+	ld	l,c		; HL = FAC1
+	ld	h,b
+	ld	b,0		; clear hi-byte
+	set	7,c		; set implicit bit
+	add	hl,hl		; dump sign, get exponent
+	ld	a,h
+	sub	128+24		; remove excess 128 and check range
+	ld	l,a
+	ld	h,0
+	jr	z,dm3
+	jp	p,dmsoob	; too large (exp > +24) -> subscript out of bounds
+	cp	-24
+	jp	m,dmsoob	; too small (exp < -24) -> subscript out of bounds
+dm2:	sra	b
+	rr	c
+	rr	(ix+1)
+	rr	(ix+0)
+	inc	l
+	jr	nz,dm2		; loop
+
+dm3:	ld	a,(ix+2)
+	or	(ix+3)
+	jr	z,dm5
+	rr	(ix+3)
+	rr	(ix+2)
+	jr	nc,dm4
+	ld	a,l		; note first time HL is zero
+	add	a,(ix+0)
+	ld	l,a
+	ld	a,h
+	adc	a,(ix+1)
+	ld	h,a
+	ex	de,hl
+	adc	hl,bc
+	ex	de,hl
+dm4:	sla	(ix+0)
+	rl	(ix+1)
+	rl	c
+	rl	b
+	jr	dm3		; loop
+
+dm5:	ld	(ix+0),l	; store result
+	ld	(ix+1),h
+	ld	(ix+2),e
+	ld	(ix+3),d
+	jp	$NEXT
+
+;-----------------------------------------------------------------------
+
+; Mantissa 2 in BHL, mantissa 1 in CDE
+; exp 2 in (ix+0), exp 1 in (ix+1)
+
+; for 'A/B' top of stack has B, A is above it
+; e.g. PI/5 => SP-> A0 41 00 00  49 41 DA 0F
+;                    B     L  H   C     E  D
+;                e-/e1 e2  s  f  m1  e m2 m3
+
+$DVR:	ld	ix,0		; leave the four words on stack to store
+	add	ix,sp		;  intermediate results
+	ld	b,(ix+0)	; get second number into (ix+1):BHL
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	c,(ix+4)	; get first number into (ix+0):CDE
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	ld	a,(ix+5)
+	ld	(ix+0),a	; exp 2 in (ix+1), exp 1 in (ix+0)
+
+	sla	b
+	rl	(ix+1)		; get sign bit of 2nd # into CY
+	jp	z,dvzero	; error if 2nd # is zero
+
+	rl	(ix+2)		; get sign bit into (ix+2)
+
+	sla	c		; get sign bit of 1st # into CY
+	rl	(ix+0)
+	jp	z,dvret0	; return 0 if 1st # is zero
+
+	ld	a,(ix+2)
+	adc	a,0		; add sign bits
+	ld	(ix+2),a
+
+	ld	a,(ix+0)
+	sub	(ix+1)		; subtract exponents
+	jr	c,dvr1		; jump if CY
+	jp	p,dvr2		; jump if > 0
+	call	FPERR		; else error
+	db	00h		; floating overflow
+	jp	dvret0		; return 0
+
+dvr1:	jp	p,dvundf	; jump if > 0 - underflow
+dvr2:	add	a,7Fh
+	rr	(ix+2)		; get sign bit of result into CY
+	rra			; then into exponent of result
+	ld	(ix+5),a
+	ld	a,0
+	rra
+	ld	(ix+4),a	; ix+4,5 = EM1 of result
+
+	scf
+	rr	c		; shift implicit mantissa bit into M1'
+
+	scf
+	rr	b		; shift implicit mantissa bit into M1"
+
+	xor	a		; need 32 bits or else we'll lose precision
+	ld	(ix+0),a	; 0C
+	ld	(ix+1),a	; 0B
+
+	ld	(ix+6),00h	; M2M3 of result
+	ld	(ix+7),01h
+
+	ld	a,c
+	cp	b		; compare M1s
+	jr	c,dvr4		; jump if M1' < M1"
+	jr	nz,dvr3		; jump if M1' > M1"
+
+	call	CPHLDE		; if same, compare M2M3s
+	jr	c,dvr4
+	jp	z,dvs5
+
+dvr3:	ld	a,e		; subtract mantissas
+	sub	l
+	ld	e,a
+	ld	a,d
+	sbc	a,h
+	ld	d,a
+	ld	a,c
+	sbc	a,b
+	ld	c,a
+	ld	a,(ix+0)	; need 32 bits or else we'll lose precision
+	sbc	a,(ix+1)
+	ld	(ix+0),a
+
+	ld	(ix+6),02h	; 0202h
+	ld	(ix+7),02h
+dvr4:	ld	(ix+3),0	; flag for DVSUB
+	call	DVSUB
+	ld	a,(ix+4)
+	add	a,(ix+6)
+	ld	(ix+4),a
+	ld	a,(ix+5)
+	adc	a,(ix+7)
+	ld	(ix+5),a
+	ld	(ix+6),01h
+	ld	(ix+7),00h
+	ld	(ix+3),1	; flag for DVSUB
+	call	DVSUB
+	sra	(ix+1)		; need 32 bits or else we'll lose precision
+	rr	b
+	ld	a,b
+	cp	c		; set CY/NC
+	ld	a,(ix+6)
+	adc	a,0
+	ld	(ix+6),a
+	ld	a,(ix+7)
+	adc	a,0
+	ld	(ix+7),a
+	ld	a,(ix+4)
+	adc	a,0
+	ld	(ix+4),a
+	ld	a,(ix+5)
+	adc	a,0
+	ld	(ix+5),a
+dvr5:	pop	bc		; cleanup stack
+	pop	bc
+	jp	$NEXT		; return, result already on stack
+
+DVSUB:	sla	e		; shift M1M2M3' left
+	rl	d
+	rl	c
+	jr	c,dvs1		; jump if CY
+	ld	a,b
+	cp	c		; compare M1s
+	jr	z,dvs3		; jump if equal
+	jr	nc,dvs2		; jump if M1" > M1 (CY clear)
+dvs1:	ld	a,e		; subtract mantissas
+	sub	l
+	ld	e,a
+	ld	a,d
+	sbc	a,h
+	ld	d,a
+	ld	a,c
+	sbc	a,b
+	ld	c,a
+	ld	a,(ix+0)	; need 32 bits or else we'll lose precision
+	sbc	a,(ix+1)
+	ld	(ix+0),a
+	scf			; set CY
+dvs2:	rl	(ix+6)		; shift bit in
+	rl	(ix+7)
+	jr	nc,DVSUB	; loop if no CY
+	ret
+
+dvs3:	call	CPDEHL		; compare M2M3s
+	jr	c,dvs1		; if <
+	jr	nz,dvs2		; if >
+	scf
+dvs4:	rl	(ix+6)
+	rl	(ix+7)
+	jr	nc,dvs4
+	inc	sp		; discard return address
+	inc	sp
+	ld	a,(ix+3)
+	or	a		; second call? (see above)
+	jr	nz,dvr5		; return if yes
+dvs5:	ld	a,(ix+6)
+	add	a,(ix+4)
+	ld	(ix+4),a
+	ld	a,(ix+7)
+	adc	a,(ix+5)
+	ld	(ix+5),a
+dvs6:	xor	a		; M2M3=0
+	ld	(ix+6),a
+	ld	(ix+7),a
+	jr	dvr5
+
+dvundf:	call	FPERR
+	db	01h		; floating underflow
+dvret0:	xor	a
+	ld	(ix+4),a
+	ld	(ix+5),a
+	jr	dvs6
+
+dvzero:	call	FPERR
+	db	02h		; division by zero
+	jr	dvret0		; return 0
+
+;-----------------------------------------------------------------------
+
+; Mantissa 2 in BHL, mantissa 1 in CDE
+; exp 2 in (ix+1), exp 1 in (ix+0)
+
+; for 'A*B' top of stack has B, A is above it
+; e.g. PI*5 => SP-> A0 41 00 00  49 41 DA 0F
+;                    B     L  H   C     E  D
+;                e+/e1 e2  s x4  m1 m2 m3 m4
+
+$MLR:	ld	ix,0		; leave the four words on stack to store
+	add	ix,sp		;  intermediate results
+	ld	b,(ix+0)	; get second number into (ix+1):BHL
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	c,(ix+4)	; get first number into (ix+0):CDE
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	ld	a,(ix+5)
+	ld	(ix+0),a	; exp 2 in (ix+1), exp 1 in (ix+0)
+	ld	a,d
+	or	e
+	jr	nz,mlr1		; jump if M2M3' not zero
+	ex	de,hl		; else swap numbers
+	ld	a,b
+	ld	b,c
+	ld	c,a
+	ld	a,(ix+0)
+	push	af
+	ld	a,(ix+1)
+	ld	(ix+0),a
+	pop	af
+	ld	(ix+1),a
+
+mlr1:	add	hl,hl		; shift M2M3" left
+	rl	b		; rotate EM1" left, get sign into CY
+	rl	(ix+1)
+	rl	(ix+2)		; then into (ix+2), (ix+1) has full exponent
+	ld	a,(ix+1)
+	or	a
+	jr	z,mlret0	; jump if 2nd number is zero (result is 0)
+
+	sla	c		; shift EM1' left, get sign into CY
+	rl	(ix+0)
+	ld	a,(ix+2)
+	adc	a,0		; add the sign bit to (ix+2)
+	ld	(ix+2),a	; (could use xor too)
+	ld	a,(ix+0)
+	or	a
+	jr	z,mlret0	; jump if zero
+	add	a,(ix+1)	; add exponents
+	jr	nc,mlr2		; jump if no CY
+	jp	p,mlr4		; jump if > 0
+	call	FPERR		; else error
+	db	00h		; floating overflow
+	jr	mlret0		; return 0
+
+mlr2:	jp	m,mlr3		; jump if < 0
+mlundf:	call	FPERR		; else error (if = 0)
+	db	01h		; floating underflow
+
+mlret0:	ld	de,0
+	ld	bc,0
+	jp	mlret
+
+mlr3:	and	7Fh
+	jr	z,mlundf	; error if zero
+	or	80h		; restore sum (we know it was < 0)
+mlr4:	add	a,7Fh
+	ld	(ix+0),a	; (ix+0) now has product exponent
+
+	scf
+	rr	c		; get implicit bit of mantissa into C
+
+	srl	c
+	rr	d
+	rr	e
+	ld	a,0
+	rra
+	ld	(ix+3),a
+
+	; 24-bit multiplication of mantissas
+
+	ld	(ix+4),c
+	ld	(ix+5),d
+	ld	(ix+6),e
+	ld	(ix+7),a
+mlr5:	sra	(ix+4)		; shift M1M2M30' right
+	rr	(ix+5)
+	rr	(ix+6)
+	rr	(ix+7)
+	sla	l		; shift M1M2M3" left
+	rl	h
+	rl	b
+	jr	c,madd
+	ld	a,l
+	or	h
+	or	b
+	jr	nz,mlr5		; loop until 0 (max 24 times)
+	jr	mlr6
+madd:	ld	a,(ix+3)	; add shifted fraction
+	add	a,(ix+7)
+	ld	(ix+3),a
+	ld	a,e
+	adc	a,(ix+6)
+	ld	e,a
+	ld	a,d
+	adc	a,(ix+5)
+	ld	d,a
+	ld	a,c
+	adc	a,(ix+4)
+	ld	c,a
+	jr	mlr5		; loop
+
+mlr6:	ld	a,c		; check M1'
+	or	a
+	jp	m,mlr7		; return if hi bit set (implicit bit)
+	rl	(ix+3)		; else normalize
+	rl	e
+	rl	d
+	rl	c
+	ld	a,(ix+0)	; check exponent sum
+	or	a
+	jp	z,mlundf	; if zero, error -> underflow
+	dec	(ix+0)		; decrement exponent
+
+mlr7:	rr	(ix+2)		; get product sign into CY
+	ld	a,(ix+0)
+	rra			; and into exponent
+	ld	b,a
+	ld	a,0
+	rra
+	add	a,c
+	ld	c,a
+	ld	a,0
+	adc	a,b
+	ld	b,a
+
+	rl	(ix+3)		; shift M4' left, get extra bit into CY
+	ld	a,e		; add it to mantissa
+	adc	a,0
+	ld	e,a
+	ld	a,d
+	adc	a,0
+	ld	d,a
+	ld	a,c
+	adc	a,0
+	ld	c,a
+	ld	a,b		; also to exponent?
+	adc	a,0
+	ld	b,a
+
+mlret:	pop	hl		; cleanup stack
+	pop	hl
+	pop	hl
+	pop	hl
+	push	de		; push result
+	push	bc
+	jp	$NEXT
+
+; Convert FAC to integer, if possible (remove fractionary part, result is
+; still float).
+
+$INTR:	pop	bc		; get lo-word (exp and high-order fraction)
+	pop	de		; get hi-word (low-order fraction)
+	ld	l,c
+	ld	h,b
+	add	hl,hl		; dump sign, get exponent
+	ld	a,h		; H = exponent
+	sub	128+24		; remove excess 128 and check range
+	jp	p,DNE$4		; return if already an integer (too large)
+	cp	-24+1
+	jp	p,SHF$4		; (blt) if -24 < A (if A >= n+1)
+	ld	bc,0		; < 1.0, return 0
+	ld	de,0
+	jr	DNE$4
+SHF$4:	push	af		; push exponent
+ROR$4:	rr	b		; rotate number right -A times
+	rr	c
+	rr	d
+	rr	e
+	inc	a
+	jp	m,ROR$4
+	pop	af		; pop exponent
+ASL$4:	sla	e		; shift number left with zero fill -A times
+	rl	d
+	rl	c
+	rl	b
+	inc	a
+	jp	m,ASL$4
+DNE$4:	push	de
+	push	bc
+	jp	$NEXT
+
+;-----------------------------------------------------------------------
+
+; integer multiply
+
+$MLI:	pop	hl		; get multiplier
+	pop	de		; get multiplicand
+	ld	a,h
+	or	a
+	jp	p,mli1		; jump if positive
+	call	NEGHL		; HL = -HL
+	ex	de,hl
+	call	NEGHL
+	ex	de,hl		; DE = -DE
+mli1:	call	CPHLDE
+	jr	nc,mli2		; if HL <= DE
+	ex	de,hl
+mli2:	ld	bc,0
+mli3:	sra	h
+	rr	l
+	jr	c,mli5
+	jr	nz,mli6
+mli4:	push	bc
+	jp	$NEXT
+
+mli5:	ld	a,c
+	add	a,e
+	ld	c,a
+	ld	a,b
+	adc	a,d
+	ld	b,a
+	jp	pe,mli7		;bvs - overflow
+mli6:	ld	a,d
+	sla	e
+	rl	d
+	xor	d
+	rla
+	jr	nc,mli3		;bvc (CY if sign changed)
+	ld	a,h
+	or	l
+	jr	z,mli4
+mli7:	call	FPERR
+	db	05h		; integer overflow
+	ld	bc,0
+	jr	mli4
+
+; integer divide
+
+$DVI:	pop	de		; get divisor into DE
+	ld	a,d
+	or	e
+	jp	z,dvi4		; error if zero
+	ld	a,d
+	or	a
+	jp	p,dvi0		; jump if positive
+	pop	bc
+	call	NEGBC		; negate dividend
+	push	bc
+	ex	de,hl		; negate divisor
+	call	NEGHL
+	ex	de,hl
+dvi0:	pop	bc		; get dividend into BC
+	push	bc
+	ld	a,b
+	or	c
+	jr	z,dvi3		; if zero, return zero
+	ld	a,b
+	or	a
+	call	m,NEGBC		; negate dividend if negative
+	ld	hl,0
+	ld	a,16
+dvi1:	rl	c		; BC = BC/DE
+	rl	b
+	adc	hl,hl
+	sbc	hl,de
+	jr	nc,dvi2
+	add	hl,de
+dvi2:	ccf
+	dec	a
+	jr	nz,dvi1
+	rl	c
+	rl	b
+	pop	de		; get saved dividend
+	push	de
+	ld	a,d		; check sign
+	or	a
+	call	m,NEGBC		; negate result if negative
+dvi3:	pop	de
+	push	bc
+	jp	$NEXT
+
+dvi4:	call	FPERR
+	db	02h		; division by zero
+	ld	bc,0
+	jr	dvi3
+
+;-----------------------------------------------------------------------
+
+; x^y: integer base, integer exponent
+
+XII$:	pop	hl		; pop exponent
+	ld	a,h
+	or	a
+	jp	m,xii9		; jump if negative
+	or	l
+	jr	z,xii7		; jump if zero
+	push	iy
+	push	hl		; save exponent
+	ld	ix,0
+	add	ix,sp
+	sra	(ix+1)		; exponent/2
+	rr	(ix+0)
+	jr	nc,xii1		; jump if remainder is zero
+	ld	c,(ix+4)
+	ld	b,(ix+5)
+	push	bc		; exponent odd, push base
+	ld	a,(ix+1)	; check quotient
+	or	(ix+0)
+	jr	z,xii6		; return if zero, result = base
+	jr	xii2
+
+xii1:	ld	bc,1
+	push	bc		; exponent even, push 1
+xii2:	ld	c,(ix+4)
+	ld	b,(ix+5)
+	push	bc		; push base
+xii3:	pop	bc
+	push	bc
+	push	bc		; two copies
+	call	$POL		; square base
+	dw	$MLI		; integer multiply, does not change IX
+	dw	xii4
+
+xii4:	sra	(ix+1)
+	rr	(ix+0)
+	jr	nc,xii3		; jump if remainder is zero to square again
+	ld	c,(ix-4)
+	ld	b,(ix-3)
+	push	bc		; push squared base
+	ld	c,(ix-2)
+	ld	b,(ix-1)
+	push	bc		; push prev base
+	call	$POL
+	dw	$MLI		; integer multiply, does not change IX
+	dw	xii5
+
+xii5:	pop	bc		; move result up
+	ld	(ix-2),c
+	ld	(ix-1),b
+	ld	a,(ix+1)	; check exp quotient
+	or	(ix+0)
+	jr	nz,xii3		; continue until zero
+	pop	bc		; drop base*base
+xii6:	pop	hl		; pop result
+	pop	bc		; drop exponent quotient
+	pop	iy
+	ex	(sp),hl		; store result
+	jp	$NEXT
+
+	; exponent is zero
+
+xii7:	pop	bc		; check base
+	ld	a,b
+	or	c
+	jr	z,xiie		; if base is zero -> error (0^0)
+xii8:	ld	bc,1
+	push	bc		; else result is 1
+	jp	$NEXT
+
+	; exponent is negative
+
+xii9:	pop	bc		; check base
+	ld	a,b
+	or	a
+	jp	m,xii11		; jump if negative
+	or	c
+	jr	z,xiie		; if zero -> error
+	dec	bc
+	ld	a,b
+	or	c
+	jr	z,xii8		; if base was 1, return 1
+xii10:	ld	bc,0		; else return 0
+	push	bc
+	jp	$NEXT
+
+	; exponent negative, base negative: result is zero unless base is -1
+
+xii11:	ld	a,b
+	and	c
+	inc	a		; base = -1?
+	jr	nz,xii10	; return 0 if not
+	rr	l		; else check exponent
+	jr	nc,xii8		; if even, return 1
+	push	bc
+	jp	$NEXT		; else return -1
+
+xiie:	call	FPERR
+	db	06h		; exponentiation error
+	jp	$NEXT
+
+;-----------------------------------------------------------------------
+
+; x^y: real base, integer exponent
+
+XFI$:	ld	ix,0
+	add	ix,sp
+	pop	bc		; get exponent
+	push	bc
+	ld	a,b
+	or	a
+	jp	p,xfi1		; jump if positive
+	call	NEGBC		; else make it positive
+xfi1:	push	bc		; push absolute value of exponent
+	push	iy
+	sra	(ix-1)		; see if exponent is odd
+	rr	(ix-2)
+	jr	nc,xfi2		; jump if even
+	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	push	de		; copy base
+	push	hl
+	ld	a,(ix-1)	; test exponent/2
+	or	(ix-2)
+	jp	z,xfi7		; jump if zero
+	jr	xfi3
+
+	; exponent is even
+
+xfi2:	ld	bc,0		; push 1.0
+	push	bc
+	ld	bc,04080h
+	push	bc
+	ld	a,(ix-8)	; check base
+	or	(ix-7)
+	jr	nz,xfi3		; jump if not zero
+	ld	a,(ix+0)	; check original exponent
+	or	(ix+1)
+	jr	nz,xfi7		; jump if not zero
+	jp	xfie2		; else error (0^0)
+
+xfi3:	ld	l,(ix+2)
+	ld	h,(ix+3)
+	ld	e,(ix+4)
+	ld	d,(ix+5)
+	push	de		; copy base
+	push	hl
+xfi4:	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de		; again
+	push	hl
+	call	$POL
+	dw	$MLR		; base*base
+	dw	xfi5
+
+xfi5:	ld	ix,0
+	add	ix,sp
+	sra	(ix+11)		; divide exponent by 2 again
+	rr	(ix+10)
+	jr	nc,xfi4		; jump if even (square result)
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	push	de
+	push	hl
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de
+	push	hl
+	call	$POL
+	dw	$MLR
+	dw	xfi6
+
+xfi6:	ld	ix,0
+	add	ix,sp
+	pop	hl
+	pop	de
+	ld	(ix+8),l
+	ld	(ix+9),h
+	ld	(ix+10),e
+	ld	(ix+11),d
+	ld	a,(ix+14)
+	or	(ix+15)
+	jr	nz,xfi4
+	pop	bc
+	pop	bc
+xfi7:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+9)	; check original exponent
+	or	a
+	jp	p,xfi8		; jump if positive
+	ld	l,(ix+0)	; else take the inverse: 1/(2^n) = 2^(-n)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de		; dup y
+	push	hl
+	ld	a,h
+	or	l
+	jr	z,xfie1		; -> exponentiation error
+	ld	bc,0
+	ld	(ix+2),c	; put 1.0 above
+	ld	(ix+3),b
+	ld	bc,04080h
+	ld	(ix+0),c
+	ld	(ix+1),b
+	call	$POL
+	dw	$DVR		; get 1/y
+	dw	xfi8
+
+xfi8:	ld	ix,0
+	add	ix,sp
+	pop	hl
+	pop	de
+	ld	(ix+10),l
+	ld	(ix+11),h
+	ld	(ix+12),e
+	ld	(ix+13),d
+	pop	iy
+	pop	bc
+	pop	bc
+	jp	$NEXT
+
+xfie1:	pop	bc
+	pop	bc
+xfie2:	call	FPERR
+	db	06h		; exponentiation error
+	jr	xfi8
+
+;-----------------------------------------------------------------------
+
+; x^y: real base, real exponent
+
+XFF$:	pop	hl		; pop exponent
+	pop	de
+	ld	ix,0
+	add	ix,sp		; IX = pointer to base arg
+	push	iy		; save IY
+	push	de		; push exponent
+	push	hl
+	ld	a,h
+	or	a
+	jp	p,xff1		; jump if positive
+	ld	a,(ix+1)	; check base
+	or	a
+	jp	m,xffe		; error if negative
+	or	(ix+0)
+	jr	z,xffe		; error if zero
+	jr	xff3
+
+xff1:	or	l
+	jr	nz,xff2		; jump if exponent > 0
+	ld	a,(ix+1)	; if zero, check base
+	or	(ix+0)
+	jr	z,xffe		; error if zero (0^0)
+	jr	xfret1		; else result is 1.0
+
+xff2:	ld	a,(ix+1)	; positive exponent, check base
+	or	a
+	jp	m,xffe		; error if negative
+	or	(ix+0)
+	jr	z,xfret0	; if zero, result is zero
+xff3:	ld	ix,6
+	add	ix,sp
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de
+	push	hl
+	ld	ix,0
+	add	ix,sp		; IX points to argument (base) on stack
+	call	ALOG		; take log()
+	pop	bc
+	pop	bc
+	push	de		; push result
+	push	hl
+	call	$POL
+	dw	$MLR		; multiply by exponent
+	dw	xff4
+
+xff4:	ld	ix,0
+	add	ix,sp		; IX points to argument on stack
+	call	EXP		; exp() gives result
+xff5:	pop	bc		; restore stack
+	pop	bc
+	pop	iy		; restore IY
+	pop	bc		; remove base
+	pop	bc
+	push	de		; push result
+	push	hl
+	jp	$NEXT
+
+xfret1:	ld	hl,04080h
+	jr	xff6
+
+xffe:	call	FPERR
+	db	06h		; exponentiation error
+xfret0:	ld	hl,0
+xff6:	ld	de,0
+	jr	xff5
+
+;-----------------------------------------------------------------------
+
+; FP package error routine, print error message and continue execution
+
+FPERR:	ex	(sp),hl
+	ld	a,(hl)		; fetch error code
+	inc	hl
+	ex	(sp),hl		; update return address, restore HL
+	call	DISPAT		; jump to error routine
+	dw	fpe1		; -> floating overflow
+	dw	fpe2		; -> floating underflow
+	dw	fpe3		; -> division by zero
+	dw	fpe4		; -> negative square root
+	dw	fpe5		; -> bad log
+	dw	fpe6		; -> integer overflow
+	dw	fpe7		; -> exp error
+
+fpe1:	rst	10h
+	db	33h		; floating overflow
+	ret
+
+fpe2:	rst	10h
+	db	34h		; floating underflow
+	ret
+
+fpe3:	rst	10h
+	db	35h		; division by zero
+	ret
+
+fpe4:	rst	10h
+	db	36h		; negative square root
+	ret
+
+fpe5:	rst	10h
+	db	37h		; bad log
+	ret
+
+fpe6:	rst	10h
+	db	2Fh		; integer overflow
+	ret
+
+fpe7:	rst	10h
+	db	38h		; exponentiation error
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- LOG10
+
+ALOG10:	ld	bc,100h		; flag ALOG10
+	jr	log1
+
+; --- LOG
+
+ALOG:	ld	bc,0		; flag ALOG
+log1:	push	iy
+	push	bc		; push flag
+	ld	bc,07218h	; push -1/2*ln(2) = -0.346574
+	push	bc
+	ld	bc,0BFB1h
+	push	bc
+	push	bc		; get work space
+	push	bc
+	ld	l,(ix+0)	; get arg
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de
+	push	hl
+	ld	a,h
+	or	a
+	jp	z,err3		; jump if not positive
+	jp	m,err3
+	sla	(ix-18)
+	rl	(ix-17)
+	ld	a,(ix-17)	; get exponent
+	ld	(ix-6),a
+	ld	a,80h
+	ld	(ix-17),a	; transform arg to (0.5-1.0)
+	rr	(ix-17)
+	rr	(ix-18)
+	ld	bc,004F3h	; push 1/sqr(2) = 0.707107
+	push	bc
+	ld	bc,04035h
+	push	bc
+	push	de		; push x
+	ld	l,(ix-18)
+	ld	h,(ix-17)
+	push	hl
+	ld	bc,004F3h	; push 1/sqr(2) = 0.707107
+	push	bc
+	ld	bc,04035h
+	push	bc
+	call	$POL
+	dw	$SBR		; get (x-sqr(2))/(x+sqr(2))
+	dw	UP$3
+	dw	$ADR
+	dw	$DVR
+	dw	DUP$		; get 3 copies
+	dw	DUP$
+	dw	$MLR		; setup polynomial
+	dw	REG$3
+	dw	$MLR		; expand polynomial
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	SCL$3		; get ln(exp)
+	dw	$IR
+	dw	PL2$3
+	dw	$MLR
+	dw	$ADR		; combine with fraction
+	dw	EXI$3		; and check if done
+	dw	$MLR		; multiply by log10(e)
+	dw	EXI$3		; and return
+
+REG$3:	pop	hl		; pop y
+	pop	de
+	ld	ix,CON$3+2	; point to coefficients
+	ld	a,4
+	jp	PY1$37		; push y and coefficients
+
+UP$3:	ld	ix,0
+	add	ix,sp
+	pop	bc		; move item to work space
+	ld	(ix+12),c
+	ld	(ix+13),b
+	pop	bc
+	ld	(ix+14),c
+	ld	(ix+15),b
+	jp	$NEXT
+
+SCL$3:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+4)	; get exponent
+	sub	80h		; remove excess 128
+	ld	c,a
+	sbc	a,a		; expand sign
+	ld	b,a
+	push	bc
+	jp	$NEXT
+
+PL2$3:	ld	bc,07218h	; push ln(2) = .693147
+	push	bc
+	ld	bc,04031h
+	push	bc
+	jp	$NEXT
+
+EXI$3:	ld	ix,0
+	add	ix,sp
+	dec	(ix+5)		; check for ALOG10
+	jr	nz,LGT$3	; no, done
+	ld	bc,05BD9h	; push log10(e) = .434295
+	push	bc
+	ld	bc,03FDEh
+	push	bc
+	jp	$NEXT
+LGT$3:	pop	hl		; pop result
+	pop	de
+	pop	bc		; flush flag
+	pop	iy
+	ret
+
+err3:	ld	hl,14
+	add	hl,sp
+	ld	sp,hl
+	call	FPERR
+	db	04h		; bad log
+	ld	hl,0
+	ld	de,0
+	pop	iy
+	ret
+
+	dw	03F9Ah,01955h	;  .300974506
+	dw	03FCCh,0A01Eh	;  .399659100
+	dw	0402Ah,0AADAh	;  .666669471
+CON$3:	dw	04100h,00000h	; 1.99999999
+
+;-----------------------------------------------------------------------
+
+; --- ATN
+
+ATAN:	push	iy
+	ld	bc,0
+	push	bc		; clear sign flag
+	push	bc		; clear ATAN2 bias
+	push	bc
+	push	bc		; clear quadrant bias
+	push	bc
+	ld	l,(ix+0)	; get arg
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	ld	a,h
+	or	a
+	jp	p,PLU$39	; jump if quadrant 1 or 3
+	add	a,80h		; get abs value
+	ld	h,a
+	inc	(ix-6)		; flag -
+PLU$39:	push	de
+	push	hl
+	push	de
+	ld	de,04080h	;!!!write better!
+	call	CPDEHL		; check if < 1.0
+	pop	de
+	jr	c,LEI$39	; jump if < 1.0
+	jr	nz,GT1$39	; > 1.0
+	ld	a,d		; check low order
+	or	e
+	jr	z,LEI$39	; = 1.0
+GT1$39:	ld	bc,0C0C9h	; -pi/2 = 1.5708
+	ld	(ix-14),c
+	ld	(ix-13),b
+	ld	bc,0FDBh	; atan(x)=pi/2-atan(1/x)
+	ld	(ix-12),c
+	ld	(ix-11),b
+	dec	(ix-6)		; adjust sign
+	push	de		; move arg down
+	push	hl
+	ld	bc,04080h	; insert 1.0
+	ld	(ix-18),c
+	ld	(ix-17),b
+	ld	bc,0
+	ld	(ix-16),c
+	ld	(ix-15),b
+	call	$POL
+	dw	$DVR		; compute 1/x
+	dw	LEI$39
+
+LEI$39:	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de		; move arg down
+	push	hl
+	xor	a
+	ld	(ix+0),a
+	ld	(ix+1),a
+	ld	(ix+2),a
+	ld	(ix+3),a
+	push	de
+	ld	de,03F89h
+	call	CPDEHL		; tan(15) = .2679491924
+	pop	de
+	jr	c,L15$39	; jump if < tan(15) [if HL < tan(15)]
+	jr	nz,TNS$39	; jump if >
+	push	hl
+	ld	hl,030A3h
+	call	CPHLDE
+	pop	hl
+	jr	nc,L15$39	; [if DE >= tan(15) ]
+TNS$39:	ld	bc,04006h	; insert pi/6 = .523599
+	ld	(ix+0),c
+	ld	(ix+1),b
+	ld	bc,00A92h
+	ld	(ix+2),c
+	ld	(ix+3),b
+	ld	bc,0B3D7h	; push -sqr(3) = -1.73205
+	push	bc
+	ld	bc,0C0DDh
+	push	bc
+	push	de		; push arg
+	push	hl
+	ld 	bc,0		; push 1.0
+	push	bc
+	ld	bc,4080h
+	push	bc
+	ld	bc,0B3D7h	; push sqr(3) = 1.73205
+	push	bc
+	ld	bc,040DDh
+	push	bc
+	push	de		; push arg
+	push	hl
+	call	$POL		; transform arg
+	dw	$MLR		; (sqr(3)*x-1)/(sqr(3)+x)
+	dw	$SBR
+	dw	UP$39
+	dw	$SBR
+	dw	$DVR
+	dw	L15$39
+
+L15$39:	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+0)	; get arg
+	ld	h,(ix+1)
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de		; 3 copies
+	push	hl
+	push	de
+	push	hl
+	call	$POL
+	dw	$MLR		; get arg^2
+	dw	PLY$39		; set up coefficients
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$ADR		; p(x)+0 if x<=1, p(x)-pi/2 if x>1
+	dw	SGN$39		; adjust sign
+	dw	$ADR		; add ATAN2 bias
+	dw	EXI$39		; pop result and exit
+
+EXI$39:	pop	hl
+	pop	de
+	pop	bc		; pop sign flag
+	pop	iy
+	ret			; return
+
+UP$39:	ld	ix,0
+	add	ix,sp
+	pop	bc
+	ld	(ix+12),c	;was10 ; move stack item up
+	ld	(ix+13),b
+	pop	bc
+	ld	(ix+14),c	; move stack item up
+	ld	(ix+15),b
+	jp	$NEXT
+
+PLY$39:	pop	hl		; pop poly arg
+	pop	de
+	ld	ix,CON$39+2	; point to coefficient table
+	ld	a,5		; loop 5
+	jp	PY1$37
+
+SGN$39:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+8)	; check sign flag
+	or	(ix+9)
+	jr	z,SG1$39
+	ld	a,(ix+1)
+	add	a,80h		; negate result for (-1,0) and (1,inf)
+	ld	(ix+1),a
+SG1$39:	jp	$NEXT
+
+	dw	03EC5h,03AC2h	;  0.0963034789
+	dw	0BF11h,05D4Ch	; -0.1419574624
+	dw	03F4Ch,0C6DBh	;  0.1999773201
+	dw	0BFAAh,0AAA4h	; -0.3333331319
+CON$39:	dw	04080h,00000h	;   .9999999999
+
+;-----------------------------------------------------------------------
+
+; --- EXP
+
+EXP:	push	iy		; since we'll re-enter polish mode
+	ld	l,(ix+0)	; get high order arg
+	ld	h,(ix+1)
+	ld	a,h
+	or	a
+	jp	p,POS$20	; jump if arg positive
+	ld	de,0C3B0h	; 0C3B2h in FPMP.MAC
+	call	CPHLDE
+	jp	c,ZER$20	; return 0.0 if exponent < -88.7
+	jr	SMT$20
+
+POS$20:	ld	de,43B0h
+	call	CPHLDE
+	jp	c,OVR$20	; -> overflow if exponent > 87
+SMT$20:	ld	a,h
+	add	a,a		; dump sign
+	cp	66h
+	jp	c,ONE$20	; return 1.0 if exp magnitude < 2^-28
+	ld	bc,0
+	push	bc		; save space for scale
+	push	bc		; push a 1.0
+	ld	bc,4080h
+	push	bc
+	ld	e,(ix+2)	; get low order argument
+	ld	d,(ix+3)
+	push	de
+	push	hl
+	push	de		; need two copies of it
+	push	hl
+	call	$POL
+	dw	PLE$20		; push log2(e)
+	dw	$MLR
+	dw	$RI		; fix x*log2(e)
+	dw	ESV$20		; save exponent scale
+	dw	$IR		; float it
+	dw	PLE$20		; push log2(e)
+	dw	$DVR
+	dw	$SBR
+	dw	CRF$20		; push continued fraction constants
+	dw	$MLR		; z=y*y
+	dw	$ADR		; b1+y*y
+	dw	$DVR		; a1/(b1+y*y)
+	dw	$ADR		; y+a1/(b1+y*y)
+	dw	$ADR		; a0+y+a1/(b1+y*y)
+	dw	$DVR		; y/(a0+y+a1/(b1+y*y))
+	dw	INC$20		; -2*y/(a0+y+a1/(b1+y*y))
+	dw	$ADR		; 1-2*y/(a0+y+a1/(b1+y*y))
+	dw	DUP$		; duplicate it
+	dw	$MLR		; (1-2*y/(a0+y+a1/(b1+y*y)))^2
+	dw	SCL$20		; exit polish mode and scale result
+
+INC$20:	pop	hl
+	ld	de,8080h	; multiply by -2.0
+	add	hl,de
+	push	hl
+	jp	$NEXT
+
+PLE$20:	ld	bc,0AA3Bh	; push log2(e) = 1.4427
+	push	bc
+	ld	bc,040B8h
+	push	bc
+	jp	$NEXT
+
+ESV$20:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+0)
+	ld	(ix+10),a	; save exponent scale
+	ld	a,(ix+1)
+	ld	(ix+11),a
+	jp	$NEXT
+
+CRF$20:	ld	ix,0
+	add	ix,sp
+	rl	(ix+0)		; shift modified arg
+	rl	(ix+1)
+	rl	c		; save sign
+	ld	a,(ix+1)
+	sub	1		; divide by 2.0
+	ld	(ix+1),a
+	jr	c,ZFR$20	; underflow, make arg 0
+	jr	z,ZFR$20
+	rr	c		; get sign back
+	rr	(ix+1)
+	rr	(ix+0)
+	ld	l,(ix+0)	; get modified arguments
+	ld	h,(ix+1)
+	ld	e,(ix+2)	; in registers
+	ld	d,(ix+3)
+	ld	bc,03D82h	; push -12.01501675
+	push	bc
+	ld	bc,0C240h
+	push	bc
+	push	de
+	push	hl
+	ld	bc,07379h	; push 601.8042667
+	push	bc
+	ld	bc,04516h
+	push	bc
+	ld	bc,05C5Bh	; push 60.0901907
+	push	bc
+	ld	bc,04370h
+	push	bc
+	push	de
+	push	hl
+	push	de
+	push	hl
+	jp	$NEXT
+
+ZFR$20:	pop	bc		; flush fract arg, result is 1.
+	pop	bc
+SCL$20:	pop	hl		; get approximation result
+	pop	de
+	pop	bc		; get int(x*log2(e))
+	ld	b,c		; make into exponent modifier
+	ld	c,0
+	sra	b
+	rr	c
+	or	a
+	adc	hl,bc		; add in exponent modifier
+	jp	m,OVR$20	; test overflow
+	pop	iy
+	ret
+
+ONE$20:	ld	de,0		; exp(tiny) = 1.0
+	ld	hl,4080h
+	pop	iy
+	ret
+
+OVR$20:	call	FPERR
+	db	00h		; floating overflow
+	jr	ECL$20		; return 0
+
+ZER$20:	call	FPERR
+	db	01h		; floating underflow
+ECL$20:	ld	hl,0		; return 0
+	ld	de,0
+	pop	iy
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- COS
+
+COS:	push	iy
+	ld	bc,0
+	push	bc		; (ix-5,6) = quadrant flag
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc		; (ix-7,8)
+	ld	c,(ix+0)
+	ld	b,(ix+1)
+	push	bc		; (ix-9,10)
+	ld	bc,0FDBh	; 1.5708 = PI/2
+	push	bc
+	ld	bc,40C9h
+	push	bc
+	call	$POL
+	dw	$ADR		; cos(x) = sin(x+pi/2)
+	dw	SNC$37
+
+; --- SIN
+
+SIN:	push	iy
+	ld	bc,0
+	push	bc		; (ix-5,6) = quadrant flag
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	push	bc		; (ix-7,8)
+	ld	c,(ix+0)
+	ld	b,(ix+1)
+	push	bc		; (ix-9,10)
+SNC$37:	ld	ix,10		; need to do this again for COS jump above
+	add	ix,sp
+	sla	(ix-9)		; remove sign and save in quadrant flag
+	rr	(ix-5)
+	rr	(ix-9)
+	ld	bc,0FDBh	; 6.28319 = PI*2
+	push	bc
+	ld	bc,41C9h
+	push	bc
+	call	$POL
+	dw	$DVR		; x/2pi
+	dw	DUP$		; 2 copies
+	dw	$INTR		; int(x/2pi)
+	dw	$SBR		; fract(x/2pi)
+	dw	X4$37		; 4*fract(x/2pi)
+	dw	DUP$		; 2 copies
+	dw	$INTR		; int(4*fract(x/2pi))
+	dw	QUD$37		; save int(...)
+	dw	$SBR		; y=fract(4*fract(x/2pi))
+	dw	QST$37		; reduce y to -1..+1
+QSE$37:	dw	DUP$		; 2 copies
+	dw	DUP$		; 3 copies
+	dw	$MLR		; y*y
+	dw	PLY$37		; push coefficients
+	dw	$MLR		; a4*y^2
+	dw	$ADR		; a4*y^2+a3
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	$ADR
+	dw	$MLR
+	dw	RTN$37		; (((((a4*z+a3)*z+a3)*z+a2)*z+a1)*z+a0)*z
+				; z=y*y
+
+RTN$37:	pop	hl		; pop high order result
+	pop	de
+	pop	bc		; pop quadrant flag
+	ld	a,b
+	or	a
+	jp	p,rtn1		; jump if argument was +
+	ld	a,h
+	add	a,80h		; sin(-x) = -sin(x)
+	ld	h,a
+rtn1:	pop	iy
+	ret
+
+DUP$:	pop	hl		; dup float
+	pop	de
+	push	de
+	push	hl
+	push	de
+	push	hl
+	jp	$NEXT
+
+X4$37:	pop	bc
+	push	bc
+	ld	a,b		; check for 0 fraction
+	or	c
+	jr	z,RTN$37	; quit now
+	pop	bc
+	inc	b		; quadruple stack item
+	push	bc
+	jp	$NEXT
+
+QUD$37:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+0)
+	ld	(ix+8),a	; save quadrant number
+	ld	a,(ix+1)
+	ld	(ix+9),a
+	jp	$NEXT
+
+QST$37:	ld	ix,0
+	add	ix,sp
+	ld	a,(ix+4)	; test quadrant
+	or	a
+	jr	z,Q13$37	; jump if first or third quadrant
+	ld	a,(ix+1)
+	add	a,80h
+	ld	(ix+1),a	; negate stack item
+	ld	bc,0000h
+	push	bc
+	ld	bc,4080h	; push floating 1.0
+	push	bc
+	call	$POL		; enter polish mode
+	dw	$ADR		; x=1-x
+	dw	QSR$37
+QSR$37:	ld	iy,QSE$37	; point back into list
+	ld	ix,0
+	add	ix,sp
+Q13$37:	sra	(ix+5)		; test quadrant
+	jr	nc,QUT$37	; jump if first or second
+	ld	a,(ix+1)
+	add	a,80h
+	ld	(ix+1),a	; negate stack item
+QUT$37:	jp	$NEXT
+
+PLY$37:	pop	hl		; save y*y
+	pop	de
+	ld	ix,CON$37+2	; point to list of coefficients
+	ld	a,5
+	jr	PY1$37
+PY2$37:	push	de		; push y*y
+	push	hl
+PY1$37:	ld	c,(ix+0)
+	ld	b,(ix+1)
+	push	bc
+	dec	ix
+	dec	ix
+	ld	c,(ix+0)
+	ld	b,(ix+1)
+	push	bc
+	dec	ix
+	dec	ix
+	dec	a		; count coefficients
+	jr	nz,PY2$37
+	jp	$NEXT
+
+	dw	03A1Eh,0D7BAh	; 1.51484E-04
+	dw	0BC99h,02663h	; -4.67377E-03
+	dw	03EA3h,03458h	; 0.0796897
+	dw	0C025h,05DE1h	; -0.645964
+CON$37:	dw	040C9h,00FDBh	; 1.5708
+
+;-----------------------------------------------------------------------
+
+; --- SQR
+
+; on entry IX points to argument on stack
+
+SQRT:	ld	l,(ix+0)	; HL <- EM1
+	ld	h,(ix+1)
+	call	SETFLG
+	jr	z,ZER$41
+	jp	p,sqr1
+	call	FPERR
+	db	03h		; negative square root
+ZER$41:	ld	hl,0		; EM1
+	ld	de,0		; M2M3
+	ret
+
+sqr1:	push	bc		; space for temp vars (bit mask)
+	push	bc
+
+	add	hl,hl		; H = exponent, shift out sign bit
+
+	ld	c,l		; C = M1
+	ld	b,0
+
+	scf
+	rr	c		; shift the implicit mantissa bit in
+
+	ld	a,h
+	rra			; exponent/2
+	jr	c,sqr2
+
+	sla	(ix+2)		; shift 0M1M2M3 left
+	rl	(ix+3)
+	rl	c
+	rl	b
+
+sqr2:	ld	a,h
+	srl	a		; exponent/2
+	adc	a,40h
+	ld	h,a
+	push	hl		; push exponent
+
+	ld	(ix-4),80h	; (ix-6..3 = 24-bit mask)
+	ld	(ix-5),0	;
+	ld	(ix-6),0
+
+	ld	hl,0		; HLDE = 0
+	ld	de,0
+
+sqr3:	ld	a,(ix-6)	; HLDE += mask
+	add	a,e
+	ld	e,a
+	ld	a,(ix-5)
+	adc	a,d
+	ld	d,a
+	ld	a,(ix-4)
+	adc	a,l
+	ld	l,a
+	ld	a,0
+	adc	a,h
+	ld	h,a
+
+	cp	b		; compare 0M1M2M3 with HLDE
+	jr	nz,sqr4		; set flags and jump if not equal
+	ld	a,l
+	cp	c
+	jr	nz,sqr4
+	ld	a,d
+	cp	(ix+3)
+	jr	nz,sqr4
+	ld	a,e
+	cp	(ix+2)
+
+sqr4:	jr	z,sqr41
+	jr	nc,sqr5		; if DE > [IX+2] (bhi)
+;;	jr	nz,sqr5
+
+sqr41:	ld	a,(ix+2)	; 0M1M2M3 -= DEHL
+	sub	e
+	ld	(ix+2),a
+	ld	a,(ix+3)
+	sbc	a,d
+	ld	(ix+3),a
+	ld	a,c
+	sbc	a,l
+	ld	c,a
+	ld	a,b
+	sbc	a,h
+	ld	b,a
+
+	ld	a,(ix-6)	; HLDE += bit mask
+	add	a,e
+	ld	e,a
+	ld	a,(ix-5)
+	adc	a,d
+	ld	d,a
+	ld	a,(ix-4)
+	adc	a,l
+	ld	l,a
+	ld	a,0
+	adc	a,h
+	ld	h,a
+
+	jr	sqr6
+
+sqr5:	ld	a,e		; HLDE -= bit mask
+	sub	(ix-6)
+	ld	e,a
+	ld	a,d
+	sbc	a,(ix-5)
+	ld	d,a
+	ld	a,l
+	sbc	a,(ix-4)
+	ld	l,a
+	ld	a,h
+	sbc	a,0
+	ld	h,a
+
+sqr6:	sla	(ix+2)		; shift 0M1M2M3 left
+	rl	(ix+3)
+	rl	c
+	rl	b
+
+	srl	(ix-4)		; shift 24-bit mask right
+	rr	(ix-5)
+	rr	(ix-6)
+
+	jp	nc,sqr3		; loop, end when all bits processed
+
+	ld	a,h		; compare HLDE and 0M1M2M3
+	cp	b
+	jr	nz,sqr7		; jump if not equal with CY set/unset
+	ld	a,l
+	cp	c
+	jr	nz,sqr7
+	ld	a,d
+	cp	(ix+3)
+	jr	nz,sqr7
+	ld	a,e
+	cp	(ix+2)
+
+sqr7:	jr	nc,sqr8
+	inc	de		; DE += CY
+
+sqr8:	ld	a,l
+	pop	hl		; dump H
+	ld	l,a		; add exponent to LDE
+
+	pop	bc		; cleanup stack
+	pop	bc
+
+	srl	h		; shift sign bit, restore exponent
+	rr	l
+	rr	d		; and fraction bits
+	rr	e
+
+	ret	nc
+
+	inc	de		; add the 'lost' rightmost bit (for rounding)
+	ld	a,d
+	or	e
+	ret	nz
+	inc	hl
+	ret
+
+	END

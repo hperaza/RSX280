@@ -1,0 +1,29 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	User functions
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+	public	FTABI
+	public	EOFNTR,UACTST,XEQNTR,RDYNTR,BYENTR,RETNTR
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+FTABI:	dw	FTBL	; no support for user routines yet.
+FTBL:	dw	0
+
+UACTST:
+EOFNTR:		; called from the LINGET routine on EOF from terminal
+RDYNTR:		; called at the READY message
+BYENTR:		; called from the BYE command
+RETNTR:		; called from the RETURN statement
+XEQNTR:		; called before the execution of each statement
+	ret
+
+	END

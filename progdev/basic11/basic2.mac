@@ -1,0 +1,2967 @@
+	TITLE	BASIC-11 interpreter
+	SUBTTL	Exec part 2
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	include	BASDEF.INC
+	include	BASTKN.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	public	LET,FOR,IFX,ASSIGN,CALLS,CALLX,INT,GOSUB,IFEND
+	public	LOCGET,FTOI1,ITOF,MKSTR,VFVAL,VFSTR,NEXT,RETURN
+	public	GOTO,ON,INPUT,LINPUT,PRINT,READ,FNDVAR,SVAL
+
+	extrn	SKPEOL,SKPOBJ,DNPACK,ALLOC,VAL,DISPAT,CKCTLC
+	extrn	CHKISE,CHKOSE,RDNXBL,RDVFBL,WRVFBL,EVAL,CLRFAC
+	extrn	$INTR,$SBR,STOP,ODEVTT,SETCOL,$TAB,MSG1,EXECUTE
+	extrn	NUMSGN,SAVCH1,PUTCHR,ADDHLA,FLINE,CPHLDE,RETNTR
+	extrn	$POLSH,$IPUSH,$FPOP,$FPSH1,$IR,$RI,$FPUSH,$UNPOL
+	extrn	$IPOP,POPFAC,FRESTR,PSHFAC,CHKSTK,FPST,FPSTS,FPLD
+	extrn	SUBSTK,FPLDS,ADDSTK,IGNORE,RCTLO,MSG,LINGET,SETFLG
+	extrn	SKIPBL,EXPF,NUMCNV,FILEA,VFBLK,STROPR,STPR,CPDEHL
+	extrn	NEGHL,NEGBC,CPBCHL
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; --- LET
+
+LET:	call	FNDVAR		; find variable
+ASSIGN:	call	GETVAR
+	ld	a,(hl)
+	inc	hl
+	cp	T.EQ		; '=' token?
+	jp	nz,snerr	; if not -> syntax error
+	call	EVAL		; evaluate expression
+	jr	c,asnstr	; jump if it was a string expression
+	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token?
+	jp	nz,snerr	; if not -> syntax error
+	call	STOVAR		; assign numeric
+	jp	EXECUTE
+
+asnstr:	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token
+	jp	nz,snerr	; syntax error
+	call	STSVAR		; assign string
+	jp	EXECUTE
+
+; Get offset to variable from program code and index into symbol table.
+; Returns DE = address of variable in symbol table.
+
+FNDVAR:	ld	a,(hl)		; get next char
+	inc	hl
+	or	a
+	jp	m,snerr		; if another token -> syntax error
+	ld	d,a
+	ld	e,(hl)		; get offset to variable (note order!)
+	inc	hl
+	ex	de,hl
+	ld	bc,(SYMBOL)
+	add	hl,bc		; index into symbol table
+	ex	de,hl		; DE = var addr
+	ret
+
+; --- IF
+
+IFX:	call	EVAL		; evaluate expression (left side)
+	jp	nc,ifn1		; jump if numeric expr
+
+	; string comparison
+
+	ld	a,(hl)
+	cp	T.LE		; '<=' token
+	jr	c,snerr		; if below -> syntax error
+	cp	T.EQ+1		; '=' token
+	jr	nc,snerr	; if above -> syntax error
+	call	CHKSTK
+	ld	e,(hl)
+	inc	hl
+	ld	d,0
+	push	de		; push token
+	call	EVAL		; evaluate expression (right side)
+	jp	nc,tmerr	; if numeric expr -> type mismatch
+	pop	de		; pop address of right-side string into DE
+	pop	bc		; pop saved token
+	ex	(sp),hl		; pop address of left-side string into HL
+	push	bc		; push token back
+	ld	bc,0		; clear lengths
+	ld	a,h		; left side is null string?
+	and	l
+	inc	a
+	jr	z,ifs1		; jump if yes
+	ld	b,(hl)		; else get length into B
+ifs1:	ld	a,d		; right side is null string?
+	and	e
+	inc	a
+	jr	z,ifs2		; jump if yes
+	ld	a,(de)
+	ld	c,a		; else get length into C
+ifs2:	inc	hl		; advance to start of both strings
+	inc	hl
+	inc	hl
+	inc	de
+	inc	de
+	inc	de
+	jr	ifs4
+
+ifs3:	ld	a,(de)
+	cp	(hl)
+	inc	hl
+	inc	de
+	jr	nz,ifs11
+ifs4:	ld	a,c		; check remaining length of right-side string
+	or	a
+	jr	z,ifs6		; jump if at end
+	ld	a,b		; check remaining length of left-side string
+	or	a
+	jr	z,ifs5		; jump if at end
+	dec	c
+	dec	b
+	jr	ifs3		; else loop to compare chars
+
+	; end of left-side string
+
+ifs5:	ld	a,(de)		; check right-side
+	cp	' '		; space?
+	inc	de
+	jr	nz,ifs11	; exit loop if not
+	dec	c		; else try next char
+	jr	nz,ifs5
+	jr	ifs8		; strings are equal (trailing spaces ignored)
+
+	; end of right-side string
+
+ifs6:	ld	a,b		; check left-side remaining length
+	or	a
+	jr	z,ifs8		; if zero, strings are the same
+ifs7:	ld	a,' '
+	cp	(hl)		; space? (note reverse comp. to set M flag)
+	inc	hl
+	jr	nz,ifs11	; exit loop if not
+	djnz	ifs7		; else ignore
+ifs8:	pop	de		; pop saved token
+	pop	hl		; restore HL
+ifs9:	ld	a,(hl)
+	inc	hl
+	cp	T.THEN		; THEN
+	jr	z,ifs10
+	cp	T.GOTO		; GOTO
+	jr	nz,snerr	; syntax error
+ifs10:	ld	a,e		; check saved token
+	cp	T.LE		; '<=' token
+	jr	z,ifn7
+	cp	T.GE		; '>=' token
+	jr	z,ifn7
+	cp	T.EQ		; '=' token
+	jr	z,ifn7
+	jp	ifn10
+
+snerr:	rst	10h
+	db	06h		; syntax error
+
+ifs11:	jp	m,ifn4		; -> '>'
+	pop	de		; pop saved token
+	pop	hl		; restore HL
+	jr	ifn2		; -> '<'
+
+	; numeric comparison
+
+ifn1:	ld	a,(hl)
+	cp	T.LE		; '<=' token?
+	jr	c,snerr		; if below -> syntax error
+	cp	T.EQ+1		; '=' token?
+	jr	nc,snerr	; if above -> syntax error
+	call	CHKSTK
+	call	PSHFAC		; push FP accum on stack
+	ld	bc,(CLCMOD)
+	push	bc		; push CLCMOD
+	ld	e,(hl)
+	inc	hl
+	ld	d,0
+	push	de		; push token
+	call	EVAL		; evaluate expression (right side)
+	jr	c,tmerr		; if string expr -> type mismatch
+	pop	de		; pop token
+	call	SUBSTK		; subtract to compare numbers
+	jr	z,ifs9
+	jp	m,ifn5
+ifn2:	ld	a,(hl)
+	inc	hl
+	cp	T.THEN		; THEN
+	jr	z,ifn3
+	cp	T.GOTO		; GOTO
+	jr	nz,snerr	; syntax error
+ifn3:	ld	a,e		; check saved token
+	cp	T.LE		; '<=' token
+	jr	z,ifn7
+	cp	T.LT		; '<' token
+	jr	z,ifn7
+	cp	T.NE		; '<>' token
+	jr	z,ifn7
+	jr	ifn10
+
+tmerr:	rst	10h
+	db	1Eh		; type mismatch
+
+ifn4:	pop	de		; pop saved token
+	pop	hl		; restore HL
+ifn5:	ld	a,(hl)
+	inc	hl
+	cp	T.THEN		; THEN
+	jr	z,ifn6
+	cp	T.GOTO		; GOTO
+	jr	nz,snerr1	; -> syntax error
+ifn6:	ld	a,e		; check saved token
+	cp	T.GE		; '>=' token
+	jr	z,ifn7
+	cp	T.GT		; '>' token
+	jr	z,ifn7
+	cp	T.NE		; '<>' token
+	jr	z,ifn7
+	jr	ifn10
+
+ifn7:	push	hl		; save HL
+	call	FLINE		; get offset to line
+	jr	c,ifn9
+	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	nz,snerr1	; if not -> syntax error
+	pop	hl		; drop saved HL
+	ex	de,hl
+	ld	a,(hl)		; get offset to line
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h		; zero?
+	jr	nz,ifn8		; jump if not
+	rst	10h
+	db	05h		; else error -> undefined line number
+ifn8:	ld	de,(CODE)
+	add	hl,de		; obtain code address
+	jp	EXECUTE		; continue execution from new point
+
+ifn9:	pop	hl		; restore HL
+	dec	hl
+	ld	a,(hl)
+	inc	hl
+	cp	T.GOTO		; previous token was a GOTO?
+	jp	nz,EXECUTE
+	jr	snerr1		; if yes -> syntax error
+
+ifn10:	call	FLINE
+	jr	nc,ifn12
+ifn11:	call	SKPEOL		; find end of statement (or program line)
+	ld	a,(hl)
+	cp	T.EOF		; "end of program" token?
+	jp	z,EXECUTE
+	call	FLINE
+	jr	c,ifn11		; loop until found
+	jp	EXECUTE
+ifn12:	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token?
+	jr	nz,snerr1	; if not -> syntax error
+	jp	EXECUTE
+
+; --- IF END #
+
+IFEND:	call	CHKISE		; get channel #, check for read, set IDEV
+	ld	a,(hl)		; get next token
+	inc	hl
+	cp	T.THEN		; must be THEN
+	jr	z,ife1
+	cp	T.GOTO		; or GOTO
+	jr	nz,snerr1
+ife1:	ld	de,(IDEV)	; DE = chan descriptor address
+	ld	a,d
+	or	e
+	jr	z,icnerr	; if zero -> illegal channel number
+	push	de
+	pop	ix
+	ld	a,(ix+2)	; check buffer descriptor address
+	or	(ix+3)
+	jr	z,cnoerr	; if zero -> channel not open
+	bit	2,(ix+0)	; 0004h
+	jr	nz,ifn7
+	jr	ifn10
+
+snerr1:	rst	10h
+	db	06h		; syntax error
+
+icnerr:	rst	10h
+	db	16h		; illegal channel number
+
+cnoerr:	rst	10h
+	db	15h		; channel not open
+
+; --- RETURN
+
+RETURN:	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; end of line follows?
+	jr	nz,snerr1	; syntax error if not
+	ld	de,(GSBCTR)
+	ld	a,d
+	or	e
+	jr	z,rtnerr	; -> RETURN without GOSUB
+	dec	de
+	ld	(GSBCTR),de
+	ld	a,d
+	or	e
+	call	z,RETNTR	; empty routine
+	inc	de
+	ex	de,hl
+	add	hl,hl
+	ld	bc,(PDL)
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	jp	nz,EXECUTE
+rtnerr:	rst	10h
+	db	26h		; RETURN without GOSUB
+
+; --- FOR
+
+FOR:	dec	hl
+	push	hl		; save start of FOR statement for NEXT block
+	inc	hl
+	call	FNDVAR		; find variable
+	ld	a,(de)
+	and	03h
+	jr	z,snerr1	; -> syntax error
+	ld	a,(de)
+	and	0Ch
+	jr	nz,snerr1	; -> syntax error
+	ld	a,(hl)
+	inc	hl
+	cp	T.EQ		; '=' must follow
+	jr	nz,snerr1	; else -> syntax error
+	ld	(VARSAV),de	; save variable address
+	call	EVAL		; evaluate expression
+	jp	c,tmerr		; if string expr -> type mismatch
+	ld	bc,-1
+	ld	(SS1SAV),bc
+	call	STOVAR		; store value
+	ld	a,(hl)
+	inc	hl
+	cp	T.TO		; TO must follow
+	jr	nz,snerr1
+	call	EVAL		; evaluate expression
+	jp	c,tmerr		; if string expr -> type mismatch
+	call	FTOI
+	ld	ix,SS1SAV	; IX = &SS1SAV
+	call	FPST		; store FP accum into SS1SAV
+	ld	bc,0
+	ld	(FAC1),bc	; default step value is 1
+	inc	bc
+	ld	(FAC2),bc
+	ld	a,(hl)
+	cp	T.EOL		; end of statement?
+	jr	z,for1		; jump if yes
+	inc	hl
+	cp	T.STEP		; else can be only STEP
+	jp	nz,snerr4	; -> syntax error
+	call	EVAL		; evaluate expression
+	jp	c,tmerr		; if string expr -> type mismatch
+	ld	a,(hl)
+	cp	T.EOL		; end of statement?
+	jp	nz,snerr4	; nothing else allowed
+for1:	call	FTOI
+	push	hl
+for2:	call	SKPEOL		; find end of statement (or program line)
+	ld	a,(hl)		; get next program byte
+	or	a		; token?
+	jp	m,for3		; branch if yes
+	inc	hl		; else skip over variable
+	inc	hl
+for3:	ld	a,(hl)
+	cp	T.EOF		; end of program?
+	jr	z,fwnerr	; -> NEXT not found
+	cp	T.NEXT		; NEXT
+	jr	z,for4
+	cp	T.FOR		; FOR?
+	jr	nz,for2		; loop if not
+	inc	hl
+	call	FNDVAR		; find variable
+	dec	hl
+	push	hl
+	ld	hl,(VARSAV)
+	call	CPHLDE		; same variable?
+	pop	hl
+	jr	nz,for2		; loop if not
+	ld	(CPSAVE),hl	; else is error
+	rst	10h
+	db	27h		; nested FOR statements with same control var
+
+fwnerr:	rst	10h
+	db	28h		; FOR without NEXT
+
+	; NEXT found
+
+for4:	inc	hl
+	push	hl		; save HL
+	ld	de,10
+	add	hl,de
+  if 0
+	call	FNDVAR		; get variable address
+  else
+	ld	a,(hl)		; get next char
+	inc	hl
+	or	a
+	jp	m,for5		; if another token -> syntax error
+	ld	d,a
+	ld	e,(hl)		; get offset to variable (note order!)
+	inc	hl
+	ex	de,hl
+	ld	bc,(SYMBOL)
+	add	hl,bc		; index into symbol table
+	ex	de,hl		; DE = var addr
+  endif
+	ld	a,(hl)
+	cp	T.EOL		; '\' token must follow
+	jr	nz,snerr3	; else -> save HL -> syntax error
+	push	hl
+	ld	hl,(VARSAV)
+	call	CPHLDE		; same variable?
+	pop	hl
+	jr	z,for6		; jump if yes
+	pop	bc		; drop saved HL, use new
+	jr	for2		; keep searching
+
+for5:	pop	hl
+	jp	snerr3		; error -> save HL -> syntax error
+
+	; NEXT var matches
+
+for6:	pop	de		; get old HL in DE
+	push	de
+	ld	hl,5
+	add	hl,sp
+	ld	a,(hl)		; store word (sp+2) to (de) swapping bytes
+	ld	(de),a		;  (addr of FOR statement)
+	inc	de		; HL+1
+	dec	hl
+	ld	a,(hl)		; !!!TODO: better use static var (e.g. CPSAVE)
+	ld	(de),a
+	ld	ix,5
+	add	ix,de		; IX = HL+6
+	call	FPSTS		; store FP accum swapping bytes
+	pop	hl		; restore old HL
+	ld	ix,SS1SAV	; IX = &SS1SAV
+	call	FPLD		; store number into FP accum
+	push	hl
+	pop	ix
+	inc	ix
+	inc	ix		; IX = HL+2
+	call	FPSTS		; store FP accum swapping bytes
+	push	hl
+	pop	ix		; get HL into IX
+	ld	b,(ix+6)	; get FOR limit (FAC1), note order!
+	ld	c,(ix+7)
+	ld	a,b
+	or	c
+	jr	nz,for7
+	ld	b,(ix+8)
+for7:	push	bc
+	ld	bc,10
+	add	hl,bc		; HL += 10
+	call	PSHFAC		; push FP accum on stack
+	ld	bc,(CLCMOD)
+	push	bc		; push CLCMOD
+	call	EVAL		; evaluate expression
+	call	SUBSTK		; subtract to compare numbers
+	jr	z,for10
+	jp	m,for8
+	pop	bc		; pop CLCMOD
+	ld	a,b
+	or	a
+	jp	m,for11		; jump if integer
+	jr	for9
+
+snerr3:	ld	(CPSAVE),hl
+snerr4:	rst	10h
+	db	06h		; syntax error
+
+for8:	pop	bc
+	ld	a,b
+	or	a
+	jp	p,for11
+for9:	pop	bc		; drop word
+	pop	bc		; drop word
+	push	hl		; restore code pointer
+	pop	ix
+	xor	a
+	ld	(ix-12),a
+	ld	(ix-11),a
+	jp	EXECUTE
+
+for10:	pop	bc		; drop word
+for11:	pop	hl		; restore code pointer
+	pop	bc		; drop word
+	jp	EXECUTE
+
+; --- NEXT
+
+NEXT:	ld	d,(hl)		; get address of FOR statement (note order!)
+	inc	hl
+	ld	e,(hl)
+	dec	hl
+	push	hl
+	ld	hl,(SYMBOL)
+	call	CPHLDE
+	pop	hl
+	jp	nc,nwferr	; if DE >= SYMBOL -> NEXT without FOR
+	ld	a,(de)
+	inc	de
+	cp	T.FOR		; FOR
+	jp	nz,nwferr	; -> NEXT without FOR
+	push	hl
+	pop	ix
+	ld	a,(ix+10)
+	or	a
+	jp	m,snerr5	; -> syntax error
+	ld	b,a
+	ld	c,(ix+11)	; note order!
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	pop	hl
+	ld	a,(de)
+	inc	de
+	cp	(ix+10)
+	jp	nz,nwferr	; -> NEXT without FOR
+	ld	a,(de)
+	inc	de
+	cp	(ix+11)
+	jp	nz,nwferr	; -> NEXT without FOR
+	ld	a,(de)
+	cp	T.EQ
+	jp	nz,nwferr	; -> NEXT without FOR
+	ld	(VARSAV),bc
+	ld	e,c
+	ld	d,b
+	push	hl
+	pop	ix
+	ld	bc,6
+	add	ix,bc		; IX = HL+6
+	call	FPLDS		; store loop step value
+	call	PSHFAC		; push FP accum on stack
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	nz,next1
+	ld	bc,-1
+	jr	next2
+next1:	ld	bc,1
+next2:	push	bc
+	ld	a,(de)
+	inc	de
+	inc	de
+	and	02h
+	jr	nz,next3
+	call	CLRFAC		; clear FP accum
+	ld	a,(de)
+	ld	c,a
+	inc	de
+	ld	a,(de)
+	ld	b,a
+	ld	(FAC2),bc
+	ld	bc,-1		; integer
+	ld	(CLCMOD),bc
+	jr	next4
+next3:	ld	bc,1		; float
+	ld	(CLCMOD),bc
+	push	de
+	pop	ix		; IX = address of number
+	call	FPLD		; load FP accum from IX
+next4:	ld	ix,0
+	add	ix,sp
+	ld	c,(ix+2)
+	ld	b,(ix+3)
+	ld	a,b
+	or	c
+	jr	nz,next5
+	ld	c,(ix+4)
+	ld	b,(ix+5)
+next5:	ld	(SS2SAV),bc
+	call	ADDSTK		; add step value
+	call	PSHFAC		; push result on stack
+	call	PSHFAC		;  twice
+	push	hl
+	pop	ix
+	inc	ix
+	inc	ix		; IX = HL+2
+	call	FPLDS		; store loop limit
+	ld	bc,(CLCMOD)
+	push	bc		; push CLCMOD
+	call	SUBSTK		; subtract to compare numbers
+	jr	z,next8
+	jp	p,next6
+	ld	bc,(SS2SAV)
+	ld	a,b
+	or	a
+	jp	m,next8
+	jr	next7
+
+next6:	ld	bc,(SS2SAV)
+	ld	a,b
+	or	a
+	jp	p,next8
+next7:	xor	a
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	ld	bc,11
+	add	hl,bc		; HL += 12
+	pop	bc		; restore stack
+	pop	bc
+	jp	EXECUTE		; end of FOR loop, continue after NEXT
+
+next8:	ld	a,(hl)
+	inc	hl
+	ld	l,(hl)		; note order!
+	ld	h,a
+	call	POPFAC		; pop FP accum from stack
+	ld	bc,-1
+	ld	(SS1SAV),bc
+	call	STOVAR		; assign value
+	jp	IGNORE
+
+nwferr:	rst	10h
+	db	29h		; NEXT without FOR
+
+snerr5:	rst	10h
+	db	06h		; syntax error
+
+; --- PRINT
+
+PRINT:	call	ODEVTT		; set ODEV to terminal
+	ld	a,(hl)
+	cp	T.FILN		; '#' token?
+	jr	nz,prnt1	; jump if not
+	inc	hl
+	call	CHKOSE		; get channel #, check for write, set ODEV
+	ex	de,hl
+	add	hl,hl
+	ex	de,hl		; DE = chan# * 2
+	ld	a,d
+	or	e
+	call	nz,SETCOL	; if not zero, set COLUMN accordingly
+	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jp	z,prnt7		; jump if yes
+	call	chksep		; else require ':' or ','
+prnt1:	ld	a,(hl)
+	cp	T.USNG		; USING
+	jp	z,PRU
+prnt2:	cp	T.COM		; ',' token
+	jp	z,prnt6
+	cp	T.SEM		; ';' token
+	jp	z,prnt7
+	cp	T.EOL		; '\' token
+	jp	z,prnt7
+	cp	T.TAB		; TAB(
+	jp	z,prnt15
+	ld	bc,(T4)
+	push	bc
+	call	EVAL		; evaluate expression
+	jr	c,prnt3		; jump if string expr
+	pop	bc
+	ld	(T4),bc
+	xor	a
+	ld	(T1),a		; clear length
+	push	hl
+	ld	hl,-16
+	add	hl,sp		; alloc buffer on stack [!!!TODO: use static buf?]
+	ld	sp,hl
+	ld	(T2),hl		; init pointer for SAVCH1 routine
+	call	NUMSGN		; convert number
+	dw	SAVCH1		; output routine addr
+	ld	a,(T1)
+	ld	b,a
+	call	prnt4		; output string
+	ld	hl,16
+	add	hl,sp
+	ld	sp,hl		; dealloc buffer
+	pop	hl
+	call	MSG1
+	db	' ',0
+	jr	prnt7		; go to next column
+
+	; string expression
+
+prnt3:	call	FRESTR		; free string by clearing backpointer
+	pop	bc
+	ld	(T4),bc
+	ld	a,d
+	or	e
+	jr	z,prnt7
+	dec	de
+	ld	a,(de)		; get length
+	ld	b,a		; into B
+	inc	de
+	inc	de
+	inc	de		; DE = start of string
+	push	hl
+	ex	de,hl
+	call	prnt4		; output string
+	pop	hl
+	jr	prnt7
+
+prnt4:	ld	de,(ODEV)
+	ld	a,d
+	or	e
+	jr	nz,prnt5
+	ld	a,(WIDTH)
+	or	a
+	jr	z,prnt5
+	ld	de,(COLUMN)
+	ld	a,(de)
+	add	a,b		; T1+COLUMN
+	ld	c,a
+	ld	a,(WIDTH)
+	cp	c
+	call	c,PRCRLF	; output newline if T1+COLUMN > WIDTH
+prnt5:	ld	a,(hl)		; get char
+	inc	hl
+	call	PUTCHR		; output char
+	djnz	prnt5		; loop to print the whole string
+	ret
+
+prnt6:	call	MSG1
+	db	' ',0
+prnt7:	ld	a,(hl)
+	cp	T.EOL		; '\' token
+	jr	nz,prnt8
+	call	PRCRLF		; output newline
+	jr	prnt14
+prnt8:	cp	T.COM		; ',' token
+	inc	hl
+	jr	nz,prnt12
+prnt9:	ld	de,(COLUMN)
+	ld	a,(de)
+	or	a
+	jr	z,prnt13
+	ld	e,a		; E = COLUMN
+	ld	bc,(ODEV)
+	ld	a,b
+	or	c
+	jr	nz,prnt10
+	ld	a,(WIDTH)
+	or	a
+	jr	z,prnt10
+	sub	e
+	cp	14+1
+	jr	nc,prnt10	; if E > 14
+	call	PRCRLF		; output newline
+	jr	prnt13
+prnt10:	ld	a,e		;!!!TODO!!! write this loop better
+prnt11:	sub	14
+	jr	z,prnt13
+	jp	p,prnt11	; loop
+	call	MSG1
+	db	' ',0
+	jr	prnt9
+prnt12:	dec	hl
+	ld	a,(hl)
+	cp	T.SEM		; ';' token
+	jp	nz,prnt2
+	inc	hl
+prnt13:	ld	a,(hl)
+	cp	T.EOL		; '\' token
+	jp	nz,prnt2
+prnt14:	call	ODEVTT
+	jp	EXECUTE
+
+prnt15:	inc	hl
+	call	$TAB
+	jr	prnt7
+
+PRCRLF:	call	MSG1
+	db	CR,LF,0
+	ret
+
+; --- READ
+
+READ:	ld	bc,-1		;!!!TODO: use static var
+	push	bc
+	jr	inp3
+
+; --- LINPUT
+
+LINPUT: ld	bc,1
+	jr	inp1
+
+; --- INPUT
+
+INPUT:	ld	bc,0
+inp1:	push	bc		; push READ/INPUT/LINPUT flag
+	ld	de,(CODE)
+	call	CPHLDE
+	jr	c,inp2		; if HL > CODE
+	rst	10h
+	db	2Ah		; illegal in immediate mode
+inp2:	ld	bc,0
+	ld	(T3),bc
+	ld	(IDEV),bc
+	ld	a,(hl)
+	cp	T.FILN		; '#' token
+	jr	nz,inp3
+	inc	c		; note not 'inc bc'??
+	ld	(T3),bc
+	inc	hl
+	call	CHKISE		; get channel #, check for read, set IDEV
+	call	chksep		; require ':' or ','
+inp3:	ld	bc,strcr
+	push	bc		; push "CR"
+inp4:	ld	a,(hl)
+	inc	hl
+	or	a
+	jp	p,inp5		; if not a token
+	rst	10h
+	db	06h		; else syntax error
+inp5:	ld	d,a		; note order!
+	ld	e,(hl)
+	inc	hl
+	push	hl
+	ld	hl,(SYMBOL)
+	add	hl,de
+	ex	de,hl
+	ld	hl,(T4)
+	ex	(sp),hl		; push T4, restore HL
+	call	GETVAR
+	pop	bc
+	ld	(T4),bc
+inp6:	pop	de
+	push	de
+	ld	a,(de)
+	cp	CR		; CR
+	jr	z,inp7
+	or	a
+	jr	z,inp9
+	jp	inp17
+inp7:	pop	ix
+	pop	bc		; get INPUT/LINPUT/READ flag
+	push	bc
+	push	ix
+	ld	a,b
+	or	a
+	jp	p,inp14		; jump if INPUT/LINPUT
+	push	hl
+	ld	hl,(PDL)	; get current DATA pointer
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	pop	hl
+	ld	a,d
+	or	e
+	jr	z,ooderr	; if zero -> out of data
+	inc	de		; test for 0FFFFh
+	ld	a,d
+	or	e
+	dec	de
+	jr	z,inp8		; reset if -1
+	ld	a,(de)		; get program byte
+	or	a
+	jr	z,inp9		; jump if variable pointer
+	jr	inp16
+
+inp8:	ld	de,(CODE)
+	jr	inp10
+
+inp9:	inc	de		; skip over line number or variable
+	inc	de
+inp10:	ld	a,(de)		; get prog byte
+	or	a
+	jp	m,inp11		; jump if token
+	inc	de		; else skip line number or variable
+	inc	de
+inp11:	ld	a,(de)		; get token
+	inc	de
+	cp	T.DATA		; DATA?
+	jr	z,inp12		; jump if yes
+	dec	de
+	cp	T.EOF		; 'end of program' token?
+	jr	z,inp13		; error -> out of data
+	push	hl
+	ex	de,hl
+	call	SKPEOL		; find end of statement (or program line)
+	ex	de,hl
+	pop	hl
+	jr	inp10		; loop
+
+	; DATA found
+
+inp12:	inc	de		; skip over 'text' token
+	jr	inp16
+
+inp13:	ld	hl,(PDL)
+	xor	a
+	ld	(hl),a		; clear DATA pointer
+	inc	hl
+	ld	(hl),a
+ooderr:	rst	10h
+	db	2Bh		; out of data
+
+inp14:	ld	bc,(T3)
+	ld	a,b
+	or	c
+	jr	nz,inp15
+	call	RCTLO		; rctrlo
+	call	MSG
+	db	'? ',0
+inp15:	call	LINGET		; get line from terminal or file
+	jr	c,ooderr	; -> out of data
+	call	CKCTLC		; ^C detected?
+	jp	c,STOP		; STOP if yes
+	ld	de,LINE		; DE = begin of input buffer
+inp16:	pop	ix
+	pop	bc		; pop READ/INPUT/LINPUT flag
+	push	bc
+	push	ix
+	ld	a,b
+	or	c
+	jr	z,inp17		; jump if INPUT
+	ld	a,b
+	or	a
+	jp	p,linp1		; jump if LINPUT !!must be > 0, not >= 0 (LINPUT)
+inp17:	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	03h
+	jp	z,linp3
+	call	NEXTNB		; skip blanks and get char
+	jr	nz,inp18	; if not CR, comma or null
+	pop	bc
+	push	de
+	ld	a,(de)
+	cp	','
+	jr	z,inp23
+	jp	inp6
+
+inp18:	pop	bc
+	push	de
+	ld	c,e
+	ld	b,d
+	call	SVAL		; convert number
+	ld	e,c
+	ld	d,b
+	jr	c,inp23
+	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	02h
+	jr	nz,inp19
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	nz,inp23
+inp19:	pop	bc
+	push	de		; replace DE on stack
+	call	STOVAR		; assign value to variable
+	pop	de
+	push	de
+inp20:	ld	a,(de)
+	cp	CR
+	jr	z,inp21
+	or	a
+	jr	z,inp21
+	cp	','
+	jr	nz,inp23
+	pop	bc
+	inc	bc		; skip over delim in DATA or user input
+	push	bc
+inp21:	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jp	z,inp4
+	cp	T.EOL		; '\' token?
+	jr	nz,snerr6	; no -> syntax error
+	pop	bc
+	ex	(sp),hl
+	ld	a,h		; set flags from value in stack (READ/INPUT/LINPUT)
+	or	a
+	pop	hl		; then drop it
+	jp	p,inp22		;!!!must be >= 0; jump if INPUT/LINPUT
+	push	hl
+	ld	hl,(PDL)
+	ld	(hl),c		; set new DATA pointer
+	inc	hl
+	ld	(hl),b
+	pop	hl
+	jp	EXECUTE
+
+inp22:	ld	bc,(IDEV)
+	ld	a,b
+	or	c
+	jp	nz,EXECUTE
+	xor	a
+	ld	(CLMNTT),a
+	ld	a,(de)
+	cp	CR
+	jr	nz,extign	; -> extra input ignored
+	jp	EXECUTE
+
+inp23:	pop	ix
+	pop	bc
+	push	bc
+	push	ix
+	ld	a,b
+	or	a
+	jp	m,bdrerr	; -> bad data read
+	ld	bc,(IDEV)
+	ld	a,b
+	or	c
+	jr	nz,bdrerr	; -> bad data read
+	rst	10h
+	db	30h		; bad data, retype from error
+	jp	inp14
+
+bdrerr:	rst	10h
+	db	2Ch		; bad data read
+
+chksep:	ld	a,(hl)
+	inc	hl
+	cp	T.COLN		; ':' token
+	ret	z
+	cp	T.COM		; ',' token
+	ret	z
+snerr6:	rst	10h
+	db	06h		; syntax error
+
+extign:	rst	10h
+	db	31h		; extra input ignored
+	jp	EXECUTE
+
+strcr:	db	CR,0
+
+	; LINPUT
+
+linp1:	ld	bc,(VARSAV)	; get variable address into BC
+	ld	a,(bc)
+	and	03h
+	jr	nz,snerr6	; -> syntax error
+	ld	bc,0		; push length
+	push	bc
+	ld	c,e		; remember start of string in BC
+	ld	b,d
+linp2:	ld	a,(de)
+	inc	de
+	cp	CR
+	jr	z,linp10
+	jr	linp2		; find end of string
+
+linp3:	call	NEXTNB		; skip blanks and get char
+	pop	bc
+	push	de		; replace DE on stack with input string addr
+	ld	bc,0
+	push	bc
+	ld	c,e		; remember string pos in BC
+	ld	b,d
+	ld	a,(de)
+	cp	'"'
+	jr	z,linp4
+	cp	"'"
+	jr	nz,linp7
+linp4:	inc	de
+	pop	bc
+	ld	c,a
+	ld	b,0
+	push	bc		; push quote char
+	ld	c,e		; remember string pos in BC
+	ld	b,d
+linp5:	ld	a,(de)
+	inc	de
+	ex	(sp),hl
+	cp	l		; cp (sp) - ending quote found?
+	ex	(sp),hl
+	jr	z,linp10	; jump if yes
+	cp	CR		; end of line?
+	jr	z,linp6		; error if yes
+	or	a
+	jr	nz,linp5	; else loop
+linp6:	ex	(sp),hl
+	call	NEGHL
+	ex	(sp),hl		; neg (sp)
+	rst	10h
+	db	32h		; input string error
+	jr	linp10
+
+linp7:	ld	c,e
+	ld	b,d
+	push	de
+linp8:	pop	af		; drop word
+	push	de		; remember start before skipping blanks
+	call	NEXTNB		; skip blanks and get char
+	jr	z,linp9		; exit loop if CR, comma or null found
+	inc	de
+	jr	linp8		; loop
+linp9:	pop	de
+	inc	de
+linp10:	push	de		; push addr of end of (sub)string (, or CR)
+	dec	bc
+	dec	bc
+	dec	bc
+	push	bc		; push BC-3 (start of string - 3)
+	inc	bc
+	inc	bc
+	inc	bc
+	inc	bc		; BC+1
+	ld	a,e
+	sub	c
+	ld	c,a
+	ld	a,d
+	sbc	a,b
+	ld	b,a		; push DE-BC-1 (string length)
+	push	bc
+	or	c
+	jr	nz,linp11	; if not null
+	pop	bc
+	dec	bc		; else make it -1
+	push	bc
+	jr	linp12
+linp11:	ld	ix,2
+	add	ix,sp		; IX=SP+2
+	call	MKSTR		; store string
+linp12:	call	STSVAR		; assign string to variable
+	pop	bc		; drop string addr
+	pop	de		; get addr of next string into DE
+	pop	bc
+	ld	a,b
+	or	c
+	jr	z,linp13
+	ld	a,b
+	or	a
+	jp	p,linp14	; branch if > 0 (check!)
+linp13:	dec	de		; back up one char
+linp14:	call	NEXTNB		; skip blanks and get char
+	jr	z,linp15	; if CR, comma or null
+	jp	inp23
+linp15:	pop	bc
+	push	de		; replace DE on stack
+	jp	inp20		; loop to process next var
+
+NEXTNB:	ld	a,(de)
+	inc	de
+	cp	' '
+	jr	z,NEXTNB	; ignore spaces
+	cp	TAB
+	jr	z,NEXTNB	; and tabs
+	dec	de
+	cp	CR		; CR
+	ret	z
+	cp	','		; return Z if CR, comma or null
+	ret	z
+	or	a
+	ret
+
+; --- GOTO
+
+GOTO:	call	FNDLN		; find line
+	jp	c,snerr6	; error if no line number follows
+	jr	go2
+
+; --- GOSUB
+
+GOSUB:	call	FNDLN		; find line
+	jp	c,snerr6	; error if no line number follows
+go1:	push	de
+	push	hl
+	ld	hl,(GSBCTR)
+	inc	hl
+	push	hl
+	add	hl,hl		; *2
+	ex	de,hl
+	ld	hl,(PDL)
+	add	hl,de
+	ld	de,(LIMIT)
+	call	CPHLDE
+	jr	c,tmgerr	; if HL > LIMIT -> too many GOSUBs error
+	pop	de
+	ld	(GSBCTR),de	; ++GSBCTR
+	pop	de
+	ld	(hl),e		; save program counter for return
+	inc	hl
+	ld	(hl),d
+	ex	de,hl		; restore HL
+	pop	de		; restore DE
+go2:	ex	de,hl
+	ld	a,(hl)		; get new program counter offset from table
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	de,(CODE)
+	add	hl,de		; index into program
+	jp	EXECUTE		; continue from the new address
+
+FNDLN:	call	FLINE
+	ret	c		; error if no line number follows
+	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token
+	scf
+	ret	nz		; error if not end of line
+	ex	de,hl
+	ld	a,(hl)		; check program counter offset
+	inc	hl
+	or	(hl)
+	dec	hl
+	ex	de,hl
+	ret	nz
+ulnerr:	rst	10h
+	db	05h		; undefined line number
+
+tmgerr:	rst	10h
+	db	24h		; too many GOSUBs
+
+; --- ON
+
+ON:	call	EVAL		; evaluate expression
+	jr	c,snerr7	; if string expr -> syntax error
+	ld	a,(hl)
+	inc	hl
+	cp	T.GOTO		; GOTO
+	jr	z,on1
+	cp	T.THEN		; THEN
+	jr	z,on1
+	cp	T.GSUB		; GOSUB
+	jr	nz,snerr7
+on1:	push	af		; remember token
+	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)
+	ld	a,b		; integer?
+	or	c
+	jr	nz,cvrerr	; error if not -> control var out of range
+	ld	bc,(FAC2)
+	ld	a,b
+	or	a
+	jp	m,cvrerr	; error if negative -> control var out of range
+	or	c
+	jr	z,cvrerr	; error if zero (error if <= 0)
+on2:	call	FLINE		; find line number
+	jr	c,snerr7	; -> syntax error
+	ld	bc,(FAC2)
+	dec	bc		; decrement counter
+	ld	(FAC2),bc
+	ld	a,b		; reached zero?
+	or	c
+	jr	z,on3		; jump if yes, target found
+	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token?
+	jr	z,on2		; keep counting
+	dec	hl
+	cp	T.EOL		; '\' token
+	jr	z,cvrerr	; -> control var out of range
+	jr	snerr7		; -> syntax error
+on3:	ex	de,hl
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; valid line number?
+	dec	hl
+	ex	de,hl
+	jr	z,ulnerr	; error if not -> undefined line number
+	pop	af		; pop token
+	cp	T.GSUB		; GOSUB?
+	jr	nz,go2		; jump if yes
+	call	SKPEOL		; else find end of statement (or program line)
+	jp	go1		; and do a GOTO
+
+cvrerr:	rst	10h
+	db	25h		; control var out of range
+
+snerr7:	rst	10h
+	db	06h		; syntax error
+
+; PRINT USING
+
+PRU:	inc	hl
+	ld	bc,-1
+	push	bc		; push non-zero
+	ld	bc,(T4)
+	ld	(T5),bc
+	call	EVAL		; evaluate expression
+	ld	bc,(T5)
+	ld	(T4),bc
+	jp	nc,pruerr	; if numeric expr -> PRINT USING error
+	ld	bc,0
+	push	bc		; push 0
+pru1:	ld	a,(hl)
+	inc	hl
+	cp	T.COM		; ',' token
+	jr	z,pru5
+	cp	T.SEM		; ';' token
+	jr	z,pru5
+	dec	hl
+	cp	T.EOL		; '\' token?
+	jp	nz,pruerr	; if not -> PRINT USING error
+pru2:	ld	bc,0
+	push	bc		; push 0
+	call	PRFMT
+	ld	sp,ix		; restore stack, drop the 22-byte block
+	pop	bc		; drop word
+	pop	de		; pop saved HL into DE
+	ld	hl,8
+	add	hl,sp
+	ld	sp,hl		; drop 4 words
+	ex	de,hl		; restore HL
+	ld	a,(hl)
+	inc	hl
+	cp	T.EOL		; '\' token?
+	jr	nz,pru3
+	call	PRCRLF		; output CRLF
+	jr	pru4
+pru3:	inc	hl
+pru4:	call	ODEVTT		; reset PRINT output pointer
+	jp	EXECUTE		; continue program execution
+
+; process next PRINT USING item
+
+pru5:	ld	a,(hl)
+	cp	T.EOL		; '\' token?
+	jr	nz,pru6		; branch if not
+	dec	hl
+	jr	pru2
+
+pru6:	ld	bc,(T4)
+	ld	(T5),bc
+	call	EVAL		; evaluate expression
+	ld	bc,(T5)
+	ld	(T4),bc
+	jr	c,pru7		; jump if string expr
+	ld	bc,0
+	push	bc		; push 0
+pru7:	call	PRFMT
+	ld	a,(ix-21)	;
+	or	a
+	jr	z,pru8
+	ld	a,(ix+10)
+	or	(ix+11)
+	jp	nz,pruerr	; -> PRINT USING error
+	xor	a
+	ld	(ix+6),a
+	ld	(ix+7),a
+	call	PRCRLF		; output CRLF
+	ld	sp,ix		; restore stack, drop the 22.-byte block
+	pop	bc		; drop word
+	pop	hl
+	jr	pru7		; loop
+
+PRFMT:	ex	(sp),hl		; push HL, pop return address
+	ld	de,0
+	push	de		; push 0
+	ld	ix,0
+	add	ix,sp		; IX points to this word
+	ld	b,11
+prfm1:	push	de		; reserve space on stack (22 bytes)
+	djnz	prfm1
+	push	ix
+	pop	de
+	push	hl
+	ld	hl,8
+	add	hl,de
+	ex	de,hl
+	pop	hl		; DE = addr of format string on stack
+	ld	a,(de)
+	ld	c,a		; get format string from stack into BC
+	inc	de
+	ld	a,(de)
+	ld	b,a
+	dec	de
+	ld	a,b
+	and	c
+	inc	a		; null string?
+	jr	z,pruerr	; -> PRINT USING error
+	ld	a,(bc)		; get length
+	inc	bc
+	inc	bc		; skip back pointer
+	inc	bc
+	dec	de
+	dec	de
+	push	af
+	ex	de,hl
+	ld	a,c
+	add	a,(hl)
+	ld	c,a
+	inc	hl
+	ld	a,b
+	adc	a,(hl)
+	ld	b,a
+	dec	hl
+	pop	af
+	sub	(hl)
+	ld	(ix-8),a
+	inc	hl
+	ld	a,0
+	sbc	a,(hl)
+	ld	(ix-7),a
+	ex	de,hl
+	call	FORMAT
+	jp	(hl)		; return to caller
+
+pru8:	xor	a
+	ld	(ix+10),a
+	ld	(ix+11),a
+	ld	l,(ix+4)	; get addr of string to format
+	ld	h,(ix+5)
+	ld	a,h
+	or	l
+	jr	z,pru11		; if zero, it's a number
+	ld	a,(ix-11)
+	or	a
+	jr	z,pruerr	; -> PRINT USING error
+	push	hl
+	ld	hl,0
+	ex	(sp),hl		; push 0
+	ld	a,h
+	and	l
+	inc	a		; null string?
+	jr	z,pru9
+	pop	bc
+	ld	c,(hl)		; get length
+	inc	hl
+	push	bc		; into stack
+	inc	hl		; skip back pointer, point to chars
+	inc	hl
+pru9:	pop	bc		; pop length of src string
+	ld	e,(ix-10)	; get field width into DE
+	ld	d,(ix-9)
+	ld	a,e		; subtract src string length
+	sub	c
+	ld	e,a
+	ld	a,d
+	sbc	a,b
+	ld	d,a
+	or	e
+	jr	z,pru10		; jump if zero (fits exactly)
+	ld	a,d
+	or	a
+	jp	p,justif	; jump if positive (padding required)
+	ld	a,(ix-17)
+	cp	1
+	jr	z,pru10
+	ld	c,(ix-10)
+	ld	b,(ix-9)
+pru10:	call	PRSTR		; output string
+prnxt:	ld	sp,ix		; restore stack
+	pop	bc		; drop word
+	pop	hl
+	pop	bc		; drop word
+	jp	pru1		; continue via PRINT code
+
+pruerr:	rst	10h
+	db	1Ch		; PRINT USING error
+
+justif:	ld	a,(ix-17)	; get justify type L=0 E=1 R=2 C=3
+	cp	2
+	jr	c,justle	; if < 2 (LE)
+	jr	z,justr		; if = 2 (R)
+	push	de		; else is C
+	sra	d
+	rr	e
+	ex	(sp),hl		; (SP) = DE - DE/2 (center)
+	or	a		; due to int rounding DE-DE/2 may be != DE/2
+	sbc	hl,de
+	ex	(sp),hl
+	call	PRSPCS		; output left padding
+	pop	de
+justle:	call	PRSTR		; output src string
+	call	PRSPCS		; then right padding spaces
+	jr	prnxt		; and exit
+
+justr:	call	PRSPCS		; output spaces
+	jr	pru10		; then src string and exit
+
+PRSTR:	dec	bc		; decrement length
+	ld	a,b
+	or	a
+	ret	m		; return if was zro
+	ld	a,(hl)		; get char
+	inc	hl
+	call	PUTCHR		; output it
+	jr	PRSTR		; and loop
+
+; number
+
+pru11:	ld	a,(ix-11)
+	or	a
+	jr	nz,pruerr	; -> PRINT USING error
+	ld	hl,(FAC1)
+	call	SETFLG
+	jr	z,pru12		; jump if integer
+	jp	p,pru15		; jump if positive float
+	res	7,h		; clear sign
+	ld	(FAC1),hl
+	jr	pru14
+
+; integer
+
+pru12:	ld	hl,(FAC2)
+	call	SETFLG
+	jr	nz,pru13
+	inc	(ix-17)
+pru13:	jp	p,pru15
+	call	NEGHL
+	ld	(FAC2),hl	; negate integer
+pru14:	ld	a,(ix-20)
+	or	a
+	jr	nz,pruerr	; -> PRINT USING error
+	inc	(ix-20)
+	jr	pru16
+
+; positive float
+
+pru15:	ld	(ix-20),0
+pru16:	ld	bc,6		; number of digits
+	ld	(T3),bc
+	call	NUMCNV		; convert number, modifies BC and DE
+pru17:	ld	bc,0
+	push	bc		; push 0
+	ld	c,(ix-16)
+	push	bc		; push (ix-16) digits after '.' in format
+	ld	a,(ix-13)	; total field width, not including the '.'
+	sub	c
+	ld	c,a		; BC = (ix-13) - ((SP) = (ix-16))
+	ld	a,0		;  (field width to the left of '.')
+	sbc	a,b
+	ld	b,a
+	ld	a,(ix-14)	; filler char
+	cp	'$'
+	jr	nz,pru18	; jump if not a '$'
+	dec	bc		; else decrease left width ($ takes one place)
+pru18:	ld	a,(ix-12)
+	or	a
+	jr	nz,pru19
+	ld	a,(ix-20)
+	or	a
+	jr	z,pru19
+	dec	bc
+pru19:	ld	a,(ix-17)
+	or	a
+	jp	nz,pru28
+	ld	a,(ix-15)
+	or	a
+	jp	nz,pru26
+	ld	a,(ix+1)	; check binary exponent of converted number
+	or	a
+	jp	m,pru28		; jump if negative (i.e. .000nn)
+	ld	d,a
+	ld	e,(ix+0)
+	inc	de		; DE = exp+1
+	pop	hl
+	add	hl,de
+	push	hl		; (SP) += DE = number length
+	push	de
+	ld	hl,0
+	push	hl		; push 0 (will count -space taken by commas)
+	ld	iy,0
+	add	iy,sp
+pru20:	ld	a,(iy+2)	; get number length
+	sub	3		; comma counter?
+	jp	m,pru21		; exit loop if <= 3 (signed)
+	jr	z,pru21
+	ld	(iy+2),a
+	pop	hl
+	dec	hl		; decrement -(space taken by commas)
+	push	hl
+	jr	pru20		; loop
+pru21:	ex	(sp),hl
+	add	hl,bc
+	ex	(sp),hl		; (SP) += field size = space left for digits
+	ld	a,(ix-19)
+	or	a
+	jr	nz,pru22
+	pop	af
+	push	bc		; replace
+pru22:	ex	(sp),hl
+	or	a
+	sbc	hl,de
+	ex	(sp),hl		; (SP) -= DE
+	jp	m,pru23		; jump if < 0 (check!) - won't fit
+	push	de
+	jp	pru33
+pru23:	ld	a,'%'
+	call	PUTCHR		; output char
+	ld	a,(ix-20)
+	or	a
+	jr	z,pru25
+	ld	hl,(FAC1)
+	ld	a,h
+	or	l
+	jr	z,pru24		; jump if integer
+	set	7,h		; make negative
+	ld	(FAC1),hl
+	jr	pru25
+pru24:	ld	hl,(FAC2)
+	call	NEGHL
+	ld	(FAC2),hl	; negate integer
+pru25:	call	NUMSGN
+	dw	PUTCHR		; TT char output routine address
+	jp	prnxt		; exit
+
+pru26:	pop	hl
+	add	hl,bc
+	push	hl		; (SP) += BC
+	ld	a,h
+	or	l
+	jr	z,pru23		; won't fit
+	ld	a,b
+	or	a
+	jp	m,pru23		; won't fit
+	or	c
+	jr	nz,pru27
+	ld	iy,0
+	add	iy,sp
+	inc	(iy+3)		; use (ix-nn)???
+pru27:	ld	hl,0
+	push	hl
+	push	hl
+	push	bc
+	jr	pru33
+
+pru28:	ld	iy,0
+	add	iy,sp
+	inc	(iy+3)		; use (ix-23)???
+	ld	hl,0
+	push	hl		; push 0
+	push	bc		; push number of '#'s to the left of '.'
+	ld	a,b
+	or	a
+	jp	m,pru23		; if negative, output '%' and full number
+	or	c
+	jr	z,pru29		; if zero
+	ld	iy,0
+	add	iy,sp
+	inc	(iy+6)		; use (ix-24)???
+	pop	hl
+	dec	hl		; decrement left digit count
+	push	hl
+pru29:	ld	a,(ix-17)
+	or	a
+	jr	z,pru31
+	ld	hl,0
+	push	hl		; push 0
+pru30:	ld	iy,0
+	add	iy,sp
+	ld	a,(ix-16)	; get '#'s after '.'
+	ld	(iy+0),a	; (SP) = (ix-16) use (ix-32)???
+	xor	a
+	ld	(iy+6),a	; use (ix-26)???
+	ld	(iy+7),a
+	jr	pru33
+
+pru31:	ld	a,(ix+0)	; get binary exponent from converted number
+	cpl			; complement it
+	ld	l,a		; HL = -(exp+1)
+	ld	a,(ix+1)
+	cpl
+	ld	h,a
+	push	hl
+	ld	iy,0
+	add	iy,sp
+	ld	a,(iy+6)	; (SP+6) -= (SP = ~exp), use (ix-26)???
+	sub	l
+	ld	(iy+6),a
+	ld	a,(iy+7)
+	sbc	a,h
+	ld	(iy+7),a
+	jp	m,pru32
+	or	(iy+6)
+	jr	nz,pru33	; if > 0 (check!)
+pru32:	xor	a
+	ld	(iy+0),a	; (SP) = 0 use (ix-32)???
+	ld	(iy+1),a
+	jr	pru30
+
+pru33:	ld	iy,0
+	add	iy,sp
+	ld	e,(iy+6)	; DE = (SP+6) decimal point position
+	ld	d,(iy+7)	; use (ix-26)???
+	ld	hl,6
+	or	a
+	sbc	hl,de
+	jp	m,pru38		; if (SP+6) >= 6 (signed) => 6 < (SP+6)
+	push	ix
+	pop	hl
+	add	hl,de
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl		; position on digit to round
+	ld	a,(hl)
+	cp	'5'
+	jr	c,pru38		; jump if < '5', no rounding needed
+pru34:	dec	de
+	ld	a,d
+	or	a
+	jp	m,pru35
+	dec	hl		; prev digit
+	ld	a,(hl)
+	cp	'9'		; '9'?
+	jr	nz,pru37	; jump if not to round digit
+	ld	(hl),'0'	; else it becomes '0'
+	jr	pru34		; and rounding propagates to previous digit
+pru35:	ld	(hl),'1'
+	inc	hl
+	ld	(hl),'0'
+	inc	hl
+	push	hl
+	ld	hl,2
+	ex	(sp),hl		; push 2
+pru36:	ld	(hl),'0'
+	inc	hl
+	ld	(hl),'0'
+	inc	hl
+	ex	(sp),hl
+	dec	hl
+	ld	a,h
+	or	l
+	ex	(sp),hl
+	jr	nz,pru36	; loop
+	pop	hl		; drop word
+	ld	l,(ix+0)
+	ld	h,(ix+1)
+	inc	hl
+	ld	(ix+0),l
+	ld	(ix+1),h
+	ld	hl,10
+	add	hl,sp
+	ld	sp,hl		; restore stack
+	jp	pru17		; loop
+
+pru37:	inc	(hl)		; round digit
+pru38:	ld	iy,0
+	add	iy,sp
+	ld	e,(iy+2)	; use (ix-30)???
+	ld	d,(iy+3)
+	ld	a,(ix-14)	; get filler char
+	cp	'*'
+	jr	z,pru39		; jump if '*'
+	call	PRSPCS		; else output DE spaces
+	jr	pru40
+pru39:	call	PRCHRS		; output '*' DE times
+pru40:	ld	a,(ix-14)	; get filler char
+	cp	'$'
+	call	z,PUTCHR	; if '$', output '$'
+	ld	a,(ix-12)
+	or	a
+	jr	nz,pru41
+	ld	a,(ix-20)
+	or	a
+	jr	z,pru41
+	ld	a,'-'
+	call	PUTCHR		; output '-'
+pru41:	pop	de
+	push	de
+	ld	bc,0
+	ld	a,(iy+9)	; use (ix-23)???
+	or	a
+	jr	nz,pru43
+pru42:	call	PR0DIG		; output '0' or digit
+	ld	iy,0
+	add	iy,sp
+	ld	l,(iy+6)
+	ld	h,(iy+7)
+	dec	hl
+	ld	(iy+6),l
+	ld	(iy+7),h
+	dec	de
+	ld	a,d
+	or	e
+	jr	z,pru44
+	ld	a,(ix-19)
+	or	a
+	jr	z,pru42		; loop
+	ld	a,(iy+4)
+	dec	a		; decrement digit group counter (for comma)
+	ld	(iy+4),a
+	jr	nz,pru42	; loop
+	ld	a,3
+	ld	(iy+4),a	; reset counter
+	ld	a,','
+	call	PUTCHR		; output char
+	jr	pru42		; loop
+
+pru43:	ld	iy,0
+	add	iy,sp
+	ld	a,(iy+8)	; use (ix-24)???
+	or	a
+	ld	a,'0'
+	call	nz,PUTCHR	; output '0'
+pru44:	ld	a,(ix-18)	; decimal point flag
+	or	a
+	ld	a,'.'
+	call	nz,PUTCHR	; output '.' if set
+	ld	iy,0
+	add	iy,sp
+	ld	a,(iy+9)	; use (ix-23)???
+	or	a
+	jr	z,pru45
+	pop	de
+	push	de
+	ld	a,'0'
+	call	PRCHRS		; output '0' DE times
+pru45:	ld	iy,0
+	add	iy,sp
+	ld	l,(iy+6)	; use (ix-26)???
+	ld	h,(iy+7)
+	dec	hl
+	ld	(iy+6),l
+	ld	(iy+7),h
+	ld	a,h
+	or	a
+	jp	m,pru46
+	call	PR0DIG		; output '0' or digit
+	jr	pru45		; loop
+pru46:	ld	a,(ix-15)
+	or	a
+	jr	z,pru48
+	ld	de,0
+	ld	a,(ix-17)
+	or	a
+	jr	nz,pru47
+	ld	e,(ix+0)
+	ld	d,(ix+1)
+	pop	hl
+	push	hl
+	ex	de,hl
+	or	a
+	sbc	hl,de
+	ex	de,hl		; DE -= (SP)
+	inc	de
+pru47:	ld	hl,PUTCHR	; HL = TT char output routine address
+	ld	c,e
+	call	EXPF		; output exponent (value in C)
+pru48:	ld	a,(ix-12)
+	or	a
+	jp	z,prnxt		; exit
+	ld	a,(ix-20)
+	or	a		; sign flag set?
+	ld	a,'-'		; output a '-' if yes
+	jr	nz,pru49
+	ld	a,' '		; else output space
+pru49:	call	PUTCHR		; output the char
+	jp	prnxt		; and exit
+
+PR0DIG:	push	hl
+	ld	hl,6
+	call	CPBCHL
+	pop	hl
+	ld	a,'0'
+	jp	z,PUTCHR	; output a '0'
+	push	ix
+	pop	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	add	hl,bc
+	inc	bc
+	ld	a,(hl)
+	jp	PUTCHR		; output digit
+
+FORMAT:	push	bc
+	push	hl
+	ld	hl,0
+	ex	(sp),hl		; push 0
+fmt1:	pop	af
+	push	bc		; replace word
+	ld	de,fmtc1	; "#.*$'"
+	call	LOOKUP		; lookup
+	jp	m,fmt6		; (ix-8) < 0
+	jr	c,fmt1		; loop if no match found
+	call	DISPAT		; match found, A = index
+	dw	fmthsh		; #
+	dw	fmtdot		; .
+	dw	fmtast		; *
+	dw	fmtdlr		; $
+	dw	fmtquo		; '
+
+; ' template char
+
+fmtquo:	inc	(ix-11)
+	call	INCX10		; inc word (ix-10)
+	ld	de,fmtc2	; "LERC"
+	call	LOOKUP		; lookup
+	jp	m,fmt6		; (ix-8) < 0
+	jp	c,fmt5		; no match found
+	ld	(ix-17),a	; match found, A = index
+fmtq1:	cp	(ix-17)		; same index? (= same format char)
+	jp	nz,fmt5		; jump if not
+	call	INCX10		; inc word (ix-10)
+	ld	de,fmtc2	; "LERC"
+	call	LOOKUP		; lookup
+	jp	m,fmt6		; (ix-8) < 0
+	jp	c,fmt5		; no match found
+	jr	fmtq1		; loop if match found, A = index
+
+fmt2:	call	INCX8		; inc word (ix-8)
+	jr	fmt1		; and process next char
+
+; * $ template chars
+
+fmtast:	ld	e,'*'
+	jr	fmfill
+
+fmtdlr:	ld	e,'$'
+fmfill:	call	DECX8
+	jp	m,fmt2
+	ld	a,(bc)
+	cp	e
+	jr	nz,fmt2
+	inc	bc
+	ld	(ix-14),a	; store filler char
+	inc	(ix-20)
+	inc	(ix-13)		; inc total field width
+fmthsh:	ld	a,(ix-18)	; check decimal point flag
+	or	a
+	jr	nz,fmth1	; jump if set
+	ld	de,fmtc3	; "#-^,."
+	jr	fmth2
+fmth1:	ld	de,fmtc4	; "#-^"
+	inc	(ix-16)		; inc count of '#'s after '.'
+fmth2:	inc	(ix-13)		; inc total field width
+fmt3:	call	LOOKUP		; lookup
+	jp	m,fmt6		; (ix-8) < 0
+	jr	c,fmt5		; no match found
+	call	DISPAT		; match found, A = index
+	dw	fmthsh		; #
+	dw	fmtsgn		; -
+	dw	fmtexp		; ^
+	dw	fmtcom		; ,
+	dw	fmtdt1		; .
+
+; . template char
+
+fmtdot:	ld	a,(ix-8)
+	or	(ix-7)
+	jp	z,fmt1
+	ld	a,(bc)
+	cp	'#'
+	jp	nz,fmt1
+fmtdt1:	inc	(ix-18)		; set decimal point flag
+	ld	de,fmtc4	; "#-^"
+	jr	fmt3
+
+; , template char
+
+fmtcom:	inc	(ix-19)
+	jr	fmthsh
+
+; - template char
+
+fmtsgn:	inc	(ix-12)
+	ld	(ix-20),0
+	jr	fmt6
+
+; ^ template char
+
+fmtexp:	ld	a,(ix-19)
+	or	a
+	jr	nz,fmt5
+	ld	a,(ix-14)	; get filler char
+	or	a
+	jr	nz,fmt5		; jump if set
+	push	bc
+	ld	e,3
+fmtex1:	call	DECX8
+	jp	m,fmt4
+	ld	a,(bc)
+	inc	bc
+	cp	'^'
+	jr	nz,fmt4
+	dec	e
+	jr	nz,fmtex1	; loop
+	pop	af		; drop saved BC
+	inc	(ix-15)
+	jr	fmt6
+
+fmt4:	pop	bc
+fmt5:	dec	bc
+fmt6:	pop	de
+	ex	de,hl
+	call	CPBCHL		; compare DE and BC
+	ex	de,hl
+	jr	nz,fmt7
+	inc	(ix-21)
+fmt7:	ex	(sp),hl
+	ld	a,c
+	sub	l
+	ld	c,a
+	ld	a,b
+	sbc	a,h
+	ld	b,a
+	ex	(sp),hl		; BC -= (SP)
+	ld	(ix-8),c
+	ld	(ix-7),b
+	ld	a,(ix+6)	; (IX+6:7) += BC
+	add	a,c
+	ld	(ix+6),a
+	ld	a,(ix+7)
+	adc	a,b
+	ld	(ix+7),a
+	pop	bc
+	ex	de,hl
+	or	a
+	sbc	hl,bc
+	ex	de,hl		; DE -= BC
+fmt8:	dec	de
+	ld	a,d
+	or	a
+	ret	m
+	ld	a,(bc)
+	inc	bc
+	call	PUTCHR		; output char
+	jr	fmt8		; loop
+
+PRSPCS:	ld	a,' '		; space
+PRCHRS:	dec	de
+	inc	d
+	dec	d
+	ret	m
+	push	af
+	call	PUTCHR		; output char
+	pop	af
+	jr	PRCHRS		; loop
+
+; DE = address of one of the PRINT USING template strings below.
+
+LOOKUP:	call	DECX8		; dec (IX-8)
+	ret	m		; return if < 0
+	push	hl
+	ld	l,-1
+look1:	ld	a,(de)		; end of template string?
+	or	a
+	scf
+	jr	z,look2		; exit loop if yes
+	inc	l		; inc index
+	ld	h,a
+	ld	a,(bc)
+	cp	h		; template char match found?
+	inc	de
+	jr	nz,look1	; loop if not
+look2:	inc	bc
+	ld	a,l
+	pop	hl
+	ret
+
+DECX8:	ld	a,(ix-8)
+	sub	1
+	ld	(ix-8),a
+	ld	a,(ix-7)
+	sbc	a,0
+	ld	(ix-7),a
+	ret
+
+INCX8:	inc	(ix-8)
+	ret	nz
+	inc	(ix-7)
+	ret
+
+INCX10:	inc	(ix-10)
+	ret	nz
+	inc	(ix-9)
+	ret
+
+fmtc1:	db	"#.*$'",0	; for PRINT USING
+	db	'\ ',0		; not used?
+fmtc2:	db	'LERC',0
+fmtc3:	db	'#-^,.',0
+fmtc4:	db	'#-^',0
+
+;-----------------------------------------------------------------------
+
+; --- CALL - not supported
+
+CALLS:
+CALLX:	rst	10h
+	db	06h		; syntax error
+
+;-----------------------------------------------------------------------
+
+; Called with DE = address of variable in symbol table
+
+GETVAR:	ld	(VARSAV),de	; save variable address into VARSAV
+	ld	bc,-1
+	ld	(SS1SAV),bc
+	ld	(SS2SAV),bc	; SS1SAV = SS2SAV = -1
+	ld	a,(de)
+	and	0Ch		; array? (resident or virtual)
+	ret	z		; return if not
+	call	EVAL		; else evaluate expression to get 1st index
+	jr	c,tmerr1	; if string expr -> type mismatch
+	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	10h
+	jr	z,gv2
+	push	hl
+	ld	hl,(FAC2)
+	ld	(SS2SAV),hl
+	ld	hl,(FAC1)
+	ld	(SS1SAV),hl
+	ld	a,h
+	or	a
+	pop	hl
+	jp	p,gv1
+	rst	10h
+	db	22h		; subscript out of bounds
+gv1:	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token?
+	ret	z		; return if yes
+	rst	10h
+	db	06h		; otherwise -> syntax error
+
+gv2:	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)	; an integer (16-bit) remains?
+	ld	a,b
+	or	c
+	jr	nz,soberr	; if not -> subscript out of bounds
+	ld	bc,(FAC2)
+	ld	(SS1SAV),bc	; SS1SAV = first array index
+	ld	a,b
+	or	a
+	jp	m,soberr	; if negative -> subscript out of bounds
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token?
+	ret	z		; if yes -> return
+	cp	T.COM		; ',' token?
+	jr	nz,snerr2	; if not -> syntax error
+	call	EVAL		; evaluate expression
+	jr	c,tmerr1	; if string expr -> type mismatch
+	call	INT		; remove fractionary part from FP accum
+	ld	bc,(FAC1)	; an integer (16-bit) remains?
+	ld	a,b
+	or	c
+	jr	nz,soberr	; if not -> subscript out of bounds
+	ld	bc,(FAC2)
+	ld	(SS2SAV),bc	; SS2SAV = second array index
+	ld	a,b
+	or	a
+	jp	m,soberr	; if negative -> subscript out of bounds
+	ld	a,(hl)
+	inc	hl
+	cp	T.RPAR		; ')' token?
+	jr	nz,snerr2	; if not -> syntax error
+	ret
+
+snerr2:	rst	10h
+	db	06h		; syntax error
+
+tmerr1:	rst	10h
+	db	1Eh		; type mismatch
+
+soberr:	rst	10h
+	db	22h		; subscript out of bounds
+
+; Remove fractionary part from FP accum
+
+INT:	ld	bc,(FAC1)	; already an integer?
+	ld	a,b
+	or	c
+	ret	z		; if yes, return
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$INTR		; convert to integer
+	dw	$UNPOL		; leave polish mode
+	ld	ix,0
+	add	ix,sp
+	call	CPFAC		; compare result with FP accum
+	jr	z,int1
+	ld	bc,(FAC1)
+	ld	a,b
+	or	a
+	jp	p,int1
+	call	$POLSH		; enter polish mode
+	dw	$FPSH1		; push 1.0 on stack
+	dw	$SBR
+	dw	$UNPOL		; leave polish mode
+int1:	ld	a,(ix+1)
+	or	a
+	jp	m,int2
+	cp	48h
+	jr	nc,int3		; if (ix+1) >= 048h (signed)
+int2:	ld	a,(ix+1)
+	cp	0C8h
+	jr	nc,int3		; if (ix+1) >= 0C8h (unsigned)
+	call	$POLSH		; enter polish mode
+	dw	$RI		; real to integer
+	dw	$IPOP		; pop integer from stack and leave polish mode
+	ret
+int3:	call	POPFAC		; pop FP accum from stack
+	ret
+
+; Compare FP number @IX with FP accum. Return Z if equal.
+
+CPFAC:	ld	bc,(FAC1)
+	ld	a,(ix+1)
+	cp	b
+	ret	nz
+	ld	a,(ix+0)
+	cp	c
+	ret	nz
+	ld	bc,(FAC2)
+	ld	a,(ix+3)
+	cp	b
+	ret	nz
+	ld	a,(ix+2)
+	cp	c
+	ret
+
+;-----------------------------------------------------------------------
+
+; Locate array element
+
+; Called with DE = 1st index, BC = 2nd index.
+
+; Returns IX = address of array element (normal array), or long
+; offset in IY:DE (virtual array).
+
+LOCGET:	push	hl
+	ld	a,(ix+2)	; array allocated?
+	or	(ix+3)
+	jr	nz,lg2		; jump if yes
+	ld	(SS1MAX),de	; save 1st array dimension
+	push	ix
+	call	DNPACK		; down-pack strings
+	push	bc
+	ld	(SS2MAX),bc	; save 2nd array dimension
+	ld	a,b
+	or	a
+	ld	bc,10		; default is 10 elements
+	ld	(SS1MAX),bc
+	jp	m,lg1		; jump if array has only one dimension
+	ld	(SS2MAX),bc	; else set second dimension to 10 elems as well
+lg1:	call	ALLOC		; allocate space for array
+	pop	bc
+	pop	ix
+lg2:	bit	4,(ix+0)	; large array? (10h)
+	jr	z,lg4		; jump if not
+
+	; large array
+
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	call	CPHLDE		; CY if array(SS1MAX) > DE
+	jr	c,lg3		; jump if DE < array(SS1MAX)
+	jr	nz,sberr1	; if DE > array(SS1MAX) -> subscript out of bounds
+
+	ld	l,(ix+6)	; here if equal
+	ld	h,(ix+7)
+	call	CPBCHL
+	jr	nc,lg3		; jump if BC <= array(SS2MAX)
+
+sberr1:	rst	10h		; else error
+	db	22h		; subscript out of bounds
+
+lg3:	ld	l,e
+	ld	h,d
+	jp	lg9		; return
+
+	; small array
+
+lg4:	ld	l,(ix+4)	;!!!write better!!!
+	ld	h,(ix+5)
+	call	CPDEHL
+	jp	c,sberr2	; if DE > array(SS1MAX) -> subscript out of bounds
+	ld	a,b
+	or	a
+	jp	m,lg10		; jump if single-dimensioned
+	ld	a,(ix+7)	; else check array(SS2MAX)
+	or	a
+	jp	m,inserr	; -> inconsistent number of subscripts
+
+	ld	l,(ix+6)
+	ld	h,(ix+7)
+	call	CPBCHL
+	jp	c,sberr2	; if BC > array(SS2MAX) -> subscript out of bounds
+
+	push	bc		; save column
+
+	ld	c,(ix+6)	; BC = array(SS2MAX)
+	ld	b,(ix+7)
+	inc	bc		; ++SS2MAX
+
+	; 16*16 bit multiply with 32-bit result
+	; DEHL = DE*BC = 1st index * (SS2MAX+1)
+	;      = offset in elements to the selected row
+
+	ld	hl,0
+	ld	a,16
+mlt1:	add	hl,hl
+	rl	e
+	rl	d
+	jr	nc,mlt2
+	add	hl,bc
+	jr	nc,mlt2
+	inc	de
+mlt2:	dec	a
+	jr	nz,mlt1
+
+	pop	bc		; restore column
+
+	bit	3,(ix+0)	; virtual array? (08h)
+	jr	nz,lg7		; jump if yes
+
+	; resident array
+
+	add	hl,bc		; add column to get array location in memory
+	ex	de,hl
+lg5:	sla	e		; get offset in bytes
+	rl	d
+	ld	a,(ix+0)
+	and	03h
+	jr	z,lg6		; jump if string
+	and	01h
+	jr	nz,lg6		; jump if integer
+	sla	e		; *2 float
+	rl	d
+lg6:	ld	l,(ix+2)	; get start address into HL
+	ld	h,(ix+3)
+	add	hl,de
+	push	hl
+	pop	ix		; IX = IX[2]+DE
+	pop	hl
+	or	a
+	ret
+
+	; virtual array
+
+lg7:	add	hl,bc		; HLDE += BC
+	jr	nc,lg8
+	inc	de
+lg8:	ex	de,hl
+lg9:	push	hl		; return value in IX:DE
+	pop	iy
+	pop	hl
+	scf
+	ret
+
+lg10:	ld	a,(ix+7)	; array(SS2MAX)
+	or	a
+	jp	p,inserr	; -> inconsistent number of subscripts
+	bit	3,(ix+0)	; vitual array? (08h)
+	jr	z,lg5		; jump if not (resident array)
+	ld	hl,0
+	ld	c,e
+	ld	b,d
+	jr	lg9		; return
+
+inserr:	rst	10h
+	db	21h		; inconsistent number of subscripts
+
+sberr2:	rst	10h
+	db	22h		; subscript out of bounds
+
+;-----------------------------------------------------------------------
+
+FTOI:	push	hl
+	ld	hl,(VARSAV)
+	bit	1,(hl)
+	pop	hl
+	jr	nz,ITOF
+FTOI1:	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	z,ftoi2
+	call	$POLSH		; enter polish mode
+	dw	$FPUSH		; push FP accum on stack
+	dw	$RI		; real to integer
+	dw	$IPOP		; pop integer from stack and leave polish mode
+ftoi2:	ld	bc,-1		; integer
+	ld	(CLCMOD),bc
+	ret
+
+ITOF:	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	nz,itof1
+	call	$POLSH		; enter polish mode
+	dw	$IPUSH		; push integer on stack
+	dw	$IR		; integer to real
+	dw	$FPOP		; pop FP accum from stack and leave polish mode
+itof1:	ld	bc,1		; real
+	ld	(CLCMOD),bc
+	ret
+
+;-----------------------------------------------------------------------
+
+; Create (store) string in dynamic area.
+; IX points to address to copy chars from, size is on stack.
+
+MKSTR:	ld	iy,2
+	add	iy,sp		; IY now points to length on stack
+	call	mktry		; check for space
+	jr	c,mkgot		; if <= HIFREE
+	call	DNPACK		; downpack strings, should not modify IX
+	call	mktry		; check for space again
+	jr	c,mkgot
+	rst	10h
+	db	23h		; string storage overflow
+mkgot:	ld	(HISTR),de	; set new top of string storage
+	push	hl
+	ld	l,(ix+0)	; HL = src
+	ld	h,(ix+1)
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	e,c		; DE = dst
+	ld	d,b
+	ld	c,(iy+0)	; BC = len
+	ld	b,(iy+1)
+	ld	a,c
+	ld	(de),a		; store length
+	inc	de
+	inc	de
+	push	de
+	inc	de
+	ldir			; copy string
+	ld	(de),a		; store length again
+	pop	de		; back to start of the string - 1
+	pop	hl
+	push	iy
+	pop	bc		; get address of size on stack into BC
+	ld	a,c
+	ld	(de),a		; note order
+	dec	de
+	ld	a,b
+	ld	(de),a
+	dec	de
+	ld	(iy+0),e	; replace size with DE
+	ld	(iy+1),d
+	ret
+
+; Check for space to store the string, length is passed in 2 words above the
+; return address (IY points to it).
+; Returns BC = HISTR and DE = HISTR + size + 4, CY NOT SET if there is not
+; enough space to store the string.
+
+mktry:	push	hl
+	ld	hl,(HISTR)
+	ld	c,l
+	ld	b,h
+	ld	e,(iy+0)
+	ld	d,(iy+1)
+	add	hl,de
+	ex	de,hl
+	inc	de
+	inc	de
+	inc	de
+	inc	de
+	ld	hl,(HIFREE)
+	inc	hl
+	call	CPHLDE		; CY if DE < HIFREE+1 (DE <= HIFREE)
+	pop	hl
+	ret
+
+; Assign value to numeric variable
+
+STOVAR:	ld	ix,(VARSAV)
+	ld	a,(ix+0)
+	and	03h
+	jr	z,tmerr2	; -> type mismatch
+	ld	de,(SS1SAV)	; DE = first array index
+	ld	a,d
+	or	a
+	jp	m,stovr3	; jump if not an array
+	ld	bc,(SS2SAV)	; BC = second array index
+	call	LOCGET		; locate array element
+	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	08h		; virtual array?
+	jr	z,stovr1	; jump if not
+	call	PSHFAC		; push FP accum on stack
+	call	VFFND		; set virtual array file position
+	bit	6,(ix+1)	; read bit set? (4000h)
+	jr	z,stovr2	; jump if not
+	rst	10h
+	db	18h		; illegal I/O direction
+
+stovr2:	call	POPFAC		; pop FP accum from stack
+	push	ix
+	pop	bc
+	push	de
+	pop	ix
+	jr	stovr1
+
+stovr3:	inc	ix
+	inc	ix
+stovr1:	push	bc
+	call	FTOI		; convert to integer
+	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	01h
+	pop	bc
+	jr	nz,stovr4
+	call	FPST		; store FP accum, address already in IX
+	jr	stovr5
+
+stovr4:	ld	de,(FAC2)
+	ld	(ix+0),e
+	ld	(ix+1),d
+stovr5:	ld	de,(VARSAV)
+	ld	a,(de)
+	and	08h
+	ret	z
+	inc	bc		;!!!write better
+	ld	a,(bc)
+	or	02h		; set "modified" flag (0200h)
+	ld	(bc),a
+	dec	bc
+	ret
+
+tmerr2:	rst	10h
+	db	1Eh		; type mismatch
+
+; Assign string to variable
+
+STSVAR:	ld	ix,(VARSAV)	; get variable address into IX
+	ld	a,(ix+0)	; check type
+	and	03h		; string?
+	jr	nz,tmerr3	; no -> type mismatch
+	ld	de,(SS1SAV)	; DE = first array index
+	ld	a,d
+	or	a
+	jp	m,stsvr1	; jump if not an array
+	ld	bc,(SS2SAV)	; BC = second array index
+	call	LOCGET		; locate array element
+	ld	bc,(VARSAV)
+	ld	a,(bc)
+	and	08h		; virtual array? (bit 3)
+	jr	nz,VFSSTR	; jump if yes
+	pop	bc
+	pop	de		; pop string address into DE
+	push	bc
+	ld	(ix+0),e	; store string address in array element
+	ld	(ix+1),d
+	push	ix
+	pop	bc
+	jr	stsvr2
+
+stsvr1:	pop	bc		; pop return address
+	pop	de		; pop string address into DE
+	push	bc		; restore return address
+	inc	ix
+	inc	ix
+	ld	(ix+0),e	; store string address in variable block
+	ld	(ix+1),d
+	inc	ix		; make value odd (this assumes all stack
+	ld	bc,(SYMBOL)	;  addresses are even!)
+	or	a
+	push	ix		;!!!write better
+	ex	(sp),hl
+	sbc	hl,bc		; get offset to variable in symbol table +1
+	ex	(sp),hl
+	pop	bc
+stsvr2:	inc	de
+	ld	a,d		; null string?
+	or	e
+	ret	z		; return if yes
+	ld	a,b		; else set backpointer in string block
+	ld	(de),a		; note order!
+	inc	de
+	ld	a,c
+	ld	(de),a
+	ret
+
+tmerr3:	rst	10h
+	db	1Eh		; type mismatch
+
+; Save string in virtual array file
+
+VFSSTR:	push	hl
+	call	VFFND		; set virtual array file position
+	ld	(T3),ix
+	bit	6,(ix+1)	; 4000h
+	jr	z,vfss1
+	rst	10h
+	db	18h		; illegal I/O direction
+
+vfss1:	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+4)	; get addr of string to assign into HL
+	ld	h,(ix+5)
+	push	bc		; push # of bytes to write in this block
+	ld	bc,0
+	inc	hl
+	ld	a,h
+	or	l
+	jr	z,vfss2		; jump if null string
+	dec	hl
+	ld	c,(hl)		; else get length
+	inc	hl
+vfss2:	push	bc
+	pop	ix		; get length into IX !!!write better!
+	pop	bc		; pop # of bytes to write
+	inc	hl
+	inc	hl		; point to chars
+vfss3:	push	bc		; push # of bytes to write
+	ld	a,b
+	or	a
+	jp	p,vfss4		; if positive, all data fits on this block
+	call	NEGBC		; if negative, data crosses block boundary
+				;  (negate value to get length)
+vfss4:	ld	a,(hl)		; get char from string
+	ld	(de),a		; store it in virtual array file buffer
+	inc	hl
+	inc	de
+	push	ix		;!!!write better!!!
+	ex	(sp),hl
+	dec	hl		; dec ix (string length)
+	ld	a,h
+	or	a
+	ex	(sp),hl
+	pop	ix
+	jp	p,vfss5
+	dec	de
+	xor	a
+	ld	(de),a
+	inc	de
+vfss5:	dec	bc		; decrement remaining buffer length
+	ld	a,b
+	or	c
+	jr	nz,vfss4	; loop
+	ex	(sp),hl
+	ld	a,h		; see VFFND - if negative, write crosses
+	or	a		;             file block
+	ex	(sp),hl
+	jp	m,vfss6
+	pop	bc		; if posivive, we're done; drop word
+	jr	vfss7		; and return
+
+vfss6:	ex	(sp),ix
+	push	ix
+	push	hl
+	ld	ix,(T3)		; IX = channel descriptor address
+	call	WRVFBL		; write current block to file
+	call	RDNXBL		; read next block
+	ld	e,(iy+BUFAD)	; DE = I/O buffer address
+	ld	d,(iy+BUFAD+1)
+	ld	c,(ix+0)	; get item length
+	pop	hl		;  note BC was zero from loop end above
+	ex	(sp),hl
+	add	hl,bc		; add -(number of bytes written)
+	ld	c,l		; BC = number of bytes to write in new block
+	ld	b,h
+	pop	hl		; restore HL
+	pop	ix
+	jr	vfss3		; loop to write the rest
+
+vfss7:	pop	hl
+	pop	bc		; pop return address
+	pop	af		; drop word
+	push	bc
+	ld	ix,(T3)
+	set	1,(ix+1)	; set "modified" flag (0200h)
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set virtual array file position
+; Sets BLKNO accordingly and reads the file block
+
+; IYDE = long offset to array element
+
+; Returns IX = channel descriptor address, IY = buffer descriptor address,
+; DE = buffer address, BC = lo-byte of chan descr
+
+VFFND:	push	hl		; save HL
+	ld	(FAC1),iy
+	ld	(FAC2),de
+	ld	l,(ix+2)	; HL = channel number
+	ld	h,0
+	call	FILEA		; get channel descriptor address into IX
+	ld	e,(ix+2)	; DE = buffer descriptor address
+	ld	d,(ix+3)
+	ld	a,d
+	or	e
+	jr	nz,vfnd1	; buffer allocated?
+	rst	10h
+	db	15h		; error if not -> channel not open
+
+vfnd1:	ld	a,(ix+1)	; virtual array channel?
+	or	a
+	jp	p,icnerr	; error if not -> illegal channel number
+	push	de
+	pop	iy		; IY = buffer descriptor
+	ld	e,(ix+0)	; get the LO-byte from the chan descr into DE
+	ld	d,0		;  (element size)
+	push	de		; save it
+	call	VFBLK		; compute block number and offset
+	jr	c,sberr3	; if CY -> subscript out of bounds
+	ld	a,e
+	cp	(iy+BLKNO)	; same block?
+	jr	nz,vfnd2
+	ld	a,d
+	cp	(iy+BLKNO+1)	; same block?
+	jr	z,vfnd4		; jump if yes
+vfnd2:	bit	5,(ix+1)	; 2000h
+	jr	z,vfnd3
+	ld	a,(iy+BLKNO)	; test BLKNO for -1 (no blocks read yet)
+	and	(iy+BLKNO+1)
+	inc	a
+	jr	nz,vfnd3	; jump if block valid
+	ld	(iy+BLKNO),e	; no blocks read yet, so just set the block #
+	ld	(iy+BLKNO+1),d
+	jr	vfnd4		; (and go store the value?)
+vfnd3:	bit	1,(ix+1)	; "modified" bit set? (0200h)
+	call	nz,WRVFBL	; write the current block to file if yes
+	ld	(iy+BLKNO),e	; set block number to read
+	ld	(iy+BLKNO+1),d
+	call	RDVFBL		; read selected block from file
+	res	1,(ix+1)	; and clear "modified" flag
+vfnd4:	pop	hl		; get elem size back into HL
+	push	hl
+	add	hl,bc		; add offset within buffer
+	ex	de,hl		; result in DE
+	ld	a,d
+	sub	02h		; DE -= 512 (see if it crosses block boundary)
+	ld	d,a
+	jp	m,vfnd5		; jump if <= 0 (OK)
+	or	e
+	jr	z,vfnd5		; (check!)
+	ex	(sp),hl
+	call	NEGHL		; -elemsz
+	add	hl,de
+	ex	(sp),hl		; DE-512+elemsz = # of bytes on this block
+vfnd5:	ld	l,(iy+BUFAD)
+	ld	h,(iy+BUFAD+1)
+	add	hl,bc		; point to byte in I/O buffer
+	ex	de,hl
+	pop	bc		; BC = number of bytes to read
+	pop	hl		; restore HL
+	ret
+
+sberr3:	rst	10h
+	db	22h		; subscript out of bounds
+
+; Read numeric value from virtual array file
+
+VFVAL:	call	VFFND		; set virtual array file position
+	ld	bc,0
+	ld	(FAC1),bc	; prepare for integer
+	dec	bc		; -1 (integer)
+	ld	(CLCMOD),bc
+	bit	2,(ix+1)	; integer virtual array? (0400h)
+	jr	nz,vfv1		; jump if yes
+	inc	bc
+	inc	bc		; 1 (float)
+	ld	(CLCMOD),bc
+	push	de		; get block address
+	pop	ix		;  into IX
+	call	FPLD		; load FP accum
+	ret
+vfv1:	push	hl
+	ex	de,hl
+	ld	e,(hl)		; get integer from virtual array file
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	(FAC2),de	; store integer in FP accum
+	ex	de,hl
+	pop	hl
+	ret
+
+; Read string from virtual array file
+
+VFSTR:	call	VFFND		; set virtual array file position
+	dec	de
+	dec	de
+	dec	de
+	push	de		; push block address
+	push	bc		; push length
+	ld	a,b		; check length
+	or	a
+	jp	m,vfs1		; jump if negative (string split across blocks)
+	push	bc
+	push	bc
+	ld	ix,6
+	add	ix,sp		; IX = address of string (pushed DE above)
+	call	MKSTR		; else just store string from block
+	ld	ix,(HISTR)
+	dec	ix
+	jp	vfs4
+
+vfs1:	ld	c,(ix+0)	; get item length into BC
+	ld	b,0
+	ld	(T3),ix
+	push	bc
+	push	bc
+	ld	ix,CODE		; IX = &CODE
+	call	MKSTR		; alloc space for the string
+	ld	ix,0
+	add	ix,sp
+	ld	c,(ix+6)
+	ld	b,(ix+7)
+	push	bc
+	ld	c,(ix+4)
+	ld	b,(ix+5)
+	pop	ix		; IX = (SP+6)
+	inc	ix
+	inc	ix
+	inc	ix
+	pop	de
+	push	de
+	inc	de
+	inc	de
+	inc	de
+vfs2:	ld	a,(ix)		;!!!use ldir
+	ld	(de),a
+	inc	ix
+	inc	de
+	inc	bc
+	ld	a,b
+	or	c
+	jr	nz,vfs2		; loop
+	ld	ix,(T3)
+	bit	1,(ix+1)	; check "modified" flag (0200h)
+	call	nz,WRVFBL	; write current block to file
+	call	RDNXBL		; read next block from file
+	ld	e,(ix+2)
+	ld	d,(ix+3)
+	push	de
+	pop	iy
+	ld	e,(iy+BUFAD)	; DE = I/O buffer address
+	ld	d,(iy+BUFAD+1)
+	ld	iy,0
+	add	iy,sp
+	ld	c,(iy+4)
+	ld	b,(iy+5)
+	pop	ix
+	push	ix
+	push	ix
+	ex	(sp),hl
+	or	a
+	sbc	hl,bc
+	ex	(sp),hl
+	pop	ix		; IX -= BC
+	inc	ix
+	inc	ix
+	inc	ix
+	ld	a,c
+	add	a,(iy+2)
+	ld	c,a
+	ld	a,b
+	adc	a,(iy+3)
+	ld	b,a
+vfs3:	ld	a,(de)		;!!!use ldir
+	ld	(ix),a
+	inc	de
+	inc	ix
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,vfs3		; loop
+vfs4:	ld	iy,0
+	add	iy,sp
+	ld	c,(iy+2)
+	ld	b,(iy+3)
+	inc	bc
+vfs5:	dec	bc
+	ld	a,b
+	or	c
+	jr	z,vfs6		; if length is zero, return null string
+	dec	ix
+	ld	a,(ix+0)
+	or	a
+	jr	z,vfs5		; loop
+	pop	de
+	push	de
+	ex	de,hl
+	ld	(hl),c		; store length
+	add	hl,bc
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl),c		; store length at the end of the string
+	inc	hl
+	ld	(HISTR),hl	; set HISTR pointer
+	ex	de,hl
+	pop	bc
+	pop	de		; restore stack
+	pop	de		;
+	pop	de		;
+	push	bc
+	jp	STPR		; -> dynamic string
+vfs6:	pop	bc		; cleanup stack
+	pop	bc
+	pop	bc
+	ld	bc,-1
+	push	bc		; return null string
+	jp	STROPR		; -> static string
+
+;-----------------------------------------------------------------------
+
+; Convert signed ASCII number to FP binary.
+
+SVAL:	push	hl
+	push	de
+	ld	l,c
+	ld	h,b
+	ld	e,0
+	call	SKIPBL		; skip blanks
+	cp	'+'
+	jr	z,sv1
+	cp	'-'
+	jr	nz,sv2
+	ld	e,80h
+sv1:	inc	hl
+sv2:	call	VAL		; get number
+	jr	c,sv5
+	ld	bc,(FAC1)
+	ld	a,b
+	or	c
+	jr	nz,sv3
+	ld	a,e
+	or	a
+	jr	z,sv4
+	ld	bc,(FAC2)
+	call	NEGBC
+	ld	(FAC2),bc	; FAC2 = -FAC2
+	jr	sv4
+sv3:	ld	a,e
+	or	a
+	jr	z,sv4
+	ld	bc,(FAC1)
+	set	7,b		; set sign bit
+	ld	(FAC1),bc
+	ld	bc,(FAC2)
+	ld	a,b
+	or	c
+	jr	nz,sv4
+	ld	bc,(FAC1)
+	ld	a,c		; 0C800h
+	or	a
+	jr	nz,sv4
+	ld	a,b
+	cp	0C8h
+	jr	nz,sv4
+	ld	bc,0
+	ld	(FAC1),bc
+	ld	b,80h
+	ld	(FAC2),bc	; 8000h
+sv4:	or	a
+sv5:	ld	c,l
+	ld	b,h
+	pop	de
+	pop	hl
+	ret
+
+	END

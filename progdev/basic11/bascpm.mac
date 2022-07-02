@@ -1,0 +1,1198 @@
+	TITLE	BASIC-11 Z80 Interpreter
+	SUBTTL	CP/M system-dependent routines
+
+	; Hector Peraza, 2016-2020
+
+	.Z80
+
+	include	BASDEF.INC
+	include	ERRORS.INC
+
+WBOOT	equ	0
+BDOS	equ	5
+
+CR	equ	0Dh
+LF	equ	0Ah
+EOF	equ	1Ah
+
+.DIRIO	equ	6
+.RESET	equ	13
+.OPEN	equ	15
+.CLOSE	equ	16
+.ERASE	equ	19
+.RDRND	equ	33
+.WRRND	equ	34
+.MAKE	equ	22
+.REN	equ	23
+.DMA	equ	26
+.FND1	equ	17
+.FNDN	equ	18
+
+TTLC	equ	0	; terminal mode bit: lowercase input enabled
+CTLO	equ	1	; terminal mode bit: output supressed by ^O
+XOFF	equ	2	; terminal mode bit: output suspended by ^S
+
+FDBSZ	equ	36	; CP/M FCB size
+
+	public	$INIT,$TTGC,$TTIN,$TTOUT,$FLINP,$FLUSH,$EXIT,DATIM
+	public	FILSPE,FCREAT,FOPEN,FCLOSE,FREAD,FWRITE,CMPEXT,ADDEXT
+	public	FRESET,CATALOG,$CHKCC,RCTLO,TTYLC,TTYUC,FDELET,FRENAM
+	public	FVERS,FWAIT
+
+	extrn	SAVREG,MSG,MSGHL,CHKFIL,PUTCHR,SYSIOB,WIDTH,COLUMN
+	extrn	READY,CCFLG,VERSION,HEAD2,HEAD3
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Initialization
+
+$INIT:	call	$FLINP		; init input buffer
+	xor	a
+	set	TTLC,a		; enable lowercase input
+	ld	(ttyflg),a
+	ld	hl,FDBSZ+4	; FCB size + status
+	ld	(FNBSZ),hl
+	call	MSG
+	db	'CP/M BASIC-11 ',0
+	ld	hl,VERSION
+	call	MSGHL		; display banner
+	call	crlf
+	ld	hl,(BDOS+1)	; return top of memory in HL
+	ld	l,0		;  (must be even!)
+	ret
+
+; Exit to system
+
+$EXIT:	jp	WBOOT
+
+;-----------------------------------------------------------------------
+
+; Terminal I/O routines
+
+; Flush input buffer
+
+$FLINP:	push	hl
+	ld	hl,ttbuf
+	ld	(ttptr),hl
+	ld	(hl),EOF
+	pop	hl
+	ret
+
+; Reset ^O
+
+RCTLO:	push	hl
+	ld	hl,ttyflg
+	res	CTLO,(hl)
+	pop	hl
+	ret
+
+; Enable/disable lowercase
+
+TTYLC:	push	hl
+	ld	hl,ttyflg
+	set	TTLC,(hl)	; enable lowercase
+	pop	hl
+	ret
+
+TTYUC:	push	hl
+	ld	hl,ttyflg
+	res	TTLC,(hl)	; convert to uppercase
+	pop	hl
+	ret
+
+; Check for Ctrl-C
+
+$CHKCC:	push	hl
+	call	CPMGC
+	call	chkctl
+	pop	hl
+	ret
+
+chkctl:	cp	3		; ^C?
+	jr	nz,cc1
+	ld	hl,CCFLG+1
+	set	7,(hl)
+	ret
+cc1:	ld	hl,ttyflg
+	cp	0Fh		; ^O?
+	jr	nz,cc2
+	ld	a,(hl)
+	xor	1 SHL CTLO
+	ld	(hl),a
+	ret
+cc2:	cp	13h		; ^S?
+	jr	nz,cc3
+	set	XOFF,(hl)
+	ret
+cc3:	cp	11h		; ^Q?
+	ret	nz
+	res	XOFF,(hl)
+	ret
+
+; CP/M get char if available. Used only internally.
+
+CPMGC:	push	hl
+	push	de
+	push	bc
+	ld	e,0FFh
+	ld	c,.DIRIO
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; CP/M raw character output. Used internally only.
+
+CPMPC:	push	hl
+	push	de
+	push	bc
+	ld	e,a
+	ld	c,.DIRIO
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; CP/M character input, no echo
+
+$TTGC:	push	hl
+wch:	call	CPMGC
+	or	a
+	jr	z,wch
+	ld	hl,ttyflg
+	bit	TTLC,(hl)
+	call	z,UCASE
+	pop	hl
+	ret
+
+; CP/M character input (buffered)
+
+$TTIN:	push	hl
+tt0:	ld	hl,(ttptr)
+	ld	a,(hl)		; get character from line buffer
+	cp	EOF		; end of input?
+	jr	nz,tt1		; return char if not
+	push	de
+	push	bc
+	ld	hl,ttbuf
+	ld	(ttptr),hl
+	ld	e,126
+	call	GETLN		; else read a new line
+	pop	bc
+	pop	de
+	jr	tt0
+tt1:	inc	hl
+	ld	(ttptr),hl
+	pop	hl
+	or	a
+	ret
+
+; CP/M character output.
+
+$TTOUT:	push	hl
+	push	af
+tto1:	call	CPMGC
+	call	chkctl
+	ld	hl,ttyflg
+	bit	XOFF,(hl)
+	jr	nz,tto1		; loop until ^Q
+	pop	af
+	bit	CTLO,(hl)
+	call	z,CPMPC
+	pop	hl
+	ret
+
+; Read line from terminal into HL buffer, max length in E
+; TODO: handle ^R
+
+GETLN:	ld	b,1
+gln1:	call	$TTGC
+	cp	8		; backspace?
+	jr	z,del
+	cp	7FH		; DEL?
+	jr	z,del		; handle like backspace
+	cp	CR		; CR?
+	jr	z,eol
+	ld	c,a
+	ld	a,b		; check length
+	cp	e		; maximum count reached?
+	jr	nc,glnerr	; jump if yes
+	ld	a,c		; check character
+	cp	' '		; control char?
+	jr	nc,gln2		; jump if not
+	ld	a,'^'		; else echo it as ^x
+	call	CPMPC
+	ld	a,c
+	add	a,'@'
+	call	CPMPC
+	ld	a,c
+	cp	3		; ^C?
+	jr	z,ctrlc
+	cp	1Ah		; ^Z?
+	jr	z,ctrlu
+	cp	15h		; ^U?
+	jr	z,ctrlu
+	jr	gln3
+
+gln2:	call	CPMPC		; printable character
+gln3:	ld	(hl),c		; store it
+	inc	hl
+	inc	b
+	jr	gln1
+
+del:	dec	b		; backup one char
+	jr	z,GETLN
+	call	bcksp
+	dec	hl
+	dec	c
+	ld	a,(hl)		; if it was a control char
+	cp	' '		;  then we need to erase
+	call	c,bcksp		;   also the '^'
+	jr	gln1
+
+bcksp:	ld	a,8
+	call	CPMPC
+	ld	a,' '
+	call	CPMPC
+	ld	a,8
+	call	CPMPC
+	ret
+
+glnerr:	ld	a,7
+	call	CPMPC
+	jr	gln1
+
+ctrlu:	dec	b		; ^U discards all input
+	ld	c,b
+	ld	b,0
+	or	a
+	sbc	hl,bc
+	ld	a,CR
+	call	CPMPC
+	ld	a,LF
+	call	CPMPC
+	jr	GETLN		; and restarts operation
+
+ctrlc:	ld	d,c		; ^C discards input
+	dec	b
+	ld	c,b
+	ld	b,0
+	or	a
+	sbc	hl,bc
+	ld	a,d
+	scf
+eol:	push	af
+	ld	(hl),a
+	ld	a,CR
+	call	CPMPC
+	ld	a,LF
+	call	CPMPC
+	inc	hl
+	ld	(hl),EOF	; and returns EOF
+	pop	af
+	ret
+
+; CP/M flush output
+
+$FLUSH:	ret			; nothing to do
+
+;-----------------------------------------------------------------------
+
+; Get date and time.
+
+DATIM:	call	SAVREG
+	ld	c,12
+	call	BDOS		; get system version
+	dec	h
+	ld	c,155
+	jr	z,dt1		; branch if MP/M
+	ld	a,l
+	cp	30h
+	jp	c,dt2		; branch if not CP/M 3
+	ld	c,105
+dt1:	ld	de,tod
+	call	BDOS
+	ld	(sec),a		; seconds are returned in A
+	ld	hl,(days)
+
+	call	cvtdat		; convert date
+
+	ld	hl,HEAD2	; address to store date
+	ld	a,(day)
+	call	adec2		; emit bin pair
+	ld	a,(month)
+	add	a,a
+	add	a,a		; *4
+	ld	c,a
+	ld	b,0
+	ex	de,hl
+	ld	hl,mlist
+	add	hl,bc
+	ld	bc,5
+	ldir
+	ld	hl,(year)
+	ld	bc,1900
+	add	hl,bc
+	call	decstr
+
+	ld	hl,HEAD3	; address to store time
+	ld	a,(hrs)
+	call	ahex		; emit bcd pair
+	ld	(hl),':'
+	inc	hl
+	ld	a,(min)
+	call	ahex
+	ld	(hl),':'
+	inc	hl
+	ld	a,(sec)
+	call	ahex
+	ret
+
+dt2:	ld	hl,timstr
+	ld	de,HEAD3
+	ld	bc,8
+	ldir
+	ld	hl,datstr
+	ld	de,HEAD2
+	ld	bc,11
+	ldir
+	ret
+
+timstr:	db	'12:00:00'	; dummy date/time string
+datstr:	db	'10-DEC-2016'
+
+; Store A as hexadecimal value at (HL)
+
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	nhex
+	pop	af
+nhex:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	ld	(hl),a
+	inc	hl
+	ret
+
+; Convert value in A to 2-digit ASCII string @HL
+
+adec2:	ld	c,'0'
+a2:	cp	10
+	jr	c,a1
+	inc	c
+	sub	10
+	jr	a2
+a1:	push	af
+	ld	(hl),c
+	inc	hl
+	pop	af
+	add	a,'0'
+	ld	(hl),a
+	inc	hl
+	ret
+
+; Convert value in HL to decimal ASCII string @DE
+
+decstr:	ld	(fptr),de
+	push	hl
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	hl,(fptr)
+	ld	(hl),a
+	inc	hl
+	ex	de,hl
+	pop	hl
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	ld	a,b
+	or	a
+	jr	nz,sb2
+	ld	a,c
+	cp	'0'
+	ret	z
+	ld	b,1
+sb2:	push	hl
+	ld	hl,(fptr)
+	ld	(hl),c
+	inc	hl
+	ld	(fptr),hl
+	pop	hl
+	ret
+
+; Convert BDOS date (num of days) to day-month-year
+; HL = number of days (1 = Jan 1, 1978)
+
+cvtdat:	call	cyear
+	ld	(year),bc
+
+	; year has been set, HL has remaining days
+
+	ld	e,0		; leap$bias
+	ld	a,c
+	and	3
+	jr	nz,cvd1		; year & 3 == 0 ?
+	ld	a,l
+	sub	59+1		; and remaining days > 59 ?
+	ld	a,h
+	sbc	a,0
+	jr	c,cvd1
+
+	; after feb 29 on leap year
+
+	inc	e		; then leap$bias = 1
+cvd1:	ld	c,e
+	call	cmonth
+	ld	a,e
+	ld	(month),a
+
+	; day = remaining_days - (month_days[month] + leap_bias);
+
+	push	hl
+	ld	hl,mdays
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = month_days[month]
+	ld	b,0
+	add	hl,bc		;    + leap_bias
+	ex	de,hl
+	pop	hl
+	or	a
+	sbc	hl,de		; day = remaining_days - HL
+	ld	a,l
+	ld	(day),a
+	ret
+
+; Compute year from number of days in HL, returns year in BC
+
+cyear:	ld	bc,78		; year = 78 (base year)
+cy1:	ld	de,365		; year length
+	ld	a,c
+	and	3		; leap year?
+	jr	nz,cy2
+	inc	de		; year length = 366
+cy2:	push	hl
+	dec	de
+	sbc	hl,de		; remaining days - year length (note CY was clear)
+	jr	c,cy3		; return if <= 0
+	pop	af
+	dec	hl
+	inc	bc		; ++year
+	jr	cy1
+cy3:	pop	hl
+	ret
+
+; Compute month from remaining days in HL, C = leap bias.
+; Returns month in DE, C = leap bias
+
+cmonth:	push	hl
+	ld	de,11		; E = month, D = 0
+	ld	b,d		; B = 0
+cm1:	ld	a,e
+	cp	2		; jan or feb?
+	jr	nc,cm2
+	ld	c,b		; if yes, leap bias = 0
+cm2:	ld	hl,mdays
+	add	hl,de
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		; HL = month$days[month]
+	add	hl,bc		;    + leap bias
+	ex	de,hl
+	ex	(sp),hl		; HL = rem days
+	ld	a,e
+	sub	l
+	ld	a,d
+	sbc	a,h
+	ex	(sp),hl
+	ex	de,hl
+	jr	c,cm3
+	dec	e
+	jr	cm1
+cm3:	pop	hl
+	ret
+
+mdays:	;	jan feb mar apr may jun jul aug sep oct nov dec
+	dw	  0, 31, 59, 90,120,151,181,212,243,273,304,334
+
+mlist:	db	'-JAN-FEB-MAR-APR-MAY-JUN-JUL-AUG-SEP-OCT-NOV-DEC-'
+
+;-----------------------------------------------------------------------
+
+; File I/O routines
+
+; DE = src string, C = length. Default extension follows the call.
+; Preserves HL.
+
+FILSPE:	ld	(fptr),de
+	ld	a,c
+	ld	(fcnt),a
+	pop	de		; pop return address (points to argument)
+	ld	ix,-(FDBSZ+4)
+	add	ix,sp
+	ld	sp,ix		; allocate FCB on stack
+	push	hl		; push HL
+	push	de		; push return address (points to argument)
+	push	ix
+	pop	de		; DE = FCB
+	push	de
+	call	MKFCB
+	pop	de		; DE = FCB
+	pop	hl		; HL = ptr to extension
+	ld	c,0
+	call	ADDEXT
+	ex	(sp),hl		; pop HL, push return address
+	ret
+
+; Create a FCB. DE = FCB address.
+
+MKFCB:	call	CLRFCB		; initialize FCB to all zeros
+	call	GETNS		; get next non-space character
+	jr	z,MF4		; jump if end of string
+	sub	'A'-1
+	ld	b,a		; may be disk name
+	call	GETN		; get next char
+	cp	':'		; disk name?
+	jr	z,MF3		; jump if yes
+	call	GETP		; backup one char
+	jr	MF4
+MF3:	ld	a,b
+	ld	(de),a		; store disk name
+	call	GETN
+MF4:	inc	de
+	ld	b,8
+	call	GETNAM		; get file name
+	call	GETC
+	cp	'.'		; was the extension explicitely supplied?
+;;	ld	(EXTFLG),a
+	jr	nz,MF5
+	call	GETN
+MF5:	ld	b,3
+	call	GETNAM		; get extension
+	ret
+
+; Clear FCB. DE = FCB address
+
+CLRFCB:	push	de
+	ld	b,FDBSZ
+	xor	a
+CLRF1:	ld	(de),a
+	inc	de
+	djnz	CLRF1
+;;	ld	(EXTFLG),a
+	pop	de
+	ret
+
+; Get a name from the input line in (HL), up to C chars in length.
+; Store the name at (DE), padding with spaces if necessary.
+
+GETNAM:	call	GETFS
+	jr	z,SFILL
+	cp	'*'
+	jr	z,WCARD
+	ld	(de),a
+	call	GETN
+	inc	de
+	djnz	GETNAM
+XSKIP:	call	GETFS
+	ret	z
+	call	GETN
+	jr	XSKIP
+SFILL:	ld	a,' '
+SF:	ld	(de),a
+	inc	de
+	djnz	SF
+	ret
+WCARD:	call	XSKIP
+	ld	a,'?'
+	jr	SF
+
+; Get next (non-blank) symbol
+; Returns Z flag on EOL.
+
+GETNS:	call	GETC
+	call	UCASE
+	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	' '
+	ret	nz
+	call	GETN
+	jr	GETNS
+
+; Get current char
+
+GETC:	ld	a,(fcnt)
+	or	a
+	ret	z
+	ld	hl,(fptr)
+	ld	a,(hl)
+	ret
+
+; Get previous char
+
+GETP:	ld	hl,fcnt
+	inc	(hl)
+	ld	hl,(fptr)
+	dec	hl
+	ld	(fptr),hl
+	ld	a,(hl)
+	ret
+
+; Get next char
+
+GETN:	ld	a,(fcnt)
+	or	a
+	ret	z
+	dec	a
+	ld	(fcnt),a
+	ld	hl,(fptr)
+	inc	hl
+	ld	(fptr),hl
+	ld	a,(hl)
+	ret
+
+; Returns Z if char in A is a filename delimiter.
+
+GETFS:	call	GETC
+	call	UCASE
+	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	'='
+	ret	z
+	cp	'_'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'/'
+	ret	z
+	cp	','
+	ret	z
+	cp	'+'
+	ret	z
+	cp	CR
+	ret
+
+; Add file ext (HL) if necessary (C=0) or forced (C=1).
+; DE = FCB addr.
+
+ADDEXT:	push	hl
+	ld	hl,8+1
+	add	hl,de
+	ld	a,c
+	or	a
+	jr	nz,ade0
+	ld	a,(hl)
+	cp	' '
+	jr	nz,ade1
+;;	ld	a,(EXTFLG)
+;;	cp	'.'
+;;	jr	z,ade1
+ade0:	ex	de,hl
+	pop	hl
+	ld	bc,3
+	ldir
+	ret
+ade1:	pop	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ret
+
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+; Compare file extension: HL = FCB, DE = ext. Returns Z/NZ.
+
+CMPEXT:	push	hl
+	push	bc
+	ld	bc,8+1
+	add	hl,bc
+	ld	b,3
+cpe1:	ld	a,(de)
+	cp	(hl)
+	jr	nz,cpe2
+	inc	hl
+	inc	de
+	djnz	cpe1
+cpe2:	pop	bc
+	pop	hl
+	ret
+
+; Reset disks
+
+FRESET:	push	hl
+	push	de
+	push	bc
+	ld	c,.RESET
+	call	BDOS		; reset BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	xor	a
+	ret
+
+; Return file version. Not supported by CP/M
+
+FVERS:	ld	bc,1
+	ret
+
+; Create file, HL = FCB
+
+FCREAT:	push	hl
+	push	de
+	push	bc
+	ex	de,hl		; get FCB into DE
+	ld	c,.MAKE
+	call	BDOS		; create file
+	pop	bc
+	pop	de
+	pop	hl
+	inc	a
+	ld	a,E.DSKF
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Delete file, HL = FCB
+
+FDELET:	push	hl
+	push	de
+	push	bc
+	ex	de,hl		; get FCB into DE
+	ld	c,.ERASE
+	call	BDOS		; delete file
+	pop	bc
+	pop	de
+	pop	hl
+	inc	a
+	ld	a,E.FNF
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Rename file, HL = new FCB, DE = old FCB
+
+FRENAM:	push	hl
+	push	de
+	push	bc
+	push	de		; save old FCB
+	ld	bc,16
+	ex	de,hl
+	add	hl,bc
+	ex	de,hl		; get old FCB+16 into DE, HL = new FCB
+	ldir			; make rename FCB
+	pop	de		; DE = rename FCB
+	ld	c,.REN
+	call	BDOS		; rename file
+	pop	bc
+	pop	de
+	pop	hl
+	inc	a
+	ld	a,E.FNF
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Open file, HL = FCB
+
+FOPEN:	push	hl
+	push	de
+	push	bc
+	ex	de,hl		; get FCB into DE
+	ld	c,.OPEN
+	call	BDOS		; open file
+	pop	bc
+	pop	de
+	pop	hl
+	inc	a
+	ld	a,E.FNF
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Close file, HL = FCB
+
+FCLOSE:	push	hl
+	push	de
+	push	bc
+	ex	de,hl		; get FCB into DE
+	ld	c,.CLOSE
+	call	BDOS		; close file
+	pop	bc
+	pop	de
+	pop	hl
+	inc	a
+	ld	a,E.FNF
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Read block (512 bytes). BC = block #, DE = buf address, HL = FCB
+
+FREAD:	push	hl
+	push	de
+	call	SETREC
+	ld	b,4		; 128*4 = 512
+	ld	c,0
+rd1:	push	bc
+	push	de		; push buffer addr
+	push	hl		; push FCB address
+	ld	c,.DMA
+	call	BDOS
+	pop	de		; pop FCB address
+	push	de
+	ld	c,.RDRND
+	call	BDOS
+	or	a
+	jr	nz,reof
+	pop	de		; pop FCB address
+	call	INCREC
+	pop	hl		; pop buffer addr
+	ld	bc,128
+	add	hl,bc		; advance pointer
+	ex	de,hl		; FCB address in HL, bufptr in DE
+	pop	bc
+	inc	c		; count records read
+	djnz	rd1
+rd2:	ld	b,c		; compute bytes read
+	ld	c,0
+	srl	b
+	rr	c		; bytes = recs*128
+	xor	a		; success
+rd3:	ld	de,FDBSZ
+	add	hl,de
+	ld	(hl),a		; store status
+	inc	hl
+	inc	hl
+	ld	(hl),c		; store bytes read
+	inc	hl
+	ld	(hl),b
+	pop	de
+	pop	hl
+	xor	a		; return success
+	ret
+
+reof:	pop	hl		; pop FCB address
+	pop	de		; pop buffer addr
+	pop	bc
+	ld	a,c
+	or	a		; anything read?
+	jr	nz,rd2		; return success if yes
+	ld	a,E.EOF
+	jr	rd3		; else return EOF
+
+; Convert block number to CP/M record and setup FCB fields accordingly.
+; BC = block #, HL = FCB
+
+SETREC:	xor	a
+	sla	c		; *2
+	rl	b
+	rl	a
+	sla	c		; *4 (128*4 = 512)
+	rl	b
+	rl	a
+	ex	de,hl
+	push	hl
+	ld	hl,33
+	add	hl,de
+	ld	(hl),c		; r0
+	inc	hl
+	ld	(hl),b		; r1
+	inc	hl
+	ld	(hl),a		; r2
+	pop	hl
+	ex	de,hl
+	ret
+
+; Increase FCB record number, DE = FCB
+
+INCREC:	ld	hl,33
+	add	hl,de
+	inc	(hl)		; r0
+	ret	nz
+	inc	hl
+	inc	(hl)		; r1
+	ret	nz
+	inc	hl
+	inc	(hl)		; r2
+	ret
+
+; Write block (512 bytes). DE = buf address, HL = FCB, BC = block #
+
+FWRITE:	push	hl
+	push	de
+	call	SETREC
+	ld	b,4		; 128*4 = 512
+	ld	c,0
+wr1:	push	bc
+	push	de		; push buffer addr
+	push	hl		; push FCB address
+	ld	c,.DMA
+	call	BDOS
+	pop	de		; pop FCB address
+	push	de
+	ld	c,.WRRND
+	call	BDOS
+	or	a
+	jr	nz,wrerr
+	pop	de		; pop FCB address
+	call	INCREC
+	pop	hl		; pop buffer addr
+	ld	bc,128
+	add	hl,bc		; advance pointer
+	ex	de,hl		; FCB address in HL, bufptr in DE
+	pop	bc
+	inc	c		; count records written
+	djnz	wr1
+wr2:	ld	b,c		; compute bytes written
+	ld	c,0
+	srl	b
+	rr	c		; bytes = recs*128
+	xor	a		; success
+wr3:	ld	de,FDBSZ
+	add	hl,de
+	ld	(hl),a		; store status
+	inc	hl
+	inc	hl
+	ld	(hl),c		; store length
+	inc	hl
+	ld	(hl),b
+	pop	de
+	pop	hl
+	xor	a		; return success
+	ret
+
+wrerr:	pop	hl		; pop FCB address
+	pop	de		; pop buffer address
+	pop	bc
+	ld	a,c
+	or	a		; anything written?
+	jr	nz,wr2		; return success if yes
+	ld	a,E.DSKF
+	jr	wr3		; else return error
+
+; Wait for file I/O to complete and return I/O status.
+; File I/O is always synchronous under CP/M, so we simply return the
+; status of the last I/O operation.
+
+FWAIT:	push	de
+	push	hl
+	ld	de,FDBSZ
+	add	hl,de
+	ld	a,(hl)		; fetch status
+	inc	hl
+	inc	hl
+	ld	c,(hl)		; fetch bytes read/written
+	inc	hl
+	ld	b,(hl)
+	pop	hl
+	pop	de
+	or	a
+	ret	z
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; --- CAT
+
+CATALOG:call	SAVREG
+	call	CHKFIL		; find string length
+	ld	a,b
+	or	c
+	jr	nz,cat1
+
+	ld	de,pattrn
+	ld	bc,patlen
+cat1:	ld	hl,-36
+	add	hl,sp		; reserve space on stack for the FCB
+	ld	sp,hl
+
+	ex	de,hl
+	push	de
+	ld	(fptr),hl
+	ld	a,c
+	ld	(fcnt),a
+	call	MKFCB		; parse filespec and prepare FCB
+	pop	de
+	ld	a,(fcnt)
+	or	a
+	jr	z,cat2
+
+	rst	10h
+	db	1Bh		; illegal file specification
+
+cat2:	push	de
+	ld	de,SYSIOB
+	ld	c,.DMA
+	call	BDOS		; set DMA address to system I/O buffer
+	pop	de
+	push	de
+	ld	c,.FND1
+	call	BDOS		; find first match
+	pop	de
+	inc	a
+	jr	nz,cat3
+
+	rst	10h
+	db	19h		; file not found
+
+cat3:	push	af
+	call	crlf
+	pop	af
+
+cat4:	dec	a
+	and	3
+	ld	l,a
+	ld	h,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl		; *32
+	ld	bc,SYSIOB
+	add	hl,bc		; index into I/O buffer
+	inc	hl
+	call	FNOUT		; display file name
+	push	de
+	ld	c,.FNDN
+	call	BDOS		; find next match
+	pop	de
+	inc	a
+	jr	nz,cat4		; loop
+
+	call	crlf
+
+	ld	hl,36
+	add	hl,sp		; restore stack
+	ld	sp,hl
+	jp	READY		; and return to READY prompt
+
+pattrn:	db	'*.*'
+patlen	equ	$-pattrn
+
+FNOUT:	ld	bc,(COLUMN)
+	ld	a,(bc)		; get current column
+	or	a
+	jr	z,fno1
+	add	a,16		; add file name field width
+	ld	c,a
+	ld	a,(WIDTH)	; compare with max width
+	or	a
+	jr	nz,fno2
+	ld	a,72
+fno2:	cp	c
+	jr	nc,fno3
+	call	crlf
+	jr	fno1
+fno3:	ld	b,4
+fno4:	ld	a,' '
+	call	PUTCHR
+	djnz	fno4
+
+fno1:	ld	b,8
+	ld	c,0
+fno5:	ld	a,(hl)
+	and	7Fh
+	inc	hl
+	cp	' '		; ignore spaces
+	jr	z,fno51
+	call	PUTCHR		; output file name
+	inc	c
+fno51:	djnz	fno5
+	ld	a,'.'
+	inc	c
+	call	PUTCHR		; output delimiter
+	ld	b,3
+fno6:	ld	a,(hl)
+	and	7Fh
+	inc	hl
+	call	PUTCHR		; output file extension
+	inc	c
+	djnz	fno6
+	ld	a,13
+	sub	c
+	ret	z
+	ld	b,a
+fno8:	ld	a,' '
+	call	PUTCHR		; pad to next field
+	djnz	fno8
+	ret
+
+crlf:	call	MSG
+	db	CR,LF,0
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ttyflg:	ds	1		; uppercase conversion and ^O flags
+
+ttbuf:	ds	128		; input line buffer
+ttptr:	ds	2		; input line pointer
+
+fptr:	ds	2
+fcnt:	ds	1
+
+tod	equ	$
+days:	ds	2		; days (1 = Jan 1st 1978)
+hrs:	ds	1		; hours (packed BCD)
+min:	ds	1		; minutes (packed BCD)
+sec:	ds	1		; seconds (packed BCD)
+
+month:	ds	1
+day:	ds	1
+year:	ds	2
+
+leap:	ds	1		; bias for Feb 29
+
+	END

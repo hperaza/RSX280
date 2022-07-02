@@ -1,0 +1,137 @@
+
+To:	Players
+From:	Game Maintenance
+Date:	4-JAN-79
+
+SUBJ:	TREK, Startrek Game for the VT52/VT100
+
+TREK is a variant of SPCWAR (or STRTRK) which uses the cursor features
+of the VT52 and VT100 to produce better displays.
+
+This version of TREK is based on numerous previous versions, starting
+with a baselevel written by Aron Insinga.  The modifications for the
+VT52/VT100 were made by J. Thompson.  The master game was added by
+R. Supnik.
+
+I.  Introduction
+
+As captain of the Federation starship ENTERPRISE, your mission is to
+destroy all the Klingon battle cruisers in the galaxy, using as few
+moves (stardates) as possible.  To this end, the ENTERPRISE is armed
+with photon torpedos, as well as the famous phasers.  You can search
+for the Klingons using your long range sensors as you move through the
+galaxy.  You are also provided with at least one starbase where you
+may replenish your supply of torpedos and energy.
+
+II.  Display
+
+The left hand display is the galaxy, which is divided into 64 quadrants,
+each of which is further divided into 64 sectors.  The quadrant with an
+E indicates the location of the ENTERPRISE.   All other quadrants are
+initially unknown.  Through the use of the long range sensors, the
+number and types of all objects in the galaxy can be discovered.  When
+a quadrant has been scanned, its contents are indicated with a three
+digit number.  The left hand digit represents the number of Klingon
+battle cruisers, the middle digit the number of starbases, the right
+hand digit the number of stars.  For example, 319 indicates 3 Klingon
+battle cruisers, 1 starbase, and 9 stars.
+
+The right hand display is a close up of the quadrant in which the
+ENTERPRISE is currently located.  E represents the ENTERPRISE, K
+represents a Klingon battle cruiser, and * represents a star.  Just
+below the quadrant display is a display of important status variables,
+such as the current location of the ENTERPRISE and the amount of energy
+remaining.  Also displayed is the current alert condition:
+
+	RED		Klingons in this quadrant
+	ORANGE		Klingons in adjacent quadrant(s)
+	YELLOW		Energy dangerously low
+	GREEN		No threats
+	DOCKED		Docked at STARBASE
+
+III.  Commands
+
+TREK recognizes nine commands:
+
+	W-	Warp drive (maneuver the ENTERPRISE)
+	L-	Long range scan
+	S-	Short range scan
+	P-	Phaser fire control
+	T-	Torpedo fire control
+	C-	Chart (rewrite) the entire screen
+	D-	Damage control report
+	B-	Battle analysis report
+	E-	Early exit from game
+
+   W-	TREK asks for the course and warp factor.  The course is a real
+	number in the range 1 - 8.9999 and indicates the direction to
+	travel, as marked on the compass in the middle of the screen.
+	The warp factor is a real number in the range 1 - 12 and is
+	the number of quadrants to be travelled.
+
+   L-	TREK scans the eight quadrants immediately adjacent to the
+	ENTERPRISE and updates the galaxy display accordingly.
+
+   S-	TREK scans the quadrant in which the ENTERPRISE currently resides
+	and updates the quadrant display accordingly.
+
+   P-	Any portion of the ENTERPRISE's energy can be used to power the
+	phasers.  The onboard computer divides this energy among the
+	Klingon cruisers in the quadrant and determines the various
+	directions of fire.  The effectiveness of phaser fire depends
+	primarily on the distance to the target.  The amount of energy
+	fired is deducted from the ENTERPRISE's energy pool.
+
+   T-	Initially the ENTERPRISE has ten photon torpedos.  One torpedo
+	destroys anything it hits, including Klingon battle cruisers,
+	stars, and starbases.  The course of a torpedo is set the same
+	way as for the ENTERPRISE.
+
+   C-	TREK rewrites the entire display screen.
+
+   D-	TREK outputs a report on the state of the major ENTERPRISE
+	subsystems (see Master Game, below).
+
+   B-	TREK analyses the location and strength of all Klingon battle
+	cruisers in the quadrant.
+
+   E-	TREK terminates the current game after printing a suitably snide
+	remark.
+
+IV.  Klingons
+
+A Klingon battle cruiser starts with an energy allocation of 200 - 300 units.
+It fires with all its force whenever attacked or whenever the ENTERPRISE
+enters or leaves its quadrant.  Phaser firing does not deplete a
+Klingon's energy pool;  however, a hit from the ENTERPRISE's phasers does.
+When a Klingon's energy pool drops to zero or below, it is eliminated.
+
+You win the game by eliminating all Klingon battle cruisers in the galaxy
+within forty turns.  If you fail to eliminate all enemy cruisers, or if
+at any time your own energy pool drops to zero or below, you lose.
+
+V.  Master Game
+
+As an option, at startup you may ask for the master game.  This differs
+from the regular game in the following ways:
+
+   -	The game length is 30 - 50 turns long (instead of 40).
+
+   -	A Klingon battle cruiser starts with an initial energy allocation
+	of 1000 - 1500 units.  However, it only fires 20% - 50% of its
+	total allocation in any one turn, and the amount fired is
+	deducted from its energy pool.
+
+   -	On any movement turn, there is a 20% chance that some major
+	subsystem of the ENTERPRISE will be damaged by a space storm.
+	Damage may make the subsystem partially or totally nonfunctional.
+	Damage is repaired gradually over the course of each subsequent
+	movement turn or by docking with a starbase.
+
+VI.  Sleeping
+
+The amount of time delay following a printout is controlled by the delay
+loop in statement 9030.  The time constant 4000 is approximately right
+for an 11/45.  You should adjust it upward or downward as necessary for
+your processor.
+

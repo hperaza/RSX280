@@ -1,0 +1,138 @@
+	TITLE	BASIC-11 Interpreter
+	SUBTTL	Work data areas
+
+	.Z80
+
+	; Z80 port by Hector Peraza, 2016-2020
+
+	public	SYMBOL,LINTAB,DEFTAB,LIMIT,PDL,STK,PDSIZE,ARRAYS
+	public	HIFREE,LOFREE,HIFSAV,CODE,LINE,VARSAV,SS1SAV,SS2SAV
+	public	CPSAVE,GSBCTR,COLUMN,CLMNTT,FAC1,FAC2,CLCMOD
+	public	BCSAVE,DESAVE,HLSAVE,IXSAVE,IYSAVE,T1,T2,T3,T4,T5
+	public	RND1,RND2,RNDCT,LOSTR,HISTR,COMN,HILINO,WIDTH
+	public	IDEV,ODEV,FILSIZ,MODE,RECSIZ,SEQFIL,BUFCHN,EDITLN
+	public	CHNFLG,SYSBUF,DATPTR,CLKPTR,CCFLG,COLTAB,FNBSZ
+	public	SS1MAX,SS2MAX,PROGNAM
+
+	extrn	HEAD2,HEAD3
+
+	public	$MEMRY,BASDAT
+
+	dseg
+
+FNBSZ:	ds	2	; size of filename block
+DATPTR:	dw	HEAD2-3	; used by DAT$
+CLKPTR:	dw	HEAD3-3	; used by CLK$
+
+$MEMRY:	ds	2	; pointer to start of free memory, set by linker
+
+BASDAT	equ	$	; start of data area, will be cleared on startup
+
+SYMBOL:	ds	2	; start address of symbol table
+LINTAB:	ds 	2	; start address of line numbers table
+DEFTAB:	ds 	2	; start address of user FN table
+LIMIT:	ds 	2	; memory top address
+PDL:	ds 	2	; list of GOSUB return addresses (init: memtop - 50)
+STK:	ds 	2	; initial SP
+PDSIZE:	ds 	2	; low limit of stack (init: initial SP - 200)
+ARRAYS:	ds	2	; address of highest word of arrays (init: memtop - 50)
+HIFREE:	ds 	2	; address of highest free word
+LOFREE:	ds 	2	; address of lowest free word
+HIFSAV:	ds 	2	;
+CODE:	ds 	2	; address of tokenized code (pointer to program text)
+VARSAV:	ds	2	; current var address
+SS1SAV:	ds	2	; 1st array index
+SS2SAV:	ds	2	; 2nd array index
+SS1MAX:	ds	2	; max 1st array index
+SS2MAX:	ds	2	; max 2nd array index
+CPSAVE:	ds	2	;
+GSBCTR:	ds	2	; current GOSUB depth
+COLUMN:	ds	2	; address of ODEV column value
+CLMNTT:	ds	1	; TT output line length (count)
+FAC1:	ds	2	; FP accum (sign, exp, lo-mantissa)
+FAC2:	ds	2	; FP accum (hi-manitssa), or integer if FAC1 is 0
+CLCMOD:	ds	2	; 0 = string, 1 = real, -1 = integer
+
+BCSAVE:	ds	2	; saved registers during polish mode
+DESAVE:	ds	2	;
+HLSAVE:	ds	2	;
+IXSAVE:	ds	2	;
+IYSAVE:	ds	2	;
+
+T1:	ds	2	; temporary variables
+T2:	ds	2	;
+T3:	ds	2	;
+T4:	ds	2	;
+T5:	ds	2	;
+
+RND1:	ds	2	; used by RND
+RND2:	ds	2	; used by RND
+RNDCT:	ds	2	; RANDOMIZE seed
+
+LOSTR:	ds	2	; low limit of string storage
+HISTR:	ds	2	; high limit of string storage
+
+COMN:	ds	1	; number of COMMON variables
+
+HILINO:	ds	2	; highest line number
+WIDTH:	ds	1	; TT line width
+
+IDEV:	ds	2	; input channel descriptor address
+ODEV:	ds	2	; output channel descriptor address
+
+FILSIZ:	ds	2	; FILESIZE option
+MODE:	ds	2	; MODE option
+RECSIZ:	ds	2	; RECORDSIZE option
+
+SEQFIL:	ds	2	; channel #1 flags
+	ds	2	; channel #1 buffer descr address
+	ds	2	; channel #2 flags
+	ds	2	; channel #2 buffer descr address
+	ds	2	; channel #3 flags
+	ds	2	; channel #3 buffer descr address
+	ds	2	; channel #4 flags
+	ds	2	; channel #4 buffer descr address
+	ds	2	; channel #5 flags
+	ds	2	; channel #5 buffer descr address
+	ds	2	; channel #6 flags
+	ds	2	; channel #6 buffer descr address
+	ds	2	; channel #7 flags
+	ds	2	; channel #7 buffer descr address
+	ds	2	; channel #8 flags
+	ds	2	; channel #8 buffer descr address
+	ds	2	; channel #9 flags
+	ds	2	; channel #9 buffer descr address
+	ds	2	; channel #10 flags
+	ds	2	; channel #10 buffer descr address
+	ds	2	; channel #11 flags
+	ds	2	; channel #11 buffer descr address
+	ds	2	; channel #12 flags
+	ds	2	; channel #12 buffer descr address
+	ds	2	; system channel flags
+	ds	2	; system channel buffer descr address
+
+SYSBUF:	ds	2	; channel #13 buffer descr address
+
+BUFCHN:	ds	2	; linked list of free file I/O buffers
+EDITLN:	ds	2	;
+CHNFLG:	ds	1	; CHAIN flag
+
+CCFLG:	ds	2	; ^C flags
+
+COLTAB:	ds	1	; used by PRINT #1
+	ds	1	; used by PRINT #2
+	ds	1	; used by PRINT #3
+	ds	1	; used by PRINT #4
+	ds	1	; used by PRINT #5
+	ds	1	; used by PRINT #6
+	ds	1	; used by PRINT #7
+	ds	1	; used by PRINT #8
+	ds	1	; used by PRINT #9
+	ds	1	; used by PRINT #10
+	ds	1	; used by PRINT #11
+	ds	1	; used by PRINT #12
+
+PROGNAM:ds	9	; program file in ASCII (9 chars)
+LINE:	ds	134	; input line buffer, 134 chars max
+
+	end
