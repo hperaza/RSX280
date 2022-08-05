@@ -1252,7 +1252,10 @@ nxtrec:	push	de
 ;	Reg DE holds FCB
 ;	Reg HL holds disk buffer address
 
-DiskWr:	push	de
+DiskWr:	ld	a,b
+	or	c
+	ret	z
+	push	de
 	ld	(qio2+Q.BUF),hl
 	ex	de,hl
 	ld	a,(hl)		; get LUN
