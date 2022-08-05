@@ -1,0 +1,37 @@
+	.Z80
+
+	ident	/1.0/
+
+	include	SYSFN.INC
+	include	TCB.INC
+
+	public	?init,?halt,?jphl
+
+	extrn	?cmdbf
+
+	cseg
+
+?init:	ld	hl,0
+	ld	de,?cmdbf
+	SC	.GTSK
+	ld	sp,(?cmdbf+GT.END)
+	push	bc		; push return address
+	ld	hl,?cmdbf
+	ld	(hl),0
+	ld	e,128
+	SC	.GTCMD
+	ld	e,(hl)		; zeroed above in case no command line present
+	ld	d,0
+	inc	hl
+	add	hl,de
+	ld	(hl),0		; add null terminator
+	ret
+
+?halt:	SC	.EXIT
+
+?jphl:	jp	(hl)
+
+; TODO: place ?cmdbf here or in separate file, referenced by T
+; if left it T, T will be always included even when not used.
+
+	end

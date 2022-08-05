@@ -1,14 +1,8 @@
-# T3X/Z compiler for RSX180 and RSX280
+# T3X/Z compiler for RSX180 and RSX280 - REL version
 
-This a port of Nils M Holm's [T3X/Z](http://t3x.org/t3x/index.html) compiler to the [RSX180](http://p112.sourceforge.net/index.php?rsx180) and [RSX280](https://github.com/hperaza/RSX280) OSes.
+This a further development of the port of Nils M Holm's [T3X/Z](http://t3x.org/t3x/index.html) compiler to [RSX180](http://p112.sourceforge.net/index.php?rsx180) and [RSX280](https://github.com/hperaza/RSX280).
 
-T3X is a small, portable, procedural, block-structured, recursive, almost typeless, and to some degree object-oriented programming language with a Pascal-like syntax.
-
-The original T3X/Z compiler implements a large subset of the T3X language and was written for Z80-based computers running CP/M.
-
-This RSX180/280 port required mainly a rewrite of the run-time library; the compiler code itself required little modification.
-
-Like the original T3X/Z compiler, the RSX180/280 port creates executable files directly with no linking step involved. While that choice is adequate for a small compiler like this, it nevertheless reduces flexibility by not being able to link modules compiled separately, or to machine-code routines, user or system libraries, etc.
+This version outputs object files in Microsoft REL format, which are then linked using a standard linker to the run-time library (and possibly to user-written assembly language rotines too) to produce the final task image file. The same REL file can be linked to the CP/M version of the run-time library to produce a CP/M executable without having to recompile the sources again with the CP/M version of the compiler.
 
 ## Building the compiler
 
@@ -18,43 +12,67 @@ The compiler can be built under CP/M or RSX180/280, or cross-compiled under Linu
 
 Required files:
 
-* The compiler sources, without the run-time library.
+* The compiler source file.
 * The run-time library sources.
 * The correct system include files for the target system (the ones in this repository are for RSX280).
 * The [ZSM4](https://github.com/hperaza/ZSM4) macro-assembler.
+* A librarian program for REL files (Microsoft LIB80, Digital Research's LIB or the CP/M version of RSX180/280 LBR)
 * Digital Research's LINK or the CP/M version of RSX180/280 linker TKB.
 * The runnable CP/M version of the compiler (there is a copy in the [bin](bin/) directory.)
 
 Steps:
 
-* Build the run-time library:
+* Compile the run-time library modules (note the /s8 option to generate 8-character symbol names):
   
   ```
-  zsm4 =lib
-  link lib.bin=lib
+  zsm4 =comp/s8
+  zsm4 =div/s8
+  zsm4 =mult/s8
+  zsm4 =strip/s8
+  zsm4 =start/s8
+  zsm4 =t/s8
   ```
 
-* Integrate the run-time library into the compiler sources:
+* Combine the run-time modules into a library:
   
   ```
-  mklib
+  lbr t3xz.lib=t/e+start/e+comp/e+div/e+mult/e+strip/e
   ```
 
-* Build the CP/M version of the RSX180/280 compiler:
+* Build the native RSX180/280 compiler. For this step you can use the original CP/M compiler that creates a COM file directly, and then use the resulting compiler to compile the compiler to a REL module:
   
   ```
   t3xz16 t
-  ```
-
-* Build the native RSX180/280 compiler:
-  
-  ```
   pip t.t3x=t.t
   t t
   ```
 
-The above steps produce a `t.com` CP/M cross-compiler that can be used to generate RSX180/280 task image files under CP/M, and a `t.tsk` native RSX180/280 compiler.
+  Alternalively, you can use the pre-compiled version that produces REL files: 
+  
+  ```
+  pip t.t3x=t.t
+  t3x t
+  ```
+  
+* Link the resulting module to produce the native RSX180/280 compiler:
+  
+  ```
+  tkb t=t.obj,t3xz/lb/of:t/task=...t3x/ext=25000/asg=ti:1,sy:2-6
+  ```
 
+* Optionally, you can build a CP/M version of the compiler:
+
+  ```
+  tkb t=t.obj,t3xzcpm/lb/of:c
+  ```
+
+  Or, using DR's link:
+  
+  ```
+  link t.obj,t3xzcpm.lib[s]
+  ```
+
+  
 ### Building on RSX180/280
 
 Required files:
@@ -63,12 +81,13 @@ Required files:
 * The runtime library sources.
 * The correct system include files for the target system (the ones in this repository are for RSX280).
 * The [ZSM4](https://github.com/hperaza/ZSM4) macro-assembler, normally included in the RSX180/280 distribution and installed as `...MAC`.
-* The TKB linker, also included in the RSX180/280 distribution and installed as `...TKB`.
+* The LBR librarian, also included in the RSX180/280 distribution and installed as `...LBR`.
+* The TKB linker, included in the RSX180/280 distribution and installed as `...TKB`.
 * The runnable RSX180 or RSX280 version of the compiler (e.g. the one generated under CP/M as described in the previous section, or the copy provided in the [bin](bin/) directory.)
 
 Steps:
 
-* Make sure MAC and TKB are installed.
+* Make sure MAC, LBR and TKB are installed.
 
 * Install the bootstrap compiler:
   
@@ -76,31 +95,28 @@ Steps:
   ins t3x/task=...t3x/inc=25000
   ```
 
-* Build the run-time library:
+* Build the run-time library modules:
   
   ```
-  mac =lib/i$
-  tkb lib.bin/of:com=lib
+  mac =comp/i$/s8
+  mac =div/i$/s8
+  mac =mult/i$/s8
+  mac =strip/i$/s8
+  mac =start/i$/s8
+  mac =t/i$/s8
   ```
 
-* Compile the RSX180/280 `mklib` utility, and use PIP to make the output file contiguous (see the "Limitations" section below):
+* Combine the run-time modules into a library:
   
   ```
-  t3x mklib
-  pip mklib.tsk/co/nv=mklib.tsk
+  lbr t3xz.lib=t/e+start/e+comp/e+div/e+mult/e+strip/e
   ```
 
-* Run the `mklib` utility to merge the run-time library with the compiler sources:
-  
-  ```
-  run mklib
-  ```
-
-* Compile the compiler:
+* Build the compiler:
   
   ```
   t3x t /v
-  pip t.tsk/co/nv=t.tsk
+  tkb t=t,t3xz/lb/of:t/task=...t3x/ext=25000/asg=ti:1,sy:2-6
   ```
 
 You can try now compiling and running some example programs, e.g.:
@@ -111,9 +127,9 @@ pip fib.tsk/co/nv=fib.tsk
 run fib
 ```
 
-Note that we used the `run` command to run the new compiler directly. Alternatively, you can use the `rem` command to uninstall the old compiler then `ins` to install the new one as explained above. Don't forget to add enough stack space with the `/inc` option.
+Note that we used the `run` command to run the new compiler directly. Alternatively, you can use the `rem` command to uninstall the old compiler then `ins` to install the new one as explained above.
 
-The provided `t3x.cmd` command file automates all the above step.
+The provided `t3x.cmd` command file automates all the above steps.
 
 The additionally supplied `tbuild.cmd` command file can be used to build T3X applications.
 
@@ -125,7 +141,8 @@ Required files:
 * The runtime library sources.
 * The correct system include files for the target system (the ones in this repository are for RSX280).
 * The [ZSM4](https://github.com/hperaza/ZSM4) macro-assembler.
-* Digital Research's LINK or the CP/M version of RSX180/280 linker TKB.
+* The CP/M version of RSX180/280 librarian LBR.
+* The CP/M version of RSX180/280 linker TKB.
 * The runnable CP/M version of the compiler (there is a copy in the [bin](bin/) directory.)
 * A CP/M emulator such as John Elliot's [ZXCC](https://www.seasip.info/Unix/Zxcc/)
 
@@ -134,27 +151,51 @@ Steps:
 * Build the run-time library:
   
   ```
-  zxcc zsm4 =lib
-  zxcc drlink lib.bin=lib
+  zxcc zsm4 =comp/s8
+  zxcc zsm4 =div/s8
+  zxcc zsm4 =mult/s8
+  zxcc zsm4 =strip/s8
+  zxcc zsm4 =start/s8
+  zxcc zsm4 =t/s8
   ```
 
-* Integrate the run-time library into the compiler sources:
+* Combine the run-time modules into a library:
   
   ```
-  zxcc ./bin/mklib
+  zxcc lbr t3xz.lib=t/e+start/e+comp/e+div/e+mult/e+strip/e
   ```
 
-* Build the CP/M version of the RSX180/280 compiler:
+* Build the native RSX180/280 compiler. For this step you can use the original CP/M compiler that creates a COM file directly, and then use the resulting compiler to compile the compiler to a REL module:
   
   ```
-  zxcc ./bin/t3xz16 t
+  zxcc t3xz16 t
+  cp t.t t.t3x
+  zxcc t t
   ```
 
-* Build the native RSX180/280 compiler:
+  Alternalively, you can use the pre-compiled version that produces REL files: 
   
   ```
   cp t.t t.t3x
-  zxcc t t
+  zxcc t3x t
+  ```
+  
+* Link the resulting module to produce the native RSX180/280 compiler:
+  
+  ```
+  zxcc tkb t=t.obj,t3xz/lb/of:t/task=...t3x/ext=25000/asg=ti:1,sy:2-6
+  ```
+
+* Optionally, you can build a CP/M version of the compiler:
+
+  ```
+  zxcc tkb t=t.obj,t3xzcpm/lb/of:c
+  ```
+
+  Or, using DR's link:
+  
+  ```
+  zxcc drlink t.obj,t3xzcpm.lib[s]
   ```
 
 The above steps produce both a `t.com` CP/M cross-compiler and a `t.tsk` native RSX180/280 compiler.
@@ -163,40 +204,31 @@ The supplied `Makefile` can be used to build the compiler on Linux.
 
 ## Usage
 
-Command line syntax is the same as the CP/M version, for example:
+Command line syntax is the same as for the CP/M version, for example:
 
 ```
 t3x source [/v]
 ```
 
-The above command assumes that the compiler is installed as `...T3X`. Note that the single `/v` (verbose) option is separated by a space.
+The above command assumes that the compiler is installed as `...T3X`. Note that the optional `/v` (verbose) option is separated from the file name by a space.
 
 ## Differences with the CP/M version
 
 * The argument to the HALT statement is used as the program exit code, which RSX180/280 then passes to the parent task.
 * The default file extension is `.t3x` and not `.t`.
 * By default, no summary line is output to the terminal.
-* The `t.bdos` and `t.bdoshl` functions were replaced by a single `t.system`, but the implementation is still missing.
+* The starndard `t` object is no longer created by default, applications must use the `object` statement to instantiate it from the `t3x` class.
+* A new `external` keyword was introduced to allow linking to external user-written assembly routines; the syntax is similar to that of the `decl` statement. Parameters are passed to the assembly routine on the stack, as with the native T3X routines.
 
 ## Limitations
 
 The original [README](docs/orig/README) file mentions the limitations of the T3X/Z compiler. In addition, the current RSX180/280 port has the following ones:
 
-* The output task image file is created non-contiguous, due to a limitation of the `t.open` library function. This can be fixed with the following PIP command:
-  
-  ```
-  pip output.tsk/co/nv=output.tsk
-  ```
-  
-  where `output.tsk` is the name of the file generated by T3X.
-
-* There is no way to specify task image file attributes (e.g. task name, identification version, additional memory, priority, etc.)
-
-* The `t.system` function is recognized, but not implemented.
+* The `t.bdos` and `t.bdoshl` functions are not implemented, as they are CP/M-specific. They can be added if desired (they are present in the CP/M version of the run-time library) or called using the `external` statement.
 
 ## TODO
 
-* Implement the `t.system` call; may be tricky because of the variery of RSX180/280 system calls, register usage, etc. A second option would be to implement separate `t.*` functions for each system call, but that will break compatibility with the standard `T3X` core class. The correct T3X way, according to the [T3X Language Reference](http://t3x.org/t3x/t3x.html), would be to implement a `SYS` class.
+* Implement a `SYS` class for system-call access.
 * Modify the `t.open` function to support additional arguments for file attributes, permissions, etc.
-* More RSX-like command line syntax, e.g. `output=input/options`
-* REL output file generation, to be able to link the generated code with external routines; may make the `t.system` call obsolete, and may require the introduction of new keywords such as `external` and `public`.
+* Make the command line syntax consistent with RSX conventions, e.g. `output=input/options`
+

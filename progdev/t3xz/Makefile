@@ -1,28 +1,22 @@
-all: t.com t3x.tsk
-
-lib.bin: lib.mac
-	zxcc zsm4 -"=lib/l"
-	zxcc drlink lib.bin=lib
-	rm lib.rel lib.sym
-
-t.t: mklib.t t.src lib.bin
-	zxcc ./bin/t3xz16 mklib
-	zxcc mklib
+all: t.com t3x.com t3x.tsk
 
 t.com: t.t
 	zxcc ./bin/t3xz16 t
 
-t3x.tsk: t.t t.com
+t.obj: t.com
 	cp t.t t.t3x
 	zxcc t t
-	mv t.tsk t3x.tsk
 
-test:
-	zxcc t t
-	cp t.com t1.com
-	zxcc t t
-	comp t.com t1.com
-	cp t.com t.bin.new
+t3x.tsk: t.obj
+	(cd lib; make)
+	cp lib/t3xz.lib .
+	zxcc tkb -"t3x,trsx,trsx=t.obj/of:t,t3xz/lb/q/ext=25000/task=...t3x/ident=t3xz16/asg=ti:1,sy:2-6"
+
+t3x.com: t.obj
+	(cd lib; make)
+	cp lib/t3xzcpm.lib .
+	zxcc tkb -"t3x,tcpm,tcpm=t.obj/of:c,t3xzcpm/lb/q"
 
 clean:
-	rm -f *~ *.prn t.com t3x.tsk mklib.tsk lib.bin
+	(cd lib; make clean)
+	rm -f t.com t3x.com t3x.tsk *.rel *.obj *.lib *.sym *.map *~

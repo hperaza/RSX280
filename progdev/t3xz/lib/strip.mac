@@ -1,0 +1,34 @@
+; This is part of the T3XZ runtime library
+; Nils M Holm, 2019,2020
+; Public Domain / CC0 license
+; REL version by H Peraza, 2022
+
+	.Z80
+
+	ident	/1.0/
+
+	public	?strip,?neghl
+
+; strip signs from HL and DE
+
+?strip: bit	7,d
+	jr	z,sb0
+	ld	a,d
+	cpl
+	ld	d,a
+	ld	a,e
+	cpl
+	ld	e,a
+	inc	de
+sb0:	bit	7,h
+	ret	z
+?neghl:	ld	a,h
+	cpl
+	ld	h,a
+	ld	a,l
+	cpl
+	ld	l,a
+	inc	hl
+	ret
+
+	end

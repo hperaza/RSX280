@@ -1,0 +1,21 @@
+	.Z80
+
+	ident	/1.0/
+
+	include	CPMDEFS.INC
+
+	public	?init,?halt,?jphl
+
+	cseg
+
+?init:	ld	hl,(BDOS+1)	; set up local stack
+	ld	l,0
+	ld	sp,hl
+	push	bc		; push return address
+	ret
+
+?halt:	jp	WARMBOOT
+
+?jphl:	jp	(hl)
+
+	end

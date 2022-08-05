@@ -1,14 +1,32 @@
-; T3XZ runtime library
+; T class for T3X/Z
 ; Nils M Holm, 2019,2020
 ; Public Domain / CC0 license
-; RSX180/280 version by H Peraza, 2022
+; REL version by H Peraza, 2022
 
 	.Z80
 
+	ident	/1.1/
+
 	include	SYSFN.INC
 	include	FCB.INC
-	include	TCB.INC
 	include	QIO.INC
+
+	public	?bpw
+	public	?nl
+	public	?mcomp
+	public	?mcopy
+	public	?mfill
+	public	?mscan
+	public	?gtarg
+	public	?open
+	public	?close
+	public	?read
+	public	?write
+	public	?ren
+	public	?del
+	public	?sys
+
+	public	?cmdbf
 
 CR	equ	0Dh
 LF	equ	0Ah
@@ -16,199 +34,30 @@ ESC	equ	1Bh
 
 	cseg
 
-rtlib:	jp	start
-
-	; The following definitions MUST start at 0103h
-	; and MUST be kept in this order!
-
-	defw	rtlen		; 0103 module length for mklib.t
-	defb	'T3X'		; 0105
-
-	jp	mul15s		; 0108
-	jp	div15s		; 010b
-	jp	mod15		; 010e
-	jp	mul16		; 0111
-	jp	div16		; 0114
-	jp	cmp16s		; 0117
-	jp	cmp16		; 011a
-	jp	t_bpw		; 011d
-	jp	t_newline	; 0120
-	jp	t_memcomp	; 0123
-	jp	t_memcopy	; 0126
-	jp	t_memfill	; 0129
-	jp	t_memscan	; 012c
-	jp	t_getarg	; 012f
-	jp	t_open		; 0132
-	jp	t_close		; 0135
-	jp	t_read		; 0138
-	jp	t_write		; 013b
-	jp	t_rename	; 013e
-	jp	t_remove	; 0141
-	jp	t_system	; 0144
-	jp	exit		; 0147
-	jp	(hl)		; 014a
-
-fcb3:	defw	0		; FCBs and buffers for file descriptors 3,
-fcb4:	defw	0		; 4,
-fcb5:	defw	0		; and 5
-tbuf:	defw	0		; temporary buffer
-handle:	defb	0		; file descriptor id
-
-cmdbuf:	ds	128		; command line buffer
-
-buf:	ds	9		; name buffer for filename parsing routine
-wcflg:	ds	1		; set if wilcards found in current field
-
-IOACR	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
-
-qcreat:	QIOW$	IO.CRE,0,1,iosb,,<,,>
-qopenr:	QIOW$	IOACR,0,1,iosb,,<>
-qclose:	QIOW$	IO.DEA,0,1,iosb
-qrw:	QIOW$	IO.RVB,0,1,iosb,,<,128,,,,>
-qrenam:	QIOW$	IO.REN,2,1,iosb,,<,>
-qdel:	QIOW$	IO.DEL,2,1,iosb,,<>
-iosb:	defs	4
-
-; Call frame layout
+; Call frame layout:
 ;
-; +-----------------+
-; | argument 1      | <-- IX+2+2N
-; +-----------------+
-; | ...             |
-; +-----------------+
-; | argument N      | <-- IX+4
-; +-----------------+
-; | saved frame     |
-; +-----------------+
-; | return address  | <-- SP, IX
-; +-----------------+
-
-; 16x16 unsigned multiplication, HL = HL*DE.
-; Algorithm from Rodney Zaks, "Programming the Z80".
-
-mul16:	ld	a,l		; transfer HL to CA
-	ld	c,h
-	ld	b,16		; 16 bits to multiply
-	ld	hl,0
-mul0:	srl	c		; shift CA right, get low bit
-	rra
-	jr	nc,mul1		; zero fell out, do not add
-	add	hl,de		; else add DE
-mul1:	ex	de,hl		; DE = DE*2
-	add	hl,hl
-	ex	de,hl
-	djnz	mul0
-	ret
-
-; 16/16 unsigned division, HL = HL div DE, DE = HL rem DE.
-; Algorithm from Rodney Zaks, "Programming the Z80".
-
-div16:	ld	a,h		; transfer HL to AC
-	ld	c,l
-	ld	hl,0		; intermediate result
-	ld	b,16		; 16 bits to divide
-div0:	rl	c		; get AC high bit, rotate in result bit
-	rla
-	adc	hl,hl		; HL = HL*2, never sets C
-	sbc	hl,de		; trial subtract and test DE > HL
-	jr	nc,div1
-	add	hl,de		; DE > HL, restore HL
-div1:	ccf			; result bit
-	djnz	div0
-	rl	c		; rotate in last result bit
-	rla
-	ld	d,a
-	ld	e,c
-	ex	de,hl
-	ret
-
-; strip signs from HL and DE
-
-strip:	bit	7,d
-	jr	z,sb0
-	ld	a,d
-	cpl
-	ld	d,a
-	ld	a,e
-	cpl
-	ld	e,a
-	inc	de
-sb0:	bit	7,h
-	ret	z
-neghl:	ld	a,h
-	cpl
-	ld	h,a
-	ld	a,l
-	cpl
-	ld	l,a
-	inc	hl
-	ret
-
-; 15x15 signed multiplication
-
-mul15s:	ld	a,h
-	xor	d
-	rla			; sign difference to carry
-	push	af
-	call	strip
-	call	mul16
-	pop	af
-	ret	nc
-	jr	neghl
-
-; 15/15 signed division, common subroutine
-
-divs:	ex	de,hl
-	ld	a,h
-	xor	d
-	rla			; sign difference to carry
-	push	af
-	call	strip
-	call	div16
-	pop	af
-	ret
-
-; 15/15 signed division
-
-div15s:	call	divs
-	ret	nc
-	jr	neghl
-
-; 15/15 signed remainder
-
-mod15:	ex	de,hl
-	call	div16
-	ex	de,hl
-	ret
-
-; signed comparison HL-DE, set Z and CY flags,
-; where CY indicates that HL < DE
-
-cmp16s:	xor	a
-	sbc	hl,de
-	ret	z
-	jp	pe,csv1		; V=1?
-	jp	m,cs1
-cs0:	or	a
-	ret
-csv1:	jp	p,cs0
-cs1:	scf
-	ret
-
-cmp16:
-	ret
+;  +----------------+
+;  |   argument 1   | <-- IX+2+2N
+;  +----------------+
+;  |      ...       |
+;  +----------------+
+;  |   argument N   | <-- IX+4
+;  +----------------+
+;  | return address |
+;  +----------------+
+;  |  saved frame   | <-- SP, IX
+;  +----------------+
 
 ; T.BPW()
 ; Return bytes per word on target machine.
 
-t_bpw:	ld	hl,2
+?bpw:	ld	hl,2
 	ret
 
 ; T.NEWLINE(B)
 ; Fill B with newline sequence.
 
-t_newline:
-	push	ix
+?nl:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	h,(ix+5)	; HL = B
@@ -228,8 +77,7 @@ t_newline:
 ; return difference between first differing
 ; pair of bytes; return 0 if R1=R2
 
-t_memcomp:
-	push	ix
+?mcomp:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	h,(ix+9)	; fetch args
@@ -270,8 +118,7 @@ mc2:	pop	ix
 ; Copy N bytes from SRC to DEST
 ; regions may overlap.
 
-t_memcopy:
-	push	ix
+?mcopy:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	d,(ix+9)	; fetch args, DEST
@@ -312,8 +159,7 @@ mcp1:	ld	hl,0
 ; T.MEMFILL(R, C, N)
 ; Fill N bytes starting at R with C.
 
-t_memfill:
-	push	ix
+?mfill:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	h,(ix+9)	; fetch args
@@ -337,8 +183,7 @@ t_memfill:
 ; Find first byte C in region R of size N
 ; return offset of the byte or -1, if C is not in R.
 
-t_memscan:
-	push	ix
+?mscan:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	h,(ix+9)	; fetch args
@@ -363,37 +208,19 @@ t_memscan:
 	pop	ix
 	ret
 
-; Skip to next non-blank token after the one pointed to by HL
-; stop after B characters
-
-skipto:	ld	a,(hl)		; first skip over any non-blanks
-	cp	' '
-	jr	z,sk0
-	inc	hl
-	djnz	skipto
-	ret
-
-sk0:	ld	a,(hl)		; then skip over blanks
-	cp	' '
-	ret	nz
-	inc	hl
-	djnz	sk0
-	ret
-
 ; T.GETARG(A, BUF, N)
 ; Extract up to N-1 characters from A'th command line argument,
 ; store the characters in BUF and append a delimiting NUL char.
 ; Return the number of characters extracted (excluding the NUL).
 
-t_getarg:
-	push	ix
+?gtarg:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	a,(ix+9)	; A > 255? then fail
 	or	a
 	jp	nz,fail
 
-	ld	hl,cmdbuf
+	ld	hl,?cmdbf
 	ld	c,(ix+8)	; A
 	ld	a,(hl)		; B = max chars to search/extract
 	or	a		; COMTAIL empty?
@@ -446,6 +273,23 @@ ga3:	xor	a		; append NUL
 	sbc	hl,de
 
 	pop	ix
+	ret
+
+; Skip to next non-blank token after the one pointed to by HL
+; stop after B characters
+
+skipto:	ld	a,(hl)		; first skip over any non-blanks
+	cp	' '
+	jr	z,sk0
+	inc	hl
+	djnz	skipto
+	ret
+
+sk0:	ld	a,(hl)		; then skip over blanks
+	cp	' '
+	ret	nz
+	inc	hl
+	djnz	sk0
 	ret
 
 ; Convert character in A to upper case.
@@ -861,8 +705,6 @@ negde:	ld	a,d
 	inc	de
 	ret
 
-	cseg
-
 ; T.OPEN(NAME, MODE)
 ; Open file NAME.
 ; If MODE=0 open existing file for reading.
@@ -886,8 +728,7 @@ OFFS	equ	BLKN+2
 BUFR	equ	OFFS+2
 FDSIZE	equ	BUFR+128
 
-t_open:
-	push	ix
+?open:	push	ix
 	ld	ix,0
 	add	ix,sp
 
@@ -896,19 +737,19 @@ t_open:
 
 	ld	hl,handle	; try descriptor 3
 	ld	(hl),3
-	ld	de,(fcb3)
+	ld	de,fcb3
 	ld	a,(de)
 	inc	a
 	jr	z,op0		; unused? open it
 
 	inc	(hl)		; try descriptor 4
-	ld	de,(fcb4)
+	ld	de,fcb4
 	ld	a,(de)
 	inc	a
 	jr	z,op0		; unused? open it
 
 	inc	(hl)		; try descriptor 5
-	ld	de,(fcb5)
+	ld	de,fcb5
 	ld	a,(de)
 	inc	a
 	jr	z,op0		; unused? open it
@@ -1039,8 +880,7 @@ CLOSE:	ld	a,(handle)
 ; T.CLOSE(FD)
 ; Close file descriptor.
 
-t_close:
-	push	ix
+?close:	push	ix
 	ld	ix,0
 	add	ix,sp
 
@@ -1049,15 +889,15 @@ t_close:
 	jp	nz,fail
 
 	ld	a,(ix+4)	; find descriptor
-	ld	de,(fcb3)
+	ld	de,fcb3
 	cp	3
 	jr	z,cl0
 
-	ld	de,(fcb4)
+	ld	de,fcb4
 	cp	4
 	jr	z,cl0
 
-	ld	de,(fcb5)
+	ld	de,fcb5
 	cp	5
 	jr	z,cl0
 
@@ -1089,8 +929,7 @@ cl1:	call	CLOSE		; now close the file
 ; Read up to 128 characters from the console
 ; (used by T.READ)
 
-rdcon:
-	ld	b,(ix+5)	; number N of chars to read
+rdcon:	ld	b,(ix+5)	; number N of chars to read
 	ld	c,(ix+4)
 
 	ld	a,b		; no bytes to read?
@@ -1112,7 +951,7 @@ rc1:	ld	a,b		; N > 255?
 	ld	a,1
 	ld	(qrw+Q.LUN),a
 
-	ld	hl,(tbuf)	; use TBUF for reading
+	ld	hl,tbuf		; use TBUF for reading
 	ld	(qrw+Q.BUF),hl
 	ld	(qrw+Q.LEN),bc
 
@@ -1134,7 +973,7 @@ rc1:	ld	a,b		; N > 255?
 
 rc0a:	push	bc		; remember number of chars
 
-	ld	hl,(tbuf)	; move to data
+	ld	hl,tbuf		; move to data
 	ld	d,(ix+7)	; BUF
 	ld	e,(ix+6)
 	ldir			; move TBUF to BUF argument of T.READ
@@ -1160,7 +999,7 @@ rc0:	pop	ix
 ; T.READ(FD, BUF, N)
 ; Read up to N bytes from FD into BUF.
 
-t_read:	push	ix
+?read:	push	ix
 	ld	ix,0
 	add	ix,sp
 
@@ -1172,15 +1011,15 @@ t_read:	push	ix
 	or	a
 	jp	z,rdcon		; then read the console
 
-	ld	de,(fcb3)	; else try the file descriptors
+	ld	de,fcb3		; else try the file descriptors
 	cp	3
 	jr	z,rdfile
 
-	ld	de,(fcb4)
+	ld	de,fcb4
 	cp	4
 	jr	z,rdfile
 
-	ld	de,(fcb5)
+	ld	de,fcb5
 	cp	5
 	jr	z,rdfile
 
@@ -1380,8 +1219,7 @@ wc2:	pop	hl
 ; T.WRITE(FD, BUF, N)
 ; WRITE N bytes from BUF to FD.
 
-t_write:
-	push	ix
+?write:	push	ix
 	ld	ix,0
 	add	ix,sp
 
@@ -1397,15 +1235,15 @@ t_write:
 	jr	z,wrcon
 
 	cp	3		; otherwise try the FDs
-	ld	de,(fcb3)
+	ld	de,fcb3
 	jr	z,wrfile
 
 	cp	4
-	ld	de,(fcb4)
+	ld	de,fcb4
 	jr	z,wrfile
 
 	cp	5
-	ld	de,(fcb5)
+	ld	de,fcb5
 	jr	z,wrfile
 
 	jp	fail		; no FD? then fail
@@ -1459,18 +1297,17 @@ wf2:	ld	h,(ix+5)	; all bytes written successfully
 ; Fail if OLD does not exist or NEW does exist.
 ; Return 0=success or -1=failure.
 
-t_rename:
-	push	ix
+?ren:	push	ix
 	ld	ix,0
 	add	ix,sp
 
 	ld	h,(ix+7)	; expand OLD name to TBUF
 	ld	l,(ix+6)
-	ld	de,(tbuf)
+	ld	de,tbuf
 	ld	(qrenam+Q.P1),de
 	call	expandfn
 
-	ld	hl,(tbuf)	; expand NEW name to TBUF+16
+	ld	hl,tbuf		; expand NEW name to TBUF+16
 	ld	de,FDBSZ
 	add	hl,de
 	ex	de,hl
@@ -1486,7 +1323,7 @@ t_rename:
 	pop	ix
 	ret
 
-RENAME:	ld	hl,(tbuf)
+RENAME:	ld	hl,tbuf
 	ld	b,2		; use LUN 2
 	call	ALUN
 	ret	c
@@ -1501,14 +1338,13 @@ RENAME:	ld	hl,(tbuf)
 
 ; T.REMOVE(NAME)
 
-t_remove:
-	push	ix
+?del:	push	ix
 	ld	ix,0
 	add	ix,sp
 
 	ld	h,(ix+5)	; expand NAME name to TBUF
 	ld	l,(ix+4)
-	ld	de,(tbuf)
+	ld	de,tbuf
 	ld	(qdel+Q.P1),de
 	call	expandfn
 
@@ -1519,7 +1355,7 @@ t_remove:
 	pop	ix
 	ret
 
-DELETE:	ld	hl,(tbuf)
+DELETE:	ld	hl,tbuf
 	ld	b,2		; use LUN 2
 	call	ALUN
 	ret	c
@@ -1536,8 +1372,7 @@ DELETE:	ld	hl,(tbuf)
 ; Do a system call with HL=HL
 ; Return the value of A.
 
-t_system:
-	push	ix
+?sys:	push	ix
 	ld	ix,0
 	add	ix,sp
 	ld	d,(ix+5)
@@ -1548,54 +1383,29 @@ t_system:
 	pop	ix
 	ret
 
-; Exit to the system with HL=code
+	dseg
 
-exit:	SC	.EXIT
-	jr	exit		; never reaches here
+fcb3:	defb	0FFh		; FCBs and buffers for file descriptors 3,
+	defs	FDSIZE-1
+fcb4:	defb	0FFh		; 4,
+	defs	FDSIZE-1
+fcb5:	defb	0FFh		; and 5
+	defs	FDSIZE-1
+handle:	defb	0		; file descriptor id
 
-	; MAIN PROGRAM ENTRY POINT
+tbuf:	defs	130		; temporary buffer
+?cmdbf:	ds	128		; command line buffer
+buf:	ds	9		; name buffer for filename parsing routine
+wcflg:	ds	1		; set if wilcards found in current field
 
-start:
-	ld	hl,0
-	ld	de,cmdbuf
-	SC	.GTSK
-	ld	sp,(cmdbuf+GT.END) ; set up local stack
+IOACR	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
 
-	ld	hl,cmdbuf
-	ld	(hl),0
-	ld	e,128
-	SC	.GTCMD
-	ld	e,(hl)		; zeroed above in case no command line present
-	ld	d,0
-	inc	hl
-	add	hl,de
-	ld	(hl),0		; add a null terminator
-
-	ld	hl,-FDSIZE	; set up FCB3 + buffer
-	add	hl,sp
-	ld	sp,hl
-	ld	(hl),0FFh
-	ld	(fcb3),hl
-
-	ld	hl,-FDSIZE	; FCB4
-	add	hl,sp
-	ld	sp,hl
-	ld	(hl),0FFh
-	ld	(fcb4),hl
-
-	ld	hl,-FDSIZE	; FCB5
-	add	hl,sp
-	ld	sp,hl
-	ld	(hl),0FFh
-	ld	(fcb5),hl
-
-	ld	hl,-130		; set up temporary buffer
-	add	hl,sp
-	ld	sp,hl
-	ld	(tbuf),hl
-
-rtlen	equ	$-rtlib
-
-	; T3X code starts here ...
+qcreat:	QIOW$	IO.CRE,0,1,iosb,,<,,>
+qopenr:	QIOW$	IOACR,0,1,iosb,,<>
+qclose:	QIOW$	IO.DEA,0,1,iosb
+qrw:	QIOW$	IO.RVB,0,1,iosb,,<,128,,,,>
+qrenam:	QIOW$	IO.REN,2,1,iosb,,<,>
+qdel:	QIOW$	IO.DEL,2,1,iosb,,<>
+iosb:	defs	4
 
 	end

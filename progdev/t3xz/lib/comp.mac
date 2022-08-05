@@ -1,0 +1,33 @@
+; This is part of the T3XZ runtime library
+; Nils M Holm, 2019,2020
+; Public Domain / CC0 license
+; REL version by H Peraza, 2022
+
+	.Z80
+
+	ident	/1.0/
+
+	public	?cmp16s
+
+	cseg
+
+; signed comparison HL-DE, set Z and CY flags,
+; where CY indicates that HL < DE
+
+?cmp16s:
+	xor	a
+	sbc	hl,de
+	ret	z
+	jp	pe,csv1		; V=1?
+	jp	m,cs1
+cs0:	or	a
+	ret
+csv1:	jp	p,cs0
+cs1:	scf
+	ret
+
+?cmp16:	xor	a
+	sbc	hl,de
+	ret
+
+	end

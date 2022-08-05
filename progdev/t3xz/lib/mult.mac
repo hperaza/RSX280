@@ -1,0 +1,44 @@
+; This is part of the T3XZ runtime library
+; Nils M Holm, 2019,2020
+; Public Domain / CC0 license
+; REL version by H Peraza, 2022
+
+	.Z80
+
+	ident	/1.0/
+
+	public	?mul16,?mul15s
+
+	extrn	?strip,?neghl
+
+; 16x16 unsigned multiplication, HL = HL*DE.
+; Algorithm from Rodney Zaks, "Programming the Z80".
+
+?mul16:	ld	a,l		; transfer HL to CA
+	ld	c,h
+	ld	b,16		; 16 bits to multiply
+	ld	hl,0
+mul0:	srl	c		; shift CA right, get low bit
+	rra
+	jr	nc,mul1		; zero fell out, do not add
+	add	hl,de		; else add DE
+mul1:	ex	de,hl		; DE = DE*2
+	add	hl,hl
+	ex	de,hl
+	djnz	mul0
+	ret
+
+; 15x15 signed multiplication
+
+?mul15s:
+	ld	a,h
+	xor	d		; sign flag set if signs differ
+	rla			; sign to carry
+	push	af
+	call	?strip
+	call	?mul16
+	pop	af
+	ret	nc
+	jp	?neghl
+
+	end

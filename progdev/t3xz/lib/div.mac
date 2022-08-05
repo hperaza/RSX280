@@ -1,0 +1,63 @@
+; This is part of the T3XZ runtime library
+; Nils M Holm, 2019,2020
+; Public Domain / CC0 license
+; REL version by H Peraza, 2022
+
+	.Z80
+
+	ident	/1.0/
+
+	public	?div16,?div15s,?mod15s
+
+	extrn	?strip,?neghl
+
+; 16/16 unsigned division, HL = HL div DE, DE = HL rem DE.
+; Algorithm from Rodney Zaks, "Programming the Z80".
+
+?div16:	ld	a,h		; transfer HL to AC
+	ld	c,l
+	ld	hl,0		; intermediate result
+	ld	b,16		; 16 bits to divide
+div0:	rl	c		; get AC high bit, rotate in result bit
+	rla
+	adc	hl,hl		; HL = HL*2, never sets C
+	sbc	hl,de		; trial subtract and test DE > HL
+	jr	nc,div1
+	add	hl,de		; DE > HL, restore HL
+div1:	ccf			; result bit
+	djnz	div0
+	rl	c		; rotate in last result bit
+	rla
+	ld	d,a
+	ld	e,c
+	ex	de,hl
+	ret
+
+; 15/15 signed division
+
+?div15s:
+	call	divs
+	ret	nc
+	jp	?neghl
+
+; 15/15 signed remainder
+
+?mod15s:
+	ex	de,hl
+	call	?div16
+	ex	de,hl
+	ret
+
+; 15/15 signed division, common subroutine
+
+divs:	ex	de,hl
+	ld	a,h
+	xor	d
+	rla			; sign difference to carry
+	push	af
+	call	?strip
+	call	?div16
+	pop	af
+	ret
+
+	end
