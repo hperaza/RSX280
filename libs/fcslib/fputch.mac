@@ -21,6 +21,8 @@
 
 	.z80
 
+	ident	/FCS1.2/
+
 	include	FCSLIB.INC
 
 CR	equ	0Dh
@@ -56,6 +58,7 @@ fpc1:	push	de
 	add	hl,de		; index into buffer
 	ld	(hl),c		; store char
 	set	FS.BM,(ix+FC.MODE)
+	set	FS.BV,(ix+FC.MODE)
 	inc	de
 	ld	(ix+FC.CUR),e
 	ld	(ix+FC.CUR+1),d

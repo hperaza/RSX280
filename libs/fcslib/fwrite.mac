@@ -21,6 +21,8 @@
 
 	.Z80
 
+	ident	/FCS1.2/
+
 	include	FCSLIB.INC
 	include	ERRORS.INC
 
@@ -81,6 +83,7 @@ fwr1:	; write loop
 	push	bc		; save len
 	ldir			; store data in buffer
 	set	FS.BM,(ix+FC.MODE)
+	set	FS.BV,(ix+FC.MODE)
 	ld	l,(ix+FC.CUR)
 	ld	h,(ix+FC.CUR+1)
 	pop	bc
