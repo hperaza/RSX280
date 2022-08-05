@@ -12,5 +12,5 @@ CF card you'll need to use a disk copy program that swaps bytes of words
 
 The "cf128m-full-emulator.img.gz" image is intended to be used with [Michal
 Tomek's Z280 emulator](https://github.com/mtdev79/z280emu). Just gunzip it,
-rename to "cf00.dsk" and copy it the the emulator's directory.
+rename it to "cf00.dsk" and copy it to the emulator's directory.
 
