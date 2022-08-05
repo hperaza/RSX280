@@ -32,6 +32,7 @@ utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap
 #size = 2880 # 1.44M floppy disk blocks
 #files = 512
 disk = cf-partition.img
+cfdev = /dev/sdb # CF device on linux via USA adapter, make sure is correct!!!
 bootloader = cfboot.bin
 size = 65536 # 32Mb partition size in blocks
 files = 8192 # max number of files
@@ -221,6 +222,7 @@ disk-image:
 	@echo "import ./hello.cmd hello.cmd" >> mkimg.cmd
 	@echo "import ./hello1.mac hello1.mac" >> mkimg.cmd
 	@echo "import ./progdev/t3xz/test/hello.t3x hello.t3x" >> mkimg.cmd
+	@echo "import ./progdev/t3xz/test/tbuild.t3x tbuild.t3x" >> mkimg.cmd
 	@echo "import ./type.cmd type.cmd" >> mkimg.cmd
 	@echo "import ./mce/mceini.cmd mceini.cmd" >> mkimg.cmd
 	@echo "mkdir games 20,3" >> mkimg.cmd
@@ -335,6 +337,8 @@ copy-progdev: progdev
 		echo "delete "`basename $$i` >> copy.cmd ; \
 		echo "import "$$i" "`basename $$i`" /c" >> copy.cmd ; \
 	done
+	@echo "delete t3xz.lib" >> copy.cmd
+	@echo "import progdev/t3xz/t3xz.lib t3xz.lib" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(disk) < copy.cmd
@@ -435,4 +439,4 @@ sysvmr:
 
 # Copy image to compact flash (Z280RC)
 cf-copy:
-	dd if=$(disk) of=/dev/sdc conv=swab bs=512 seek=$(seek)
+	dd if=$(disk) of=$(cfdev) conv=swab bs=512 seek=$(seek)
