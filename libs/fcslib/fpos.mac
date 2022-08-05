@@ -19,7 +19,7 @@
 ;                                                                      ;
 ;**********************************************************************;
 
-;  Get current file position into HLDE.
+;  Get current file position into DEBC.
 
 	.Z80
 
