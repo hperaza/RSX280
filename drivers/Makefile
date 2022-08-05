@@ -22,10 +22,10 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 drivers.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=devdu/e+devtt/e+devco/e+devnl/e+pseudo/e"
+	$(ZXCC) $(LBR) -"$@=devdu,devtt,devco,devnl,pseudo"
 
 list: drivers.lib
-	$(ZXCC) $(LBR) -",tty:=drivers.lib"
+	$(ZXCC) $(LBR) -",tty:/li=drivers.lib"
 
 clean:
 	rm -f *.rel *.lib *.prn *.sym core *~ *.\$$\$$\$$

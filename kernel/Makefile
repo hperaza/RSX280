@@ -45,13 +45,11 @@ $(OBJS): %.rel: %.mac *.inc
 
 # Note: sysdat.rel is not included (will be linked last)
 kernel.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=tskmgr/e+flags/e+sndrcv/e+device/e+session/e"
+	$(ZXCC) $(LBR) -"$@=tskmgr,flags,sndrcv,device,session,connect,ints"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+connect/e+ints/e+kalloc/e+mmu/e+syscom/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,kalloc,mmu,syscom,qio,qldr,qmcr,qtktn,ast"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+qio/e+qldr/e+qmcr/e+qtktn/e+ast/e+fork/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+pars/e+clkq/e+sysfn/e+args/e+z280rc/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,fork,pars,clkq,sysfn,args,z280rc"
 	@rm src.lib
 
 clean:

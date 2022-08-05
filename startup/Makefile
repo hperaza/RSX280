@@ -23,7 +23,7 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 init.lib: $(OBJS)	# note startup.rel not included
-	$(ZXCC) $(LBR) -"$@=init/e"
+	$(ZXCC) $(LBR) -"$@=init"
 
 clean:
 	rm -f $(OBJS) init.lib *.sym *.prn core *~ *.\$$\$$\$$

@@ -24,9 +24,9 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 $(PROG): $(OBJS)
-	$(ZXCC) $(LBR) -"$@=odt280/e+dis280/e"
-	$(ZXCC) $(LBR) -",odt=odt.lib"
-	$(ZXCC) $(LBR) -",tty:/m=odt.lib"
+	$(ZXCC) $(LBR) -"$@=odt280,dis280"
+	$(ZXCC) $(LBR) -",odt/li/cr/un=odt.lib"
+	$(ZXCC) $(LBR) -",tty:/br=odt.lib"
 	$(ZXCC) $(DRLIB) ODT.IRL=ODT.LIB[I]
 
 clean:

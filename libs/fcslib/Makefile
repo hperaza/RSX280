@@ -54,20 +54,18 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 fcslib.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=fgetln/e+fgetch/e+fputstr/e+fputln/e+fputch/e"
+	$(ZXCC) $(LBR) -"$@=fgetln,fgetch,fputstr,fputln,fputch,fopen,fclose"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fopen/e+fclose/e+fread/e+fwrite/e+freload/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,fread,fwrite,freload,fseek,fpos,fsize,fdel"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fseek/e+fpos/e+fsize/e+fdel/e+fren/e+mkdir/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,fren,mkdir,fflush,fsync,frdblk,fwrblk"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fflush/e+fsync/e+frdblk/e+fwrblk/e+frattr/e+fwattr/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,frattr,fwattr,fincbk,fdecbk,parsefn,qioblk"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fincbk/e+fdecbk/e+parsefn/e+qioblk/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+finc24/e+fdec24/e+fcmp24/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,finc24,fdec24,fcmp24"
 	@rm src.lib
-	$(ZXCC) $(LBR) -",fcslib=fcslib.lib"
-	$(ZXCC) $(LBR) -",tty:/m=fcslib.lib"
+	$(ZXCC) $(LBR) -",fcslib/li/cr/un=fcslib.lib"
+	$(ZXCC) $(LBR) -",tty:/br=fcslib.lib"
 	$(ZXCC) $(DRLIB) FCSLIB.IRL=FCSLIB.LIB[I]
 
 clean:

@@ -74,28 +74,22 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
 syslib.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=gcml/e+attach/e+detach/e+malloc/e+ovlmgr/e+cvtld/e"
+	$(ZXCC) $(LBR) -"$@=gcml,attach,detach,malloc,ovlmgr,cvtld,adec,adec2"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+adec/e+adec2/e+hldec/e+ldec/e+hlhex/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,hldec,ldec,hlhex,parsefn,ucase,perror,errstr"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+parsefn/e+ucase/e+perror/e+errstr/e+crlf/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,crlf,bin2bcd,bcd2bin,clrmem,cphlde,exit,rctrlo"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+bin2bcd/e+bcd2bin/e+clrmem/e+cphlde/e+exit/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,getln,getch,gccl,putstr,putch,sleep,crc16,md5"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+rctrlo/e+getln/e+getch/e+gccl/e+putstr/e+putch/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,crypt,cpy32m,cpl32m,add32m,and32m,or32m,xor32m"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+sleep/e+crc16/e+md5/e+crypt/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,shl32m,shr32m,rlc32m,cvtbd,cvtbd2,cvtwd,cvtwh"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+cpy32m/e+cpl32m/e+add32m/e+and32m/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+or32m/e+xor32m/e+shl32m/e+shr32m/e+rlc32m/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+cvtbd/e+cvtbd2/e+cvtwd/e+cvtwh/e+cvtwo/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+qioblk/e+savrg/e+savreg/e+saval/e+savall/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,cvtwo,qioblk,savrg,savreg,saval,savall"
 	@rm src.lib
-	$(ZXCC) $(LBR) -",syslib=syslib.lib"
-	$(ZXCC) $(LBR) -",tty:/m=syslib.lib"
+	$(ZXCC) $(LBR) -",syslib/li/cr/un=syslib.lib"
+	$(ZXCC) $(LBR) -",tty:/br=syslib.lib"
 	$(ZXCC) $(DRLIB) SYSLIB.IRL=SYSLIB.LIB[I]
 
 clean:

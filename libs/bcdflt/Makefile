@@ -5,7 +5,6 @@ VOL180  = ../../Tools/linux/vol180/vol180
 # Path to CP/M utilities
 ZSM4    = ../../Tools/cpm/zsm4.com
 LBR     = ../../Tools/cpm/lbr.com
-DRLIB   = ../../Tools/cpm/drlib.com
 
 SRCS = afp.mac \
 	atn.mac \
@@ -51,21 +50,17 @@ $(OBJS): %.rel: %.mac
 	$(ZXCC) $(ZSM4) -"="$</l
 
 bcdflt.lib: $(OBJS)
-	$(ZXCC) $(LBR) -"$@=atn/e+fabs/e+sincos/e+fneg/e+fsgn/e+fint/e"
+	$(ZXCC) $(LBR) -"$@=atn,fabs,sincos,fneg,fsgn,fint,fpow,exp,log,sqr"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fpow/e+exp/e+log/e+sqr/e+xform/e+plyevl/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,xform,plyevl,fadd,fmul,fdiv,fpmisc"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fadd/e+fmul/e+fdiv/e+fpmisc/e+afp/e+fpa/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,afp,fpa,ifp,fpi,denorm,fnorm,pshpop"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+ifp/e+fpi/e+denorm/e+fnorm/e+pshpop/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+ftrunc/e+rolfr/e+isint/e+fpclr/e"
-	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib/e+fpload/e+fpmove/e+fpdat/e"
+	$(ZXCC) $(LBR) -"$@=src.lib,ftrunc,rolfr,isint,fpclr,fpload,fpmove,fpdat"
 	@rm src.lib
-	$(ZXCC) $(LBR) -",bcdflt=bcdflt.lib"
-	$(ZXCC) $(LBR) -",tty:/m=bcdflt.lib"
-	$(ZXCC) $(DRLIB) BCDFLT.IRL=BCDFLT.LIB[I]
+	$(ZXCC) $(LBR) -",bcdflt/li/cr/un=bcdflt.lib"
+	$(ZXCC) $(LBR) -",tty:/br=bcdflt.lib"
+	$(ZXCC) $(LBR) -"bcdflt/ix=bcdflt.lib"
 
 clean:
 	rm -f $(OBJS) $(PROG) *.sym *.prn *.irl *.com *.tsk core *~ *.\$$\$$\$$
