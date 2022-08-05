@@ -1,0 +1,266 @@
+	.Z80
+
+	ident	'M580'
+
+	include	SYSFN.INC
+	include	QIO.INC
+	include	AST.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+
+LUNTI	equ	1		; default T3X TI: LUN
+TTEFN	equ	10
+TMEFN	equ	11
+
+	public	ioinit,inkey,getch,delay,putch,putstr,flush
+
+	cseg
+
+; T3X call frame layout:
+;
+;  +-----------------+
+;  | argument 1      | <-- IX+2+2N
+;  +-----------------+
+;  | ...             |
+;  +-----------------+
+;  | argument N      | <-- IX+4
+;  +-----------------+
+;  | return address  |
+;  +-----------------+
+;  | saved frame     | <-- SP, IX
+;  +-----------------+
+
+; ioinit();
+
+ioinit:	push	ix
+	ld	ix,ttq
+	call	qinit		; init input queue
+	call	ttclr
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign TI: to LUN 5
+	jr	c,ini1
+	ld	hl,qatt
+	SC	.QIO
+	jr	c,ini1
+	ld	a,(iosb)
+ini1:	ld	l,a
+	ld	h,0
+	pop	ix
+	ret
+
+ttast:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	ix,ttq
+	ld	c,l		; get char into reg C
+	ld	a,c
+	cp	3		; ^C?
+	jr	nz,ta1		; no
+	call	qinit		; else reset queue
+	ld	e,TMEFN
+	SC	.SETF		; and cancel timeout
+ta1:	call	qput		; store char in queue
+	ld	e,TTEFN
+	SC	.SETF		; and set event flag
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+; c := inkey();
+
+inkey:	push	ix
+	ld	ix,ttq
+	call	qget
+	ld	l,a
+	ld	h,0
+	pop	ix
+	ret
+
+; c := getch();
+
+getch:	push	ix
+	call	flush
+	ld	ix,ttq
+gc0:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag before accessing queue
+	call	qget		; get char
+	jr	nc,gc1		; return if available
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for char
+	jr	gc0
+gc1:	ld	l,a
+	ld	h,0
+	pop	ix
+	ret
+
+; delay(val, units);
+
+delay:	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+6)	; HL = interval magnitude
+	ld	h,(ix+7)
+	ld	d,(ix+4)	; units = ticks
+	ld	e,TMEFN
+	ld	bc,0		; no AST
+	SC	.MRKT
+	ld	e,TMEFN
+	SC	.WTSE
+	ld	bc,0
+	ld	e,TMEFN
+	SC	.CMKT		; cancel request in case flag was set by ^C
+	pop	ix
+	ret
+
+; putch(c);
+
+putch:	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	hl,(bufptr)
+	ld	a,(ix+4)
+	pop	ix
+	ld	(hl),a		; store char in buffer
+	inc	hl		; advance pointer
+	ld	(bufptr),hl
+	ld	a,(bufcnt)
+	inc	a		; increase byte counter
+	ld	(bufcnt),a
+	cp	128		; buffer full?
+	jr	nc,flush	; output it if yes
+	ld	a,c
+	cp	CR		; CR?
+	ret	nz		; return if not, else flush buffer
+	; continue below
+
+; flush();
+
+flush:	ld	a,(bufcnt)
+	or	a
+	ret	z
+	ld	hl,(bufcnt)
+	ld	h,0
+	ld	(qttout+Q.LEN),hl
+f0:	ld	hl,qttout
+	SC	.QIO
+	jr	c,f1
+	ld	a,(iosb)
+	or	a
+	jr	nz,f2
+	ld	hl,(iosb+2)	; fetch byte count
+	ld	a,h
+	or	l		; anything sent?
+	jr	z,f0		; keep trying if not
+	ld	a,(bufcnt)
+	sub	l		; all bytes sent?
+	ld	(bufcnt),a
+	ld	de,buf
+	jr	z,f1		; return if yes
+	ld	c,a		; else prepare counter of bytes to move
+	ld	b,0
+	ld	h,b		; just in case
+	add	hl,de		; HL = src (buf+sent), DE = dst (buf)
+	ldir			; shift buffer, we'll send the remainder later
+f1:	ld	(bufptr),de	; set new buffer pointer (buf+diff)
+	xor	a
+f2:	ld	l,a
+	ld	h,0
+	ret
+
+ttclr:	ld	hl,buf
+	ld	(bufptr),hl
+	xor	a
+	ld	(bufcnt),a
+	ret
+
+; putstr(str);
+
+putstr:	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	pop	ix
+p1:	ld	a,(hl)
+	or	a
+	ret	z
+	ld	c,a
+	call	putch
+	inc	hl
+	jr	p1
+
+; Input queue routines
+
+qinit:	xor	a
+	ld	(ix+q.ipos),a
+	ld	(ix+q.opos),a
+	ret
+
+qput:	ld	a,(ix+q.ipos)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+q.opos)
+	scf
+	ret	z		; queue full
+	ld	(ix+q.ipos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+q.iob),c	; store char
+	pop	ix
+	or	a
+	ret
+
+qget:	ld	a,(ix+q.opos)
+	ld	e,a
+	sub	(ix+q.ipos)
+	scf
+	ret	z		; queue empty
+	ld	a,e
+	inc	a
+	and	3Fh
+	ld	(ix+q.opos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+q.iob)	; get char
+	pop	ix
+	or	a
+	ret
+
+qsize:	ld	a,(ix+q.opos)
+	sub	(ix+q.ipos)
+	ret	nc
+	ret	nz
+	add	a,64
+	ret
+
+	dseg
+
+q.ipos	equ	0		; queue structure offsets
+q.opos	equ	1
+q.iob	equ	2
+
+ttq:	ds	1		; q.ipos
+	ds	1		; q.opos
+	ds	64		; q.buf
+
+IO.ATA	equ	IO.ATT OR (TF.AST SHL 8)
+
+qatt:	QIOW$	IO.ATA,LUNTI,3,iosb,,<ttast>
+qttout:	QIOW$	IO.WVB,LUNTI,3,iosb,,<buf,128,0>
+iosb:	ds	4
+
+bufcnt:	db	0
+bufptr:	dw	buf
+buf:	ds	128
+
+	end
