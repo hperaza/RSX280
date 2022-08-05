@@ -40,7 +40,7 @@ ins uptime
 ins vdo				! install text editor
 ins view/task=...mor		! install file viewer
 ins basic/inc=15000		! install basic interpreter
-ins t3x/task=...t3x/inc=25000	! install T3X/Z compiler
+ins t3x/inc=25000		! install T3X/Z compiler
 ins ccl/task=...ca.		! install ccl as catch-all task
 ins ted/inc=10000/pri=65	! install large-file text editor
 ins md5
