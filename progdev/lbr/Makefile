@@ -21,10 +21,10 @@ $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 lbr.com: $(OBJS)
-	$(ZXCC) $(TKB) -"$@,lbrcpm=lbr,cpmio/of=c"
+	$(ZXCC) $(TKB) -"$@,lbrcpm=lbr,cpmio/of:c"
 
 lbr.tsk: $(OBJS) syslib.lib fcslib.lib
-	$(ZXCC) $(TKB) -"$@,,lbr.map=lbr/of=t,rsxio,fcslib/lb,syslib/lb/task=...LBR/ext=4000"
+	$(ZXCC) $(TKB) -"$@,,lbr=lbr/of:t,rsxio,fcslib/lb,syslib/lb/task=...LBR/ext=2000"
 
 clean:
 	rm -f *.com *.rel *.prn *.sym *.map core *.tsk *~ *.\$$\$$\$$

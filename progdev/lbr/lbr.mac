@@ -27,28 +27,28 @@
 ;----------------------------------------------------------------------;
 
 ; TODO:
-; - check for min mem space
-; - automatic task extension
-; - create IRL file
-; - display symbol cross-reference
-; - display undefined references
+; - allow /LI /IX switches, etc. for input files ('=' case)
+; - remove old /E?
+; - operation description in listing file (',lst=' case)
+; - default to /LI if listing file is specified and no other listing
+;   option is specified (',lst=' case)
+; - /AP switch to append to an output file (if the file does not exist,
+;   create it instead of triggering an error?)
+; - /ID switch to display program version
 
 	.Z80
 
-	ident	'V1.41'
+	include	LBR.INC
 
-TAB	equ	09h
-CR	equ	0Dh
-LF	equ	0Ah
-FF	equ	0Ch
+	version	id
 
 	public	ERROR,ADDR,MEMBOT,SYMTAB,$MEMRY
 
 	extrn	GETTOP,GETCMD,RESCMD,EXIT,ERRMSG,PARSE
 	extrn	SETINP,FGETRB,FWRLST,LNBUF,LNPTR,CVTWH
 	extrn	MAKEF,OPENF,CLSE.I,CLSE.O,CLSE.L,FPUTLB
-	extrn	MODN,LIBNAM,LMODE,WRMODE,WRFLAG,CVTWD
-	extrn	PROGID,GETDT,ADDHLA
+	extrn	MODN,LIBNAM,SWBITS,CVTWD,PROGID,ADDHLA
+	extrn	POS.I,SEEK.I,POS.O,SEEK.O,GETDT,INCMEM
 
 ;-----------------------------------------------------------------------
 
@@ -81,13 +81,12 @@ ERROR:	ld	sp,STACK	; restore stack
 
 ; Program initialization
 
-INIT:	ld	hl,(MEMTOP)
-	ld	(MODBFR),hl	; module buffer grows down from memory top
-	ld	hl,(MEMBOT)
+INIT:	ld	hl,(MEMBOT)
 	ld	(MODN),hl	; user module list grows up
 	ld	(hl),0FFh	; 0FFh means end of table
 	inc	hl
 	ld	(SYMTAB),hl	; symbol table follows module list
+	ld	(MODPTR),hl
 	ld	hl,0
 	ld	(MODCNT),hl
 	ret
@@ -104,26 +103,40 @@ STRCPY:	ld	a,(hl)
 
 ;-----------------------------------------------------------------------
 
-LBR.R:	ld	hl,(MODN)
-lbr0:	ld	a,(hl)
+; Process command, create output library from input files and output
+; report to listing.
+
+LBR:	xor	a
+	ld	(PASS),a
+	ld	hl,(SYMTAB)
+	ld	(MODPTR),hl
+	bit	S1.IX,(iy)	; building IRL index?
+	call	nz,IRLHDR	; yes, write (empty) IRL header
+	call	LBR2		; build library
+	bit	S1.CR,(iy)	; user wants cross-reference?
+	call	nz,XREF		; yes
+	bit	S1.UN,(iy)	; unresolved Externals?
+	call	nz,LUNDEF
+	ret
+
+LBR.R:	ld	hl,(MODN)	; get pointer to file+modules list
+lbr1:	ld	a,(hl)		; skip to next entry
 	inc	hl
-	cp	0FEh		; end of name?
-	jr	nz,lbr0		; loop if not
+	cp	0FEh		; end of entry?
+	jr	nz,lbr1		; loop if not
 	ld	a,(hl)
-	cp	0FFh		; end of table?
-	ret	z		; return if yes
-	ld	(MODN),hl
-LBR:	ld	hl,(MODN)
+	cp	0FFh		; end of list?
+	jp	z,lbr5		; yes
+	ld	(MODN),hl	; update pointer
+LBR2:	ld	hl,(MODN)
 	call	SETINP		; setup input FCB with next file name
 	ld	(MODN),hl
-	ld	(WRMODE),a	; store switch
+	ld	(WRMODE),a	; store operation switch
 	xor	a
-	ld	(WRFLAG),a	; clear write flag
-	ld	(COMFLG),a	; clear COMMON flag
-	ld	(LRQFLG),a	; clear Lib Request flag
-	call	OPENF		; open input
+	ld	(KEEPFL),a	; no symbols to keep yet
+	call	OPENF		; open input file
 	ld	a,8
-	ld	(BITCNT),a
+	ld	(BITCNT),a	; reset REL bit counter
 	ld	hl,LBR.R
 	push	hl		; push return address
 	call	INITAB		; reset the symbol table
@@ -132,29 +145,27 @@ LBR:	ld	hl,(MODN)
 	ld	(de),a
 	inc	de
 	ld	hl,PROGID
-	call	STRCPY
-	ld	a,' '
+	call	STRCPY		; copy program ID
 	ld	b,30
-lbr1:	ld	(de),a
-	inc	de
-	djnz	lbr1
-	call	GETDT
+	call	SPACES		; separator
+	call	GETDT		; add date and time
 	call	WRLST		; output header
-	call	WRLST
-	ld	a,(LMODE)
-	cp	1		; list only module names?
+	call	WRLST		; follow with an empty line
+	bit	S1.BR,(iy)	; list only module names?
 	ld	hl,MSG6B	; "Modules in "...
-	jr	z,lbr2		; jump if yes
+	jr	nz,lbr4		; yes
+	bit	S1.LI,(iy)	; full listing?
 	ld	hl,MSG6A	; "Module listing of "...
-lbr2:	ld	de,LNBUF
-	call	STRCPY
+	jr	z,RELD		; no
+lbr4:	ld	de,LNBUF
+	call	STRCPY		; copy message
 	call	LIBNAM		; copy library name
 	call	WRLST		; output line
 	xor	a
 	ld	(ICNT),a	; reset number of items per line
 	ld	de,LNBUF
 	ld	(LNPTR),de
-	call	WRLST		; follow with empty line
+	call	WRLST		; follow with an empty line
 RELD:	ld	hl,RELD
 	push	hl		; push return address
 	call	GETBIT		; get segment type
@@ -165,8 +176,12 @@ RELD:	ld	hl,RELD
 	or	a		; special segment?
 	jp	z,S.SPC		; jump if yes
 	ld	c,16		; skip next 16 bits
-	call	SNBITS
-	ret
+	jp	SNBITS
+
+lbr5:	bit	S1.IX,(iy)	; writing IRL index?
+	ret	nz		; yes, return (EOF already copied from source)
+	ld	a,9Eh		; REL EOF
+	jp	FPUTLB		; else write REL EOF record and return
 
 MSG6A:	db	'Module listing of ',0
 MSG6B:	db	'Modules in ',0
@@ -174,8 +189,7 @@ MSG6B:	db	'Modules in ',0
 ; Process absolute segment
 
 S.ABS:	ld	c,8		; skip next 8 bits
-	call	SNBITS
-	ret
+	jp	SNBITS
 
 ; Process special relative segment
 
@@ -199,25 +213,18 @@ SGTAB:	dw	SEG.0,SEG.1,SEG.2,SEG.3
 	dw	SEG.C,SEG.D,SEG.E,SEG.F
 
 SEG.0:				; Entry symbol (name for search)
-SEG.1:	call	FLD.B		; Select COMMON block
-	ret
+SEG.1:	jp	FLD.B		; Select COMMON block
 
 SEG.2:	call	FLD.B		; Module name
-	xor	a
-	ld	(TYPE),a
-	ld	hl,0
-	ld	(ADDR),hl
-	call	ADDSYM
-	ret
+	ld	a,MODTYP
+	ld	c,0
+	jp	ADDSYM		; enter module name into symbol table
 
 SEG.3:	call	FLD.B		; Default lib (RQUEST)
-	ld	a,4 SHL 3
-	ld	(TYPE),a
+	ld	a,LIBTYP
 	ld	(LRQFLG),a	; set Lib Request flag
-	ld	hl,0
-	ld	(ADDR),hl
-	call	ADDSYM
-	ret
+	ld	c,0
+	jp	ADDSYM		; enter lib name into symbol table
 
 SEG.4:	call	FLD.B		; Special extension segment
 	ld	hl,SNAME
@@ -234,48 +241,37 @@ SEG.4:	call	FLD.B		; Special extension segment
 	inc	de
 	ld	(de),a
 	ld	a,(SLEN)
-	call	FIXLEN
 	dec	a
+	ret	z		; null name, ignore
 	cp	6+1
 	jr	c,se41
 	ld	a,6		; truncate to 6 chars
 se41:	ld	(SLEN),a
-	ld	a,5 SHL 3
-	ld	(TYPE),a
-	ld	hl,0
-	ld	(ADDR),hl
-	call	ADDSYM
-	ret
+	ld	a,IDNTYP
+	ld	c,0
+	jp	ADDSYM		; enter ident into symbol table
 
 SEG.5:	call	FLD.A		; COMMON length
 	call	FLD.B
-	ld	a,3 SHL 3
-	ld	(TYPE),a
+	ld	a,COMTYP
 	ld	(COMFLG),a	; set COMMOM flag
-	call	ADDSYM
-	ret
+	jp	ADDSV		; enter COMMON name and length into symbol table
 
 SEG.6:	call	FLD.A		; EXTERN ref
 	call	FLD.B
-	ld	a,(TYPE)
-	or	2 SHL 3
-	ld	(TYPE),a
-	call	ADDSYM
-	ret
+	ld	a,EXTTYP
+	ld	(EXTFLG),a	; set External flag
+	jp	ADDSV		; enter External ref into symbol table
 
 SEG.7:	call	FLD.A		; PUBLIC def
 	call	FLD.B
-	ld	a,(TYPE)
-	or	1 SHL 3
-	ld	(TYPE),a
-	call	ADDSYM
-	ret
+	ld	a,GBLTYP
+	jp	ADDSV		; enter Public symbol into symbol table
 
 SEG.8:				; External - offset
 SEG.9:				; External + offset
 SEG.B:				; Set loading location
-SEG.C:	call	FLD.A		; Chain address
-	ret
+SEG.C:	jp	FLD.A		; Chain address
 
 SEG.A:	call	FLD.A		; DSEG length
 	ld	hl,(ADDR)
@@ -289,19 +285,22 @@ SEG.D:	call	FLD.A		; CSEG length
 
 SEG.E:	call	FLD.A		; End of module
 	ld	a,8
-	ld	(BITCNT),a
-	call	MATCH		; module name matches user supplied name?
-	jp	nz,S.EE		; branch if not
+	ld	(BITCNT),a	; skip to next byte boundary
+	call	MMATCH		; module name matches any in user-supplied list?
+	jp	nz,S.EE		; no, ignore this module
 
 	ld	hl,(MODCNT)
-	inc	hl
+	inc	hl		; count this module
 	ld	(MODCNT),hl
 
 	ld	a,(WRMODE)
 	ld	(WRFLAG),a	; write flag = write mode
-	ld	a,(LMODE)
-	cp	2		; list all?
-	jr	z,S.EALL	; jump if yes
+	ld	a,1
+	ld	(KEEPFL),a	; keep symbols for cross-ref
+	bit	S1.LI,(iy)	; list all?
+	jr	nz,S.EALL	; yes
+	bit	S1.BR,(iy)	; list only module names?
+	jp	z,S.EE		; no
 
 	ld	de,(LNPTR)
 	ld	a,(ICNT)
@@ -313,14 +312,14 @@ SEG.E:	call	FLD.A		; End of module
 se2:	ld	a,(ICNT)
 	inc	a
 	ld	(ICNT),a	; increment counter
-	xor	a
+	ld	a,MODTYP
 	ld	(TYPE),a
-	ld	hl,(SYMTAB)
+	ld	hl,(MODPTR)	; scan symbols of last module only
 	ld	(SYMPTR),hl
 	call	GETSYM		; find module name
 	call	nc,CPYN8	; output module name
 	ld	a,' '
-	ld	(de),a
+	ld	(de),a		; add separator
 	inc	de
 	ld	(LNPTR),de
 	jp	S.EE
@@ -328,17 +327,24 @@ se2:	ld	a,(ICNT)
 S.EALL:	ld	de,LNBUF
 	ld	hl,MSG1		; "Module "
 	call	STRCPY
-	xor	a
+	push	hl
+	ld	a,MODTYP
 	ld	(TYPE),a
-	ld	hl,(SYMTAB)
+	ld	hl,(MODPTR)	; scan symbols of last module only
 	ld	(SYMPTR),hl
 	call	GETSYM
 	call	nc,CPYNAM	; output module name
+	pop	hl
+ IF 0
+	inc	hl
+	call	STRCPY		; " of "
+	call	LIBNAM		; output source file name
+ ENDIF
 	call	WRLST		; output line
 
-	ld	a,5 SHL 3
+	ld	a,IDNTYP
 	ld	(TYPE),a
-	ld	hl,(SYMTAB)
+	ld	hl,(MODPTR)	; scan last module only
 	ld	(SYMPTR),hl
 	call	GETSYM		; find ident
 	jr	c,se1		; skip if not set
@@ -400,42 +406,86 @@ se5:	call	WRLST
 	call	STRCPY
 	call	WRLST
 
-	ld	a,1 SHL 3
-	ld	(TYPE),a	; type 1: public symbols
+	ld	a,GBLTYP	; type = public symbols
 	call	DMPTAB		; dump symbol table
 	call	WRLST
+
+	ld	a,(EXTFLG)
+	or	a
+	jr	z,se6
+
 	call	WRLST
 
 	ld	hl,MSG5		; "External references:"
 	call	STRCPY
 	call	WRLST
 
-	ld	a,2 SHL 3
-	ld	(TYPE),a	; type 2: external symbols
+	ld	a,EXTTYP	; type = external symbols
 	call	DMPTAB		; dump symbol table
 	call	WRLST
 
-	call	WRLST
+se6:	call	WRLST
 	call	WRLST
 
 S.EE:	ld	a,(WRFLAG)	; check write flag
 	or	a		; no output?
-	jr	z,S.EE1		; then jump
-	ld	de,(MODPTR)	; DE = end
-	ld	hl,(MODBFR)	; HL = start
-S.EE2:	call	HL?DE
-	jr	z,S.EE3
-	ld	a,(hl)
-	call	FPUTLB		; output byte
-	dec	hl
-	jr	S.EE2
-S.EE3:	xor	a
-	ld	(WRFLAG),a	; clear write flag
-S.EE1:	ld	(COMFLG),a	; clear COMMON flag
-	call	INITAB		; reset symbol table
+	jr	z,S.EE1		; then skip copy
+	bit	S1.IX,(iy)	; building IRL index?
+	call	z,MCOPY		; no, copy module to output file
+S.EE1:	jp	INITAB		; reset symbol table and return
+
+; Copy module to output file
+
+MCOPY:	call	POS.I		; get current input file position
+	ld	hl,MODST
+	ld	a,c
+	sub	(hl)		; compute module length
+	ld	c,a
+	inc	hl
+	ld	a,b
+	sbc	a,(hl)
+	ld	b,a
+	inc	hl
+	ld	a,e
+	sbc	a,(hl)
+	ld	e,a
+	inc	hl
+	ld	a,d
+	sbc	a,(hl)
+	ld	d,a
+	or	e		; zero length?
+	or	b
+	or	c
+	ret	z		; yes, return
+	ld	(MCNT),bc
+	ld	(MCNT+2),de
+	ld	bc,(MODST)
+	ld	de,(MODST+2)
+	call	SEEK.I		; rewind to start of module
+mcpy:	call	FGETRB
+	call	FPUTLB		; copy byte
+	call	DECCNT		; decrement count
+	jr	nz,mcpy		; and loop
 	ret
 
-MSG1:	db	'Module ',0
+DECCNT:	ld	hl,(MCNT)
+	ld	a,h
+	or	l
+	dec	hl
+	ld	(MCNT),hl
+	ex	de,hl
+	jr	nz,dec1
+	ld	hl,(MCNT+2)
+	dec	hl
+	ld	(MCNT+2),hl
+	ld	a,h
+	or	l
+	ret	nz
+dec1:	ld	a,d
+	or	e
+	ret
+
+MSG1:	db	'Module ',0,' of ',0
 MSG10:	db	'Ident  ',0
 MSG2:	db	'Code size:   ',0
 MSG3:	db	'Data size:   ',0
@@ -446,16 +496,25 @@ LEN7	equ	$-MSG7-1	; -1 is to ignore trailing null in length
 MSG9:	db	'Requested libraries:',0
 
 SEG.F:	pop	hl		; End of file, discard return addr
-	call	CLSE.I		; close input file
-	ld	a,(LMODE)
-	or	a
-	ret	z
-	cp	1		; list only module names?
-	jr	nz,sf1		; branch if not
-	ld	de,(LNPTR)
-	call	WRLST		; else output last line
+	bit	S1.IX,(iy)	; building IRL index?
+	jr	z,sf0		; no
+	call	ENDIX		; else write end-of-index marker
+	call	UPDHDR		; update IRL header
+	ld	hl,0
+	ld	(MODST),hl
+	ld	(MODST+2),hl
+	call	MCOPY		; copy the whole library to the output IRL file
+sf0:	call	CLSE.I		; close input file
+	bit	S1.BR,(iy)	; list only module names?
+	jr	nz,sf1		; yes
+	bit	S1.LI,(iy)	; list all?
+	jr	nz,sf2		; yes
+	ret			; else return
+
+sf1:	ld	de,(LNPTR)	; output last line
+	call	WRLST		;  if listing module names only
 	call	WRLST		; follow with an empty line
-sf1:	ld	de,LNBUF
+sf2:	ld	de,LNBUF
 	ld	hl,MSG8		; "Total modules: "
 	call	STRCPY
 	ld	hl,(MODCNT)
@@ -463,8 +522,7 @@ sf1:	ld	de,LNBUF
 	xor	a
 	call	CVTWD
 	ex	de,hl
-	call	WRLST
-	ret
+	jp	WRLST
 
 MSG8:	db	'Total modules: ',0
 
@@ -474,7 +532,7 @@ FLD.A:	ld	c,2		; get next 2 bits
 	call	GNBITS
 	rrca
 	rrca			; into 2 upper bits
-	ld	(TYPE),a
+	ld	(SEG),a
 	ld	c,8		; get next 16 bits into HL
 	call	GNBITS
 	ld	l,a
@@ -487,19 +545,14 @@ FLD.A:	ld	c,2		; get next 2 bits
 ; Get field B of REL item
 
 FLD.B:	ld	hl,SNAME
-	ld	b,8
-	ld	a,' '
-clrn:	ld	(hl),a
-	inc	hl
-	djnz	clrn
-	ld	hl,SNAME
 	ld	c,3		; get next 3 bits (name length)
 	call	GNBITS
-	ld	(SLEN),a	; store length (note: unfixed)
 	call	FIXLEN		; length 0 means 8
+	ld	(SLEN),a	; store length
 	ld	b,a
 fb1:	ld	c,8		; get next 8 bits (char)
 	call	GNBITS
+	and	7Fh
 	ld	(hl),a		; store name
 	inc	hl
 	djnz	fb1
@@ -514,17 +567,6 @@ GETBIT:	ld	a,(BITCNT)
 	ld	(BITCNT),a
 	call	FGETRB
 	ld	(BYTE),a
-	push	hl
-	push	bc
-	ld	c,a
-	call	CHKMEM
-	ld	a,c
-	ld	hl,(MODPTR)
-	ld	(hl),a
-	dec	hl
-	ld	(MODPTR),hl
-	pop	bc
-	pop	hl
 gb1:	ld	a,(BITCNT)
 	inc	a
 	ld	(BITCNT),a
@@ -572,153 +614,351 @@ HL?DE:	ld	a,h
 	cp	e
 	ret
 
+; Compare HL and BC
+
+HL?BC:	ld	a,h
+	cp	b
+	ret	nz
+	ld	a,l
+	cp	c
+	ret
+
 ; Reset the symbol table
 
-INITAB:	ld	hl,0
-	ld	(LENC),hl
-	ld	(LEND),hl
+INITAB:	bit	S1.CR,(iy)	; user wants symbol cross-reference?
+	jr	nz,init1
+	bit	S1.UN,(iy)	; or undefined symbol list?
 	ld	hl,(SYMTAB)
-	ld	(TABPTR),hl
-	ld	(hl),0FFh
-	ld	hl,(MODBFR)
-	ld	(MODPTR),hl
+	jr	z,init2		; no, zap whole table
+init1:	ld	a,(KEEPFL)
+	or	a		; was last module included?
+	ld	hl,(MODPTR)
+	jr	z,init2		; no, zap last module
+	ld	hl,(TABPTR)	; yes, keep it
+	jr	init3
+init2:	ld	(TABPTR),hl	; reset symbol table pointer
+init3:	ld	(MODPTR),hl	; reset module pointer
+	ld	(hl),0FFh	; store end of table marker
+	call	POS.I
+	ld	(MODST),bc	; remember start of module
+	ld	(MODST+2),de
+	ld	hl,0
+	ld	(LENC),hl	; clear CSEG length
+	ld	(LEND),hl	; clear DSEG length
+	xor	a
+	ld	(WRFLAG),a	; clear write flag
+	ld	(KEEPFL),a	; clear keep symbols flag
+	ld	(EXTFLG),a	; clear External flag
+	ld	(COMFLG),a	; clear COMMON flag
+	ld	(LRQFLG),a	; clear Lib Request flag
 	ret
 
-; Enter symbol into the symbol table
+; Enter symbol and symbol value into the symbol table
 
-ADDSYM:	ld	a,(LMODE)	; check list mode
-	or	a
-	ret	z
-	cp	1		; list only module names?
-	jr	z,ad1
-	cp	2		; list all?
-	jr	z,ad2
-	ret
-ad1:	ld	a,(TYPE)	; get address type
-	and	NOT(07h SHL 3)
-	ret	nz
-ad2:	call	CHKMEM		; ensure enough memory is available
-	ld	hl,SLEN
-	ld	c,(hl)		; get length into C
-	ld	de,(TABPTR)	; get symbol table pointer
-	ld	a,(TYPE)	; get address type
-	or	c		; merge with length
-	ld	(de),a		; store in table
-	ld	a,c
-	call	FIXLEN		; get effective length
-	ld	c,a		;  into BC
-	ld	b,0
-	inc	hl		; point to name (SNAME)
-	inc	de
-	ldir			; store symbol name
-	ld	hl,(ADDR)	; get value
-	ex	de,hl
-	ld	(hl),e		; store in table
+ADDSV:	bit	S1.CR,(iy)	; cross-reference wanted?
+	jr	nz,adsv0	; yes
+	bit	S1.UN,(iy)	; unresolved list?
+	jr	z,adsv1		; no
+
+adsv0:	ld	hl,(SYMTAB)
+	ld	(SYMPTR),hl
+	push	af		; save type
+	ld	hl,(TABPTR)
+	push	hl
+	call	FNDSYM		; find symbol by name
+	jr	c,adsv3		; not found
+	ex	(sp),hl
+	xor	a
+	ld	(SLEN),a	; else omit name in record
+adsv3:	pop	hl
+	pop	af
+	ld	de,(TABPTR)	; TODO: write better!
+	push	de
+	push	hl
+	ld	c,6		; payload = 6 bytes
+	call	adsv2		; enter symbol and value
+	ld	de,(MODPTR)
+	inc	hl
+	ld	(hl),e		; store def/ref module name
 	inc	hl
 	ld	(hl),d
 	inc	hl
-	ld	(hl),0FFh	; set end marker
-	ld	(TABPTR),hl
+	pop	de
+	ld	(hl),e		; store ptr to root symbol
+	inc	hl
+	ld	(hl),d
+	ex	de,hl
+	ld	c,l		; remember address of root symbol
+	ld	b,h
+adsv4:	call	SYMDAT		; point to data area
+	ld	a,1+2+2
+	call	ADDHLA		; then to ref list
+	ld	e,(hl)		; get pointer
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	call	HL?BC		; same as root?
+	jr	nz,adsv4	; no, try next
+	ex	de,hl		; yes, end of the list
+	pop	de
+	ld	(hl),d		; replace with address of this symbol
+	dec	hl
+	ld	(hl),e
+
+	;this.ptr=root
+	;ptr=root.ptr
+	;while (ptr!=root) ptr=ptr.ptr
+	;ptr.ptr=this
+
 	ret
 
+adsv1:	ld	c,2		; payload = 2 bytes
+adsv2:	call	ADDSYM
+	ld	a,(SEG)
+	dec	hl
+	or	(hl)		; merge segment bits
+	ld	(hl),a		;  with payload length byte
+	inc	hl
+	ld	de,(ADDR)
+	ld	(hl),e		; store symbol value
+	inc	hl
+	ld	(hl),d
+	ret
+
+; Add symbol into symbol table, reserving C payload bytes.
+; Returns HL = payload area.
+
+ADDSYM:	push	bc
+	ld	(TYPE),a
+	bit	S1.IX,(iy)	; building IRL index?
+	jr	z,ad0		; no
+	and	TYPMSK
+	cp	GBLTYP		; public symbol?
+	call	z,ADDIX		; yes, add to index
+ad0:	bit	S1.BR,(iy)	; list only module names?
+	jr	z,ad1		; no, add all symbols
+	ld	a,(TYPE)	; get address type
+	and	TYPMSK
+	cp	MODTYP		; module name?
+	pop	bc
+	ret	nz		; no, return
+	push	bc
+ad1:	call	CHKMEM		; ensure enough memory is available
+	ld	hl,SLEN
+	ld	c,(hl)		; get length into C
+	ld	de,(TABPTR)	; get symbol table pointer
+	ld	a,(TYPE)	; get symbol type
+	or	c		; merge with length
+	ld	(de),a		; store in table
+	inc	de
+	ld	b,0		; BC = length
+	ld	a,c
+	or	a
+	jr	z,ad2
+	inc	hl		; point to name (SNAME)
+	ldir			; store symbol name
+ad2:	pop	hl		; get payload length
+	ld	a,l
+	ld	(de),a		; store in table
+	inc	de
+	ld	h,0
+	add	hl,de
+	ld	(hl),0FFh	; set end marker
+	ld	(TABPTR),hl
+	ex	de,hl		; return HL = addr of payload area
+	ret
+
+; TODO: Check!
+
+TSHIFT:	ld	a,(hl)
+	inc	a		; end of table?
+	ret	z
+	ld	de,(TABPTR)
+	inc	de		; include end marker in copy
+	ex	de,hl
+	or	a
+	sbc	hl,de		; obtain length
+	push	hl
+	ex	de,hl		; DE = src
+	ld	a,(SLEN)
+	add	a,4		; len,seg,value
+	add	a,c		; add any extra payload
+	ld	l,a
+	ld	h,0
+	add	hl,de
+	ld	(TABPTR),hl	; set new end of table
+	ex	de,hl		; HL = src, DE = dst
+	pop	bc
+	lddr			; shift table up
+	inc	hl		; HL = addr to store new symbol
+	ret
+
+; Find root symbol entry for cross-reference record. Preserves DE.
+
+FNDNAM:	ld	c,l		; remember symbol address
+	ld	b,h
+fn1:	ld	a,(hl)
+	and	LENMSK
+	ret	nz		; found
+	ld	a,1+1+2+2	; skip length, segment, value, modptr
+	call	ADDHLA
+	ld	a,(hl)		; get chain pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	HL?BC		; back home?
+	jr	nz,fn1		; no, try next record in chain
+	scf
+	ret			; no record found (should not happen)
+
 ; Get next symbol of specified type in symbol table, starting from current
-; position (SYMPTR).  Returns CY set if no more symbol were found.
+; position (SYMPTR). Returns CY set if no more symbols left. Preserves DE.
 
 GETSYM:	ld	hl,(SYMPTR)
 	ld	ix,TYPE
-fnd1:	ld	a,(hl)
-	cp	0FFh
+fnd1:	ld	a,(hl)		; get first byte from symbol entry
+	cp	0FFh		; end of table?
 	scf
-	ret	z
-	ld	c,a
-	and	07h SHL 3
-	cp	(ix)
-	ret	z
-	ld	a,c
-	and	07h
-	call	FIXLEN
-	add	a,3
-	call	ADDHLA
-	jr	fnd1
+	ret	z		; yes, return - symbol not found
+	and	TYPMSK		; mask type bits
+	cp	(ix)		; type matches?
+	ret	z		; yes, return
+	call	NXTSYM		; point to start of next symbol
+	jr	fnd1		; and loop
 
-; Check for enough available memory
+; Find symbol by name, match only Public and External types. Used by the
+; symbol cross-reference routines.
+
+FNDSYM:	ld	hl,(SYMPTR)
+fnd2:	ld	a,(hl)
+	cp	0FFh		; end of table?
+	scf
+	ret	z		; yes, return - symbol not found
+	and	TYPMSK
+	cp	GBLTYP		; Public symbol?
+	jr	z,fnd3		; yes
+	cp	EXTTYP		; External reference?
+	jr	nz,fnd4		; no, skip
+fnd3:	push	hl
+	ex	de,hl
+	call	CMPNAM		; name matches?
+	pop	hl
+	ret	z		; yes, return
+fnd4:	call	NXTSYM		; else try next
+	jr	fnd2
+
+CMPNAM:	ld	hl,SLEN
+	ld	a,(de)
+	and	LENMSK
+	cp	(hl)		; same length?
+	ret	nz		; no, return
+	ld	b,a
+cmp1:	inc	hl
+	inc	de
+	ld	a,(de)
+	cp	(hl)		; else compare strings
+	ret	nz
+	djnz	cmp1
+	ret
+
+; Advance SYMPTR to start of next symbol.
+
+NXTSYM:	ld	hl,(SYMPTR)
+	ld	a,(hl)		; get len+type byte
+	inc	hl
+	and	LENMSK		; mask length bits
+	call	ADDHLA
+	ld	a,(hl)		; get symbol segment byte
+	inc	hl
+	and	LENMSK		; length of additional payload
+	call	ADDHLA		; point to start of next symbol
+	ld	(SYMPTR),hl	; update pointer
+	ret
+
+; Check for enough available memory, request more if necessary.
 
 CHKMEM:	ld	hl,(TABPTR)
-	ld	de,80h
+	ld	de,32		; more than enough for a symbol entry
 	add	hl,de
 	ex	de,hl
-	ld	hl,(MODPTR)
-	call	HL?DE
-	ret	nc
+	ld	hl,(MEMTOP)
+	call	HL?DE		; enough space?
+	ret	nc		; yes, return
+	ld	hl,2048
+	call	INCMEM		; else try extending task size
+	ex	de,hl
 	ld	hl,ERROVF
-	jp	ERROR
+	jp	c,ERROR
+	ld	(MEMTOP),de	; set new memory top
+	ret
 
 ERROVF:	db	'Out of memory',0
 
 ; Dump all symbols of the specified type
 
-DMPTAB:	ld	hl,(SYMTAB)
+DMPTAB:	ld	(TYPE),a	; remember symbol type
+	ld	hl,(MODPTR)	; scan last module only
 	ld	(SYMPTR),hl
 	xor	a
 	ld	(ICNT),a
-dt1:	call	GETSYM
-	ret	c
+dt1:	call	GETSYM		; get next symbol
+	ret	c		; end of table, return
 	ld	a,(ICNT)
 	cp	4		; max 4 items per line
 	jr	nz,dt2
+	call	WRLST		; wrap to next line
 	xor	a
-	ld	(ICNT),a	; wrap to next line
-	call	WRLST
-dt2:	ld	a,(ICNT)
-	inc	a
+dt2:	inc	a
 	ld	(ICNT),a
-	ld	a,(hl)
-	push	af		; remember segment type
-	call	CPYN8
+	call	CPYN8		; copy symbol name
 	ld	a,' '
-	ld	(de),a
+	ld	(de),a		; add separator
 	inc	de
-	push	hl
-	ld	a,(hl)
+	call	CPYVAL		; follow with value
+	ld	b,4
+	call	SPACES		; add separator
+	call	NXTSYM
+	jr	dt1
+
+CPYVAL:	ld	c,(hl)		; get symbol segment
 	inc	hl
+	ld	a,(hl)		; get symbol value
+	inc	hl
+	push	hl
 	ld	h,(hl)
 	ld	l,a
 	ex	de,hl
-	call	CVTWH
+	call	CVTWH		; copy value
 	ex	de,hl
+	ld	a,c		; get segment type
+	call	SEGCHR		; conver to char id
+	ld	a,b
+	ld	(de),a		; copy segment identifier
+	inc	de
 	pop	hl
 	inc	hl
-	inc	hl
-	pop	af		; get segment type
-	and	0C0h
+	ret
+
+SEGCHR:	and	SEGMSK
 	cp	40h		; CSEG
 	ld	b,''''
-	jr	z,dt4
+	ret	z
 	cp	80h		; DSEG
 	ld	b,'"'
-	jr	z,dt4
+	ret	z
 	cp	0C0h		; COMMON
 	ld	b,'!'
-	jr	z,dt4
-dt3:	ld	b,' '		; ASEG
-dt4:	ld	a,b
-	ld	(de),a
-	inc	de
-	ld	b,4
-	ld	a,' '
-dt5:	ld	(de),a		; output separator
-	inc	de
-	djnz	dt5
-	ld	(SYMPTR),hl
-	jr	dt1
+	ret	z
+	ld	b,' '		; ASEG
+	ret
 
 ; Dump COMMON names
 
-DMPCOM:	ld	hl,(SYMTAB)
+DMPCOM:	ld	hl,(MODPTR)	; scan last module only
 	ld	(SYMPTR),hl
 	xor	a
 	ld	(ICNT),a
-	ld	a,3 SHL 3
+	ld	a,COMTYP
 	ld	(TYPE),a
 dc1:	call	GETSYM
 	ret	c
@@ -727,17 +967,14 @@ dc1:	call	GETSYM
 	jr	z,dc5
 	ld	de,LNBUF	; indent if not first time
 	ld	b,LEN7
-	ld	a,' '
-dc6:	ld	(de),a
-	inc	de
-	djnz	dc6
+	call	SPACES
 dc5:	ld	a,(hl)
 	inc	hl
 	push	hl		; remember start of name
-	and	07h
-	call	FIXLEN
-	push	af
+	and	LENMSK		; mask length bits
+	push	af		; save length
 	call	ADDHLA
+	inc	hl		; skip segment (we know is COMMON)
 	ld	a,(hl)		; get value (COMMON length)
 	inc	hl
 	ld	h,(hl)
@@ -754,29 +991,27 @@ dc5:	ld	a,(hl)
 	ld	a,'/'
 	ld	(de),a
 	inc	de
-	pop	af
-	pop	hl
+	pop	af		; pop length
+	pop	hl		; pop pointer to start of name
 	ld	c,a
 	ld	b,0
-	ldir
+	ldir			; copy name
 	ld	a,'/'
 	ld	(de),a
 	inc	de
 	call	WRLST		; output line
-	inc	hl
-	inc	hl
-	ld	(SYMPTR),hl
+	call	NXTSYM
 	ld	a,1
 	ld	(ICNT),a
 	jr	dc1
 
 ; Dump names of requested libraries
 
-DMPLRQ:	ld	hl,(SYMTAB)
+DMPLRQ:	ld	hl,(MODPTR)	; scan last module only
 	ld	(SYMPTR),hl
 	xor	a
 	ld	(ICNT),a
-	ld	a,4 SHL 3
+	ld	a,LIBTYP
 	ld	(TYPE),a
 dl1:	call	GETSYM
 	ret	c
@@ -791,88 +1026,82 @@ dl2:	ld	a,(ICNT)
 	ld	(ICNT),a
 	call	CPYN8
 	ld	a,' '
-	ld	(de),a		; output separator
+	ld	(de),a		; add separator
 	inc	de
-	inc	hl
-	inc	hl
-	ld	(SYMPTR),hl
+	call	NXTSYM
 	jr	dl1
 
 ; Copy symbol name to output string
 
-CPYNAM:	ld	a,(hl)
-	and	07h
-	call	FIXLEN
-	inc	hl
+CPYNAM:	ld	a,(hl)		; get type and length
+	and	LENMSK		; leave length bits
+	ret	z
+	inc	hl		; point to start of name
 	ld	c,a
 	ld	b,0		; BC = length
-	ldir
+	ldir			; copy name
 	ret
 
 ; Copy symbol name to output string, padding to 8 chars with spaces
 
-CPYN8:	ld	a,(hl)
-	and	07h
-	call	FIXLEN
-	inc	hl
-	ld	c,a
-	ld	b,0
-	push	bc
-	ldir
-	pop	bc
+CPYN8:	push	hl
+	call	FNDNAM
+	call	cpyn81
+	pop	hl
+	jp	SYMDAT
+
+cpyn81:	call	CPYNAM		; copy name
+	ld	c,a		; A still contains length
 	ld	a,8
 	sub	c
 	ret	z
 	ld	b,a
-	ld	a,' '
-cp81:	ld	(de),a
+SPACES:	ld	a,' '
+pad8:	ld	(de),a		; pad with spaces
 	inc	de
-	djnz	cp81
+	djnz	pad8
 	ret
 
-; Check if user-specified module name matches the one in symbol table
+; Point to symbol data area
 
-MATCH::	ld	hl,(MODN)
+SYMDAT:	ld	a,(hl)
+	inc	hl
+	and	LENMSK
+	jp	ADDHLA
+
+; Check if module name matches any in user-supplied list
+
+MMATCH:	ld	hl,(MODN)
 	ld	a,(hl)
 	cp	0FEh		; null module list?
 	jr	z,EQL		; default behavior is match
-	cp	' '
+	or	a
 	jr	z,EQL		; same for an empty name
-	ld	hl,(SYMTAB)
+	ld	hl,(MODPTR)	; scan last module only
 	ld	(SYMPTR),hl
-	xor	a
+	ld	a,MODTYP
 	ld	(TYPE),a	; type = module name
 	call	GETSYM		; get current module name
 	jr	c,NEQ		; branch if not found
-	ld	a,(hl)
-	and	07h
-	call	FIXLEN
-	ld	b,a		; get module name length into B
-	inc	hl
-	ld	de,(MODN)	; DE = start of user-specified module list
-m6:	ld	a,(de)
+	ld	de,SNAME	; DE = dest
+	call	CPYNAM		; copy name
+	xor	a
+	ld	(de),a		; end with a null
+	ld	hl,(MODN)	; DE = start of user-specified module list
+m1:	ld	a,(hl)
 	cp	0FEh		; end of list?
 	jr	z,NEQ		; branch if yes, not found
-	push	hl		; remember start of name
-	push	bc		;  and its length
-	ld	c,8		; user names are always padded to 8 chars
-m3:	ld	a,(de)
-	cp	'?'		; test for wildcard
-	jr	z,m4
-	cp	(hl)		; else compare chars
-	jr	nz,m5		; no match, exit loop
-m4:	inc	de		; else advance pointers
+	ld	de,SNAME
+	push	hl
+	call	MATCH		; name matches?
+	pop	hl
+	jr	z,EQL		; exit loop if yes, found
+m2:	ld	a,(hl)
 	inc	hl
-	dec	c
-	djnz	m3		; and loop
-	inc	c
-	dec	c
-	jr	z,EQ0		; if end of user name we have a match
-	ld	a,(de)
-	cp	' '
-	jr	nz,m5
-EQ0:	pop	bc		; drop saved length
-	pop	hl		;  and saved start of module name
+	or	a
+	jr	nz,m2		; skip to next name
+	jr	m1		; and loop
+
 EQL:	ld	a,(WRMODE)
 	cp	2		; delete module?
 	jr	z,NEQ1		; jump if yes, return 0FFh
@@ -886,19 +1115,344 @@ NEQ1:	xor	a
 	dec	a		; else return 0FFh
 	ret
 
-m5:	ld	b,c
-m7:	inc	de		; skip to end of user name
-	djnz	m7
-	inc	de
-	pop	bc		; restore saved length,
-	pop	hl		;  start of module name
-	jr	m6		;   and loop to try next name in list
+; Match string in DE against pattern in HL. Both are zero-terminated.
+; Returns Z if string matches pattern.
+
+MATCH:	ld	c,1		; star flag: 0 if star seen, 1 otherwise
+mstart:	ld	(MSTR),de
+	ld	(MPAT),hl
+mloop:	ld	a,(de)
+	or	a
+	jr	z,eloop
+	ld	a,(hl)
+	cp	'%'		; % matches a single character
+	jr	z,next
+	cp	'*'		; * matches zero or more characters
+	jr	nz,other
+	ld	c,0		; star = 0
+	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z		; match
+	jr	mstart
+
+other:	ld	a,(de)		; any other character matches literally
+	cp	(hl)
+	jr	z,next
+	ld	a,c
+	or	a		; no star?
+	ret	nz		; no match
+	ld	hl,(MSTR)
+	inc	hl
+	ld	(MSTR),hl
+	ex	de,hl		; old ++str in DE
+	ld	hl,(MPAT)	; old pat in HL
+	jr	mloop
+
+next:	inc	de
+	inc	hl
+	jr	mloop
+
+eloop:	ld	a,(hl)
+	cp	'*'
+	jr	nz,s1
+	inc	hl
+	ld	a,(hl)
+s1:	or	a
+	ret			; match if end of pattern
 
 ; If A=0 then A=8
 
 FIXLEN:	dec	a		; 0 means 8
 	and	7
 	inc	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Output symbol cross-reference
+
+XREF:	ld	de,LNBUF
+	call	WRLST		; TODO: new page?
+	ld	hl,MSG20
+	call	STRCPY
+	call	WRLST		; output header
+	call	WRLST
+
+	ld	hl,(SYMTAB)
+	ld	(SYMPTR),hl	; scan the whole table
+xr1:	ld	a,(hl)
+	cp	0FFh		; end of table?
+	ret	z		; yes, return
+	ld	bc,xr2
+	push	bc		; push return address
+	ld	c,a
+	and	LENMSK		; name-suppressed record?
+	ret	z		; yes, skip it
+	ld	a,c
+	and	TYPMSK		; mask type bits
+	cp	GBLTYP		; public symbol?
+	jp	z,xrp		; yes
+	cp	EXTTYP		; external reference?
+	jp	z,xre		; yes
+	ret
+xr2:	call	NXTSYM		; advance to next symbol
+	jr	xr1
+
+xrp:	; Public symbol found
+
+	push	hl		; remember address of this symbol
+	call	CPYN8		; copy symbol name
+	ld	a,' '
+	ld	(de),a		; add separator
+	inc	de
+	call	CPYVAL		; copy value
+	ld	b,4
+	call	SPACES		; skip to the 'Defined' section
+	ld	a,(hl)		; get pointer to module name
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CPYN8		; output module name defining this symbol
+	ld	a,' '
+	ld	(de),a		; add separator
+	inc	de
+
+xrf:	pop	hl		; pop symbol address
+	ld	(ADDR),hl	; remember it
+	xor	a
+	ld	(ICNT),a	; clear names/line counter
+xrf1:	ld	a,(hl)		; search for External entries
+	and	TYPMSK
+	cp	EXTTYP		; found?
+	call	z,xrf2		; yes, display name under 'Referenced' section
+	ld	a,(hl)
+	and	LENMSK
+	add	1+1+2+2
+	call	ADDHLA
+	ld	a,(hl)		; get chain pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	push	de
+	ld	de,(ADDR)
+	call	HL?DE		; back home?
+	pop	de
+	jr	nz,xrf1		; no, try next
+	call	WRLST		; end with a newline
+	ret
+
+xrf2:	ld	a,(ICNT)
+	cp	5		; line full?
+	jr	c,xrf3		; no
+	call	WRLST		; else output the line, wrap to next
+	ld	b,9*3
+	call	SPACES		; skip to the 'Referenced' section
+	xor	a
+xrf3:	inc	a
+	ld	(ICNT),a
+	push	hl
+	call	SYMDAT
+	ld	a,1+2
+	call	ADDHLA
+	ld	a,(hl)		; get pointer to module name
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CPYN8		; output module name referencing this symbol
+	ld	a,' '
+	ld	(de),a		; add separator
+	inc	de
+	pop	hl
+	ret
+
+xre:	; External reference found
+
+	ld	c,l		; remember symbol address
+	ld	b,h
+xre1:	ld	a,(hl)		; search for Public entry
+	and	TYPMSK
+	cp	GBLTYP		; found?
+	jr	z,xrp		; yes, continue via Public symbol routine
+	ld	a,(hl)
+	and	LENMSK
+	add	1+1+2+2
+	call	ADDHLA
+	ld	a,(hl)		; get chain pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	HL?BC		; back home?
+	jr	nz,xre1		; no, try next
+
+	push	hl		; remember symbol address
+	call	CPYN8		; copy symbol name
+	ld	a,' '
+	ld	(de),a		; add separator
+	inc	de
+	call	CPYVAL		; copy value
+	ld	b,4+9
+	call	SPACES		; no module defines this symbol
+	jp	xrf		; display 'referenced' list
+
+MSG20:	db	'Symbol   Value    Defined  Referenced',0
+
+;-----------------------------------------------------------------------
+
+; List unsatisfied Externals
+; TODO: list Externals unsatisfied after a single scan.
+
+LUNDEF:	ld	de,LNBUF
+	call	WRLST		; TODO: new page?
+	ld	hl,MSG21
+	call	STRCPY
+	call	WRLST		; output header
+	xor	a
+	ld	(ICNT),a
+
+	ld	hl,(SYMTAB)
+	ld	(SYMPTR),hl	; scan the whole table
+lu1:	ld	a,(hl)
+	cp	0FFh		; end of table?
+	jp	z,WRLST		; yes, write line and return
+	ld	bc,lu2
+	push	bc		; push return address
+	ld	c,a
+	and	LENMSK		; name-suppressed record?
+	ret	z		; yes, skip it
+	ld	a,c
+	and	TYPMSK		; mask type bits
+;;	cp	GBLTYP		; public symbol?
+;;	jp	z,...		; yes
+	cp	EXTTYP		; external reference?
+	jp	z,lu3		; yes
+	ret
+lu2:	call	NXTSYM		; advance to next symbol
+	jr	lu1
+
+lu3:	ld	c,l		; remember symbol address
+	ld	b,h
+lu4:	ld	a,(hl)		; search for Public entry
+	and	TYPMSK
+	cp	GBLTYP		; found?
+	ret	z		; yes, return
+	ld	a,(hl)
+	and	LENMSK
+	add	1+1+2+2
+	call	ADDHLA
+	ld	a,(hl)		; get chain pointer
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	HL?BC		; back home?
+	jr	nz,lu4		; no, try next
+
+	ld	a,(ICNT)
+	cp	8		; max 8 names per line
+	jr	c,lu5
+	call	WRLST		; wrap to next line
+	xor	a
+lu5:	inc	a
+	ld	(ICNT),a
+	call	CPYN8		; copy symbol name
+	ld	a,' '
+	ld	(de),a		; add separator
+	inc	de
+	ret
+
+MSG21:	db	'Unsatisfied External requests:',0
+
+;-----------------------------------------------------------------------
+
+; Write (initially empty) IRL header.
+
+IRLHDR:	ld	b,128
+ih1:	xor	a
+	call	FPUTLB
+	djnz	ih1
+	ret
+
+; Update IRL header, called after end index marker is written (ENDIX)
+; Resets the output file pointer to the end of index section, so the
+; input library call be copied afterwards.
+
+UPDHDR:	call	POS.O
+	ld	(MODST),bc
+	ld	(MODST+2),de
+	ld	de,0
+	ld	bc,0
+	call	SEEK.O
+	call	WROFS
+	ld	bc,(MODST)
+	ld	de,(MODST+2)
+	jp	SEEK.O
+
+; Add symbol to IRL index
+
+ADDIX:	call	WROFS		; write 3-byte module offset
+	ld	hl,SLEN
+	ld	b,(hl)		; get length
+	inc	hl		; point to SNAME
+a1:	ld	a,(hl)
+	call	FPUTLB		; write symbol name
+	inc	hl
+	djnz	a1
+	ld	a,0FEh		; end of name marker
+	jp	FPUTLB		; write marker and return
+
+WROFS:	ld	bc,(MODST)	; get file offset of module start
+	ld	de,(MODST+2)
+	ld	a,e		; IRL offset is a 21-bit value
+	and	0E0h		; thus ensure upper 11 bits are zero
+	or	d
+	ld	hl,ERRBIG
+	jp	nz,ERROR	; else library is too big for IRL
+	rl	c		; convert offset to 3x 7-bit values
+	rl	b		;  as per IRL format specs
+	rl	e
+	srl	c
+	rl	b
+	rl	e
+	srl	b
+	ld	a,e
+	call	FPUTLB		; write high 7 bits
+	ld	a,b
+	call	FPUTLB		; write mid 7 bits
+	ld	a,c
+	jp	FPUTLB		; write low 7 bits and return
+
+ERRBIG:	db	'IRL index overflow',0
+
+; Add end of index marker
+
+ENDIX:	call	POS.I
+	call	PADSZ		; pad size to next 127-byte record boundary
+	ld	(MODST),bc
+	ld	(MODST+2),de
+	call	WROFS
+	ld	a,0FEh
+	call	FPUTLB
+ex1:	call	POS.O
+	ld	a,c
+	and	7Fh
+	ret	z
+	ld	a,EOF
+	call	FPUTLB		; pad with EOF chars to next record boundary
+	jr	ex1
+
+PADSZ:	ld	a,c
+	and	7Fh
+	ret	z
+	ld	a,c
+	and	80h
+	add	a,80h
+	ld	c,a
+	ret	nc
+	inc	b
+	ret	nz
+	inc	e
+	ret	nz
+	inc	d
 	ret
 
 ;-----------------------------------------------------------------------
@@ -913,25 +1467,37 @@ BITCNT:	ds	1
 
 LEND:	ds	2		; DSEG length
 LENC:	ds	2		; CSEG length
+EXTFLG:	ds	1
 COMFLG:	ds	1
 LRQFLG:	ds	1
 
 TYPE:	ds	1		; symbol type
 SLEN:	ds	1		; name length  !    do not    !
-SNAME:	ds	8		; symbol name  ! change order !
+SNAME:	ds	9		; symbol name  ! change order !
+SEG:	ds	1		; symbol segment
 ADDR:	ds	2		; symbol value
 
 SYMTAB:	ds	2		; begin of symbol table
 TABPTR:	ds	2		; current end of symbol table
 SYMPTR:	ds	2		; current symbol pointer
+MODPTR:	ds	2		; pointer to symbols of current module in table
 
-MODBFR:	ds	2		; module buffer
-MODPTR:	ds	2
+MODST:	ds	4		; file position of module start
+MCNT:	ds	4		; module copy count
+PASS:	ds	1
+
+TEMP1:	ds	2
+
+WRMODE:	ds	1
+WRFLAG:	ds	1		; write flag: 0 = no output, <>0 = output
+KEEPFL:	ds	1		; keep symbols flag
+MSTR:	ds	2
+MPAT:	ds	2
 
 MEMBOT:	ds	2		; begin of heap
 MEMTOP:	ds	2		; top of heap
 
-$MEMRY:	ds	2		; pointer to begin of free memory
+$MEMRY:	ds	2		; pointer to start of free memory
 
 	ds	128
 STACK	equ	$

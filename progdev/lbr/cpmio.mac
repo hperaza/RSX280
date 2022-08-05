@@ -24,23 +24,11 @@
 ;                                                                      ;
 ;   CP/M-specific routines.                                            ;
 ;                                                                      ;
-;   Usage:                                                             ;
-;     LBR [output][,listing[/M]=input[<module,...>][/E][/D][+...]      ;
-;                                                                      ;
-;   Example:                                                           ;
-;     LBR NEWLIB=REL1/E+REL2/E   - create a NEWLIB lib containing      ;
-;                                  REL1 and REL2 modules.              ;
-;     LBR REL1=NEWLIB<REL1>/E    - extract module REL1 from NEWLIB     ;
-;     LBR =NEWLIB<REL1>/D        - delete module REL1 from NEWLIB      ;
-;     LBR ,TTY:/M=NEWLIB         - list to console name of modules     ;
-;                                  stored in NEWLIB                    ;
-;     LBR NEWLIB2=NEWLIB1/E+REL3/E  - add module REL3 to NEWLIB,       ;
-;                                     note that the output name must   ;
-;                                     be different.                    ;
-;                                                                      ;
 ;----------------------------------------------------------------------;
 
 	.Z80
+
+	include	LBR.INC
 
 WBOOT	equ	0
 BDOS	equ	5
@@ -58,14 +46,14 @@ CPMBUF	equ	80h
 .MAKE	equ	22
 .REN	equ	23
 .DMA	equ	26
-
-CR	equ	0Dh
-LF	equ	0Ah
+.RNDRD	equ	33
+.RNDWR	equ	34
 
 	public	GETTOP,GETCMD,RESCMD,EXIT,ERRMSG,UCASE,PARSE
 	public	SETINP,FGETRB,LNBUF,LNPTR,MAKEF,OPENF,CLSE.I
-	public	FPUTLB,FWRLST,CLSE.O,CLSE.L,LIBNAM,LMODE,MODN
-	public	WRFLAG,WRMODE,CVTWH,CVTWD,GETDT,PROGID,ADDHLA
+	public	FPUTLB,FWRLST,CLSE.O,CLSE.L,LIBNAM,SWBITS,MODN
+	public	CVTWH,CVTWD,GETDT,PROGID,ADDHLA,POS.I,SEEK.I
+	public	POS.O,SEEK.O,INCMEM
 
 	extrn	ERROR,ADDR,MEMBOT,SYMTAB
 
@@ -124,7 +112,9 @@ ERRMSG:	call	PUTSTR		; display error message
 
 EXIT:	jp	WBOOT		; exit to CP/M
 
-PROGID:	db	'LBR Version 1.4',0
+PROGID:	db	'LBR '
+	version	str
+	db	0
 
 UCASE:	cp	'a'
 	ret	c
@@ -150,7 +140,8 @@ ln2:	ld	(hl),0
 
 ; Parse command line
 
-PARSE:	ld	hl,LINE+1
+PARSE:	ld	iy,SWBITS	; IY points to option switch bits
+	ld	hl,LINE+1
 	ld	e,(hl)		; get character count
 	ld	d,0
 	inc	hl
@@ -158,65 +149,208 @@ PARSE:	ld	hl,LINE+1
 	add	hl,de
 	ld	(hl),0		; append a null character
 	xor	a
-	ld	(WRFLAG),a	; write flag: no output
-	ld	(WRMODE),a
-	ld	(FLG.I),a	; no input file
+	ld	(iy),a		; clear option bits
+	ld	(iy+1),a
+	ld	(FLG.I),a	; no input file(s)
 	ld	(FLG.O),a	; no output file
 	ld	(FLG.L),a	; no listing file
-	ld	a,2
-	ld	(LMODE),a	; default listing mode = list all
 	call	LNUPR
-	call	GETDST		; get output file
+	call	GETDST		; get first (possibly output) file name
 NEXT:	ld	hl,(LNPTR)
 	ld	a,(hl)
 	inc	hl
 	or	a		; end of line?
 	jr	z,endp		; jump if yes
 	cp	'/'
-	jp	z,SWITCH	; process input switches
+	jp	z,GETSW		; process input/listing switches
 	cp	','
-	jp	z,GETLST	; get the optional listing file
+	jp	z,GETLST	; get second (possibly listing) file name
 	cp	'='
-	jp	z,GETINP	; get the input file
+	jp	z,GETINP	; get input file list
 	ld	(LNPTR),hl
 	jp	CMDERR
-endp:	ld	a,(FLG.I)	; do we have an input file?
+
+endp:	bit	S2.EQ,(iy+1)	; equal sign seen?
+	jr	z,ep1		; no, must be a listing operation
+	ld	a,(FLG.I)	; do we have an input file?
 	or	a
-	jp	z,CMDERR	; error if not
+	jp	z,CMDERR	; no, error
+	ld	a,(iy)
+	ld	c,a
+	and	SW.LST		; listing bits set?
+	jr	z,ep2		; no
+	ld	a,(FLG.L)
+	and	0Fh		; listing file specified?
+	jr	nz,ep3		; yes
+ if 0
+	ld	hl,FLG.O
+	ld	a,(hl)
+	or	a		; output file specified?
+	jp	z,CMDERR	; no, error
+	ld	(hl),0
+	ld	(FLG.L),a	; else listing file is the output file
+	ld	hl,FCB.O
+	ld	de,FCB.L
+	push	de
+	ld	bc,1+8+3
+	ldir
+	pop	hl
+	ld	de,EXT.L	; FLG.L still in A
+	jp	ADDEXT		; add default extension if none was supplied
+ else
+	ld	a,2
+	ld	(FLG.L),a	; force output to TTY:
+ endif
+ep2:	bit	S1.IX,(iy)	; generate index?
+	jr	z,ep3		; no
+	ld	hl,(ICNT)
+	dec	hl
+	ld	a,h
+	or	l		; then only one input file is allowed
+	jp	nz,CMDERR
+	ld	de,EXT.X
+	jr	ep4
+
+ep3:	ld	de,EXT.O
+ep4:	ld	hl,FCB.O
+	ld	a,(FLG.O)
+	push	af
+	call	ADDEXT		; add default output extension
+	pop	af
+	and	0Fh
+	cp	2
+	ret	c
+OERR:	ld	hl,OEMSG	; output cannot be a device
+	jp	ERROR
+
+ep1:	ld	a,(FLG.L)
+	or	a
+	jp	nz,CMDERR	; only one file allowed
+	ld	hl,FLG.O
+	ld	a,(hl)
+	ld	(hl),0		; no output file
+	ld	hl,(MODN)
+	push	hl		; push starting address of name
+	ex	de,hl
+	ld	hl,FCB.O
+	ld	bc,1+8+3
+	ldir
+	ex	de,hl
+	ld	(hl),0		; default mode is 'no-op'
+	ld	(ADDR),hl	; remember switch address
+	inc	hl
+	ld	(hl),0FEh
+	inc	hl
+	ld	(hl),0FFh	; end of input file list
+	inc	hl
+	ld	(SYMTAB),hl	; set start of symbol table
+	pop	hl		; HL = begin of name
+	push	hl
+	ld	de,EXT.I	; FLG.O still in A
+	call	ADDEXT		; add REL extension if necessary
+	pop	hl
+	call	TSTFCB		; check name specification
+	cp	2
+	jp	nc,IERR		; cannot be a device
+	ld	(FLG.I),a
+	ld	hl,(MEMBOT)
+	ld	(MODN),hl
+	ld	a,2
+	ld	(FLG.L),a	; force output to TTY:
+	ld	a,(iy)
+	ld	c,a
+	and	NOT SW.LST
+	jp	nz,CMDERR	; error if and option other than listing is set
+	ld	a,c
+	and	SW.LST
+	jp	z,CMDERR	; error if no listing option is set
 	ret
 
-; Get the input switches (only /M allowed)
+OEMSG:	db	'Illegal output file',0
 
-SWITCH:	ld	a,(hl)
-	inc	hl
-	ld	(LNPTR),hl
-	cp	'M'
-	jr	z,lstm
-ERRSW:	ld	hl,ESMSG
-	jp	ERROR
-lstm:	ld	a,1
-	ld	(LMODE),a	; list only module names
+; Process output/listing switch
+
+GETSW:	ld	bc,SWTAB
+	call	SWITCH		; get and match switch
+	jr	c,ERRSW		; error if invalid or unknown
+	ld	a,(bc)		; get bit info
+	rrca			; high nibble is switch byte index in table
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	ld	e,a		; byte index in DE
+	ld	d,0
+	ld	a,(bc)
+	and	07h		; bit number is in low nibble
+	ld	b,a
+	ld	a,80h
+	inc	b		; so mask starts from 01h
+sw4:	rlca			; get bit into position
+	djnz	sw4
+	ld	hl,SWBITS
+	add	hl,de
+	or	(hl)		; set switch bit
+	ld	(hl),a
 	jp	NEXT
 
+ERRSW:	ld	hl,ESMSG
+	jp	ERROR
+
 ESMSG:	db	'Bad switch',0
+
+SWTAB:	db	'LI',(0 SHL 4) OR S1.LI
+	db	'BR',(0 SHL 4) OR S1.BR
+	db	'CR',(0 SHL 4) OR S1.CR
+	db	'UN',(0 SHL 4) OR S1.UN
+	db	'IX',(0 SHL 4) OR S1.IX
+	db	0
+
+; Find switch in table.
+
+SWITCH:	ld	a,(hl)
+	or	a
+	scf
+	ret	z
+	ld	d,a
+	inc	hl
+	ld	a,(hl)
+	or	a
+	scf
+	ret	z
+	ld	e,a		; switch name in DE
+	inc	hl
+	ld	(LNPTR),hl
+sw1:	ld	a,(bc)
+	inc	bc
+	or	a		; end of table?
+	scf
+	ret	z		; yes, error
+	cp	d
+	ld	a,(bc)
+	inc	bc
+	jr	nz,sw2
+	cp	e
+	ret	z		; found
+sw2:	inc	bc
+	jr	sw1
 
 ; Get output (destination) file name
 
 GETDST:	ld	hl,FCB.O
 	call	MKFCB		; create output FCB
-	ld	hl,FCB.O
-	ld	de,EXT.O
-	call	ADDEXT		; add default extension if none was supplied
+	ld	hl,FLG.O
+	or	(hl)
+	ld	(hl),a		; store dot flag
 	ld	hl,FCB.O
 	call	TSTFCB		; check FCB
-	cp	2
-	jr	nc,OERR		; output cannot be a device
-	ld	(FLG.O),a	; signal we have an output file
+	ld	c,a
+	ld	hl,FLG.O
+	ld	a,(hl)
+	and	40h
+	or	c
+	ld	(hl),a		; we have an output file
 	ret
-OERR:	ld	hl,OEMSG
-	jp	ERROR
-
-OEMSG:	db	'Illegal output file',0
 
 ; Return 0 if the FCB is empty, 1 if it is a valid disk file FCB,
 ; or 2 if a device (CON:, TTY:, etc.) was specified.
@@ -235,8 +369,7 @@ TSTFCB:	inc	hl
 	inc	hl
 	ld	(LNPTR),hl
 	ex	de,hl
-	call	TSTDEV		; CP/M device
-	ret
+	jp	TSTDEV		; CP/M device
 
 ; Get the listing file name
 
@@ -244,10 +377,16 @@ GETLST:	ld	(LNPTR),hl
 	ld	a,(FLG.L)	; listing already specified?
 	or	a
 	jp	nz,CMDERR	; error if yes
+	ld	a,(iy)
+	and	NOT (1 SHL S1.IX)
+	jp	nz,CMDERR	; only /IX allowed on output file
 	ld	hl,FCB.L
 	call	MKFCB		; create listing FCB
+	ld	hl,FLG.L
+	or	(hl)
+	ld	(hl),a		; store dot flag
 	ld	hl,FCB.L
-	ld	de,EXT.L
+	ld	de,EXT.L	; FLG.L still in A
 	call	ADDEXT		; add default extension if necessary
 	ld	hl,FCB.L
 	call	TSTFCB
@@ -256,27 +395,32 @@ GETLST:	ld	(LNPTR),hl
 
 ; Get the input file name(s)
 
-GETINP:	ld	a,(FLG.I)	; input already specified?
-	or	a
-	jp	nz,CMDERR	; error if so
+GETINP:	bit	S2.EQ,(iy+1)	; '=' already seen?
+	jp	nz,CMDERR	; yes, error
+	set	S2.EQ,(iy+1)	; set flag
+	ld	de,0
+	ld	(ICNT),de	; clear input file count
 get1:	ld	(LNPTR),hl
 	ld	hl,(MODN)
 	push	hl		; push starting address of name
 	call	FCBNAM		; get input file name
-	ld	(hl),0
-	ld	(ADDR),hl	; addr. for switch
+	ld	(hl),1		; default mode is 'include'
+	ld	(ADDR),hl	; remember switch address
 	inc	hl
-	ld	(hl),0FEh
+	ld	(hl),0FEh	; end of module list marker
 	ld	(MODN),hl
 	pop	hl		; HL = begin of name
 	push	hl
-	ld	de,EXT.I
+	ld	de,EXT.I	; dot flag still in A
 	call	ADDEXT		; add REL extension if necessary
 	pop	hl
 	call	TSTFCB		; check name specification
 	cp	2
 	jp	nc,IERR		; cannot be a device
 	ld	(FLG.I),a
+	ld	hl,(ICNT)
+	inc	hl		; count file
+	ld	(ICNT),hl
 get2:	ld	hl,(LNPTR)
 	ld	a,(hl)
 	inc	hl
@@ -284,13 +428,15 @@ get2:	ld	hl,(LNPTR)
 	jp	z,GETMOD	; get module name
 	cp	'/'
 	jp	z,INPSW		; get input switches
+	cp	','
+	jr	z,get3
 	cp	'+'
-	jr	nz,get3
-	ld	de,(MODN)	; keep the 0FEh if '+'
+	jr	nz,get4
+get3:	ld	de,(MODN)	; keep the 0FEh if '+' or ','
 	inc	de
 	ld	(MODN),de
 	jr	get1
-get3:	ld	hl,(MODN)
+get4:	ld	hl,(MODN)
 	inc	hl
 	ld	(hl),0FFh	; end of input file list
 	inc	hl
@@ -308,42 +454,36 @@ IEMSG:	db	'Illegal input file',0
 GETMOD:	ld	b,8
 	ex	de,hl
 	ld	hl,(MODN)
-	call	GETNAM
-	ld	(hl),0
+	call	GETNAM		; get module name
+	ld	(hl),0		; end name with a null
 	inc	hl
-	ld	(hl),0FEh
+	ld	(hl),0FEh	; end of module list marker
 	ld	(MODN),hl
 	ex	de,hl
 	ld	a,(hl)
-	cp	','
+	cp	','		; more module names?
 	inc	hl
-	jr	z,GETMOD
+	jr	z,GETMOD	; yes, add them to the list
 	dec	hl
-	cp	'>'
-	jp	nz,CMDERR
+	cp	'>'		; end of list?
+	jp	nz,CMDERR	; no, error
 	inc	hl
 	ld	(LNPTR),hl
-	jp	get2
+	jp	get2		; yes, done
 
-; Process input switches: /E - extract module, /D - delete module
+; Process input switches
 
-INPSW:	ld	a,(hl)
-	inc	hl
-	ld	(LNPTR),hl
-	cp	'E'
-	jr	z,incl
-	cp	'D'
-	jr	z,excl
-	jp	ERRSW
-excl:	ld	a,2		; WRMODE = 2 -> exclude (delete)
-	jr	setsw
-incl:	ld	a,1		; WRMODE = 1 -> include (extract)
-setsw:	ld	(WRMODE),a
+INPSW:	ld	bc,ISWTAB
+	call	SWITCH
+	jp	c,ERRSW
+	ld	a,(bc)
 	ld	hl,(ADDR)	; get switch address (end of file name)
 	ld	(hl),a		; store switch for this file
-	xor	a
-	ld	(WRFLAG),a	; clear write flag
 	jp	get2
+
+ISWTAB:	db	'EX',1		; mode = 1 -> include (extract)
+	db	'DE',2		; mode = 2 -> exclude (delete)
+	db	0
 
 ; Create a FCB. HL = FCB address, LNPTR = input line
 
@@ -366,14 +506,18 @@ mf3:	ld	(hl),b
 	inc	de
 mf4:	ld	b,8
 	inc	hl
-	call	GETNAM		; get file name
+	call	FNAM		; get file name
 	cp	'.'		; was the extension explicitly supplied?
-	ld	(PFLG),a
+	push	af
 	jr	nz,mf5
 	inc	de
 mf5:	ld	b,3
-	call	GETNAM		; get extension
+	call	FNAM		; get extension
 	ld	(LNPTR),de
+	pop	af
+	ld	a,40h
+	ret	z
+	xor	a
 	ret
 
 ; Clear FCB. HL = FCB address
@@ -386,11 +530,12 @@ clrf1:	ld	(hl),0
 	pop	hl
 	ret
 
-; Get a name from the input line in (DE), up to C chars in length.
-; Store the name at (HL), padding with spaces if necessary.
+; Get module from the input line in (DE), up to B chars in length.
+; Store the name at (HL). Characters '_', '.' and '?' are legan in module
+; names, and '*' and '%' can be used as wildcards.
 
 GETNAM:	call	GETFS
-	jr	z,sfill
+	ret	z
 	ld	(hl),a
 	inc	hl
 	inc	de
@@ -399,6 +544,20 @@ skip:	call	GETFS
 	ret	z
 	inc	de
 	jr	skip
+
+; Get file name or extension from the input line in (DE), up to B chars
+; in length. Store the name at (HL), padding with spaces if necessary.
+
+FNAM:	call	GETFS1
+	jr	z,sfill
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	FNAM
+fskip:	call	GETFS1
+	ret	z
+	inc	de
+	jr	fskip
 sfill:	ld	(hl),' '
 	inc	hl
 	djnz	sfill
@@ -426,10 +585,6 @@ GETFS:	ld	a,(de)
 	ret	z
 	cp	'='
 	ret	z
-	cp	'_'
-	ret	z
-	cp	'.'
-	ret	z
 	cp	':'
 	ret	z
 	cp	';'
@@ -440,38 +595,60 @@ GETFS:	ld	a,(de)
 	ret	z
 	cp	'/'
 	ret	z
-	cp	'*'
-	ret	z
-	cp	'?'
-	ret	z
 	cp	','
 	ret	z
 	cp	'+'
 	ret
+
 CMDERR:	ld	hl,ERRCMD
 	jp	ERROR
+
+GETFS1:	call	GETFS
+	ret	c
+	ret	z
+	cp	'_'
+	ret	z
+	cp	'.'
+	ret	z
+	cp	'*'
+	ret	z
+	cp	'?'
+	ret
 
 ERRCMD:	db	'Command line error',0
 
 ; Add file ext (DE) if necessary.
-; HL = FCB addr.
+; HL = FCB addr, A = flags (bit 6 set if dot was found in file name)
 
 ADDEXT:	ld	bc,8+1
-	add	hl,bc
+	add	hl,bc		; point to extension field of FCB
+	ld	c,a		; save flags
 	ld	a,(hl)
-	cp	' '
-	ret	nz
-	ld	a,(PFLG)
-	cp	'.'
-	ret	z
+	cp	' '		; extension set?
+	ret	nz		; yes, return
+	ld	a,c
+	and	40h		; dot flag set?
+	ret	nz		; yes, return
 	ex	de,hl
 	ld	bc,3
-	ldir
+	ldir			; else set the extension
 	ret
 
+EXT.X:	db	'IRL'
 EXT.I:
 EXT.O:	db	'REL'
 EXT.L:	db	'PRN'
+
+; Compare file extension to the one at (DE)
+
+CMPEXT:	ld	b,3
+cmp1:	ld	a,(de)
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	de
+	djnz	cmp1
+	ret
 
 ; Check device name, return 2 if console device, 3 if printer.
 
@@ -522,12 +699,41 @@ PUTSTR:	ld	a,(hl)
 
 OPENF:	ld	de,FCB.I
 	ld	c,.OPEN
+	push	iy
 	call	BDOS
+	pop	iy
 	inc	a
 	jr	z,ERRFNF
-	ld	a,80h
-	ld	(CNT.I),a
-	ret
+	ld	hl,FLG.I
+	set	7,(hl)
+	ld	bc,0
+	ld	de,0
+	call	SEEK.I		; seek to start of file and load 1st sector
+	ld	hl,FCB.I+1+8
+	ld	de,EXT.X
+	call	CMPEXT		; IRL input file?
+	ret	nz		; no, return
+	ld	hl,BUF.I
+	ld	c,(hl)		; get offset to start of REL section
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	e,(hl)
+	ld	a,c
+	or	b
+	or	e		; return if hi-bit set in any of these
+	ret	m		;  (assume ordinary REL file)
+	rl	c		; get bits into right places
+	rr	b
+	rr	c
+	rl	b
+	rl	b
+	srl	e
+	rr	b
+	srl	e
+	rr	b
+	ld	d,0
+	jp	SEEK.I		; skip IRL header
 ERRFNF:	ld	hl,ERRNF
 	jp	ERROR
 
@@ -535,28 +741,36 @@ ERRNF:	db	'File not found',0
 
 ; Create output file
 
-MAKEF:	ld	a,(FLG.O)	; WRMODE
+MAKEF:	ld	a,(FLG.O)
 	or	a
 	jr	z,op1
+	push	iy
 	ld	de,FCB.O
 	ld	c,.ERASE
 	call	BDOS
 	ld	de,FCB.O
 	ld	c,.MAKE
 	call	BDOS
+	pop	iy
 	inc	a
 	jr	z,NOROOM
+	ld	hl,FLG.O
+	set	7,(hl)
 op1:	ld	a,(FLG.L)
 	cp	1		; disk file
 	jr	nz,op2
+	push	iy
 	ld	de,FCB.L
 	ld	c,.ERASE
 	call	BDOS
 	ld	de,FCB.L
 	ld	c,.MAKE
 	call	BDOS
+	pop	iy
 	inc	a
 	jr	z,NOROOM
+	ld	hl,FLG.L
+	set	7,(hl)
 op2:	xor	a
 	ld	(CNT.O),a
 	ld	(CNT.L),a
@@ -623,7 +837,7 @@ fw2:	ld	a,CR
 OUTCHR:	push	de
 	ld	e,a
 	ld	a,(FLG.L)
-	or	a
+	and	0Fh
 	jr	z,OUTNUL
 	dec	a
 	jr	z,OUTDSK
@@ -642,7 +856,8 @@ OUTNUL:	pop	de
 
 ; Output character to console
 
-PUTCH:	push	hl
+PUTCH:	push	iy
+	push	hl
 	push	de
 	push	bc
 	ld	e,a
@@ -651,11 +866,13 @@ PUTCH:	push	hl
 	pop	bc
 	pop	de
 	pop	hl
+	pop	iy
 	ret
 
 ; Output character to printer
 
-LPUTCH:	push	hl
+LPUTCH:	push	iy
+	push	hl
 	push	de
 	push	bc
 	ld	e,a
@@ -664,6 +881,7 @@ LPUTCH:	push	hl
 	pop	bc
 	pop	de
 	pop	hl
+	pop	iy
 	ret
 
 ; Read a byte from input file
@@ -676,12 +894,16 @@ FGETRB:	ld	a,(CNT.I)
 	push	hl
 	push	de
 	push	bc
+	push	iy
+	ld	hl,FCB.I
+	call	NXTREC
 	ld	de,BUF.I
 	ld	c,.DMA
 	call	BDOS
 	ld	de,FCB.I
-	ld	c,.READ
+	ld	c,.RNDRD
 	call	BDOS
+	pop	iy
 	pop	bc
 	pop	de
 	pop	hl
@@ -705,6 +927,17 @@ ENDF:	ld	hl,ERREOF
 
 ERREOF:	db	'Unexpected end of file',0
 
+NXTREC:	ld	de,33
+	add	hl,de		; point to r0,r1,r2
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
 ; Write byte to listing file
 
 WRPRN:	push	hl
@@ -721,12 +954,14 @@ WRPRN:	push	hl
 	ld	(CNT.L),a
 	cp	80h
 	jr	nz,wr1
+	push	iy
 	ld	de,BUF.L
 	ld	c,.DMA
 	call	BDOS
 	ld	de,FCB.L
 	ld	c,.WRITE
 	call	BDOS
+	pop	iy
 	or	a
 	jp	nz,ERRW
 	xor	a
@@ -742,6 +977,9 @@ FPUTLB:	push	hl
 	push	de
 	push	bc
 	ld	c,a
+	ld	a,(FLG.O)
+	or	a
+	jr	z,wl1
 	ld	a,(CNT.O)
 	ld	e,a
 	ld	d,0
@@ -752,14 +990,18 @@ FPUTLB:	push	hl
 	ld	(CNT.O),a
 	cp	80h
 	jr	nz,wl1
+	push	iy
 	ld	de,BUF.O
 	ld	c,.DMA
 	call	BDOS
 	ld	de,FCB.O
-	ld	c,.WRITE
+	ld	c,.RNDWR
 	call	BDOS
+	pop	iy
 	or	a
 	jr	nz,ERRW
+	ld	hl,FCB.O
+	call	NXTREC
 	xor	a
 	ld	(CNT.O),a
 wl1:	pop	bc
@@ -771,30 +1013,159 @@ ERRW:	ld	hl,ERRWF
 
 ERRWF:	db	'Disk full',0
 
+; Return current input file position in DEBC
+
+POS.I:	push	hl
+	ld	hl,FCB.I+33	; get record number from r0,r1,r2
+	ld	a,(hl)
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	b,a
+	ld	c,0		; DEBC = recno*256
+	srl	d
+	rr	e
+	rr	b
+	rr	c		; DEBC = recno*128
+	ld	a,(CNT.I)
+	add	c
+	ld	c,a
+	pop	hl
+	ret	nc
+	inc	b
+	ret	nz
+	inc	e
+	ret	nz
+	inc	d
+	ret
+
+; Seek input REL file to specified position in DEBC
+
+SEEK.I:	push	hl
+	ld	a,c
+	and	7Fh
+	ld	(CNT.I),a	; set byte pos
+	rl	c
+	rl	b
+	rl	e
+	rl	d		; DEB = recno
+	ld	hl,FCB.I+33
+	ld	(hl),b		; set recno
+	inc	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	push	iy
+	ld	de,BUF.I
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.I
+	ld	c,.RNDRD
+	call	BDOS
+	pop	iy
+	pop	hl
+	or	a
+	ret	z
+	jp	ENDF
+
+; Return current output file position in DEBC
+
+POS.O:	push	hl
+	ld	hl,FCB.O+33	; get record number from r0,r1,r2
+	ld	a,(hl)
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	b,a
+	ld	c,0		; DEBC = recno*256
+	srl	d
+	rr	e
+	rr	b
+	rr	c		; DEBC = recno*128
+	ld	a,(CNT.O)
+	add	c		; no overflow since CNT.O is always < 128
+	ld	c,a
+	pop	hl
+	ret
+
+; Seek output file to specified position in DEBC
+
+SEEK.O:	push	hl
+	push	de
+	push	bc
+	ld	a,(CNT.O)
+	or	a		; anything in buffer?
+	jr	z,sk1		; no
+	push	iy
+	ld	de,BUF.O
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.O
+	ld	c,.RNDWR
+	call	BDOS		; else flush output
+	pop	iy
+	or	a
+	jp	nz,ERRW
+sk1:	pop	bc
+	pop	de
+	ld	a,c
+	and	7Fh
+	ld	(CNT.O),a	; set byte pos
+	rl	c
+	rl	b
+	rl	e
+	rl	d		; DEB = recno
+	ld	hl,FCB.O+33
+	ld	(hl),b		; set recno
+	inc	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	push	iy
+	ld	de,BUF.O
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB.O
+	ld	c,.RNDRD
+	call	BDOS
+	pop	iy
+	pop	hl
+ if 0
+	or	a
+	ret	z
+	jp	ENDF
+ else
+	xor	a
+	ret
+ endif
+
 ; Close input file
 
 CLSE.I:	ld	a,(FLG.I)
 	or	a
-	ret	z
+	ret	p
+	push	iy
 	push	hl
 	push	de
 	push	bc
 	ld	de,FCB.I
 	ld	c,.CLOSE
 	call	BDOS
+	ld	hl,FLG.I
 	jr	cl21
 
 ; Close output file
 
 CLSE.O:	ld	a,(FLG.O)
 	or	a
-	ret	z
+	ret	p
+	push	iy
 	push	hl
 	push	de
 	push	bc
-	ld	a,9Eh		; REL EOF
-	call	FPUTLB
-cl1:	ld	a,1Ah
+cl1:	ld	a,EOF		; pad output with ^Z chars
 	call	FPUTLB
 	ld	a,(CNT.O)
 	or	a
@@ -804,17 +1175,19 @@ cl1:	ld	a,1Ah
 	call	BDOS
 	inc	a
 	jr	z,CLERR
+	ld	hl,FLG.O
 	jr	cl21
 
 ; Close listing file
 
 CLSE.L:	ld	a,(FLG.L)
-	cp	1
-	ret	nz
+	or	a
+	ret	p
+	push	iy
 	push	hl
 	push	de
 	push	bc
-cl2:	ld	a,1Ah
+cl2:	ld	a,EOF
 	call	WRPRN
 	ld	a,(CNT.L)
 	or	a
@@ -824,14 +1197,24 @@ cl2:	ld	a,1Ah
 	call	BDOS
 	inc	a
 	jr	z,CLERR
-cl21:	pop	bc
+	ld	hl,FLG.L
+cl21:	res	7,(hl)
+	pop	bc
 	pop	de
 	pop	hl
+	pop	iy
 	ret
 CLERR:	ld	hl,ERRCF
 	jp	ERROR
 
 ERRCF:	db	'Error closing output file',0
+
+;-----------------------------------------------------------------------
+
+; Extend task limits, not supported by CP/M.
+
+INCMEM:	scf			; already got all what's available
+	ret
 
 ;-----------------------------------------------------------------------
 
@@ -848,6 +1231,7 @@ YEAR	equ	7
 GETDT:	ld	ix,-9
 	add	ix,sp		; allocate 9-byte buffer
 	ld	sp,ix
+	push	iy
 
 	push	de
 	ld	c,12
@@ -923,6 +1307,7 @@ dt1:	push	ix
 	ex	de,hl
 dt2:	xor	a
 	ld	(de),a
+	pop	iy
 	ld	hl,9
 	add	hl,sp
 	ld	sp,hl		; cleanup stack
@@ -1149,32 +1534,29 @@ ADDHLA:	add	a,l
 	dseg
 
 MODE:	ds	1		; command prompt mode
-LMODE:	ds	1		; listing mode
+SWBITS:	ds	2		; option switch bits
 
 LINE:	db	128,0		; 128 characters max
 LNBUF:	ds	128		; CP/M returns the command here
 LNPTR:	ds	2
 
-PFLG:	ds	1		; file name dot presence flag
 MODN:	ds	2		; pointer to module list
+ICNT:	ds	2		; input file count
 
 FLG.I:	ds	1		; input file structure
 CNT.I:	ds	1
-FCB.I:	ds	35
+FCB.I:	ds	36
 BUF.I:	ds	128
 
 FLG.O:	ds	1		; output file structure
 CNT.O:	ds	1
-FCB.O:	ds	35
+FCB.O:	ds	36
 BUF.O:	ds	128
 
 FLG.L:	ds	1		; listing file structure
 CNT.L:	ds	1
-FCB.L:	ds	35
+FCB.L:	ds	36
 BUF.L:	ds	128
-
-WRMODE:	ds	1
-WRFLAG:	ds	1		; write flag: 0 = no output, <>0 = output
 
 filler:	ds	1
 
