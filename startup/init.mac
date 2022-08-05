@@ -270,7 +270,6 @@ CPR:	db	CR,LF,'MCR>',0
 CPRL	equ	$-CPR
 
 SYSACN:	db	'SYSTEM   ',1,1
-TKTNAM:	db	'TKTN  '
 
 sserr:	ld	de,serr
 	jr	fatal
