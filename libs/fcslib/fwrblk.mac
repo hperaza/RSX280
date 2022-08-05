@@ -21,7 +21,7 @@
 
 	.z80
 
-	ident	/FCS1.2/
+	ident	/FCS1.3/
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -83,8 +83,7 @@ FWRBLK:	push	hl
 	ld	c,(hl)
 	ld	hl,(QIOBLK+Q.BLK)
 	ld	a,(QIOBLK+Q.BLK+2)
-	ld	c,a
-	ld	b,0
+	ld	b,a
 	call	?INC24		; BHL = blkno + 1
 	call	?CMP24		; compare with F.NUSED
 	jr	z,upd1		; branch if same (on last block)
