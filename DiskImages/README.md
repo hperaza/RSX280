@@ -1,6 +1,7 @@
 The "cf128m-full-z280rc.img.gz" file is a full CF image intended to be used
 in a real Z280RC machine.  In addition to RSX280, the image contains CP/M
-2.2, CP/M 3 and UZI180 partitions.
+2.2 and CP/M 3 from [Tony Nicholson's distribution](https://github.com/agn453/Z280RC),
+and UZI280 partitions.
 
 The "cf32m-partition-z280rc.img.gz" file contains only the RSX280 partition.
 
