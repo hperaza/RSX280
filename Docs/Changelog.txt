@@ -7222,3 +7222,152 @@ BUGS:
   installs the compiler by default during system generation.
 
 
+02/07/22
+
+- Working on a new TX3/Z compiler version that generates REL files:
+  * added REL-output routines.
+  * use two unused SFLAGS bits for segment information.
+  * globaddr() now allocates space in data segment, and no longer in code
+    segment with a relative jump to get around the data; CG_RJUMP became
+    obsolete and was removed.
+  * gen() function expanded to handle segment information.
+  * removed emitlib() since the Run-Time library is now added at the link
+    phase.
+  * the Run-Time library is now a separate REL library, mklib no longer
+    needed.
+
+
+10/07/22
+
+- More work on the T3X/Z compiler with REL output:
+  * Generate external references for Run-Time library calls. Pointers to
+    the corresponding symbol table entries are now kept in a separate table
+    to make chain address handling easier (saves a symbol table lookup.)
+
+
+21/07/22
+
+- More work on the T3X/Z compiler with REL output:
+  * New symbol 'class' and 'object' types, borrowed from the PC compiler
+    version. Class members can be constants or functions at this point,
+    not variables. Due to REL name length limitations, external function
+    names are aliased to a shorter name, invisible to the compiled program
+    (originally, T.* methods were entered into the symbol table as simple
+    identifiers resolving to fixed run-time library addresses.)
+  * Chain externals when calling external object methods.
+
+
+22/07/22
+
+- More work on the T3X/Z compiler with REL output:
+  * Emit an external call to the initialization library code, do not assume
+    that the main program begins at zero (code-relative) address.
+  * Place constant strings, byte vectors and tables on data segment. This
+    eliminates the jump-around instruction required when those are placed in
+    the code segment, resulting in smaller code.
+  * 'Module' statement now sets REL module name.
+  * Don't add 't' object by default; create it in object_decl();
+  * First working version!
+
+
+23/07/22
+
+- More work on the T3X/Z compiler with REL output:
+  * Remove redundant jump-around instructions to further reduce output code
+    size.
+  * Added 'external' keyword to allow calling external assembly-language
+    functions.
+
+- TKB bug fix, RSX180/280 version: the DiskWr routine should not write to
+  disk if byte count is zero (the CP/M version was OK).
+
+
+26/07/22
+
+- LBR: don't cache the library module in memory. Instead, remember the
+  file position and do a file-to-file copy when extracting the module.
+  Also, automatically extend task limits as symbol table grows. This fixes
+  the annoying "out of memory" errors that occurred when processing large
+  modules.
+
+
+30/07/22
+
+- LBR: the command line syntax is now more PIP-like:
+    [,lst=]lib/LI - detailed listing of library modules, output to terminal
+                    if dst is not specified
+    [,lst=]lib/BR - brief listing (module names only), same as the old /M
+                    switch
+    dst[,lst]=src1,src2,...srcn - create new library from src1...srcn modules,
+                    the /E switch is now the default and does not have to be
+                    specified for each module, also ',' can be used in place
+                    of '+'.
+    dst[,lst]=src1<mod1,...modn>,src2<mod1,...modn> - same as above, but
+                    only mod1...modn modules are included from the source
+                    libraries.
+    dst[,lst]=src1<mod1,...modn>/DE - delete modules mod1...modn; actually
+                    creates a new library from src1 excluding the specified
+                    modules
+  Note that add and delete operations can be specified in the same command
+  line, e.g.:
+    dst[,lst]=src1<mod1,mod2>,src2<mod3,mod4>/DE,src3 - creates dst library
+                    from selected modules mod1 and mod2 of library src1,
+                    all modules of library src2 except mod3 and mod4, and
+                    all modules of library src3.
+
+
+31/07/22
+
+- LBR can now create an indexed IRL library:
+    dst/IX[,lst]=src
+  Note that at this point only a single file can be specified as source,
+  and that any module list will be ignored (thus, a REL library must be
+  created as usual, then the index added with the /IX switch.) Note also
+  that the IX switch must be specified for the output file.
+
+- FCSLIB: fixed a bug in FWRBLK (current block number must be in BHL and
+  not CHL before calling ?INC24, affected only large-file operations.)
+
+
+01/08/22
+
+- FCSLIB: set FS.BV bit too when writing data to a buffer (FPUTCH, FWRITE).
+
+
+02/08/22
+
+- LBR:
+  * allow IRL libraries as input files (just skip the IRL header and process
+    them as ordinary REL files).
+  * better module pattern matching, borrowing code from PIP, e.g.:
+      lbr dst=syslib.lib<sav*>
+      lbr dst=syslib.lib<%%tach,*5,*32*>
+
+
+03/07/22
+
+- LBR:
+  * suppress 'External references' message if the module does not contain
+    any External symbols.
+  * new /CR switch for listing symbol cross-reference table.
+  * when building a cross-reference table, keep symbols of every included
+    module.
+  * symbol table structure expanded to contain additional cross-reference
+    information: public symbols include a pointer to the module that defines
+    them, external symbols are chained in a list ending in the corresponding
+    public symbol or null if they are not defined anywhere in the library.
+
+
+04/08/22
+
+- LBR:
+  * remove redundant names when building the cross-reference table: records
+    refering to an existing symbols are now saved without the name field
+    (the xref list allows to find the root record); this helps to keep the
+    symbol table small.
+  * the xref list is now circular, as external references can appear before
+    the actual symbol definition and vice-versa.
+  * output the cross-reference table using a format similar to MS' LIB80.
+  * new /UN switch for listing unresolved Externals, using the cross-reference
+    table information.
+
