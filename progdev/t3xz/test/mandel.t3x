@@ -1,6 +1,8 @@
 ! Draw a Mandelbrot set using ASCII characters.
 ! Example from http://t3x.org/t3x/exam-mandel.html
 
+object  t[t3x];
+
 ! Denominator for fixed-point computations
 const   SCALE = 100;
 

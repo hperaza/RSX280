@@ -1,3 +1,5 @@
+object t[t3x];
+
 do var k, buf::20;
 	t.write(T3X.SYSOUT, "\nEnter your name: ", 17);
 	k := t.read(T3X.SYSIN, buf, 20);

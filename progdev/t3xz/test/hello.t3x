@@ -1,3 +1,4 @@
+object  t[t3x];
 do
 	t.write(T3X.SYSOUT, "\nHello, World!\r", 15);
 end
