@@ -35,6 +35,9 @@
 ; - /AP switch to append to an output file (if the file does not exist,
 ;   create it instead of triggering an error?)
 ; - /ID switch to display program version
+; - When building cross-ref, keep in mind that the module name record
+;   can appear after public/external symbol records, or may not be
+;   present at all! -> make dummy entry '#nnnnn'
 
 	.Z80
 
@@ -547,7 +550,9 @@ FLD.A:	ld	c,2		; get next 2 bits
 FLD.B:	ld	hl,SNAME
 	ld	c,3		; get next 3 bits (name length)
 	call	GNBITS
-	call	FIXLEN		; length 0 means 8
+	dec	a		; length 0 means 8
+	and	7
+	inc	a
 	ld	(SLEN),a	; store length
 	ld	b,a
 fb1:	ld	c,8		; get next 8 bits (char)
@@ -704,12 +709,6 @@ adsv4:	call	SYMDAT		; point to data area
 	ld	(hl),d		; replace with address of this symbol
 	dec	hl
 	ld	(hl),e
-
-	;this.ptr=root
-	;ptr=root.ptr
-	;while (ptr!=root) ptr=ptr.ptr
-	;ptr.ptr=this
-
 	ret
 
 adsv1:	ld	c,2		; payload = 2 bytes
@@ -1161,13 +1160,6 @@ eloop:	ld	a,(hl)
 s1:	or	a
 	ret			; match if end of pattern
 
-; If A=0 then A=8
-
-FIXLEN:	dec	a		; 0 means 8
-	and	7
-	inc	a
-	ret
-
 ;-----------------------------------------------------------------------
 
 ; Output symbol cross-reference
@@ -1302,19 +1294,16 @@ MSG20:	db	'Symbol   Value    Defined  Referenced',0
 ; List unsatisfied Externals
 ; TODO: list Externals unsatisfied after a single scan.
 
-LUNDEF:	ld	de,LNBUF
-	call	WRLST		; TODO: new page?
-	ld	hl,MSG21
-	call	STRCPY
-	call	WRLST		; output header
-	xor	a
-	ld	(ICNT),a
-
+LUNDEF:	xor	a
+	ld	(TEMP),a	; no header output yet
+	ld	(ICNT),a	; clear symbols per line counter
+	ld	de,LNBUF
+	call	WRLST		; output empty line (TODO: new page?)
 	ld	hl,(SYMTAB)
 	ld	(SYMPTR),hl	; scan the whole table
 lu1:	ld	a,(hl)
 	cp	0FFh		; end of table?
-	jp	z,WRLST		; yes, write line and return
+	jp	z,lu6		; yes, write line and return
 	ld	bc,lu2
 	push	bc		; push return address
 	ld	c,a
@@ -1347,6 +1336,7 @@ lu4:	ld	a,(hl)		; search for Public entry
 	call	HL?BC		; back home?
 	jr	nz,lu4		; no, try next
 
+	call	UHDR		; output header, if pending
 	ld	a,(ICNT)
 	cp	8		; max 8 names per line
 	jr	c,lu5
@@ -1360,7 +1350,28 @@ lu5:	inc	a
 	inc	de
 	ret
 
-MSG21:	db	'Unsatisfied External requests:',0
+lu6:	ld	a,(TEMP)
+	or	a		; and symbol names output?
+	ld	hl,MSG21
+	call	z,STRCPY	; no, say "No Unsatisfied External requests"
+	jp	WRLST		; flush line and return
+
+UHDR:	ld	a,(TEMP)
+	or	a		; header already output?
+	ret	nz		; yes
+	inc	a
+	ld	(TEMP),a	; no, set flag
+	push	hl
+	ld	hl,MSG22
+	call	STRCPY		; "Unsatisfied External requests"
+	inc	hl
+	call	STRCPY		; ":"
+	call	WRLST		; output header
+	pop	hl
+	ret
+
+MSG21:	db	'No '
+MSG22:	db	'Unsatisfied External requests',0,':',0
 
 ;-----------------------------------------------------------------------
 
@@ -1486,7 +1497,7 @@ MODST:	ds	4		; file position of module start
 MCNT:	ds	4		; module copy count
 PASS:	ds	1
 
-TEMP1:	ds	2
+TEMP:	ds	1
 
 WRMODE:	ds	1
 WRFLAG:	ds	1		; write flag: 0 = no output, <>0 = output

@@ -7371,3 +7371,10 @@ BUGS:
   * new /UN switch for listing unresolved Externals, using the cross-reference
     table information.
 
+
+27/08/22
+
+- LBR:
+  * inlined FIXLEN routine.
+  * /UN: if no undefined Externals found, say so.
+

@@ -10,7 +10,7 @@ version	macro	type
 	endif
 	endm
 	endif
-	.vers	<2.05>,&type	; change version here
+	.vers	<2.06>,&type	; change version here
 	endm
 
 ; ASCII equates
