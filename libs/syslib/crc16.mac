@@ -34,6 +34,8 @@
 ; Called with remainder in HL, char in C.
 ; Returns remainder in HL.
 
+; Note: this is the "CP/M" version, which contains a bug!
+
 	cseg
 
 CRC16:	add	hl,hl		; 2 * remainder
