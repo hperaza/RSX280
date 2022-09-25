@@ -236,8 +236,10 @@ TRAP?:	ld	a,(hl)
 	inc	hl
 	ret	z		; no, return
 	push	hl
+	push	bc
 	call	FNDERR		; else get topmost .ONERR entry,
-	pop	hl		;  returns NZ if found, else Z and CY
+	pop	bc		;  returns NZ if found, else Z and CY
+	pop	hl
 	ret
 
 snerr:	db	E_SNE,2,'Syntax error',0
