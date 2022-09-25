@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -51,38 +51,26 @@
 ; Clear flag.
 
 ; Input:
-;   BC = TCB of flag owner task
-;   E  = flag number
+;   BC = TCB address of flag owner
+;   E  = flag number (1..32)
 ; Returns:
-;   A = 0 on success, else error code with CY set
+;   CY flag clear on success and old flag polarity in A
+;   CY flag set on error and error code in A
 
-CLRFLG:	ld	a,e
-	rrca
-	rrca
-	rrca			; upper 5 bits are byte index in flag array
-	and	1Fh
-	cp	4
-	jr	nc,clrf2
-	ld	hl,T.FLGS
+CLRFLG:	ld	hl,T.FLGS
 	add	hl,bc		; point to flag bits in TCB
-	ld	c,a		; get flag byte offset into BC
-	ld	b,0
+	call	FLGMSK		; compute offset and bit mask
+	ret	c		; on error, return
 	add	hl,bc		; index into flag array
-	ld	a,e
-	and	07h		; low 3 bits are bit number in flag array
-	ld	b,a
-	inc	b		; so mask starts as 0FEh
-	ld	a,7Fh
-clrf1:	rlca			; get the zero-bit into position
-	djnz	clrf1
+	ld	d,a		; save mask
+	and	(hl)		; get old flag state
+	push	af		; save it
+	ld	a,d
+	cpl			; invert bit mask
 	and	(hl)		; clear the flag
 	ld	(hl),a
-	xor	a
-	ei
-	ret
-clrf2:	ld	a,E.BADFL
-	scf
-	ret
+	pop	af
+	ret			; return prev state (note CY is clear)
 
 ;-----------------------------------------------------------------------
 
@@ -90,9 +78,10 @@ clrf2:	ld	a,E.BADFL
 
 ; Input:
 ;   BC = TCB address of flag owner
-;   E  = flag number
+;   E  = flag number (1..32)
 ; Returns:
-;   CY flag on error
+;   CY flag clear and A=0 on success
+;   CY flag set on error and error code in A
 
 ; Notes:
 ; - We need to ensure that task still exists (and is active) by calling
@@ -101,39 +90,22 @@ clrf2:	ld	a,E.BADFL
 
 SETFLG:	push	de
 	push	bc
-	call	$FNTCB
-	pop	bc
+	call	$FNTCB		; ensure task still exists
+	pop	hl		; TCB address now in HL
 	pop	de
 	ret	c
-	ld	a,e
-	rrca
-	rrca
-	rrca			; upper 5 bits are byte number in flag array
-	and	1Fh
-	cp	4
-	jr	nc,setf2
-	push	bc
-	ld	hl,T.FLGS
-	add	hl,bc		; point to flag array in TCB
-	ld	c,a		; get flag byte offset into BC
-	ld	b,0
-	add	hl,bc		; index into array
-	ld	a,e
-	and	07h		; low 3 bits are bit number in flag array
-	ld	b,a
-	inc	b		; so mask starts as 01h
-	ld	a,80h
-setf1:	rlca			; get bit into position
-	djnz	setf1
+	call	FLGMSK		; compute offset and bit mask
+	ret	c		; on error, return
+	push	hl		; push TCB address
+	ld	de,T.FLGS
+	add	hl,de		; point to flag array in TCB
+	add	hl,bc		; index into flag array
 	or	(hl)		; set flag
 	ld	(hl),a
-	pop	bc		; task TCB back in BC
+	pop	bc		; task TCB back into BC
 	call	CKWMSK		; check wait mask
 	call	nz,TCONT	; if flag set, resume task
 	xor	a
-	ret
-setf2:	ld	a,E.BADFL
-	scf
 	ret
 
 ;-----------------------------------------------------------------------
@@ -170,35 +142,18 @@ ckm2:	pop	bc
 
 ; Input:
 ;   BC = TCB address
-;   E  = flag number
+;   E  = flag number (1..32)
 ; Returns:
 ;   Z flag set and A=0 if flag not set, else NZ and A<>0
 ;   CY set on error and error code in A.
 ;   Flag number still in E.
 
-CHKFLG:	ld	a,e
-	rrca
-	rrca
-	rrca			; upper 5 bits are byte number in flag array
-	and	1Fh
-	cp	4
-	jr	nc,ckf2
-	ld	hl,T.FLGS
-	add	hl,bc
-	ld	c,a		; get flag byte offset into BC
-	ld	b,0
+CHKFLG:	ld	hl,T.FLGS
+	add	hl,bc		; point to flag bits in TCB
+	call	FLGMSK		; compute offset and bit mask
+	ret	c		; on error, return
 	add	hl,bc		; index into flag array
-	ld	a,e
-	and	07h		; low 3 bits are bit number in flag array
-	ld	b,a
-	inc	b		; so mask starts as 01h
-	ld	a,80h
-ckf1:	rlca
-	djnz	ckf1
-	and	(hl)
-	ret
-ckf2:	ld	a,E.BADFL
-	scf
+	and	(hl)		; get flag state
 	ret
 
 ;-----------------------------------------------------------------------
@@ -207,11 +162,12 @@ ckf2:	ld	a,E.BADFL
 
 ; Input:
 ;   BC = TCB address
-;   E  = flag number
+;   E  = flag number (1..32)
 
 ; Return immediately if in the meantime the flag has been set.
 
 FLWAIT:	call	SETMSK		; setup wait mask
+	ret	c		; on error, return
 fw0:	call	CKWMSK		; check if flag is set
 	ret	nz		; return if yes
 	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
@@ -228,7 +184,7 @@ fw1:	set	T2.EFW,(ix+T.ST+1) ; set 'event flag waiting' status bit
 	ldw	(iy),bc		; update link of previous TCB (unlink)
 	ld	iy,$WLIST
 	ld	bc,T.ACTL
-	call	$LKTCB
+	call	$LKTCB		; move task to waiting list
 	xor	a		; return success
 	ret
 
@@ -257,11 +213,12 @@ FLWTLO:	ld	hl,T.WAIT
 
 ; Input:
 ;   BC = TCB address
-;   E  = flag number
+;   E  = flag number (1..32)
 
 ; Return immediately if in the meantime the flag has been set.
 
 FLSTOP:	call	SETMSK		; setup wait mask
+	ret	c		; on error, return
 fs0:	call	CKWMSK		; check if flag is set
 	ret	nz		; return if yes
 	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
@@ -278,7 +235,7 @@ fs1:	set	T2.SEF,(ix+T.ST+1) ; set 'stopped for event flag' status bit
 	ldw	(iy),bc		; update link of previous TCB (unlink)
 	ld	iy,$WLIST
 	ld	bc,T.ACTL
-	call	$LKTCB
+	call	$LKTCB		; move task to waiting list
 	xor	a		; return success
 	ret
 
@@ -307,43 +264,61 @@ FLSTLO:	ld	hl,T.WAIT
 
 ; Input:
 ;   BC = TCB address
-;   E  = event flag number
+;   E  = event flag number (1..32)
 
 ; Preserves BC and E.
 
-SETMSK:	ld	a,e
+SETMSK:	push	bc		; push TCB address
+	ld	hl,T.WAIT
+	add	hl,bc
+	ld	b,4
+	push	hl		; push T.WAIT address
+sm1:	ld	(hl),0		; clear wait mask
+	inc	hl
+	djnz	sm1
+	pop	hl		; pop T.WAIT address
+	call	FLGMSK		; compute offset and bit mask
+	jr	c,sm2		; on error, return
+	add	hl,bc		; index into wait mask
+	or	(hl)
+	ld	(hl),a		; set bit in wait mask
+	xor	a		; success, clear CY
+sm2:	pop	bc		; pop TCB address back into BC
+	ret
+
+;-----------------------------------------------------------------------
+
+; Compute offset and bit mask from flag number.
+
+; Input:
+;   E = flag number (1..32)
+; Returns:
+;   BC = offset
+;   A  = bit mask
+;   CY clear on success
+;   CY set on error and error code in A (flag value out of range)
+
+; Preserves HL, DE.
+
+FLGMSK:	dec	e		; make flag number zero-based
+	ld	a,e
 	rrca
 	rrca
 	rrca			; upper 5 bits are byte number in flag array
 	and	1Fh
+	ld	c,a		; flag byte offset in reg C
 	cp	4
-	jr	nc,sm3		; invalid flag, return error
-	push	bc		; push TCB
-	ld	hl,T.WAIT
-	add	hl,bc
-	ld	b,4
-	push	hl		; push address T.WAIT
-sm1:	ld	(hl),0		; clear wait mask
-	inc	hl
-	djnz	sm1
-	pop	hl		; pop T.WAIT
-	ld	c,a		; flag byte offset in BC
-	ld	b,0
-	add	hl,bc		; index into wait mask
+	ccf
+	ld	a,E.BADFL
+	ret	c		; invalid flag, return with CY set
 	ld	a,e
 	and	07h		; low 3 bits are bit number in flag array
 	ld	b,a
-	inc	b		; so mask starts as 01h
+	inc	b		; so mask starts at 01h
 	ld	a,80h
-sm2:	rlca
-	djnz	sm2
-	or	(hl)
-	ld	(hl),a		; set bit in wait mask
-	pop	bc		; TCB back in BC
-	xor	a
-	ret
-sm3:	ld	a,E.BADFL
-	scf
-	ret
+fm1:	rlca
+	djnz	fm1
+	or	a
+	ret			; success, note B=0
 
 	END

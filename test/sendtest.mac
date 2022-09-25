@@ -26,11 +26,9 @@ SEND::	ld	sp,stack
 	jr	z,usage
 
 	push	hl		; push src string
-	call	strlen
-	ld	e,c		; DE = message size
-	ld	d,b
-	pop	hl		; HL = message addr
-	ld	bc,tsknam
+	call	strlen		; BC = message size
+	pop	de		; DE = message addr
+	ld	hl,tsknam	; HL = dest task name
 	SC	.SEND		; send message
 	jr	c,error		; jump if error
 	ld	hl,EX.SUC	; else exit normally

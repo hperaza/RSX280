@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2021, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -53,7 +53,7 @@
 	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
 	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
-	extrn	$CLIST,SYSTYP
+	extrn	$CLIST,SYSTYP,$VALTB,$VALBF
 
 	cseg
 
@@ -138,7 +138,8 @@ EXIF:	push	hl
 	ld	bc,($CTCB)
 	call	CHKFLG		; flag set?
 	pop	hl
-	ret	nz		; return to task if yes
+	ret	c		; on error, return
+	ret	nz		; return to task if flag is set
 	jp	EXIT		; else exit task
 
 ;-----------------------------------------------------------------------
@@ -154,7 +155,8 @@ EXIF:	push	hl
 
 SRUN:	ld	de,TMPTDB	; DE = destination
 	ld	bc,TDBSZ+4+4	; read task descriptor + dtime + rsi
-	call	uget		;  from user space
+	call	UGET		;  from user space
+	ret	c
 	ld	hl,TMPTDB
 	jp	TSRUN		; schedule task
 
@@ -176,9 +178,10 @@ CSRQ:	call	UFNTSK		; get task name, find TCB
 ; Read TDB from user space into TMPTDB.
 
 GETTDB:	ld	de,TMPTDB	; DE = destination
+	push	de
 	ld	bc,TDBSZ
-	call	uget		; read task descriptor from user space
-	ld	hl,TMPTDB
+	call	UGET		; read task descriptor from user space
+	pop	hl		; return HL = TMPTDB address
 	ret
 
 ;-----------------------------------------------------------------------
@@ -196,13 +199,17 @@ GETTDB:	ld	de,TMPTDB	; DE = destination
 ; TODO:
 ; - use $CTCB console and session values if user did not specify a TDB
 ; - allow E.TACT error if and only if TD.SDAT is valid
-; - make sure that ESB is within the requesting task limits.
 
 URQST:	push	bc
 	push	de
+	call	VALESB		; validate ESB, if specified
+	jr	c,rq3
 	call	GETTDB		; get TDB from user space
+	jr	c,rq3
+	call	VALSD		; validate send data buffer, if any
+	jr	c,rq3
 	push	hl
-	call	GETCMD
+	call	GETCMD		; get command line from user space
 	pop	hl
 	call	nc,TRQST	; request the task, return TCB in IX
 	pop	de
@@ -223,12 +230,15 @@ URQST:	push	bc
 	jr	z,rq1		; branch if not
 	call	$CONN		; else connect to task
 	ret	c
-rq1:	ld	bc,(TMPTDB+TD.SDAT)
-	ld	a,b
-	or	c		; anything to send?
+rq1:	ld	de,(TMPTDB+TD.SDAT)
+	ld	a,d
+	or	e		; anything to send?
 	ret	z		; return if not
-	ld	de,(TMPTDB+TD.SLEN)
-	jp	USEND1		; else send data
+	ld	bc,(TMPTDB+TD.SLEN)
+	ld	a,b
+	or	c
+	ret	z
+	jp	USEND1		; else send data and return
 
 rq2:	push	af
 	ld	hl,(CMDPTR)
@@ -236,17 +246,21 @@ rq2:	push	af
 	pop	af
 	ret
 
+rq3:	pop	de
+	pop	bc
+	ret
+
 rqcli:	ld	l,c
 	ld	h,b
 	ld	a,h		; request and connect?
 	or	l
-	jr	z,rq3		; branch if not
+	jr	z,rq4		; branch if not
 	push	ix
 	call	NEWOCB		; else create OCB
 	ex	(sp),ix		; push OCB, pop TCB
 	pop	hl		; HL = OCB address
 	ret	c
-rq3:	push	hl
+rq4:	push	hl
 	call	QCLI		; send command to CLI
 	pop	hl
 	ret	nc		; return on success
@@ -256,6 +270,24 @@ rq3:	push	hl
 	pop	af
 	ret			; and return error code
 
+VALSD:	ld	de,(TMPTDB+TD.SDAT)
+	ld	a,d
+	or	e		; anything to send?
+	ret	z		; no, return with CY clear
+	ld	bc,(TMPTDB+TD.SLEN)
+	ld	a,b
+	or	c
+	ret	z
+	jp	$VALBF		; validate buffer and return
+
+VALESB:	ld	a,b
+	or	c		; request and connect?
+	ret	z		; no, return with CY clear
+	ld	e,c
+	ld	d,b
+	ld	bc,2
+	jp	$VALBF		; else validate ESB
+
 ; Request task and pass offspring information.
 
 ; Input:
@@ -264,8 +296,11 @@ rq3:	push	hl
 ;   CY flag set on error
 
 RPOI:	call	GETTDB		; get TDB from user space
+	ret	c
+	call	VALSD		; validate send data buffer, if specified
+	ret	c
 	push	hl
-	call	GETCMD
+	call	GETCMD		; get command line from user space
 	pop	hl
 	call	nc,TRQST	; request the task
 	jr	c,rq2		; on error return
@@ -286,9 +321,9 @@ RPOI:	call	GETTDB		; get TDB from user space
 	push	ix
 	pop	hl		; get offspring TCB into HL
 	bit	TA.MCR,(iy+T.ATTR)
-	jr	z,rq1
+	jp	z,rq1
 	set	TA.MCR,(ix+T.ATTR) ; propagate TA.MCR bit
-	jr	rq1		; return via common code
+	jp	rq1		; return via common code
 
 rpcli:	ld	iy,($CTCB)	; get TCB of caller into IY
 	ldw	hl,(iy+T.OCBL)	; get OCB pointer into HL
@@ -357,6 +392,8 @@ GETCMD:	ld	hl,0
 	ld	a,b
 	or	c
 	ret	z		; don't bother if zero
+	call	$VALBF		; ensure buffer is within task limits
+	ret	c
 	push	de		; save pointer to command line in user space
 	push	bc		; save command length
 	inc	bc		; add one extra byte for lenght field
@@ -368,9 +405,7 @@ GETCMD:	ld	hl,0
 	ld	(hl),c		; store command length
 	inc	hl
 	ex	de,hl		; HL = src, DE = dst, BC = len
-	call	uget		; copy command line block
-	xor	a
-	ret
+	jp	UGET1		; copy command line block and return
 
 ;-----------------------------------------------------------------------
 
@@ -384,6 +419,15 @@ GETCMD:	ld	hl,0
 ;   CY flag set on error (task not found)
 
 UCONN:	call	UFNTSK		; get name from user space and find task
+	ret	c
+	push	bc
+	push	de
+	ld	e,c
+	ld	d,b
+	ld	bc,2
+	call	$VALBF		; validate ESB address
+	pop	de
+	pop	bc
 	ret	c
 	jp	$CONN		; connect to the task
 
@@ -468,65 +512,93 @@ UCHPRI:	ld	a,h
 
 ;-----------------------------------------------------------------------
 
+; Assign LUN.
+
 ASGLUN:	ld	ix,($CTCB)
 	jp	$ALUN
 
 ;-----------------------------------------------------------------------
+
+; Set event flag.
 
 USETFL:	ld	bc,($CTCB)
 	jp	SETFLG
 
 ;-----------------------------------------------------------------------
 
+; Clear event flag.
+
 UCLRFL:	ld	bc,($CTCB)
 	jp	CLRFLG
 
 ;-----------------------------------------------------------------------
+
+; Test event flag.
 
 UCHKFL:	ld	bc,($CTCB)
 	jp	CHKFLG
 
 ;-----------------------------------------------------------------------
 
+; Wait for single event flag.
+
 UFLGWT:	ld	bc,($CTCB)
 	jp	FLWAIT
+
+; Wait for logical-OR of event flags.
 
 UFWTLO:	ld	de,DTBUF
 	push	de
 	ld	bc,4
-	call	uget		; read wait mask from user space
+	call	UGET		; read wait mask from user space
 	pop	de
+	ret	c
 	ld	bc,($CTCB)
 	jp	FLWTLO
 
 ;-----------------------------------------------------------------------
 
+; Stop for single event flag.
+
 UFLGST:	ld	bc,($CTCB)
 	jp	FLSTOP
+
+; Stop for logical-OR of event flags.
 
 UFSTLO:	ld	de,DTBUF
 	push	de
 	ld	bc,4
-	call	uget		; read wait mask from user space
+	call	UGET		; read wait mask from user space
 	pop	de
+	ret	c
 	ld	bc,($CTCB)
 	jp	FLSTLO
 
 ;-----------------------------------------------------------------------
+
+; Extend task limits
 
 UEXTSK:	ld	ix,($CTCB)	; get task TCB into IX
 	jp	EXTTSK
 
 ;-----------------------------------------------------------------------
 
+; Specify SST vector table.
+
 SVTBL:	ld	ix,($CTCB)
+	ex	de,hl
+	ld	bc,16		; 8 words
+	ld	a,d
+	or	e
+	call	nz,$VALTB	; ensure table is within task limits
+	ret	c
 	ldw	iy,(ix+T.CTX)
 	ld	a,iyh
 	or	iyl
 	ld	a,E.INV
 	scf
 	ret	z		; should not happen
-	ldw	(iy+TX.SST),hl
+	ldw	(iy+TX.SST),de
 	xor	a
 	ret
 
@@ -539,19 +611,23 @@ SVTBL:	ld	ix,($CTCB)
 ;   E  = size of buffer (max 255 bytes)
 
 UGTCMD:	ld	ix,($CTCB)
-	push	hl		; save user buffer address
+	ld	c,e		; get length into BC
+	ld	b,0
+	ex	de,hl		; buffer address in DE
+	call	$VALTB		; validate buffer
+	ret	c
+	push	de		; save user buffer address
 	ldw	hl,(ix+T.CMD)
-	ld	bc,0
-	ldw	(ix+T.CMD),bc	; unlink the block
+	ld	de,0
+	ldw	(ix+T.CMD),de	; unlink the block
 	ld	a,h		; check pointer
 	or	l		; valid?
-	jr	z,nulcmd	; skip if not
+	jr	z,gcm1		; skip if not (command length = 0)
 	ld	a,(hl)		; else get command length
-	cp	e		; compare with user buffer length
-	jr	c,gcm1		; jump if command is shorter
-	ld	a,e		; else truncate to user-specified size
-gcm1:	ld	c,a		; get string length into BC (note B=0)
-nulcmd:	ex	de,hl		; src in DE
+	cp	c		; compare with user buffer length
+	jr	nc,gcm2		; use user buffer length if <= cmd length
+gcm1:	ld	c,a		; else use command length
+gcm2:	ex	de,hl		; src in DE
 	pop	hl		; dst in HL
 	push	de		; save src buf address
 	ld	de,($UBANK)
@@ -561,7 +637,7 @@ nulcmd:	ex	de,hl		; src in DE
 	push	de
 	inc	de		; advance src to point to command chars
 	inc	hl		; advance dst ptr over copied length byte
-	ex	de,hl		; HL = src, DE = dst, BC = len
+	ex	de,hl		; HL = src, DE = dst, BC = len (note B=0)
 	exx
 	ld	hl,($SBANK)	; HL' = src bank
 	ld	de,($UBANK)	; DE' = dst bank
@@ -582,11 +658,11 @@ nulcmd:	ex	de,hl		; src in DE
 GDT:	push	hl
 	ld	hl,DTBUF	; temporary buffer
 	push	hl
-	call	GETDT
+	call	GETDT		; get current date and time
 	pop	hl
 	pop	de
 	ld	bc,8
-	jp	ucpy		; store result and return success
+	jp	UCPY		; validate buffer, store result and return
 
 ; Set date and time
 
@@ -598,10 +674,10 @@ GDT:	push	hl
 SDT:	ld	de,DTBUF
 	push	de
 	ld	bc,8
-	call	uget
+	call	UGET		; read date/time from user space
 	pop	hl
-	call	SETDT
-	ret
+	ret	c		; on error, return (invalid buffer)
+	jp	SETDT		; set date and time
 
 ;-----------------------------------------------------------------------
 
@@ -652,7 +728,7 @@ tinf2:	push	de
 	pop	de
 	ld	hl,GTBUF
 	ld	bc,GTKSZ	; BC = size
-	jp	ucpy		; store result and return success
+	jp	UCPY		; validate buffer, store result and return
 
 tdev:	ldw	bc,(hl)
 	inc	hl
@@ -706,11 +782,11 @@ GTPAR:	ld	a,h
 pt1:	push	de
 	call	UGTNAM		; get partition name
 	ld	bc,DTBUF
-	call	$FNPAR		; find partition by name
+	call	nc,$FNPAR	; find partition by name
 	pop	de
 	ret	c		; return error if not found
 pt2:	ld	bc,PCBSZ	; BC = size
-	jp	ucpy		; store result and return success
+	jp	UCPY		; validate dst buffer, store result and return
 
 ;-----------------------------------------------------------------------
 
@@ -726,11 +802,12 @@ pt2:	ld	bc,PCBSZ	; BC = size
 ;   be returned for the CLI matching the specified name.
 
 ; TODO:
-; - validate user buffer
+; - validate dst buffer *before* doing anything else
 
 GCII:	ld	de,GCIBUF
 	ld	bc,12
-	call	uget		; read param block from user space
+	call	UGET		; read param block from user space
+	ret	c
 	ld	a,(GCIBUF+3)
 	or	a
 	jr	nz,gci1		; branch on lookup by name
@@ -769,7 +846,7 @@ gci9:	ld	c,a
 gci2:	ld	b,0		; len in BC
 	ex	de,hl		; src in HL
 	ld	de,(GCIBUF)	; dst in DE
-	jp	ucpy		; store result and return success
+	jp	UCPY		; validate dest buffer, store result and return
 
 gci1:	; lookup by CLI name
 
@@ -856,7 +933,12 @@ GIN:	ld	a,c
 ;     +0: system version number (lo-byte: minor, hi-byte: major)
 ;     +2: system type (1=RSX180, 2=RSX280)
 
-sver:	ld	bc,(SYSVER)
+sver:	ex	de,hl
+	ld	bc,4
+	call	$VALBF		; validate dest buffer
+	ex	de,hl
+	ret	c
+	ld	bc,(SYSVER)
 	call	storew		; store version number
 	ld	a,(SYSTYP)	; system type
 	ld	c,a
@@ -879,7 +961,11 @@ storew:	ld	de,($UBANK)
 ;   from the total system memory (also assumes that the system has been
 ;   assigned a partition)
 
-smem:	push	hl
+smem:	ex	de,hl
+	ld	bc,6
+	call	$VALBF		; validate dest buffer
+	ret	c
+	push	de
 	call	MSIZE##
 	ld	c,l
 	ld	b,h
@@ -941,7 +1027,9 @@ gtscb:	ld	bc,U.LCB
 	scf
 	ret	z		; error if not set
 	ld	bc,LCBSZ	; BC = size
-ucpy:	exx
+UCPY:	call	$VALBF
+	ret	c
+	exx
 	ld	hl,($SBANK)	; HL' = src bank
 	ld	de,($UBANK)	; DE' = dst bank
 	exx
@@ -955,18 +1043,28 @@ ucpy:	exx
 hstn:	ex	de,hl
 	ld	hl,$HOSTN
 	ld	bc,9
-	jr	ucpy
+	jr	UCPY		; validate dst buffer, store result and return
 
 ; I.TCKS:
 ;   returns ticks per second (word)
 
-tcks:	ld	bc,TCKSEC
+tcks:	ex	de,hl
+	ld	bc,2
+	call	$VALBF		; validate dest buffer
+	ex	de,hl
+	ret	c
+	ld	bc,TCKSEC
 	jp	storew
 
 ; I.FEAT:
 ;   returns feature bits (word)
 
-feat:	ld	a,($FEAT)
+feat:	ex	de,hl
+	ld	bc,2
+	call	$VALBF		; validate dest buffer
+	ex	de,hl
+	ret	c
+	ld	a,($FEAT)
 	ld	c,a
 	ld	b,0
 	jp	storew
@@ -985,7 +1083,7 @@ UFNTSK:	push	de
 	push	bc
 	call	UGTNAM
 	ld	bc,DTBUF
-	call	$FNTSK
+	call	nc,$FNTSK
 	pop	bc
 	pop	de
 	ret
@@ -994,32 +1092,41 @@ UFNTSK:	push	de
 
 UGTNAM:	ld	de,DTBUF	; dst in DE, src in HL
 	ld	bc,6		; len in BC
-uget:	exx
+UGET:	ex	de,hl
+	call	$VALBF		; validate buffer
+	ex	de,hl
+	ret	c
+UGET1:	exx
 	ld	hl,($UBANK)	; src bank in HL'
 	ld	de,($SBANK)	; dst bank in DE'
 	exx
-	jp	$MCOPY		; get task name from user space
+	call	$MCOPY		; get task name from user space
+	xor	a		; return success
+	ret
 
 ;-----------------------------------------------------------------------
 
 ; Send data to task.
 
 ; Input:
-;   HL = buffer in user space
-;   DE = size
-;   BC = task name
+;   HL = address of task name in user space
+;   DE = data buffer address in user space
+;   BC = data length
 ; Returns:
 ;   CY set on error and error code in A.
 
-USEND:	push	hl		; push buf addr
-	ld	l,c
-	ld	h,b
-	call	UFNTSK		; find receiver task, return TCB in HL
-	pop	bc		; pop buf addr into BC
+USEND:	ld	a,b
+	or	c
+	ld	a,E.BADOP
+	scf
+	ret	z		; error if data length is zero
+	call	$VALBF		; validate user data buffer
+	ret	c		; error if outside task limits
+	call	UFNTSK		; find receiver task, return TCB addr in HL
 	ret	c		; error if task not found
-USEND1:	push	bc		; push src = buf
-	push	de		; push size
-	push	hl		; push TCB
+USEND1:	push	de		; push src = buf
+	push	bc		; push size
+	push	hl		; push TCB addr
 	ld	bc,T.ATTR
 	add	hl,bc
 ;;	bit	TA.CLI,(hl)	; is the task a CLI?
@@ -1082,22 +1189,26 @@ usnd1:	push	ix
 ; Receive data.
 
 ; Input:
-;   HL = buffer in user space
-;   DE = buffer size, not counting 2-byte length field
+;   DE = buffer address in user space
+;   BC = buffer size, including 2-byte length field
 ; Returns:
 ;   CY set on error and error code in A.
 
-URECV:	ld	a,d
-	or	e
+URECV:	ld	hl,2
+	cpw	hl,bc
 	ld	a,E.BADOP
-	scf
-	ret	z
-	push	hl		; push dest
-	push	de		; push size
+	ccf
+	ret	c		; length must be > 2
+	call	$VALBF		; validate buffer
+	ret	c		; error if outside task limits
+	push	de		; push dest
+	push	bc		; push size
 	call	RECV		; dequeue packet, returns addr in HL
 	pop	de		; size in DE
 	pop	bc		; dest in BC
 	ret	c		; return if list empty
+	dec	de		; dest size = buffer size - data field
+	dec	de
 	push	hl
 	pop	ix		; IX = packet address
 	ldw	hl,(ix+QU.SIZ)	; get data size
@@ -1163,6 +1274,11 @@ GETLUN:	dec	c		; 1..16 -> 0..15
 	ret	c
 	ld	ix,($CTCB)
 	ex	de,hl		; dst in DE
+	push	bc
+	ld	bc,6
+	call	$VALTB		; validate user buffer
+	pop	bc
+	ret	c
 	ldw	hl,(ix+T.CTX)
 	ld	a,TX.LUT
 	add	hl,a		; HL = address of LUN table
@@ -1239,7 +1355,7 @@ gcd3:	ex	de,hl		; DE = dst
 	ret	z		; error if LCB not set
 	add	hl,bc		; HL = src
 gcd4:	ld	bc,9
-	jp	ucpy		; copy name to user space and return success
+	jp	UCPY		; validate dst buffer, store name and return
 
 ;-----------------------------------------------------------------------
 
@@ -1276,9 +1392,7 @@ scd1:	ex	de,hl
 	add	hl,bc
 scd2:	ex	de,hl		; src in HL, dst in DE
 	ld	bc,9
-	call	uget		; get name from user space
-	xor	a
-	ret
+	jp	UGET		; get name from user space and return
 
 ;=======================================================================
 ;

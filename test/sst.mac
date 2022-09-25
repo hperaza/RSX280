@@ -16,6 +16,8 @@ LF	equ	0Ah
 
 EXSTAT::
 	ld	sp,stack
+	ld	hl,msg1
+	call	PUTSTR
 	ld	hl,sstvt
 	SC	.SVTBL		; specify SST vector table
 	jr	c,error
@@ -43,6 +45,8 @@ iaddr:	nop
 
 	halt			; breakpoint
 
+	ld	hl,msg2
+	call	PUTSTR
 	ld	hl,0
 	SC	.SVTBL		; disable SSTs
 	jr	c,error
@@ -53,7 +57,7 @@ iaddr:	nop
 	jp	EXIT
 
 error:	push	af
-	ld	hl,msg
+	ld	hl,errmsg
 	call	PUTSTR
 	pop	af
 	call	PERROR
@@ -62,7 +66,10 @@ error:	push	af
 	ld	hl,EX.SEV
 	jp	EXIT
 
-msg:	db	CR,LF,'Fatal error: ',0
+msg1:	db	CR,LF,'Enabling SSTs',CR,0
+msg2:	db	CR,LF,'Disabling SSTs',CR,0
+
+errmsg:	db	CR,LF,'Fatal error: ',0
 
 sstvt:	dw	eivec		; extended instruction, EPU->reg
 	dw	e2vec		; extended instruction, EPU->mem

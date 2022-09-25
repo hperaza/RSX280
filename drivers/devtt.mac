@@ -208,7 +208,7 @@ DBGTRP	equ	1		; set to true to enable ^T trap to system
 				;  debugger-monitor from system console
 
 	extrn	SETHVC,GETPKT,IODONE,QMCR,QAST,$UGETB,$UPUTB
-	extrn	LNKFQB,$ALLOC,$FREE,$CLIST
+	extrn	LNKFQB,$ALLOC,$FREE,$CLIST,$VALTB
 
 ; NOTE: the DCB will be constructed dynamically by the kernel in system
 ; memory, since the device driver can reside on its own bank or partition.
@@ -613,10 +613,14 @@ ttclr:	push	ix
 
 ; Handle 'read with prompt' function.
 
-ttrpr:	ldw	hl,(ix+Q.PRB)	     ; get address of prompt string
-	ldw	(iy+UX.PRM),hl
-	ldw	hl,(ix+Q.PRL)	     ; get prompt length
-	ldw	(iy+UX.PRL),hl
+ttrpr:	ldw	de,(ix+Q.PRB)	     ; get address of prompt string
+	ldw	(iy+UX.PRM),de
+	ldw	bc,(ix+Q.PRL)	     ; get prompt length
+	ldw	(iy+UX.PRL),bc
+	call	chkbuf		     ; validate prompt buffer
+	jp	c,iend1
+	call	chkiob		     ; validate dest buffer
+	jp	c,iend1
 	ldw	hl,(ix+Q.PVF)	     ; get prompt vertical format control
 	ldw	(iy+UX.VFC),hl
 	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
@@ -640,7 +644,9 @@ ttrpr:	ldw	hl,(ix+Q.PRB)	     ; get address of prompt string
 
 ; Handle read function.
 
-ttrlb:	ld	hl,0
+ttrlb:	call	chkiob		     ; validate user buffer
+	jp	c,iend1
+	ld	hl,0
 	ldw	(iy+UX.PRM),hl
 	ldw	(iy+UX.PRL),hl
 	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
@@ -658,7 +664,9 @@ ttr1:	di
 
 ; Handle write function.
 
-ttwlb:	ldw	hl,(ix+Q.VFC)	     ; get vertical format control word
+ttwlb:	call	chkiob		     ; validate user buffer
+	jp	c,iend1
+	ldw	hl,(ix+Q.VFC)	     ; get vertical format control word
 	ldw	(iy+UX.VFC),hl
 	ld	a,(iy+U.ATT)
 	or	(iy+U.ATT+1)	     ; task attached?
@@ -713,9 +721,10 @@ ttdet:	res	TC.BIN,(iy+U.CW+1)   ; clear binary mode
 
 ; Handle 'get multiple characteristics' function
 
-ttgmc:	ldw	hl,(iy+UX.BFP)	; HL = address of buffer in user space
-	ldw	de,(iy+UX.BNK)	; DE = user bank
-	ldw	bc,(iy+UX.CNT)	; BC = length in bytes
+ttgmc:	call	chkiob		; validate user buffer
+	jp	c,iend1
+	ex	de,hl		; HL = address of buffer in user space
+	ldw	de,(iy+UX.BNK)	; DE = user bank, length still in BC
 	srl	b
 	rr	c		; length now in words
 ttgmc1:	ld	a,b
@@ -754,7 +763,9 @@ ttgmc4:	sub	8		; TC.SPD?
 ; Handle 'set multiple characteristics' function.
 ; BC still points to TCB of requesting task (see ioreq routine).
 
-ttsmc:	bit	US.PUB,(iy+U.ST); public unit?
+ttsmc:	call	chkiob		; validate user buffer
+	jp	c,iend1
+	bit	US.PUB,(iy+U.ST); public unit?
 	jr	nz,ttsmc0	; yes, anybody can change settings
 	ld	hl,T.ATTR
 	add	hl,bc
@@ -828,6 +839,26 @@ ttsmc5:	sub	8		; TC.SPD?
 ttsmc6:	pop	af
 	pop	bc
 	jp	ierr
+
+;-----------------------------------------------------------------------
+
+; Ensure user buffer is within task limits, 'chkbuf' is an alternate
+; entry point.
+
+chkiob:	ldw	de,(ix+Q.BUF)	; get buffer address
+	ldw	bc,(ix+Q.LEN)	; get buffer size
+chkbuf:	push	ix
+	push	hl
+	ldw	ix,(iy+U.SCB)	; get SCB address
+	ldw	ix,(ix+S.CPKT)	; get address of current packet
+	ldw	ix,(ix+I.TCB)	; get TCB address of requesting task
+	call	$VALTB		; validate user buffer
+	pop	hl
+	pop	ix
+	ret	nc
+	ld	bc,E.INV
+	scf
+	ret
 
 ;-----------------------------------------------------------------------
 

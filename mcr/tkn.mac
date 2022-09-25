@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Task Termination Notification task for RSX280.                     ;
-;   Copyright (C) 2016-2020, Hector Peraza.                            ;
+;   Copyright (C) 2016-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.03'
+	ident	'02.04'
 
 	cseg
 
@@ -43,8 +43,8 @@ ESC	equ	1Bh
 ;-----------------------------------------------------------------------
 
 START:	ld	sp,stack
-loop:	ld	hl,rcvlen	; receive task termination message
-	ld	de,128
+loop:	ld	de,rcvlen	; receive task termination message
+	ld	bc,128+2
 	SC	.RECV
 	jr	c,exit		; exit if nothing to process
 	call	NOTIFY		; process message

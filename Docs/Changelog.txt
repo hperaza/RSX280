@@ -7378,3 +7378,35 @@ BUGS:
   * inlined FIXLEN routine.
   * /UN: if no undefined Externals found, say so.
 
+
+02/09/22
+
+- Kernel: when processing user requests, ensure data structures are within
+  task limits.
+
+
+18/09/22
+
+- Kernel:
+  * changed register assignment for the .SEND system call (now HL points
+    to task name, DE to data buffer and BC contains data length) to avoid
+    unnecessary register swaps in the kernel processing routines. This change
+    didn't affect any of the distributed applications (only the test program.)
+  * changed likewise register assignment for the .RECV system call (now DE
+    points to data buffer and BC contains buffer size, *including* the length
+    field.) Updated the applications that issued the call (MCR, COT, TKTN,
+    and the test program.)
+  * the .CLEF system call now returns the previous flag state, which may be
+    useful to avoid certain race conditions.
+  * ensure flag value range is 1..32 in .SETF, .CLEF, .RDEF, etc.
+
+- ICP bug fix: don't thrash system error code in TRAP? routine.
+
+- DEVDU, DEVTT: ensure user buffer is within task limits.
+
+
+24/09/22
+
+- DEVCT, DEVDY, DEVLP: ensure user buffer lies within task limits.
+
+

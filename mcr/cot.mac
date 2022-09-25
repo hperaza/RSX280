@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.07'
+	ident	'01.08'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -114,11 +114,12 @@ loop:	ld	e,ASTEFN
 
 	; try to get a command line
 
-	ld	hl,rcvlen
-	ld	de,80+3
+	ld	de,rcvlen
+	ld	bc,80+3+2
 	SC	.RECV		; get CLI command (includes terminal name)
 	jr	c,nocmd		; no command ready, jump to try packet
 
+	ex	de,hl
 	ldw	bc,(hl)		; get received data length
 	inc	hl
 	inc	hl

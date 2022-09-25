@@ -97,4 +97,6 @@ UPTIME	; system up time (ticks and seconds)
 $UPUTB	; inter-bank put byte routine
 $UPUTW	; inter-bank put word routine
 $UBANK	; bank of current task
+$VALBF	; validate buffer (current task)
+$VALTB	; validate buffer (arbitrary task)
 $WLIST	; ptr to head of waiting tasks list

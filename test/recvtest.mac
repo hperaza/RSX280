@@ -19,11 +19,12 @@ RECV::	ld	sp,stack
 	call	PUTSTR
 	call	TTFLSH
 
-loop:	ld	hl,msgbuf
-	ld	de,127
+loop:	ld	de,msgbuf
+	ld	bc,127+2
 	SC	.RECV		; wait for message
 	jr	c,wait
 
+	ex	de,hl
 	ld	c,(hl)		; get message length
 	inc	hl
 	ld	b,(hl)

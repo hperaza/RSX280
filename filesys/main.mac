@@ -23,7 +23,7 @@
 
 	.Z280
 
-	IDENT	"V5.0-5"
+	IDENT	"V5.0-6"
 
 	include	SYSFN.INC
 	include	SYSFCP.INC
@@ -663,18 +663,16 @@ VALBUF:	ld	ix,(USRTSK)
 	ex	de,hl
 	cpw	hl,de		; CY if bufptr < task_start
 	ex	de,hl
-	pop	hl
-	ld	a,E.BADOP
-	ret	c
-	push	hl
+	ld	a,E.INV
+	jr	c,vb1
 	ldw	hl,(ix+T.END)
 	sbc	hl,bc		; note CY clear
-	ret	c		; CY if task_end - len < 0
+	jr	c,vb1		; CY if task_end - len < 0
+	inc	hl
 	cpw	hl,de		; CY if bufptr + len > task_end
-	pop	hl
-	ld	a,E.BADOP
-	ret	c
+	jr	c,vb1
 	xor	a
+vb1:	pop	hl
 	ret
 
 ; Get FDB from user space. HL = ptr to FDB, DE = ptr to dest buffer

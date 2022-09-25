@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -36,7 +36,7 @@
 	include	SYSCONF.INC
 	include	ERRORS.INC
 
-	extrn	GETPKT,IODONE,$ERSEQ,$UPUTW,$MCOPY,$SBANK,LNKFQB
+	extrn	GETPKT,IODONE,$ERSEQ,$UPUTW,$MCOPY,$SBANK,LNKFQB,$VALTB
 
 ; This driver assumes that the hard disk has been partitioned using the
 ; FDISK utility. The initialization routine validates the partition table
@@ -372,7 +372,9 @@ getcnt:	ld	a,c
 HDSEC:	ld	de,4
 	call	CHKLEN		; ensure user buffer can hold a long word
 	jp	c,iend
-	ld	hl,(iy+UX.PSIZ)	; get partition size
+	call	CHKBUF		; ensure user buffer is within task limits
+	jp	c,iend
+	ldw	hl,(iy+UX.PSIZ)	; get partition size
 	ld	c,h		; convert from 128K tracks to blocks
 	ld	h,l		; *16 with 20-bit result in CHL
 	ld	l,0
@@ -394,7 +396,9 @@ HDSEC:	ld	de,4
 ; Read drive identification information to memory buffer UX.BFP in bank
 ; UX.BNK.
 
-HDIDN:	call	IDENT		; read drive identification
+HDIDN:	call	CHKBUF		; ensure user buffer is within task limits
+	jp	c,iend
+	call	IDENT		; read drive identification
 	jr	HDRD1		; finish via common code
 
 ; Read physical block (number in LBN) from specified unit (IY = UCB) to
@@ -412,7 +416,9 @@ HDRPB:	ld	hl,(LBN)
 HDRLB:	call	CHKBLK		; ensure blkno is within partition limits
 	jp	c,iend		;  and that user buffer is large enough
 	call	L2PBN		; compute physical block number
-HDRD:	call	DSKRD		; read one physical block from hard disk
+HDRD:	call	CHKBUF		; ensure user buffer is within task limits
+	jp	c,iend
+	call	DSKRD		; read one physical block from hard disk
 HDRD1:	jp	c,iend		; finish operation if there were errors
 	exx
 	ld	hl,($SBANK)	; set src bank for $MCOPY
@@ -439,7 +445,9 @@ HDWPB:	ld	hl,(LBN)
 HDWLB:	call	CHKBLK		; ensure blkno is within partition limits
 	jp	c,iend		;  and that user buffer is large enough
 	call	L2PBN		; compute physical block number
-HDWR:	exx
+HDWR:	call	CHKBUF		; ensure user buffer is within task limits
+	jp	c,iend
+	exx
 	ldw	hl,(iy+UX.BNK)	; src bank
 	ld	de,($SBANK)	; dst bank
 	exx
@@ -491,6 +499,23 @@ CHKLEN:	ldw	hl,(iy+UX.CNT)
 	cpw	hl,de		; CY if buf size < length
 	ret	nc
 	ld	a,3
+	jp	SETERR
+
+; Ensure user buffer is within task limits.
+
+CHKBUF:	ldw	hl,(iy+U.SCB)	    ; get SCB address
+	ldw	ix,(hl+S.CPKT)	    ; fetch current packet address
+	ldw	de,(ix+I.QDB+Q.BUF) ; get buffer address
+	ldw	bc,(ix+I.QDB+Q.LEN) ; get length
+	ldw	ix,(ix+I.TCB)	    ; get TCB address
+	or	a		    ; clear CY
+	bit	TA.PRV,(ix+T.ATTR)  ; task privileged?
+	jr	z,cb1		    ; no
+	bit	TS.SUP,(ix+T.ST)    ; kernel database mapped to task space?
+	ret	nz		; yes, allow operation
+cb1:	call	$VALTB		; validate task buffer
+	ret	nc
+	ld	a,4
 	jp	SETERR
 
 ; Convert logical block number in LBN to physical block number in PBN.

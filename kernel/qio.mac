@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -45,6 +45,8 @@
 	public	IODONE		; end current I/O, called by driver
 	public	$IOEND		; end current I/O, called by ACPs
 	public	IOKILL		; kill all pending I/O packets of a task
+	public	$VALTB		; validate buffer (arbitrary task)
+	public	$VALBF		; validate buffer (current task)
 
 	extrn	$CTCB,$CPCB,SEND,$PHYDV,$ALLOC,$FREE,$MCOPY,$REDIR
 	extrn	$CHKPT,SETFLG,CLRFLG,FLWAIT,TKILL2,$SBANK,$UPUTW,QAST
@@ -54,10 +56,6 @@
 ;-----------------------------------------------------------------------
 
 ; Handle QIO requests. Called with HL = QDB address.
-
-; TODO:
-; - check requests to ensure I/O buffers and IOSB are fully within task
-;   limits (return error if not).
 
 QIO:	push	hl
 	ld	bc,IOPKSZ	; BC = I/O packet size
@@ -80,27 +78,36 @@ QIO:	push	hl
 	pop	bc
 	ldw	(ix+I.TCB),bc	; set TCB address of caller
 
-	push	hl
 	exx
 	ld	hl,($CPCB)
 	ld	hl,(hl+P.BASE)	; HL' = src bank = task bank
 	ld	de,($SBANK)	; DE' = dst bank = system bank
 	exx
+	ex	de,hl		; DE = QDB address in user space
 	push	ix
 	pop	hl
-	ld	de,I.QDB
-	add	hl,de
-	ex	de,hl		; DE = dst (ix+I.QDB)
-	pop	hl		; HL = src (QDB in user space)
+	ld	bc,I.QDB
+	add	hl,bc		; HL = ix+I.QDB
 	ld	bc,QDBSZ
+	call	$VALBF		; ensure QDB is within task limits
+	jp	c,qio6		; on error, return
+	ex	de,hl		; DE = dst (ix+I.QDB), HL = src (user QDB)
 	call	$MCOPY		; get QDB from user space into I.QDB
 
+	ldw	de,(ix+I.QDB+Q.IOSB)
+	ld	bc,4
+	call	$VALBF		; ensure IOSB is within task limits
+	jp	c,qio6
+
 	ld	e,(ix+I.QDB+Q.EFN) ; get event flag number into E
-	push	de
+	push	de		; save it
 	push	ix
 	ld	bc,($CTCB)
-	call	CLRFLG		; ensure flag is clear
+	ld	a,e
+	or	a
+	call	nz,CLRFLG	; ensure flag is clear
 	pop	ix
+	jp	c,qio3		; error if flag invalid (note: 0 allowed)
 
 	ldw	hl,(iy+T.CTX)	; get address of task context block
 	ld	a,h
@@ -202,9 +209,9 @@ qio4:	; on error free packet and return
 
 	ld	a,E.BADOP
 	scf
-qio3:	ld	iy,($CTCB)
+qio3:	pop	bc		; pop flag number
+qio6:	ld	iy,($CTCB)
 	dec	(iy+T.IOC)	; restore original outstanding I/O count
-	pop	bc		; pop flag number
 	push	af		; remember error code
 	ld	de,IOPKSZ	; DE = size
 	push	ix
@@ -539,7 +546,7 @@ IODONE:	ldw	ix,(iy+U.SCB)	; get SCB address into IX
 ;  - set event flag
 ;  - free I/O packet
 ;  - resume task execution
- 
+
 ; Input:
 ;   IX = packet address
 ;   BC = I/O return code (first word - error/success)
@@ -561,7 +568,9 @@ SETFRE:	ldw	bc,(ix+I.TCB)	; get TCB of requesting task into BC
 	ld	e,(ix+I.QDB+Q.EFN) ; get flag number into E
 	push	bc		; save TCB address
 	push	ix
-	call	SETFLG		; set flag and resume task
+	ld	a,e
+	or	a
+	call	nz,SETFLG	; set flag and resume task
 	pop	hl		; packet addr now in HL
 	ld	de,IOPKSZ	; size in DE
 	call	$FREE		; free I/O packet
@@ -612,8 +621,7 @@ QSTORE:	ldw	hl,(ix+I.TCB)
 	ldw	hl,(ix+I.QDB+Q.IOSB) ; HL = addr in user space to store result
 	call	$UPUTW		; store first word (completion code)
 	pop	bc
-	call	$UPUTW		; store second word (transfer count)
-	ret
+	jp	$UPUTW		; store second word (transfer count)
 
 ;-----------------------------------------------------------------------
 
@@ -631,7 +639,7 @@ QSTORE:	ldw	hl,(ix+I.TCB)
 ;   BC = task TCB
 ; Returns:
 ;   A<>0 if task had outstanding I/O, else 0
-; Preserves BC
+; Preserves BC.
 
 IOKILL:	xor	a
 	ld	(OIOFLG),a	; clear 'outstanding I/O' flag
@@ -888,6 +896,42 @@ QIOCLN:	ld	a,TK.EIO
 	push	ix
 	ld	de,IOPKSZ	; DE = size
 	call	$FREE		; free I/O packet, address already in HL
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Validate buffer, ensure it is contained within task limits.
+
+; Input:
+;   IX = TCB address
+;   DE = buffer address
+;   BC = buffer length
+
+; Preserves BC, DE, HL, IX, IY.
+
+$VALTB:	push	hl
+	ldw	hl,(ix+T.STRT)
+	ex	de,hl
+	cpw	hl,de		; CY set if buffer addr < task start
+	ex	de,hl
+	ld	a,E.INV
+	jr	c,vb1
+	ldw	hl,(ix+T.END)
+	sbc	hl,bc		; note CY is clear from above
+	jr	c,vb1		; CY if task end - len < 0
+	inc	hl
+	cpw	hl,de		; CY if buffer addr + len > task end
+	jr	c,vb1
+	xor	a
+vb1:	pop	hl
+	ret
+
+; Same as the above, but for the current task.
+
+$VALBF:	push	ix
+	ld	ix,($CTCB)
+	call	$VALTB
 	pop	ix
 	ret
 

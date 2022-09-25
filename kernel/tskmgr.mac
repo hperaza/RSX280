@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2021, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -82,10 +82,9 @@
 	extrn	$RNDH,$RNDL,$SWPC,$SWPCT,$SWPRI
 
 	extrn	SYSENT,SYSSTK,SYSXIT,TICCNT,INTON,$SBANK,$UBANK,$MCOPY
-	extrn	$ASNTP,DOCLKQ,CLRFLG,DISCON,MALLOC,MFREE,$ALLOC,$FREE
+	extrn	$ASNTP,DOCLKQ,DISCON,MALLOC,MFREE,$ALLOC,$FREE,CHKPAR
 	extrn	CLRMEM,CLRCVL,CLNAST,IOKILL,QTKTN,QPAR,MCRTCB,LDRTCB
 	extrn	$FNDEV,TFLAG,DOFORK,TRPFLG,MEXTND,CLNCLQ,SRQST,NEWSUB
-	extrn	CHKPAR
 
 	if	F$HALT
 	extrn	CKCLKQ
