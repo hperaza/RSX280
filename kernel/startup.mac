@@ -21,21 +21,20 @@
 
 	.Z280
 
-	ident	/6.28/
+	ident	/6.29/
 
 	include	DCB.INC
 	include	TCB.INC
 	include	PCB.INC
 	include	SYSFN.INC
+	include	ERRORS.INC
 
 	include	SYSCONF.INC
 
 	extrn	SYSSTK,MMUINI,INITKM,ININT,SETVEC,INTON,INTOFF
 	extrn	TMRINT,$ASGN,SYSENT,SYSLVL,$PHYDV,$FNPAR,$ALLOC
-	extrn	CLRMEM,UPTIME,NVREAD,LDRTCB,TRQST,$POLSZ,MSIZE
-	extrn	$PLIST,GO
-
-	extrn	INIT_S,INIT_E
+	extrn	CLRMEM,UPTIME,NVREAD,LDRTCB,TRQST,$POLSZ,$PLIST
+	extrn	$MFLGS,MSIZE,GO
 
 BOOTDV	equ	0081h		; address of the boot device name set
 				;  by the bootstrap loader
@@ -73,6 +72,9 @@ START::	di
 	ld	hl,UPTIME
 	ld	bc,5
 	call	CLRMEM		; init uptime
+
+	ld	hl,$MFLGS
+	set	7,(hl)		; set boot flag
 
 	ld	hl,($PLIST)
 p1:	ld	a,h
@@ -161,76 +163,48 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	; by VMR
 
 	ld	hl,LDRTDB
-	call	TRQST		; request loader
+	call	?RQST		; request loader
 	jp	c,noldr
 	ld	(LDRTCB),ix
 
-	; start initialization task
+ if 1
+	ld	hl,MCRTDB
+	call	?RQST		; request MCR
+	jp	c,skip
+	ld	(MCRTCB),ix
+	set	TA.PRV,(ix+T.ATTR)
+	set	TA.CLI,(ix+T.ATTR)
+	set	TA.MCR,(ix+T.ATTR)
+ endif
 
-	ld	bc,SYSPAR
-	call	$FNPAR		; find system partition
-	jp	c,uncfg		; error if not found
-	ld	(INITCB+T.PCB),hl ; set pointer to partition in TCB
-	ld	de,'TT'
-	ld	c,0
-	ld	ix,INITCB
-	call	$FNDEV##	; get UCB for console device
+skip:	; start initialization task
+
+	ld	hl,SAVTDB
+	call	?RQST		; request initialization task
 	jp	c,uncfg
-	ld	(INITCB+T.TI),hl
-	ld	bc,TCBSZ
-	call	$ALLOC		; allocate new TCB for initialization task
-	jp	c,uncfg
-	push	hl
-	pop	ix		; get TCB address into IX
-	ex	de,hl
-	ld	hl,INITCB
-	ld	bc,TCBSZ
-	ldir			; copy TCB
-	ldw	de,(ix+T.END)	; get initial top of stack into DE
-;;	inc	de
-	ldw	(ix+T.SP),hl	; set SP value in TCB
-	call	NEWCTX##	; alloc and link context block, ignore errors
-	ldw	de,(ix+T.CTX)
-	ld	hl,TX.UID
-	add	hl,de
-	ld	(hl),1		; set user ID
-	inc	hl
-	ld	(hl),1		; set group ID
-	ld	hl,TX.DIR
-	add	hl,de
-	ld	bc,9
-	call	CLRMEM		; clear current dir
-	ld	hl,TX.REGS+24
-	add	hl,de
-	ldw	bc,(ix+T.EPT)	; get entry point into BC
-	ldw	(hl),bc		; set PC on stack frame
-	dec	hl
-	dec	hl
-;;	ld	bc,407Fh	; user mode, enable all ints
-	ld	bc,507Fh	; user mode, bpt on halt, enable all ints
-	ldw	(hl),bc		; set MSR on stack frame
-	ld	iy,$RLIST##
-	ld	bc,T.ACTL
-	call	$LKTCB##	; insert TCB in ready list
-	ld	iy,$TLIST##
-	ld	bc,T.TCBL
-	call	$LKTCB##	; add TCB to the task directory
 
 	; start dispatcher
 
 	jp	GO
 
+?RQST:	call	TRQST
+	ret	nc
+	cp	E.TACT
+	ret	z
+	cp	E.TRUN
+	ret	z
+	scf
+	ret
+
 uncfg:	call	$DMTRP##
-	db	'RSX280 -- System not configured, stopping',0
+	db	'RSX280 -- System not configured',0
 	di
 	halt
 
 noldr:	call	$DMTRP##
-	db	'RSX280 -- Loader not installed, stopping',0
+	db	'RSX280 -- Loader not installed',0
 	di
 	halt
-
-SYSPAR:	db	'SYSPAR'
 
 ;-----------------------------------------------------------------------
 
@@ -251,37 +225,22 @@ LDRTDB:	db	'LDR...'	; task name
 	db	'CO',0		; terminal device
 	dw	0,0		; addr and size of data blk to send (not used)
 
-INITCB:	dw	0		; T.LNK
-	dw	0		; T.TCBL
-	dw	0		; T.ACTL
-	db	(1 SHL TA.PRV) OR (1 SHL TA.REM) OR (1 SHL TA.CKD) ; T.ATTR
-	db	(1 SHL TS.ACT)	; T.ST
-	db	0		; T.ST+1
-	db	200		; T.DPRI
-	db	200		; T.PRI
-	db	0		; T.SPRI
-	db	'INIT  '	; T.NAME
-	db	'V6.03 '	; T.VID
-	dw	0		; T.CMD
-	db	0		; T.IOC
-	dw	0		; T.RCVL
-	dw	0		; T.OCBL
-	dw	0		; T.SAST
-	dw	0		; T.ASTL
-	dw	0		; T.SVST
-	db	0,0,0,0		; T.FLGS
-	db	0,0,0,0		; T.WAIT
-	dw	0		; T.CTX
-	dw	0		; T.TI
-	dw	0		; T.LDEV
-	dw	0,0		; T.SBLK
-	dw	0		; T.NBLK
-	dw	0		; T.PCB
-	dw	0		; T.CPCB
-	dw	INIT_S		; T.STRT
-	dw	INIT_E		; T.DEND
-	dw	INIT_E		; T.END
-	dw	INIT_S		; T.SPT
-	dw	0		; T.SP
+ if 1
+MCRTDB:	db	'MCR...'	; task name
+	dw	0,0		; addr and length of command line (not used)
+	db	0,0,0		; attr, user, grp (not used)
+	db	'CO',0		; terminal device
+	dw	0,0		; addr and size of data blk to send (not used)
+ endif
+
+SAVTDB:	db	'...SAV'	; task name
+	dw	0,0		; addr and length of command line (not used)
+	db	0,0,0		; attr, user, grp (not used)
+ if 0
+	db	'CO',0		; terminal device
+ else
+	db	'TT',0		; terminal device
+ endif
+	dw	0,0		; addr and size of data blk to send (not used)
 
 	end	START
