@@ -12,7 +12,6 @@ ins sysfcp/acp=yes		! install filesystem task
 ins tkn				! install task termination task
 fix tktn
 ins cot/acp=yes/cli=yes		! install console logger
-;ins sav
 ins mcr/ckp=no			! install command processor
 ins sys				! install display part of command processor
 ins ins				! install install
@@ -24,6 +23,7 @@ ins shf/ckp=no			! install shuffler
 fix shf...
 ins mou				! install mount
 ins dmo				! install dismount
+ins sav				! install save
 ins ufd				! install user file directory builder
 ins ini				! install volume initialization task
 ins rmd				! install resource monitoring display task
