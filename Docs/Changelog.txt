@@ -7410,3 +7410,107 @@ BUGS:
 - DEVCT, DEVDY, DEVLP: ensure user buffer lies within task limits.
 
 
+28/09/22
+
+- Working on a SAV-like program to save the current system configuration
+  back into the system image file, e.g. to keep any newly installed and/or
+  removed tasks, device and/or system SET parameters, etc. without having
+  to VMR the changes into the image every time:
+  * SAV should make sure that the system is in an adequate state (mostly
+    idling) before attempting to save the system; this is to ensure that
+    e.g. no undesired tasks will continue executing after the new system
+    image is rebooted, that all terminals other than the system console
+    are logged out, to minimize chances of pool fragmentation and/or
+    orphaned pool blocks, etc.
+  * SAV will also replace the INIT task that currently lives in kernel
+    space and that is used only once, freeing around 1.3K of kernel memory
+    (IIRC, this is what RSX11M also does.)
+
+
+29/09/22
+
+- More work on SAV:
+  * adapting the system initialization routine from the old system startup
+    code.
+  * main routine: right now jumps directly to the initialization code,
+    so it could be already used to finish booting the system.
+
+
+30/09/22
+
+- More work on SAV: writing routines to check the system state before
+  saving:
+  * checks must be performed with task dispatching disabled (system database
+    access locked), to prevent system state from changing.
+  * all terminals must be logged out except CO:
+    + scan $PHYDV for terminal devices (DV.TTY bit set in U.CW), and make
+      sure U.LGN is null.
+  * console logging is not active; this is to prevent any pending queued
+    message to be processed again and again everytime the new system is
+    booted:
+    + U.ACP of CO: device must be null.
+    + ensure COT... is not active or not installed?
+  * ensure no checkpoint files are active; this is to prevent the system
+    trying to access checkpoint space on the wrong disk if disk configuration
+    changes, and to avoid tasks remaining active in the checkpoint file:
+    + $CPLST must be null
+  * all tasks are installed from the LB: (system load) device; this is
+    to prevent errors in case the system is booted with a different disk
+    configuration (e.g. on the P112 running from a floppy, an installed
+    task from the second floppy will cause an error if the system is
+    booted next time with a different floppy on the second drive.):
+    + scan $TLIST and ensure that T.LDEV points to LB: (note: without
+      redirection!)
+    Use the STARTUP.CMD to install any necessary tasks from a second drive.
+  * no volumes are mounted except LB: (system load device), again in case
+    disk configuration changes.
+    + $MVTBL should contain a single entry with M.UCB matching the UCB
+      address of the physical device LB: is redirected to.
+  * no files should be open on LB:, and that LB: can be safely dismounted:
+    + M.FCBL of the $MVTBL entry (see above) should be null (but note:
+      SYSFCP keeps the master directory open while the disk is mounted!)
+
+
+01/10/22
+
+- More work on SAV: writing routines to check the system state before
+  saving:
+  * ensure all device drivers are idle:
+    + either ensure that S.PKTL and S.CPKT are both null for all devices
+      in the system, or
+    + ensure that T.IOC is null for all active tasks (i.e. that no tasks
+      have outstanding I/O)
+
+
+02/10/22
+
+- TKB, CP/M version: fixed a bug in file name parsing routine (the drive
+  field of the FCB was not being cleared if no drive was specified.)
+
+- More work on SAV:
+  * the system initialization routine is now working.
+  * removed the old, kernel-space initialization task; the startup code
+    now requests SAV to finish booting the system.
+  * the main routine now executes the initialization routine only when the
+    system is being booted, else switches to system image saving code.
+  * ensure user is privileged before saving the system:
+    + bit LS.PRV must be set in status byte of LCB of user's terminal.
+
+
+05/10/22
+
+- Kernel: do not reset the ready and waiting lists on startup, so SAVed
+  systems could be properly restarted. Don't reset the clock queue either,
+  as it may contain valid time-scheduled scheduled tasks.
+
+
+09/10/22
+
+- Kernel: the $LOGIN function now returns the old LCB address if another
+  user is logged in.
+
+- More work on SAV:
+  * set boot device 'public' on startup.
+  * ensure system console is non-slaved.
+  * display hostname on banner instead of 'P112' or 'Z280RC'.
+

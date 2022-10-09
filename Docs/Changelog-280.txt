@@ -315,3 +315,9 @@ Changelog
 - ODT: align neately the output of the D command when address is not a
   multiple of 16 (borrowing code from Tony Nicholson's CP/M emulator).
 
+
+05/10/21
+
+- Kernel: fixed a bug in the MMUINI routine: must divide PDR by 16 and not
+  by 4 in order to obtain page address (case of MMU in system mode).
+
