@@ -95,24 +95,18 @@
 ; Initialize task manager: init dynamic lists, queues, tables, etc.
 ; Called only during system startup.
 ;
-; A number of lists are now set by VMR and therefore no longer
-; initialized here.
+; A number of lists are now set by VMR (or SAV SAVed from a running
+; system) and therefore no longer initialized here. E.g. $TLIST, $RLIST,
+; $WLIST, $PLIST, $CLKQ, $PHYDV, $LOGDV, etc.
 
 INITKM:	xor	a
 	ld	(TRPFLG),a	; clear trap flag
 	ld	hl,0
 	ld	($CTCB),hl	; no current TCB yet
 	ld	($CPCB),hl	; no current PCB either
-;;	ld	($PLIST),hl	; clear partition list
 	ld	($CPLST),hl	; clear checkpoint partition list
-;;	ld	($TLIST),hl	; clear system task directory
-	ld	($RLIST),hl	; clear ready list
-	ld	($WLIST),hl	; clear wait list
 	ld	($FORKQ),hl	; clear fork queue
-	ld	($CLKQ),hl	; clear clock queue
 	ld	($ERSEQ),hl	; reset error counter
-;;	ld	($PHYDV),hl	; reset physical device table (DCB list)
-;;	ld	($LOGDV),hl	; reset logical-to-physical xlt table
 	ld	($MVTBL),hl	; reset mounted volume table
 	ld	a,($RNDC)
 	ld	($RNDCT),a	; reset round-robin interval counter
