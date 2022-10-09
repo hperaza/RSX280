@@ -284,21 +284,22 @@ MakeFCB:
 	ld	b,a		; may be disk name
 	inc	hl
 	ld	a,(hl)
+	inc	hl
 	cp	':'
 	jr	z,mf1
 	dec	hl
-	jr	mf2
+	dec	hl
+	ld	b,0
 mf1:	ld	a,b
 	ld	(de),a		; store disk name
-	inc	hl
-mf2:	inc	de
+	inc	de
 	ld	b,8
 	call	GetFN
 	ld	a,(hl)
 	cp	'.'
-	jr	nz,mf3
+	jr	nz,mf2
 	inc	hl
-mf3:	ld	b,3
+mf2:	ld	b,3
 	call	GetFN
 	pop	de
 	xor	a
@@ -1693,6 +1694,17 @@ UsrLow:
 	ld	(de),a
 	inc	de
 	pop	hl
+ELSE	;@@DU
+	ld	a,(hl)
+	or	a
+	jr	z,NoDisk
+	add	a,'A'-1
+	ld	(de),a
+	inc	de
+	ld	a,':'
+	ld	(de),a
+	inc	de
+NoDisk:
 ENDIF	;@@DU
 	ld	b,@nam+@ext
 PrFN.loop:
