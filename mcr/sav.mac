@@ -707,12 +707,14 @@ SETTN:	push	ix
 ;   file) can be requested by the startup code? [RSX-11M VMR's seem to
 ;   distinguish between the two cases]
 
-; Validate task VBN
+; Validate task files, task header, etc.
 
-CKTVBN:
+CKTSK:
 	ret
 
-msgt4:	db	'Bad task file VBN, task removed - %T',0
+msgt4:	db	'Task file deleted, task removed - %T',0
+msgt5:	db	'Bad task file header, task removed - %T',0
+msgt6:	db	'Task too big for partition, task removed - %T',0
 
 ;=======================================================================
 ; System initialization after boot.
