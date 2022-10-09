@@ -617,7 +617,9 @@ ttrpr:	ldw	de,(ix+Q.PRB)	     ; get address of prompt string
 	ldw	(iy+UX.PRM),de
 	ldw	bc,(ix+Q.PRL)	     ; get prompt length
 	ldw	(iy+UX.PRL),bc
-	call	chkbuf		     ; validate prompt buffer
+	ld	a,d
+	or	e		     ; user specified a prompt string?
+	call	nz,chkbuf	     ; yes, validate prompt buffer
 	jp	c,iend1
 	call	chkiob		     ; validate dest buffer
 	jp	c,iend1
