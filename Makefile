@@ -17,10 +17,10 @@ LBR     = ./Tools/cpm/lbr.com
 DRLIB   = ./Tools/cpm/drlib.com
 
 # System modules
-sysmod = startup.rel init.lib drivers.lib kernel.lib sysdat.rel
+sysmod = startup.rel drivers.lib kernel.lib sysdat.rel
 
 # Source of system modules (directories)
-sysdirs = boot drivers startup kernel
+sysdirs = boot drivers kernel
 
 # Source of utilities
 utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap
@@ -77,9 +77,8 @@ syssrcs:
 		echo Making all in $$i ; \
 		(cd $$i; ${MAKE} all) ; \
 	done
-	@cp -u startup/startup.rel .
-	@cp -u startup/init.lib .
 	@cp -u drivers/drivers.lib .
+	@cp -u kernel/startup.rel .
 	@cp -u kernel/kernel.lib .
 	@cp -u kernel/sysdat.rel .
 
@@ -88,7 +87,7 @@ syssrcs:
 # fully accessible to privileged tasks. If necessary, use the "d4000" linker
 # option.
 system.sys: $(sysmod)
-	$(ZXCC) $(TKB) -"system.sys,system.sym,system.map=startup/ofmt=com/load=0/cseg=100,init.lib,kernel.lib,drivers/lb,sysdat"
+	$(ZXCC) $(TKB) -"system.sys,system.sym,system.map=startup/ofmt:com/load=0/cseg=100,kernel.lib,drivers/lb,sysdat"
 	@cat system.map
 	$(SYM2INC) system.sym system.dat system.inc
 
