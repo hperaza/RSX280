@@ -24,7 +24,7 @@
 
 	.Z80
 
-	ident	/SL1.2/
+	ident	/SL1.3/
 
 	include	SYSFN.INC
 	include	ERRORS.INC
@@ -108,6 +108,9 @@ gc1:	ld	bc,0
 	ret
 
 strlen:	ld	hl,0
+	ld	a,b
+	or	c
+	ret	z
 s1:	ld	a,(bc)
 	or	a
 	ret	z
