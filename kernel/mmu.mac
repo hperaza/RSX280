@@ -55,7 +55,7 @@ MMUINI:	pop	ix		; pop ret addr, as we may invalidate the stack
 	iopage	MMUP		; select MMU I/O page
 
 	ld	a,16
-	out	(PDR),a		; select system PDR 0 for opertaions below
+	out	(PDR),a		; select system PDR 0 for operations below
 
 	ld	c,MMCR
 	inw	hl,(c)		; read MMU Master Control Register
@@ -68,7 +68,7 @@ MMUINI:	pop	ix		; pop ret addr, as we may invalidate the stack
 
 m1:	push	hl
 	ld	de,0
-	divuw	dehl,4
+	divuw	dehl,16
 	ld	($SBANK),hl	; remember base of system bank
 	pop	hl
 
