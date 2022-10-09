@@ -26,7 +26,8 @@ SRCS = args.mac \
 	sysdat.mac \
 	sysfn.mac \
 	tskmgr.mac \
-	z280rc.mac
+	z280rc.mac \
+	startup.mac
 
 INC = tcb.inc \
 	z180.inc
@@ -35,7 +36,7 @@ OBJS = $(SRCS:.mac=.rel)
 
 PROG = kernel.lib
 
-all: $(PROG)
+all: startup.rel sysdat.rel $(PROG)
 
 .SUFFIXES:		# delete the default suffixes
 .SUFFIXES: .mac .rel
@@ -43,7 +44,8 @@ all: $(PROG)
 $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
-# Note: sysdat.rel is not included (will be linked last)
+# Note: startup.rel and sysdat.rel are not included (will be linked first
+# and last, respectively.)
 kernel.lib: $(OBJS)
 	$(ZXCC) $(LBR) -"$@=tskmgr,flags,sndrcv,device,session,connect,ints"
 	@cp $@ src.lib
