@@ -1,0 +1,1062 @@
+;**********************************************************************;
+;                                                                      ;
+;   MCR external command SAV - Save System Image, also contains the    ;
+;   system initialization routine.                                     ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z80
+
+	ident	/0.99/
+
+	include	SYSFN.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	VCB.INC
+	include	LCB.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	CLICB.INC
+	include	ERRORS.INC
+	include	SYSCONF.INC
+	include	SYSTEM.INC
+
+	extrn	PFN,PUTCH,PUTSTR,PERROR,TTFLSH,CPHLDE,EXIT
+	extrn	ADEC,ADEC2,HLDEC,CVTBD,SLEEP,UCASE,CRLF
+
+CR	equ	0Dh
+LF	equ	0Ah
+ESC	equ	1Bh
+
+LUNSY	equ	1
+LUNTI	equ	5
+
+EFN	equ	9
+
+	cseg
+
+KCALL	MACRO	addr
+	call	$SWSTK
+	dw	addr
+	ENDM
+
+;-----------------------------------------------------------------------
+
+START::	ld	sp,stack	; setup local stack
+
+	ld	c,1
+	SC	.SUPER
+	jp	c,error
+
+	ld	a,($MFLGS)
+	bit	7,a		; system startup?
+	jp	nz,INIT
+
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
+
+	call	CHECK
+	jp	c,erxit		; exiting will re-enable task dispatching
+
+	; TODO:
+	; - dismount the boot volume
+	; - save the system image to file:
+	;   * either copy the system image to a reserved partition, and
+	;     use IO.WLB QIO to save the file (not suitable for systems
+	;     with 256K of memory or less); or,
+	;   * save the file using a local driver (I believe that's what
+	;     RSX11M does), the disadvantage being that SAV must know how
+	;     to write to every disk (and/or tape) in the system. But,
+	;     since SAV is used to write the boot block too, it must be
+	;     able to "know" how to write to disks in addition to booting
+	;     from them.
+	; - reset PC value on SAV's task context and reboot the system
+	;   (don't reload it, just jump to kernel startup entry point)
+
+	ld	hl,msg1
+	call	SAVERR
+
+	jp	okxit
+
+msg1:	db	'We are not there yet!',0
+
+SAVIMG:	; TODO: parse command line for switches, optional system image file,
+	; etc.
+
+	; create file
+
+	ld	hl,fname
+	ld	ix,fdb
+	call	PFN
+	ld	a,E.BADF
+	jp	c,error
+
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	ld	b,LUNSY		; lun in B
+	SC	.ALUN
+	jp	c,error
+
+	ld	hl,IO.CRE	; create non-contiguous file
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO
+	jp	c,error
+	ld	a,(iosb)
+	or	a
+	jp	nz,error
+
+	ld	de,0
+	ld	b,128		; 64K/512 = 128
+wloop:	call	rdsys		; get system image block
+	call	wrblk		; write to file
+	jp	c,error1
+	inc	de		; next block
+	djnz	wloop
+
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	jp	c,error
+	ld	a,(iosb)
+	or	a
+	jp	nz,error
+
+	jp	okxit
+
+error1:	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close file
+	pop	af
+error:	call	SYSERR
+	call	TTFLSH
+erxit:	ld	hl,EX.SEV
+	jp	EXIT
+
+okxit:	ld	hl,EX.SUC
+	jp	EXIT
+
+fname:	db	'SYSTEM.BIN',0
+
+; Read block from system memory
+
+; Note: this is not good, as the file write operation will cause pool
+; contents to change (activity on other terminals, or the action of other
+; tasks is disabled by SYSLVL). Therefore, the saved image will not be
+; really an snapshot; and the pool chain will be no longer valid.
+
+; One possibility will be to reserve a 64K partition, to copy the system
+; there with ints disabled, then save the partition. Another is to use
+; direct device I/O (embedded driver?)
+
+rdsys:	push	hl
+	push	de
+	push	bc
+
+	ld	c,1
+	SC	.SUPER
+	;jr	c,...
+
+	ld	h,l
+	ld	l,0
+	add	hl,hl		; get memory address from block number
+	ld	de,buf		; dst
+	exx
+	ld	a,($SBANK)
+	ld	e,a		; src bank
+	ld	a,($UBANK)
+	ld	d,a		; dst bank
+	exx
+	ld	bc,512
+	di
+	KCALL	$MCOPY
+	ei
+
+	ld	c,0
+	SC	.SUPER
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Write to file block number in HL
+
+wrblk:	push	hl
+	push	de
+	push	bc
+	ld	a,IO.WVB
+	ld	(qio2+Q.FUNC),a
+	ld	(qio2+Q.BLK),hl
+	ld	hl,qio2
+	SC	.QIO
+	jr	c,w1
+	ld	a,(iosb)
+	or	a
+	jr	z,w1
+	scf
+w1:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Print error message in the form 'SAV -- message', expanding %T to task
+; name, and %D to device name.
+
+SAVMSG:	push	de
+	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+sm1:	ld	a,(hl)
+	or	a
+	jr	z,sm6
+	cp	'%'		; argument to expand?
+	jr	nz,sm4		; no
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'T'		; task name?
+	jr	nz,sm2
+	ex	de,hl
+	ld	hl,SAVTN
+	ld	b,6
+	call	PSTRN
+	ex	de,hl
+	jr	sm5
+sm2:	cp	'D'		; device name?
+	jr	nz,sm3
+	ex	de,hl
+	ld	hl,SAVDN
+	call	PDEVN
+	ex	de,hl
+	jr	sm5
+sm3:	ld	a,'?'
+sm4:	ld	c,a
+	call	PUTCH
+sm5:	inc	hl
+	inc	de
+	jr	sm1
+sm6:	ld	c,CR
+	call	PUTCH
+	pop	de
+	scf
+	ret
+
+PSTRN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PSTRN
+	ret
+
+PDEVN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	c,':'
+	jp	PUTCH
+
+; Print starndard error message in the form 'SAV -- message'.
+
+SAVERR:	push	hl
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+SYSERR:	push	af
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'SAV -- ',0
+
+;=======================================================================
+; Required checks before saving the system.
+;=======================================================================
+
+; System data structures to check:
+; - $PLIST?
+; - $CPLST: must be empty
+; - $TLIST: all tasks installed from LB:, tasks have no outstanding I/O,
+;           no active+checkpointed tasks, unstop all stopped tasks?,
+;           exit all CLIs?
+; - $CLIST?
+; - $MVTBL: only the boot device mounted, no files open
+; - $FORKQ: should be empty if device drivers are idling
+; - $PHYDV: look for terminals, U.LCB must be null except for CO:
+; - loader queue empty?
+; - clock queue? scheduled tasks unexpectedly requested? hi-bit of
+;   $MFLGS could be set to tell the kernel not to service CT.RUN entries
+;   of the clock queue? the same bit could be used by the TT driver to
+;   disable unsolicited input?
+
+; Also:
+; - ensure system image file is contiguous and large enough to contain
+;   the system.
+
+; Notes:
+; - do not use system calls (e.g. .GIN in CKPRV to get login information),
+;   as they will enable task dispatching on return.
+; - task dispatching will be enabled by the .QIO call that displays error
+;   messages, but errors will abort the save operation anyway.
+; - task dispatching will have to be enabled to allow dismounting the load
+;   device, but by then we are sure no other users are logged in to other
+;   terminals (use SET /NOLOGON before running SAV when in doubt.)
+
+CHECK::	xor	a
+	ld	(ERRFLG),a
+	ld	hl,CHKR
+chk1:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,d
+	or	e		; end of list?
+	ret	z		; yes, return with CY clear
+	push	hl
+	call	jpde
+	pop	hl
+	ld	a,(ERRFLG)
+	rra
+	jr	nc,chk1
+	ret
+
+jpde:	ex	de,hl
+	jp	(hl)
+
+CHKR:	dw	CKPRV		; make sure user is privileged
+	dw	CKCO		; SAV must be run from CO:
+	dw	CKLOG		; no logged-in terminals except CO:
+	dw	CKCOT		; ensure console logger is not active
+	dw	CKTDEV		; all tasks must be installed from LB:
+	dw	CKCHKP		; no checkpoint files must be active
+	dw	CKMNT		; only boot device must be mounted
+	dw	CKDMO		; ensure boot device can be dismounted
+	dw	CKTIO		; ensure no tasks have outstanding I/O
+	dw	CKMEM		; ensure system image file is large enough
+	dw	0
+
+; SAV must be run by a privileged user
+
+CKPRV:	ld	ix,($CTCB)
+	ld	l,(ix+T.TI)	; get UCB address of terminal device
+	ld	h,(ix+T.TI+1)
+	ld	bc,U.LCB
+	add	hl,bc
+	ld	a,(hl)		; get address of Login Control Block
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	jr	z,cpv1		; error if not set
+	ld	bc,L.ST
+	add	hl,bc
+	bit	LS.PRV,(hl)	; else set for privileged bit in status byte
+	ret	nz		; OK if set
+cpv1:	ld	hl,msprv
+	call	SAVMSG
+	ld	a,-1
+	ld	(ERRFLG),a
+	ret
+
+msprv:	db	'Privileged command',0
+
+; SAV must run from CO:
+; TODO: ensure CO: is redirected to TT0:?
+
+CKCO:	ld	ix,($CTCB)
+	ld	l,(ix+T.TI)	; get UCB of our terminal device
+	ld	h,(ix+T.TI+1)
+	KCALL	$REDIR		; follow any redirections
+	ex	de,hl
+	KCALL	$UCBDN		; translate to dev name and unit number
+	ld	hl,'TT'
+	call	CPHLDE		; CO: is TT0: on P112 and Z280RC
+	jr	nz,cc1
+	ld	a,c
+	or	a
+	ret	z
+cc1:	ld	hl,msgco
+	call	SAVMSG
+	ld	a,-1
+	ld	(ERRFLG),a
+	ret
+
+msgco:	db	'Must be run from terminal CO:',0
+
+; Ensure no users are logged in to terminals other than the current one.
+
+CKLOG:	ld	ix,$PHYDV	; head of physical device list
+cl1:	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	a,h
+	or	l		; end of list?
+	ret	z		; yes, return
+	push	hl
+	pop	ix
+	ld	e,(ix+D.UCBL)	; get UCB list head
+	ld	d,(ix+D.UCBL+1)
+cl2:	ld	a,d
+	or	e		; end of list?
+	jr	z,cl1		; yes, exit inner loop
+	ld	hl,U.CW
+	add	hl,de
+	bit	DV.TTY,(hl)	; terminal device?
+	jr	z,cl1	;cl3	; no, skip
+	ld	hl,U.LCB
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	a		; logged-in terminal?
+	jr	z,cl3		; no, skip
+	ld	hl,($CTCB)
+	ld	bc,T.TI
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	call	CPHLDE		; is this our terminal?
+	jr	z,cl3		; yes, skip
+	ld	a,-1
+	ld	(ERRFLG),a	; set error flag
+	call	SETDN		; set device name argument
+	ld	hl,msgl1
+	call	SAVMSG		; and output error message
+cl3:	ld	hl,U.LNK
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	jr	cl2		; loop to check next terminal
+
+msgl1:	db	'User still logged on terminal %D',0
+
+; Ensure console logging is not active.
+
+CKCOT:	ld	ix,($CTCB)
+	ld	de,'CO'
+	ld	c,0
+	KCALL	$FNDEV
+	ret	c		; no CO: device
+	ld	de,U.ACP
+	add	hl,de
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	or	h
+	ret	z		; U.ACP not set, console logger not running
+	ld	a,-1
+	ld	(ERRFLG),a	; else set error flag
+	ld	hl,msgcl	; and display error message
+	jp	SAVMSG
+
+msgcl:	db	'Console logging still active',0
+
+; Ensure all tasks are installed from LB:
+
+CKTDEV:	ld	hl,($TLIST)
+ct1:	ld	a,h
+	or	l		; end of STD?
+	ret	z		; yes, return
+	push	hl
+	pop	ix
+	ld	e,(ix+T.LDEV)	; check task load device
+	ld	d,(ix+T.LDEV+1)
+	KCALL	$UCBDN
+	ld	hl,'LB'
+	call	CPHLDE		; is it LB:?
+	jr	z,ct2		; yes
+	ld	a,-1
+	ld	(ERRFLG),a	; else set error flag
+	call	SETTN		; set task name argument
+	ld	hl,msgt1
+	call	SAVMSG
+ct2:	ld	l,(ix+T.TCBL)
+	ld	h,(ix+T.TCBL+1)
+	jr	ct1
+
+msgt1:	db	'Task %T not installed from an LB:',0
+
+; Ensure no checkpoint files are active.
+
+CKCHKP:	ld	hl,($CPLST)
+cp1:	ld	a,h
+	or	l		; end of checkpoint file list?
+	ret	z		; yes
+	push	hl
+	pop	ix
+	ld	a,-1
+	ld	(ERRFLG),a	; set error flag
+	ld	e,(ix+P.UCB)
+	ld	d,(ix+P.UCB+1)
+	call	SETDN		; set device name argument
+	ld	hl,msgc1
+	call	SAVMSG		; output error message
+	ld	l,(ix)
+	ld	h,(ix+1)
+	jr	cp1
+
+msgc1:	db	'Checkpoint file still in use on %D',0
+
+; Ensure no volumes are mounted except the load device.
+
+CKMNT:	ld	ix,($CTCB)
+	ld	de,'LB'
+	ld	c,0
+	KCALL	$FNDEV		; find load dev in table, return UCB addr in HL
+	KCALL	$REDIR		; follow redirections, get UCB of physical dev
+	ex	de,hl		;  into DE
+	xor	a
+	ld	(TEMP),a
+	ld	ix,$MVTBL
+cm1:	ld	l,(ix)		; get next entry
+	ld	h,(ix+1)
+	ld	a,h
+	or	l		; end of list?
+	jr	z,cm3		; yes
+	push	hl
+	pop	ix
+	ld	l,(ix+M.UCB)	; get UCB address of mounted volume into HL
+	ld	h,(ix+M.UCB+1)
+	call	CPHLDE		; load device?
+	jr	nz,cm2		; no, error
+	push	hl
+	ld	hl,TEMP
+	ld	a,(hl)
+	ld	(hl),-1
+	pop	hl
+	or	a		; already seen? (should not happen)
+	jr	z,cm1		; no, loop to check next entry
+cm2:	ld	a,-1
+	ld	(ERRFLG),a	; set error flag
+	push	de
+	ex	de,hl
+	call	SETDN		; set device name argument
+	ld	hl,msgv1
+	call	SAVMSG		; output error message
+	pop	de
+	jr	cm1		; loop to check next entry
+cm3:	ld	a,(TEMP)
+	or	a		; load device mounted?
+	ret	nz		; yes, return
+	ld	a,-1
+	ld	(ERRFLG),a	; else set error flag
+	ld	hl,msgv2
+	jp	SAVMSG		; and report error
+
+msgv1:	db	'Volume still mounted on %D',0
+msgv2:	db	'Load volume not mounted',0
+
+; Ensure the load device can be successfully dismounted.
+; *** TODO: what about [MASTER]MASTER.DIR?
+
+CKDMO:	ld	ix,$MVTBL
+	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	a,h
+	or	l
+	ret	z		; should not happen
+	push	hl
+	pop	ix
+	ld	l,(ix+M.FCBL)
+	ld	h,(ix+M.FCBL+1)
+	ld	a,h
+	or	l		; any files still open?
+	ret	z		; no
+	ld	a,(hl)
+	inc	hl
+	or	(hl)		; only the master directory open?
+	ret	z		; yes
+	ld	a,-1		; else set error flag
+	ld	(ERRFLG),a
+	ld	e,(ix+M.UCB)
+	ld	d,(ix+M.UCB+1)
+	call	SETDN		; set device name argument
+	ld	hl,msgv3
+	jp	SAVMSG		; and display error message
+
+msgv3:	db	'Files still open on %D',0
+
+; Dismount the load volume,
+; *** Use MCR DMO to dismount device, or request DMO directly?
+
+msgd1:	db	'Error attempting to dismount %D',0
+msgd2:	db	'Dismount complete for %D',0
+
+msgd3:	db	'MCR is not installed',0
+
+; Ensure no tasks have outstanding I/O.
+; TODO: wait for tasks being aborted to be unloaded from memory?
+
+CKTIO:	ld	hl,($TLIST)
+ct11:	ld	a,h
+	or	l		; end of STD?
+	ret	z		; yes, return
+	push	hl
+	pop	ix
+	bit	TS.ACT,(ix+T.ST); task active?
+	jr	z,ct13		; no, skip
+	ld	a,(ix+T.IOC)
+	or	a		; task has outstanding I/O?
+	jr	z,ct12		; no
+	ld	a,-1
+	ld	(ERRFLG),a	; else set error flag
+	call	SETTN		; set task name argument
+	ld	hl,msgt2
+	call	SAVMSG		; and output error
+ct12:	bit	T2.CKP,(ix+T.ST+1) ; task checkpointed?
+	jr	z,ct13		; no
+	ld	a,-1
+	ld	(ERRFLG),a	; else set error flag
+	call	SETTN		; set task name argument
+	ld	hl,msgt3
+	call	SAVMSG		; and output error
+ct13:	ld	l,(ix+T.TCBL)
+	ld	h,(ix+T.TCBL+1)
+	jr	ct11
+
+msgt2:	db	'Task %T has outstanding I/O',0
+msgt3:	db	'Task %T is active and checkpointed',0
+
+; Ensure all drivers, active and fixed tasks reside within the saved area
+; of memory.
+
+CKMEM:
+	ret
+
+msgm1:	db	'Task %T above system image file limit',0
+
+; Set device name in SAVDN from UCB address in DE.
+
+SETDN:	push	de
+	KCALL	$UCBDN
+	ld	(SAVDN),de	; copy device name
+	ld	a,c
+	ld	(SAVDN+2),a	; and unit
+	pop	de
+	ret
+
+; Set task name in SAVTN from TCB address in IX.
+
+SETTN:	push	ix
+	pop	hl
+	ld	bc,T.NAME
+	add	hl,bc
+	ld	de,SAVTN
+	ld	bc,6
+	ldir			; copy task name
+	ret
+
+;=======================================================================
+; Required checks after booting the system.
+;=======================================================================
+
+; Ensure booted device driver is in system and loaded.
+
+; Scan STD list and ensure that
+; - convert file ID is STD to VBN (for that SAV must be active in memory
+;   when the system is booted)
+; - tasks have valid VBN
+; - task partition exists
+; - task file is not deleted
+; - task file header is correct
+; - task fits in partition
+
+; Note:
+; - chicken and egg problem: if tasks installed by VMR (or SAV) have
+;   file ID instead of LBN, how SAV (and SYSFCP needed to read the index
+;   file) can be requested by the startup code? [RSX-11M VMR's seem to
+;   distinguish between the two cases]
+
+; Validate task VBN
+
+CKTVBN:
+	ret
+
+msgt4:	db	'Bad task file VBN, task removed - %T',0
+
+;=======================================================================
+; System initialization after boot.
+;=======================================================================
+
+; System initialization task. Mounts the system disk, creates logical
+; devices, and installs the CLI and other necessary tasks to continue
+; booting the system.
+
+; Assumes kernel database is mapped.
+
+INIT::	ld	ix,($CTCB)
+	ld	de,'LB'
+	ld	c,0
+	KCALL	$FNDEV
+	KCALL	$REDIR		; must have been set by the startup code
+	ex	de,hl		; get UCB address into DE
+	ld	hl,U.ST
+	add	hl,de
+	set	US.PUB,(hl)	; make the boot device public
+	KCALL	$UCBDN
+	ld	(sydev),de	; remember boot device
+	ld	a,c
+	ld	(sydev+2),a
+
+	ld	hl,LOGMSG
+	call	PUTSTR		; display header
+	push	hl
+	ld	hl,$HOSTN
+	ld	b,9
+	call	PNAME		; output host name
+	ld	a,b
+	cp	9
+	ld	c,' '
+	call	nz,PUTCH	; output separator if name was set
+	ld	hl,CMDBUF
+	ld	c,I.SMEM
+	SC	.GIN
+	ld	hl,(CMDBUF)
+	call	HLDEC		; show system memory size
+	pop	hl
+	inc	hl
+	call	PUTSTR		; display next part of header
+	push	hl
+	ld	hl,CMDBUF
+	ld	c,I.VERS
+	SC	.GIN		; get system type and version into CMDBUF
+	ld	a,(CMDBUF+2)
+	cp	2
+	ld	c,'2'
+	jr	z,ini0
+	ld	c,'1'
+ini0:	call	PUTCH		; say it's RSX180 or RSX280
+	pop	hl
+	inc	hl
+	call	PUTSTR
+	push	hl
+	ld	a,(CMDBUF+1)
+	ld	l,a
+	ld	h,0
+	call	HLDEC		; show major version number
+	ld	c,'.'
+	call	PUTCH
+	ld	a,(CMDBUF)
+	call	ADEC2		; show minor version number
+	pop	hl
+	inc	hl
+	call	PUTSTR		; display the rest of the header
+
+	; login SYSTEM user if booting from fresh system image,
+	; else switch existing session to SYSTEM user.
+
+	ld	iy,SYSACN	; login SYSTEM user
+	KCALL	$LOGIN
+	jr	nc,ini1		; branch on success (new login on fresh image)
+	cp	E.ULI		; already logged in?
+	jp	nz,sserr	; no, error is fatal
+
+ini1:	ex	de,hl
+	ld	hl,L.ST
+	add	hl,de
+	set	LS.PRV,(hl)	; set privileged bit
+
+	ld	hl,L.CDIR
+	add	hl,de
+	ex	de,hl
+	ld	hl,SYSACN
+	ld	bc,9
+	ldir			; set current directory in LCB
+
+	; TODO: set SAV current directory too?
+
+	ld	hl,qio3
+	SC	.QIO		; ensure terminal is non-slaved
+
+	; start MCR
+
+	ld	hl,$MFLGS
+	res	7,(hl)		; clear startup flag
+
+	ld	ix,MCRTDB	; prepare to request MCR... task
+	xor	a
+	set	TA.MCR,a	; set MCR bit (else TRQST will clear it)
+	set	TA.CLI,a	; set CLI bit
+	ld	(ix+TD.ATTR),a
+
+	ld	hl,($CLIST)	; get head of CLI control block list
+	ld	a,h
+	or	l		; set?
+	jr	nz,ini2		; yes (assume MCR is set; TODO: check!)
+
+	ld	hl,CLIBSZ
+	ld	bc,DPRL
+	add	hl,bc
+	ld	bc,CPRL
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	KCALL	$ALLOC		; create CLI control block for MCR
+	jp	c,mcrerr	; unlikely to happen
+	ld	($CLIST),hl	; add it to CLICB list
+
+ini2:	push	hl
+	pop	ix
+	xor	a
+	ld	(ix+CL.LNK),a	; clear link field
+	ld	(ix+CL.LNK+1),a
+	ld	de,CL.NAM
+	add	hl,de
+	ex	de,hl
+	ld	hl,MCRTDB+TD.NAME
+	ld	bc,6
+	ldir			; set name
+	push	ix
+	pop	hl
+	ld	de,CL.DAT	; point to data area
+	add	hl,de
+	ex	de,hl
+	ld	hl,DPR
+	ld	bc,DPRL
+	ld	(ix+CL.DPL),c
+	ldir
+	ld	hl,CPR
+	ld	bc,CPRL
+	ld	(ix+CL.CPL),c
+	ldir
+
+	ld	hl,MCRTDB
+	SC	.RQST		; start MCR
+	jp	c,mcrerr
+
+	; execute startup commands
+
+	ld	hl,cmdseq	; implicit startup commands
+cmloop:	ld	a,(hl)
+	or	a
+	jr	z,done
+	push	af
+	inc	hl
+	call	DEVCMD		; build command
+	pop	af
+	ld	e,a
+	push	hl
+	call	SNDMCR		; execute command
+	pop	hl
+;;	jr	c,mcrerr
+	inc	hl
+	jr	cmloop
+
+done:	; exit, the startup file will do the rest
+
+	ld	hl,EX.SUC
+	SC	.EXIT
+	jr	done
+
+; Build MCR command inserting the boot device name in the reserved
+; placeholder for it.
+
+DEVCMD:	ld	de,CMDBUF
+dvcm1:	ld	a,(hl)
+	dec	a		; placeholder for device name?
+	jr	nz,dvcm2	; branch if not
+	push	hl
+	ld	hl,sydev
+	ld	bc,2
+	ldir			; else insert device name
+	ld	a,(hl)
+	ex	de,hl
+	call	CVTBD		; and unit number
+	ex	de,hl
+	ld	a,':'
+	ld	(de),a
+	pop	hl
+	jr	dvcm3
+dvcm2:	inc	a		; end of string?
+	ld	(de),a
+	jr	z,dvcm4		; exit loop if yes
+dvcm3:	inc	hl
+	inc	de
+	jr	dvcm1
+dvcm4:	push	hl
+	ld	hl,CMDBUF
+	call	PRMSTR		; display the resulting command
+	pop	hl
+	ret
+
+LOGMSG:	db	CR,LF,0,'K RSX',0,'80 V',0,CR,LF,0
+
+cmdseq:	db	1,'RED ',1,'=LB:',CR,0		   ; via .RQST + .WTSE
+	db	1,'RED ',1,'=SY:',CR,0
+	db	1,'MOU ',1,CR,0
+	db	2,'@SY0:[SYSTEM]STARTUP.CMD',CR,0  ; via .RPOI w/o waiting
+	db	0
+
+DPR:	db	CR,LF,'>'
+DPRL	equ	$-DPR
+
+CPR:	db	CR,LF,'MCR>'
+CPRL	equ	$-CPR
+
+SYSACN:	db	'SYSTEM   ',1,1
+
+sserr:	ld	hl,serr
+	jp	fatal
+
+serr:	db	'Failed to initialize system session',0
+
+mcrerr:	ld	hl,cerr
+fatal:	push	af
+	call	SAVERR
+	call	CRLF
+  IF 0
+	ld	hl,5
+	ld	d,2		; units = seconds
+	call	SLEEP
+	pop	af
+	KCALL	INTOFF
+  ELSE
+	KCALL	$DBTRP
+  ENDIF
+	jp	erxit		; TODO: halt the system, enter debugger?
+
+cerr:	db	'Failed to run MCR',0
+
+;-----------------------------------------------------------------------
+
+PRMSTR:	push	hl
+	ld	hl,DPR
+	ld	b,DPRL
+PRM1:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PRM1
+	call	TTFLSH
+	ld	a,(TICSEC)
+	srl	a
+	srl	a
+	srl	a		; 1/8 sec
+	ld	l,a
+	ld	h,0
+	ld	d,1		; units = ticks
+	call	SLEEP		; give TI: some time
+	pop	hl
+	jp	PUTSTR
+
+PNAME:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	z
+	ld	c,a
+	call	PUTCH
+	inc	hl
+	djnz	PNAME
+	ret
+
+;-----------------------------------------------------------------------
+
+; Send command to MCR and wait until it is processed
+
+SNDMCR:	ld	hl,CMDBUF
+	call	STRLEN
+	ld	b,0
+	ld	(MCRTDB+TD.CML),bc
+	ld	hl,CMDBUF
+	ld	(MCRTDB+TD.CMD),hl
+	ld	hl,EX.SUC
+	ld	(EXSTAT),hl
+	ld	hl,MCRTDB
+	dec	e
+	jr	z,snd1
+	SC	.RPOI
+	ret
+snd1:	ld	e,2
+	ld	bc,EXSTAT
+	SC	.RQST
+	ret	c
+	ld	e,2
+	SC	.WTSE
+	ret
+
+; Compute string length
+
+STRLEN:	ld	c,0
+slen:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	slen
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+qio1:	QIOW$	<<IO.ACC OR (SF.ACW SHL 8)>>,LUNSY,EFN,iosb,,<fdb,0>
+qio2:	QIOW$	IO.WVB,LUNSY,EFN,iosb,,<buf,512,0,0,>
+qio3:	QIOW$	SF.SMC,LUNTI,EFN,iosb,,<ttmode,2>
+iosb:	ds	4
+
+ttmode:	db	TC.SLV,0
+
+fdb:	ds	FDBSZ
+buf:	ds	512
+
+SAVTN:	ds	6
+SAVDN:	ds	3
+
+TEMP:	ds	1
+ERRFLG:	ds	1
+
+MCRTDB:	db	'MCR...'
+	dw	0,0
+	db	0
+	db	1,1
+	db	'TT',0
+	dw	0,0
+
+CMDBUF:	ds	80
+EXSTAT:	ds	2
+
+sydev:	db	'dd',0
+
+	ds	128
+stack	equ	$
+
+	end	START

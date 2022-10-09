@@ -19,6 +19,7 @@ SRCS = acnt.mac \
 	ins.mac \
 	mcr.mac \
 	mou.mac \
+	sav.mac \
 	shutup.mac \
 	tkn.mac \
 	ufd.mac
@@ -73,6 +74,9 @@ mcr.tsk: mcr.rel ttputch.rel syslib.lib
 
 mou.tsk: mou.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=mou/of=tsk,syslib/lb/task=...MOU/pri=160/priv"
+
+sav.tsk: sav.rel syslib.lib
+	$(ZXCC) $(TKB) -"sav/of:tsk,sav,sav=sav,syslib/lb/task=...SAV/pri=100/priv"
 
 shutup.tsk: shutup.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=shutup/of=tsk,syslib/lb/task=SHUTUP/pri=100/priv"
