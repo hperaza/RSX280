@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.04'
+	ident	'03.05'
 
 	include	SYSFN.INC
 	include	QIO.INC
@@ -1893,12 +1893,14 @@ iosb:	ds	4
 sysfdb:	dw	0
 	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
 	db	'SY',0
-	db	'MASTER   ','SYSTEM   ','SYS',0
+	db	'MASTER   ','SYSTEM   ','SYS'
+	dw	0
 
 idxfdb:	dw	0
 	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
 	db	'SY',0
-	db	'MASTER   ','INDEXF   ','SYS',0
+	db	'MASTER   ','INDEXF   ','SYS'
+	dw	0
 
 finfo:	ds	FINFSZ		; buffer for system image file info
 
