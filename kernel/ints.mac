@@ -42,8 +42,8 @@ TRUE	equ	NOT FALSE
 	public	INTON		; enable Z280 interrupts
 	public	INTOFF		; disable Z280 interrupts
 
-	extrn	$ITBL,$SBANK,$ALLOC,IHSP,IHSTK,INTMAP,CPUSPD
-	extrn	TICSEC,TICCNT,UPTIME
+	extrn	$ITBL,$SBANK,$ALLOC,IHSP,IHSTK,IUNSET,INTMAP
+	extrn	CPUSPD,TICSEC,TICCNT,UPTIME
 
 	cseg
 
@@ -113,7 +113,13 @@ INTOFF:	iopage	CTP
 
 ; Set interrupt vector in A to address in DE
 
-SETVEC:	ld	l,a
+SETVEC:	call	VECADR
+	ldw	(hl),de		; set vector
+	ret
+
+; Return interrupt vector table address for interrupt vector in A
+
+VECADR:	ld	l,a
 	ld	h,0
 	add	hl,hl
 	add	hl,hl
@@ -121,7 +127,6 @@ SETVEC:	ld	l,a
 	inc	hl
 	ld	bc,$ITBL
 	add	hl,bc
-	ldw	(hl),de
 	ret
 
 ;--------------------------------------------------------------------
@@ -131,16 +136,21 @@ SETVEC:	ld	l,a
 SETHVC:	push	af		; push vector number
 	push	de		; push routine address
 	push	bc		; push bank number
+	call	VECADR
+	ldw	hl,(hl)
+	cpw	hl,IUNSET	; vector already set?
+	ex	de,hl
+	jr	nz,sv1		; yes, reuse the existing ITB
 	ld	bc,ISTLEN	; BC = stub length
 	call	$ALLOC		; allocate an Interrupt Transfer Block
-	jr	c,sv1
+	jr	c,sv2
 	ex	de,hl		; DE = dst
 	push	de
 	ld	hl,ISTUB	; HL = start of stub routine
 	ld	bc,ISTLEN	; BC = stub length
 	ldir			; copy stub to ITB
 	pop	de		; DE = start of copied stub routine
-	ld	hl,ISBASE
+sv1:	ld	hl,ISBASE
 	add	hl,de
 	pop	bc		; pop bank number
 	ld	(hl),c		; set bank in copied stub routine
@@ -151,7 +161,7 @@ SETHVC:	push	af		; push vector number
 	pop	af		; pop vector number
 	jp	SETVEC		; now set vector to stub (address in DE)
 
-sv1:	pop	bc
+sv2:	pop	bc
 	pop	de
 	pop	af
 	ret

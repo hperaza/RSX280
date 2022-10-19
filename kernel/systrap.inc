@@ -21,7 +21,7 @@
 
 	.Z280
 
-	public	$ITBL,SYSENT,SYSXIT,SYSLVL,TRPFLG,DOFORK
+	public	$ITBL,SYSENT,SYSXIT,SYSLVL,TRPFLG,DOFORK,IUNSET
 
 	extrn	SYSFN,TKILL,$FORKQ,$FREE,DOCLKQ,DSPTCH,DOAST,$CPCB
 	extrn	USRMAP,PRVMAP
@@ -61,6 +61,7 @@ $ITBL:	dw	0,0		; reserved
 	dw	0,iret2		; reserved
 	; vector tables for INTA...INTC not used
 
+IUNSET:
 nmint:
 iret2:	inc	sp
 	inc	sp
