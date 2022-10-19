@@ -765,7 +765,9 @@ ttgmc4:	sub	8		; TC.SPD?
 ; Handle 'set multiple characteristics' function.
 ; BC still points to TCB of requesting task (see ioreq routine).
 
-ttsmc:	call	chkiob		; validate user buffer
+ttsmc:	push	bc		; save TCB address of requester
+	call	chkiob		; validate user buffer
+	pop	bc		; restore TCB address
 	jp	c,iend1
 	bit	US.PUB,(iy+U.ST); public unit?
 	jr	nz,ttsmc0	; yes, anybody can change settings
