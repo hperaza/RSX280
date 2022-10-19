@@ -107,7 +107,7 @@ Changelog
   * ported the AST routines.
   * DS1302 clock read/write routines.
   * added the extra Z280 abort codes to TKTN.
-  * removed the "interrupt pool" on the old common area, since it is not
+  * removed the "interrupt pool" from the old common area, since it is not
     needed on the Z280 (ITBs can be allocated from system core).
 
 - Updated the Linux 'vol180' utility (the task context structure has
@@ -320,4 +320,5 @@ Changelog
 
 - Kernel: fixed a bug in the MMUINI routine: must divide PDR by 16 and not
   by 4 in order to obtain page address (case of MMU in system mode).
+
 

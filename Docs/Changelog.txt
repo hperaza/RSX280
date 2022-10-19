@@ -7514,3 +7514,34 @@ BUGS:
   * ensure system console is non-slaved.
   * display hostname on banner instead of 'P112' or 'Z280RC'.
 
+
+15/10/22
+
+- Kernel: reuse Interrupt Transfer Blocks on startup to prevent leaking
+  them after restarting a SAVed system.
+
+- Pre-allocate a few more blocks for the system image file, since SAVed
+  systems can become larger.
+
+
+16/10/22
+
+- More work on SAV:
+  * allow tasks installed from SY: if SY: matches LB:, but output a warning
+    message.
+  * compute the current, in-core system image size and refuse to save the
+    system if it would not fit into the system image file.
+  * dismount the boot volume after passing all tests, and save the system
+    image using direct-device-write QIO calls: this is safe enough if there
+    is no activity from other terminals (test passed), most tasks are inactive
+    or idling, etc. (RSX-11M disables all interrupts and saves the system
+    using a dedicated driver that does not use interrupts.)
+
+
+17/10/22
+
+- Kernel: reset SAV PC on startup if the task is active.
+
+- Got SAV working!
+
+
