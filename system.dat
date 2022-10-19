@@ -25,6 +25,7 @@ IODONE	; end I/O processing
 $IOEND	; end I/O processing for ASTs
 $ALLOC	; allocate pool memory
 $FREE	; free pool memory
+$AVAIL	; compute available pool memory
 LDRTCB	; LDR... TCB
 $LKTCB	; link TCB to the specified list
 $LOGDV	; ptr to head of logical device assignment list

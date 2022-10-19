@@ -34,7 +34,7 @@
 
 	public	$ALLOC		; alloc kernel memory block
 	public	$FREE		; free kernel memory block
-	public	KSIZE		; compute amount of free kernel memory
+	public	$AVAIL		; compute amount of free kernel memory
 
 	extrn	$POOL,$POLSZ
 
@@ -276,7 +276,7 @@ kf4:	xor	a		; job done (full merge)
 
 ; Calculate the amount of free kernel memory. Return the value in BC.
 
-KSIZE:	ld	hl,($POOL)
+$AVAIL:	ld	hl,($POOL)
 	ld	bc,0
 ks1:	ld	a,h
 	or	l		; no (more) free blocks?
