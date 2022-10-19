@@ -22,7 +22,7 @@
 
 	.Z80
 
-	ident	/0.99/
+	ident	/1.00/
 
 	include	SYSFN.INC
 	include	DCB.INC
@@ -58,6 +58,9 @@ KCALL	MACRO	addr
 
 ;-----------------------------------------------------------------------
 
+; TODO: parse command line for switches, optional system image file,
+; etc.
+
 START::	ld	sp,stack	; setup local stack
 
 	ld	c,1
@@ -71,152 +74,281 @@ START::	ld	sp,stack	; setup local stack
 	xor	a
 	ld	(SYSLVL),a	; disable task dispatching
 
+	call	SYSIZE		; get in-core system size
+	call	SYSINF		; get system image file info
+	jp	c,erxit
+
 	call	CHECK
 	jp	c,erxit		; exiting will re-enable task dispatching
 
-	; TODO:
-	; - dismount the boot volume
-	; - save the system image to file:
-	;   * either copy the system image to a reserved partition, and
-	;     use IO.WLB QIO to save the file (not suitable for systems
-	;     with 256K of memory or less); or,
-	;   * save the file using a local driver (I believe that's what
-	;     RSX11M does), the disadvantage being that SAV must know how
-	;     to write to every disk (and/or tape) in the system. But,
-	;     since SAV is used to write the boot block too, it must be
-	;     able to "know" how to write to disks in addition to booting
-	;     from them.
-	; - reset PC value on SAV's task context and reboot the system
-	;   (don't reload it, just jump to kernel startup entry point)
+	call	SAVIMG		; save the system image to file
+	jp	c,erxit
 
-	ld	hl,msg1
-	call	SAVERR
-
-	jp	okxit
-
-msg1:	db	'We are not there yet!',0
-
-SAVIMG:	; TODO: parse command line for switches, optional system image file,
-	; etc.
-
-	; create file
-
-	ld	hl,fname
-	ld	ix,fdb
-	call	PFN
-	ld	a,E.BADF
-	jp	c,error
-
-	ld	de,(fdb+F.DEV)
-	ld	a,(fdb+F.UNIT)
-	ld	c,a		; device name in DE-C
-	ld	b,LUNSY		; lun in B
-	SC	.ALUN
-	jp	c,error
-
-	ld	hl,IO.CRE	; create non-contiguous file
-	ld	(qio1+Q.FUNC),hl
-	ld	hl,qio1
-	SC	.QIO
-	jp	c,error
-	ld	a,(iosb)
-	or	a
-	jp	nz,error
-
-	ld	de,0
-	ld	b,128		; 64K/512 = 128
-wloop:	call	rdsys		; get system image block
-	call	wrblk		; write to file
-	jp	c,error1
-	inc	de		; next block
-	djnz	wloop
-
-	ld	hl,IO.DEA
-	ld	(qio1+Q.FUNC),hl
-	ld	hl,qio1
-	SC	.QIO		; close file
-	jp	c,error
-	ld	a,(iosb)
-	or	a
-	jp	nz,error
-
-	jp	okxit
-
-error1:	push	af
-	ld	hl,IO.DEA
-	ld	(qio1+Q.FUNC),hl
-	ld	hl,qio1
-	SC	.QIO		; close file
-	pop	af
-error:	call	SYSERR
+	call	CRLF
+	call	CRLF
 	call	TTFLSH
+
+	; Strictly speaking, here we should reload the boot sector and
+	; execute it to restart the newly saved system. But in this version,
+	; we will simply restart the system by jumping to the kernel startup
+	; entry point.
+
+	KCALL	100h		; restart the system
+	jp	START		; should never get here
+
+error:	call	SYSERR
 erxit:	ld	hl,EX.SEV
 	jp	EXIT
 
 okxit:	ld	hl,EX.SUC
 	jp	EXIT
 
-fname:	db	'SYSTEM.BIN',0
+; Compute the in-core system image size: search for the highest partition
+; (which is the last partition in the list, since they are in ascending
+; address order), calculate its top address and convert the value to
+; disk blocks.
+
+SYSIZE:	ld	hl,0
+	ld	(sblks),hl
+	ld	hl,($PLIST)
+p1:	ld	a,h
+	or	l		; last partition in list?
+	ret	z		; yes, return
+p2:	push	hl
+	pop	ix
+	ld	l,(ix+P.LNK)
+	ld	h,(ix+P.LNK+1)
+	ld	a,h
+	or	l		; last in list?
+	jr	nz,p2		; no, keep looking
+	bit	PA.SYS,(ix+P.ATTR)
+	jr	z,p4		; system controlled
+	ld	l,(ix+P.SUB)
+	ld	h,(ix+P.SUB+1)
+p3:	ld	a,h
+	or	l		; end of subpartition list?
+	jr	z,p4		; yes
+	push	hl
+	pop	ix
+	ld	l,(ix+P.LNK)
+	ld	h,(ix+P.LNK+1)
+	jr	p3
+p4:	ld	l,(ix+P.BASE)
+	ld	h,(ix+P.BASE+1)
+	ld	e,(ix+P.SIZE)
+	ld	d,(ix+P.SIZE+1)
+	add	hl,de		; get top of (sub)partition
+	add	hl,hl		; compute size in disk blocks
+	add	hl,hl		;  (one page = 4K = 8 blocks)
+	add	hl,hl
+	ld	(sblks),hl	; store result
+	ret
+
+; Get system image file info. Extend the file size if it is smaller than
+; the in-core system image size computed above.
+
+SYSINF:	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	ld	b,LUNSY		; lun in B
+	SC	.ALUN		; assign LUN
+	jp	c,SYSERR
+
+	ld	hl,qio1
+	SC	.QIO		; open system image file
+	jp	c,SYSERR
+	ld	a,(iosb)
+	or	a
+	jp	nz,SYSERR
+
+	ld	hl,qio2
+	SC	.QIO		; read file attributes
+	jp	c,sav1
+	ld	a,(iosb)
+	or	a
+	scf
+	jr	nz,sav1
+
+	ld	a,(finfo+F.ATTR)
+	and	FA.CTG		; safety check: ensure the file is contiguous
+	ld	a,E.FNC
+	scf
+	jr	z,sav1
+
+	ld	hl,(sblks)
+	ld	de,(finfo+F.NALOC)
+	call	CPHLDE
+	jr	nc,sav0		; branch if sblks <= F.NALOC (file big enough)
+	ld	(qio3+Q.BLK),hl
+	ld	hl,0
+	ld	(qio3+Q.BLK+2),hl
+	ld	hl,qio3
+	SC	.QIO		; try to extend the space allocated to the file
+	jr	c,sav1
+	ld	a,(iosb)
+	or	a		; very likely will fail, since it is a
+	scf			;  contiguous file... (alternatively,
+	jr	nz,sav1		;   just create a new file)
+
+sav0:	ld	(qio4+Q.BLK),hl
+	ld	hl,0
+	ld	(qio4+Q.BLK+2),hl
+	ld	hl,qio4
+	SC	.QIO		; extend the file within allocated space
+	jr	c,sav1
+	ld	a,(iosb)
+	or	a
+	jr	z,sav1
+	scf
+
+sav1:	push	af
+	ld	hl,qio5
+	SC	.QIO		; close file
+	pop	af
+	jp	c,SYSERR
+	ret
+
+; Save system image file. We read block-sized chunks of system image into a
+; local buffer and then save them into the contiguous system image file via
+; direct device I/O accesses (remember that the volume is dismounted at this
+; point).
+
+; This works, since the system is basically idling at this point and thus no
+; changes to the system structures are expected. Yet, we're taking several
+; risks:
+; - an I/O packet is allocated from the pool and queued to the boot device
+;   driver every time we write a new block, but since the block being written
+;   is copied to the local buffer while the device driver is idling in between
+;   the writes and after the packet was returned to the pool, we can assume
+;   that the pool state remains basically the same.
+; - we are assuming that SAV will not move in the task priority list either,
+;   as no other tasks are supossed to be running.
+; - we also assume no other tasks will become active during this time.
+; - etc.
+
+SAVIMG:	ld	hl,finfo+F.BMAP	; get starting LBN of the system image file
+	ld	de,qio7+Q.BLK
+	ld	bc,3
+	ldir			; copy 3-byte block number to the QIO block
+	xor	a
+	ld	(de),a		; zero the 4th byte
+
+	ld	hl,0
+	ld	(saddr),hl	; starting address of the system image
+	ld	hl,($SBANK)
+	ld	(sbank),hl	; starting bank
+
+	ld	bc,(sblks)	; number of blocks to write
+sav2:	call	rdsys		; read a block from memory
+	call	wrblk		; write it to file
+	jp	c,SYSERR
+	call	incadr		; advance address
+	call	incblk		; next block number
+	dec	bc
+	ld	a,b
+	or	c		; all saved?
+	jr	nz,sav2		; no, loop
+
+	; TODO: only if /WB is specified?
+
+	ld	hl,1		; volume ID block is at LBN 1
+	ld	(qio6+Q.BLK),hl
+	ld	(qio7+Q.BLK),hl
+	dec	hl
+	ld	(qio6+Q.BLK+2),hl
+	ld	(qio7+Q.BLK+2),hl
+	call	rdblk		; read volume ID block
+	jp	c,SYSERR
+
+	ld	hl,(sblks)
+	ld	(buf+76),hl	; set system image size in volume ID block
+	call	wrblk		; save changes
+	jp	c,SYSERR
+
+	xor	a		; success
+	ret
 
 ; Read block from system memory
 
-; Note: this is not good, as the file write operation will cause pool
-; contents to change (activity on other terminals, or the action of other
-; tasks is disabled by SYSLVL). Therefore, the saved image will not be
-; really an snapshot; and the pool chain will be no longer valid.
-
-; One possibility will be to reserve a 64K partition, to copy the system
-; there with ints disabled, then save the partition. Another is to use
-; direct device I/O (embedded driver?)
-
-rdsys:	push	hl
-	push	de
-	push	bc
-
-	ld	c,1
-	SC	.SUPER
-	;jr	c,...
-
-	ld	h,l
-	ld	l,0
-	add	hl,hl		; get memory address from block number
+rdsys:	push	bc
+	ld	hl,(saddr)	; src memory address
 	ld	de,buf		; dst
-	exx
-	ld	a,($SBANK)
-	ld	e,a		; src bank
-	ld	a,($UBANK)
-	ld	d,a		; dst bank
-	exx
 	ld	bc,512
-	di
-	KCALL	$MCOPY
-	ei
-
-	ld	c,0
-	SC	.SUPER
+	call	mcpy		; read system memory into local buffer
 	pop	bc
-	pop	de
-	pop	hl
 	ret
 
-; Write to file block number in HL
+mcpy:	ld	a,(SYSTYP)
+	dec	a		; RSX180?
+	jr	nz,s280		; no, must be RSX280
+	exx
+	ld	a,(sbank)
+	ld	l,a		; src bank
+	ld	a,($UBANK)
+	ld	e,a		; dst bank
+	exx
+	di			; yes
+	call	$MCOPY		; in common mem, don't use KCALL (enables ints!)
+	ei
+	ret
 
-wrblk:	push	hl
-	push	de
-	push	bc
-	ld	a,IO.WVB
-	ld	(qio2+Q.FUNC),a
-	ld	(qio2+Q.BLK),hl
-	ld	hl,qio2
+s280:	exx
+	ld	hl,(sbank)	; src bank
+	ld	de,($UBANK)	; dst bank
+	exx
+	KCALL	$MCOPY
+	ret
+
+; Read block from boot device
+
+rdblk:	ld	hl,qio6
 	SC	.QIO
-	jr	c,w1
+	ret	c
 	ld	a,(iosb)
 	or	a
-	jr	z,w1
+	ret	z
 	scf
-w1:	pop	bc
-	pop	de
-	pop	hl
+	ret
+
+; Write block to boot device
+
+wrblk:	ld	hl,qio7
+	SC	.QIO
+	ret	c
+	ld	a,(iosb)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Increment system address
+
+incadr:	ld	hl,(saddr)
+	ld	de,512		; one full block
+	add	hl,de
+	ld	(saddr),hl
+	ret	nc		; return if still within the 64K limit
+	ld	hl,0
+	ld	(saddr),hl
+	ld	hl,(sbank)
+	ld	de,16		; else move to the next 64K bank
+	add	hl,de
+	ld	(sbank),hl
+	ret
+
+; Increment disk block number
+
+incblk:	ld	hl,qio7+Q.BLK
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
 	ret
 
 ;-----------------------------------------------------------------------
@@ -325,10 +457,6 @@ eprfx:	db	CR,LF,'SAV -- ',0
 ;   of the clock queue? the same bit could be used by the TT driver to
 ;   disable unsolicited input?
 
-; Also:
-; - ensure system image file is contiguous and large enough to contain
-;   the system.
-
 ; Notes:
 ; - do not use system calls (e.g. .GIN in CKPRV to get login information),
 ;   as they will enable task dispatching on return.
@@ -336,7 +464,7 @@ eprfx:	db	CR,LF,'SAV -- ',0
 ;   messages, but errors will abort the save operation anyway.
 ; - task dispatching will have to be enabled to allow dismounting the load
 ;   device, but by then we are sure no other users are logged in to other
-;   terminals (use SET /NOLOGON before running SAV when in doubt.)
+;   terminals (use SET /NOLOGON before running SAV when in doubt?)
 
 CHECK::	xor	a
 	ld	(ERRFLG),a
@@ -369,6 +497,7 @@ CHKR:	dw	CKPRV		; make sure user is privileged
 	dw	CKDMO		; ensure boot device can be dismounted
 	dw	CKTIO		; ensure no tasks have outstanding I/O
 	dw	CKMEM		; ensure system image file is large enough
+	dw	DMOLB		; dismount system volume
 	dw	0
 
 ; SAV must be run by a privileged user
@@ -396,8 +525,7 @@ cpv1:	ld	hl,msprv
 
 msprv:	db	'Privileged command',0
 
-; SAV must run from CO:
-; TODO: ensure CO: is redirected to TT0:?
+; SAV must run from CO:, which is normally TT0:
 
 CKCO:	ld	ix,($CTCB)
 	ld	l,(ix+T.TI)	; get UCB of our terminal device
@@ -492,6 +620,7 @@ CKCOT:	ld	ix,($CTCB)
 msgcl:	db	'Console logging still active',0
 
 ; Ensure all tasks are installed from LB:
+; TODO: allow SY: if redirected to same device as LB:?
 
 CKTDEV:	ld	hl,($TLIST)
 ct1:	ld	a,h
@@ -505,16 +634,37 @@ ct1:	ld	a,h
 	ld	hl,'LB'
 	call	CPHLDE		; is it LB:?
 	jr	z,ct2		; yes
-	ld	a,-1
+	ld	hl,'SY'
+	call	CPHLDE		; is it SY:?
+	jr	nz,ct3		; no
+	ld	l,(ix+T.LDEV)	; get again load device (SY:)
+	ld	h,(ix+T.LDEV+1)
+	KCALL	$REDIR		; follow redirections
+	push	hl		; save UCB addr of physical device
+	push	ix
+	ld	ix,($CTCB)
+	ld	de,'LB'
+	ld	c,0
+	KCALL	$FNDEV		; get UCB addr of LB:
+	KCALL	$REDIR		; follow redirections
+	pop	ix
+	pop	de
+	call	CPHLDE		; SY: and LB: redirected to the same device?
+	ld	hl,msgt11
+	jr	z,ct4		; yes, output warning only
+ct3:	ld	a,-1
 	ld	(ERRFLG),a	; else set error flag
+	ld	hl,msgt1	; and display error message
+ct4:	push	hl
 	call	SETTN		; set task name argument
-	ld	hl,msgt1
+	pop	hl
 	call	SAVMSG
 ct2:	ld	l,(ix+T.TCBL)
 	ld	h,(ix+T.TCBL+1)
 	jr	ct1
 
 msgt1:	db	'Task %T not installed from an LB:',0
+msgt11:	db	'Warning: task %T installed from SY: = LB:',0
 
 ; Ensure no checkpoint files are active.
 
@@ -587,7 +737,8 @@ msgv1:	db	'Volume still mounted on %D',0
 msgv2:	db	'Load volume not mounted',0
 
 ; Ensure the load device can be successfully dismounted.
-; *** TODO: what about [MASTER]MASTER.DIR?
+; Note: the master directory is normally kept open by the filesystem task
+; even when there are no files open on the volume.
 
 CKDMO:	ld	ix,$MVTBL
 	ld	l,(ix)
@@ -616,8 +767,57 @@ CKDMO:	ld	ix,$MVTBL
 
 msgv3:	db	'Files still open on %D',0
 
-; Dismount the load volume,
-; *** Use MCR DMO to dismount device, or request DMO directly?
+; Dismount the load volume. We send the request to MCR (could request
+; DMO directly instead).
+
+DMOLB:
+ if 1
+	ld	ix,($CTCB)
+	ld	de,'LB'
+	ld	c,0
+	KCALL	$FNDEV		; find load dev in table, return UCB addr in HL
+	KCALL	$REDIR		; follow redirections, get UCB of physical dev
+	ex	de,hl
+	call	SETDN
+ else
+	;... better get M.UCB from mount table entry?
+ endif
+	ld	hl,dmocmd
+	ld	de,CMDBUF
+	ld	bc,dlen
+	ldir			; copy command
+	ld	e,1		; .RQST + .WTSE
+	call	SNDMCR		; request MCR to execute the command
+	ld	hl,(EXSTAT)
+	ld	a,l
+	cp	EX.SUC		; success?
+	jr	z,dm1		; yes
+	ld	a,-1
+	ld	(ERRFLG),a
+	ld	hl,msgd1
+	jp	SAVMSG
+
+	; TODO:
+	; - on failure, check for 'dismount in progress' bit
+	;   * is set, wait 1 second and check again, retrying 5..18 times
+	;   * if not set, error
+
+dm1:	ld	ix,$MVTBL
+	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	a,h
+	or	l
+	jr	z,dm2		; dismount complete
+
+	; may need to check for 'dismount in progress' bit and wait here too
+
+	ret
+
+dm2:	ld	hl,msgd2
+	jp	SAVMSG
+
+dmocmd:	db	'DMO LB:/DEV',CR,0
+dlen	equ	$-dmocmd
 
 msgd1:	db	'Error attempting to dismount %D',0
 msgd2:	db	'Dismount complete for %D',0
@@ -807,7 +1007,7 @@ ini1:	ex	de,hl
 
 	; TODO: set SAV current directory too?
 
-	ld	hl,qio3
+	ld	hl,qio8
 	SC	.QIO		; ensure terminal is non-slaved
 
 	; start MCR
@@ -862,9 +1062,14 @@ ini2:	push	hl
 	ld	(ix+CL.CPL),c
 	ldir
 
+  IF 0	; no need to start MCR here, first command sent will request it
+	ld	hl,0
+	ld	(MCRTDB+TD.CMD),hl
+	ld	(MCRTDB+TD.CML),hl
 	ld	hl,MCRTDB
 	SC	.RQST		; start MCR
 	jp	c,mcrerr
+  ENDIF
 
 	; execute startup commands
 
@@ -880,7 +1085,7 @@ cmloop:	ld	a,(hl)
 	push	hl
 	call	SNDMCR		; execute command
 	pop	hl
-;;	jr	c,mcrerr
+	jp	c,mcrerr
 	inc	hl
 	jr	cmloop
 
@@ -1030,15 +1235,33 @@ slen:	ld	a,(hl)
 
 	dseg
 
+fdb:	dw	0
+	db	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT
+	db	'LB',0
+	db	'MASTER   ','SYSTEM   ','SYS'
+	dw	0
+
+finfo:	ds	FINFSZ
+
 qio1:	QIOW$	<<IO.ACC OR (SF.ACW SHL 8)>>,LUNSY,EFN,iosb,,<fdb,0>
-qio2:	QIOW$	IO.WVB,LUNSY,EFN,iosb,,<buf,512,0,0,>
-qio3:	QIOW$	SF.SMC,LUNTI,EFN,iosb,,<ttmode,2>
+qio2:	QIOW$	IO.RAT,LUNSY,EFN,iosb,,<finfo,FINFSZ>
+qio3:	QIOW$	IO.EXT,LUNSY,EFN,iosb,,<,,,0,0,>
+qio4:	QIOW$	IO.WVB,LUNSY,EFN,iosb,,<buf,512,,0,0,>
+qio5:	QIOW$	IO.DEA,LUNSY,EFN,iosb
+
+qio6:	QIOW$	IO.RLB,LUNSY,EFN,iosb,,<buf,512,,0,0,>
+qio7:	QIOW$	IO.WLB,LUNSY,EFN,iosb,,<buf,512,,0,0,>
+
+qio8:	QIOW$	SF.SMC,LUNTI,EFN,iosb,,<ttmode,2>
 iosb:	ds	4
 
 ttmode:	db	TC.SLV,0
 
-fdb:	ds	FDBSZ
 buf:	ds	512
+
+sblks:	ds	2
+saddr:	ds	2
+sbank:	ds	2
 
 SAVTN:	ds	6
 SAVDN:	ds	3
