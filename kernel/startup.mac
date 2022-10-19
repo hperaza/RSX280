@@ -183,6 +183,14 @@ skip:	; start initialization task
 	call	?RQST		; request initialization task
 	jp	c,uncfg
 
+	ldw	hl,(ix+T.CTX)
+	addw	hl,TX.REGS+20+2
+	ldw	(hl),507Fh	; reset MSR
+	inc	hl
+	inc	hl
+	ldw	de,(ix+T.EPT)
+	ldw	(hl),de		; reset PC
+
 	; start dispatcher
 
 	jp	GO
