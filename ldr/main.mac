@@ -27,7 +27,7 @@
 
 	.Z280
 
-	ident	'V6.15'
+	ident	'V6.16'
 
 	include	SYSCONF.INC
 	include	SYSFN.INC
@@ -232,8 +232,13 @@ iload:	; initial task load
 	add	hl,de		; round to upper 256-byte record limit
 	ld	l,h		; divide by 256
 	ld	h,0
+	rl	h		; get possible carry bit from addition in place
+	ld	a,h
+	or	l		; task size can't be zero
+	ld	e,TK.ITH
+	jp	c,lderr
+	ex	de,hl		; result in DE
 
-	ex	de,hl
 	ldw	hl,(ix+T.NBLK)	; get file size in blocks
 	add	hl,hl		; compute file size in 256-byte records
 	jr	c,ld1		; CY means file size larger than code length
