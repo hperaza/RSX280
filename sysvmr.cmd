@@ -49,6 +49,7 @@ ins cpu
 ins cal				! install calendar display
 ins acnt/task=...pwd		! install user password change utility
 ins kermit			! install Kermit
+ins cpm				! install the CP/M emulator
 ;set /speed=tt0:115200
 set /speed=tt1:19200
 set /speed=tt2:19200
