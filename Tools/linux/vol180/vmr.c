@@ -872,7 +872,7 @@ void install_task(char *name, int argc, char *argv[]) {
   tskend = thdr[TH_END] | (thdr[TH_END+1] << 8);
   if (inc == 0) inc = thdr[TH_INC] | (thdr[TH_INC+1] << 8);
   tskend += inc;
-  if (tskend > 0xf000) {
+  if (tskend > ((system_type == 2) ? 0x10000 : 0xf000)) {
     printf("Program too big\n");
     return;
   }
@@ -944,7 +944,7 @@ static address task_size(address tcb) {
     printf("Task has zero size\n");
     return 0;
   }
-  if (size > 15) {
+  if (size > ((system_type == 2) ? 16 : 15)) {
     printf("Task too large\n");
     return 0;
   }
