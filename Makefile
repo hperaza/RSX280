@@ -23,7 +23,7 @@ sysmod = startup.rel drivers.lib kernel.lib sysdat.rel
 sysdirs = boot drivers kernel
 
 # Source of utilities
-utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap
+utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap cpm
 
 # Disk device or image to update
 #disk = /dev/fd0
@@ -225,13 +225,15 @@ disk-image:
 	@echo "import ./type.cmd type.cmd" >> mkimg.cmd
 	@echo "import ./mce/mceini.cmd mceini.cmd" >> mkimg.cmd
 	@echo "mkdir games 20,3" >> mkimg.cmd
-	@echo "mkdir test 20,4" >> mkimg.cmd
+	@echo "mkdir cpm 20,4" >> mkimg.cmd
+	@echo "mkdir test 20,5" >> mkimg.cmd
 	@echo "cd master" >> mkimg.cmd
 	@echo "dir master" >> mkimg.cmd
 	@echo "dir system" >> mkimg.cmd
 	@echo "dir help" >> mkimg.cmd
 	@echo "dir user" >> mkimg.cmd
 	@echo "dir games" >> mkimg.cmd
+	@echo "dir cpm" >> mkimg.cmd
 	@echo "dir test" >> mkimg.cmd
 	@echo "quit" >> mkimg.cmd
 	$(VOL180) < mkimg.cmd
@@ -312,6 +314,12 @@ copy-utils: cli utils
 	@echo "import ted/ted.tsk ted.tsk /c" >> copy.cmd
 	@echo "delete zap.tsk" >> copy.cmd
 	@echo "import zap/zap.tsk zap.tsk /c" >> copy.cmd
+	@echo "delete cpm.tsk" >> copy.cmd
+	@echo "import cpm/cpm.tsk cpm.tsk /c" >> copy.cmd
+	@echo "dir" >> copy.cmd
+	@echo "cd cpm" >> copy.cmd
+	@echo "delete map.com" >> copy.cmd
+	@echo "import cpm/map.com map.com" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(disk) < copy.cmd
@@ -360,6 +368,19 @@ copy-basic: progdev
 	$(VOL180) $(disk) < copy.cmd
 	@rm copy.cmd
 
+# Copy some CP/M files for the CP/M emulator, the files are placed
+# in the [CPM] directory.
+copy-cpm:
+	@echo "cd cpm" > copy.cmd
+	@for i in cpm/test/* ; do \
+		echo "delete "`basename $$i` >> copy.cmd ; \
+		echo "import "$$i" "`basename $$i` >> copy.cmd ; \
+	done
+	@echo "dir" >> copy.cmd
+	@echo "quit" >> copy.cmd
+	$(VOL180) $(disk) < copy.cmd
+	@rm copy.cmd
+
 # Copy some test files to the disk image.
 # The files are placed in a separate [TEST] directory.
 copy-test: test
@@ -376,8 +397,14 @@ copy-test: test
 			echo "import "$$i" "`basename $$i` >> copy.cmd ; \
 		fi ; \
 	done
+	@echo "delete maze.t3x" >> copy.cmd
+	@echo "import progdev/t3xz/test/maze.t3x maze.t3x" >> copy.cmd
+	@echo "delete rsxio.mac" >> copy.cmd
+	@echo "import progdev/t3xz/test/rsxio.mac rsxio.mac" >> copy.cmd
+	@echo "delete mkmaze.cmd" >> copy.cmd
+	@echo "import progdev/t3xz/test/mkmaze.cmd mkmaze.cmd" >> copy.cmd
 	@echo "dir" >> copy.cmd
-	@echo "quit" >> copy.cmd
+	@echo "exit" >> copy.cmd
 	$(VOL180) $(disk) < copy.cmd
 	@rm copy.cmd
 
@@ -411,7 +438,7 @@ copy-kermit: kermit
 # Copy everything to the disk image.
 copy-all: copy-system copy-utils copy-help \
           copy-progdev copy-basic copy-test \
-          copy-kermit copy-games
+          copy-kermit copy-games copy-cpm
 
 # Configure system
 sysvmr-old:
