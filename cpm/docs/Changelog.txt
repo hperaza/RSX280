@@ -1,0 +1,160 @@
+Changelog (HP)
+--------------
+
+Starting from Tony Nicholson's V0.99
+
+18/12/21
+
+- Switched to direct QIO calls for file I/O instead of using FCSLIB. While
+  FCSLIB provides a convenient a C-like interface to file I/O operations,
+  it may be a bit overkill for this application that requires fixed 128-byte
+  record I/O. QIO calls also help to reduce buffer space since we can do I/O
+  directly to/from the application area, increasing TPA by about 3K. OTOH,
+  reading partial blocks means 4 times more QIO calls, meaning also more
+  context-switching, which may reduce performance.
+
+- We can get rid of the PFN call as well, since CP/M FCBs are easy to convert
+  to RSX280 FDBs (~600 additional bytes freed.)
+
+- Use a simple CP/M drive to RSX280 directory mapping table. Only two drives
+  supported at the moment: SY:[UserDir] and SY:[CPM]. Still TODO: implement
+  DPBs and DPHs for the new drive(s).
+
+- Under CP/M files open for read do not have to be closed, and that creates
+  a problem for RSX280, which can quickly run out of LUNs. For UZI180, a
+  rather crude solution was implemented: a single file descriptor was used
+  for all I/O operations, the UZI file was normally kept open until an
+  explicit file close call, a file open call, or a read or write operation
+  with a different FCB than the last one. At that point the old file was
+  closed and a new one was opened, and so on. Performance was still very
+  acceptable, perhaps due to the fact that most CP/M applications process
+  several files either sequentially or in large chunks. For RSX280, we'll
+  do something similar, but instead of reserving one file descriptor we'll
+  use four LUNs arranged in a LRU list.
+
+
+19/12/21
+
+- Had to move a few more routines into the BIOS area.
+
+- Adapted the read directory and index file routines.
+
+- Load COM file using BDOS calls (this is in preparation for using a genuine
+  or adapted CCP.COM as the command interpreter in the future).
+
+- Place the CCP stack in the TPA area below BDOS start, so it will not be
+  overwritten by the BDOS stack when using BDOS services.
+
+- Now using ODT as debugger (conditionally included). This makes debugging
+  easier than via $PSTR calls.
+
+- Fixed a bug in sz_compute which caused the computed file size to become
+  negative in certain cases.
+
+- When building a fake directory for file search first/next, clear s1 and s2
+  bytes, else the compare loop 'searchloop' will very likely fail.
+
+- Build emulator task to load at address of 0000h, else the kernel will not
+  allow file I/O below the usual 0100h task bottom limit (specifically, I/O
+  to the default CP/M buffer at 0080h will not be allowed.) This was not a
+  problem with FCSLIB, since I/O was done to/from a buffer in high memory.
+
+- Simple applications (e.g. DUMP) are already working. Other ones (e.g. DDTZ)
+  crash the emulator with a 'privileged instruction' error, as they use Z280
+  privileged instructions such as 'ei', 'di', 'ld a,i', etc. TODO: setup
+  a SST vector table to catch and emulate (or ignore) such instructions.
+
+
+20/12/21
+
+- Support BDOS function 40 (RSX280 does the zero-fill).
+
+- If a file cannot be open in r/w mode, try r/o mode.
+
+- BDOS function 35 (compute file size) now computes file size from the
+  RSX280 file attributes (faster than doing a search first/next call.)
+
+
+21/12/21
+
+- The command tail @0080h should include the space separator.
+
+- Removed the code that parsed the command line tail into a set of argv[]
+  (leftover from UZI280, more space freed). The main routine now simply
+  looks for a file matching the first argument and passes the remainder
+  of the command line to the application.
+
+- Read/Write random record should set the sequential file position.
+
+- More programs tested: ASM, MAC, RMAC, DR LINK, MBASIC, T3XZ compiler,
+  Turbo Pascal 3.0; all seem to be working OK.
+
+- Fixed the delete and rename functions; now PIP succeeds copying a file.
+
+
+23/12/21
+
+- BDOS function 35: reverted changes back to computing size via directory
+  scan, as the function does not require the file to be open.
+
+- Extent size is larger than 128 records for the emulated 4K-block disk.
+  The search first/next functions now take into account the extent mask;
+  this keeps NULU happy and also fixes the problem of large files being
+  reported twice (or more) in a search next function.
+
+- CP/M BDOS returns zero for illegal function numbers. This is used by some
+  applications that issue special ZSDOS calls to determine whether they are
+  running under ZSDOS or vanilla CP/M.
+
+
+26/12/21
+
+- Implemented BDOS functions 14 (select disk), 25 (get current disk) and 24
+  (get login vector). The login vector is used by function 14 to avoid a
+  time-consuming re-logging of an already logged-in disk.
+
+- Function 13 (reset disk system) now clears the login vector and re-logs in
+  the currently selected disk (note: the real CP/M always resets the current
+  disk to A).
+
+- The main routine now allows changing the current disk with a 'd:' command
+  like CP/M CCP does.
+
+- Reset the BDOS if an application exits via warm boot vector or BDOS
+  function 0, but not if it restores the stack and returns to CCP.
+
+- Implemented subfunction 0FEh (return console status) of BDOS function 6.
+
+- Adding simple BIOS extensions via the cold-boot entry point, which CP/M
+  never uses after startup - an idea borrowed from Hal Bower's BIOS for the
+  P112. The call passes a function code in reg C and a validation code
+  in reg B (function code XOR'ed with 55h):
+  * function code 1 exits the emulator.
+  * function code 2 returns the address of the drive mapping table.
+
+- Added a simple CP/M application to change drive mappings "on the fly"
+  using the BIOS extension above.
+
+
+27/12/21
+
+- Hi-Tech C compiler already compiles a simple "Hello world" application.
+
+
+28/12/21
+
+- Uppercase the command line when copying it to the CP/M buffer @0080h.
+  Forcing uppercase command entry is no longer necessary, and thus the
+  ttlc flag was removed. Also removed ccflg, which was set but never used.
+
+- Store a fake block alloc map in directory entry for DR's STAT and SDIR.
+
+
+23/10/22
+
+- BDOS function 35: ensure the right directory is open!
+
+- Trap Z280 privileged instructions, ignore DI, EI, IN and OUT; abort CP/M
+  program on all others.
+
+

@@ -1,0 +1,322 @@
+	cseg
+;
+; A simple CP/M program for testing
+;
+	.z280
+
+bdos	equ	5
+ddma	equ	0080h	; default DMA address
+fcb1	equ	005Ch	; default FCB
+
+start:	ld	hl,0
+	add	hl,sp	; get stack pointer
+	push	hl
+	ld	c,9
+	ld	de,stkmsg
+	call	bdos
+	pop	hl
+	call	hlhex
+	call	crlf
+
+;	call	dump_pg0
+
+	ld	hl,ddma	; any parameters?
+	ld	a,(hl)
+	or	a
+	jr	z,chartest	; no - do character I/O test
+
+	jp	searchtest	; do a search test
+
+
+
+chartest:
+	ld	c,9	; print string
+	ld	de,msg0
+	call	bdos
+	ld	c,1	; read a character
+	call	bdos
+        push	af	; save it
+	ld	c,9
+	ld	de,msg1
+	call	bdos
+	pop	af
+	push	af
+	ld	e,a
+	ld	c,2	; echo it back
+	call	bdos
+	ld	c,9
+	ld	de,msg2
+	call	bdos
+	pop	af
+	call	ahex	; print char in hex
+	ld	c,9
+	ld	de,msg3
+	call	bdos
+
+	call	delay	; Give them a chance to type something
+
+getc:	ld	e,0FFh	; direct console I/O test
+	ld	c,6
+	call	bdos
+
+	or	a	; anything typed?
+	jr	nz,gotc	; yes
+
+	ld	c,9
+	ld	de,msg5
+	call	bdos
+	jp	crlf		; new line and exit
+
+gotc:	push	af
+	ld	c,9
+	ld	de,msg4
+	call	bdos
+	pop	af
+	call	ahex
+	jp	crlf		; new line and exit
+
+searchtest:
+	ldw	(found),0	; zero count
+
+	ld	c,9
+	ld	de,srchmsg
+	call	bdos
+
+	ld	hl,fcb1+1	; print out the file spec we're
+	ld	b,8+3		;  searching for
+p_nam:	ld	a,(hl)
+	inc	hl
+	push	hl
+	push	bc
+	call	putc
+	pop	bc
+	pop	hl
+	djnz	p_nam
+	call	crlf
+
+	ld	c,26		; setdma
+	ld	de,ddma
+	call	bdos
+
+	ld	c,17		; search first
+	ld	de,fcb1		; use default FCB
+	call	bdos
+
+	cp	255		; not found?
+	jr	z,notfound
+
+	incw	(found)
+
+	push	af		; save result
+	ld	c,9		; show result of search_first
+	ld	de,resultmsg
+	call	bdos
+	pop	af
+	call	ahex
+	call	crlf
+	call	dump_dma
+
+srchnext:
+	ld	c,18		; now do a search_next
+	call	bdos
+
+	cp	255
+	jp	z,srchdone	; no more
+
+	incw	(found)
+
+	push	af
+	ld	c,9
+	ld	de,resultmsg
+	call	bdos
+	pop	af
+	call	ahex
+	call	crlf
+	call	dump_dma
+	call	crlf
+	jr	srchnext
+
+srchdone:
+	ld	c,9
+	ld	de,foundmsg
+	call	bdos
+	ld	hl,(found)
+	call	hlhex
+	jp	crlf
+
+notfound:
+	ld	c,9
+	ld	de,notfndmsg
+	jp	bdos
+
+; new line and exit
+crlf:	push	hl
+	push	de
+	push	bc
+	ld	c,9
+	ld	de,crlf_msg
+	call	bdos
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Dump default DMA buffer
+dump_dma:
+	ld	hl,ddma	; start at DDMA address
+	jr      d_addr
+
+; Dump out page 0 of memory
+dump_pg0:
+	ld	hl,0	; start at address 0000
+d_addr:	call	hlhex
+	call	colonsp
+	push	hl
+d_byte:	ld	a,(hl)
+	call	ahex
+	call	space
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,d_byte
+	call	space
+	pop	hl
+d_char:	ld	a,(hl)
+	call	putc
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,d_char
+	call	crlf
+	ld	a,h
+	or	a
+	ret	nz
+	jr	d_addr
+
+; Print char
+putc:	push	hl
+	push	de
+	push	bc
+	and	7Fh
+	cp	7Fh
+	jr	z,dot
+	cp	' '
+	jr	c,dot
+	ld	e,a
+	jr	co
+dot:	ld	e,'.'
+co:	ld	c,2
+	call	bdos
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print a space
+space:	push	hl
+	push	de
+	push	bc
+	ld	e,' '
+	ld	c,2
+	call	bdos
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print a colon followed by a space
+colonsp:
+	push	hl
+	push	de
+	push	bc
+	ld	c,9
+	ld	de,cspmsg
+	call	bdos
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print value in HL to console in hexadecimal
+hlhex:	ld	a,h
+	call	ahex
+	ld	a,l
+	; fall into ahex routine
+
+; Print value in A to console in hexadecimal
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	chex
+	pop	af
+chex:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	push	hl
+	push	de
+	push	bc
+	ld	e,a
+	ld	c,2		; Console output
+	call	bdos
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+delay:	push	bc
+	push	hl
+	ld	b,64
+dlyn:	call	dly0
+	djnz	dlyn
+	pop	hl
+	pop	bc
+	ret
+
+dly0:	ld	hl,0
+dly1:	dec	hl
+	ld	a,h
+	or	l
+	jr	nz,dly1
+	ret
+
+stkmsg:	defb	13,10,'TESTCPM entered with SP=$'
+
+msg0:	defb	'Hello from CP/M.  Press a key : $'
+
+msg1:	defb	13,10,'You typed a "$'
+
+msg2:	defb	'" character with this value (in hex) $'
+
+msg3:	defb	13,10,"Now checking direct console I/O. I'm going to delay a bit. You may type"
+	defb	13,10,'some keys or not. I will let you know if I see anything...$'
+
+msg4:	defb	13,10,'This time you typed $'
+
+msg5:	defb	13,10,'You typed nothing$'
+
+crlf_msg:
+	defb	13,10,'$'
+
+cspmsg:	defb	': $'
+
+srchmsg:
+	defb	13,10,'Search test - looking for file $'
+
+resultmsg:
+	defb	13,10,'******************************************************'
+	defb	13,10,'Result code=$'
+
+notfndmsg:
+	defb	13,10,'Search returned NOT FOUND',13,10,'$'
+
+foundmsg:
+	defb	13,10,'Search found matches $'
+
+found:	defs	2
+
+	end	start
+

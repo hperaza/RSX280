@@ -1,0 +1,4081 @@
+	title	CP/M 2.2 Emulator for RSX280
+	subttl	27-Dec-2021
+	ident	"V0.99"		; pre-release version
+
+;*******************************************************************
+;
+;	CPM - CP/M 2.2 BDOS/BIOS emulation for RSX280.
+;
+;	Copyright (C) 2020, Tony Nicholson
+;
+;  This program is free software; you can redistribute it and/or
+;  modify it under the terms of the GNU General Public License as
+;  published by the Free Software Foundation; either version of
+;  the License, or (at your option) any later version.
+;
+;  This program is distributed in the hope that it will be useful,
+;  but WITHOUT ANY WARRANTY; without even the implied warranty of
+;  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+;  GNU General Public License for more details.
+;
+;  You should have received a copy of the GNU General Public License
+;  along with this program; if not, write to the Free Software
+;  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;*******************************************************************
+;
+;  Acknowledgements
+;
+;  Loosely based on CPMEMU - a CP/M emulator for the UZI-280
+;  operating system by Stefan Nitschke and released into the
+;  Public Domain on 13-Mar-1996.
+;
+;  Also, portions of the original CP/M 2.2 BDOS and CCP
+;  source code by Digital Research Inc. have been adapted to
+;  preserve the functions of various routines in this
+;  emulation.
+;
+;  CP/M is Copyright (C) Caldera Corporation and later by Lineo Inc.
+;
+;  Original source-code, disassembled sources and documentation
+;  for CP/M are available from the "Unofficial CP/M Web Site" for
+;  hobbyists, developers and the retro-computing community at
+;
+;	 http://www.cpm.z80.de
+;
+;*******************************************************************
+
+	.Z280
+
+FALSE	equ	0
+TRUE	equ	not FALSE
+
+DBG_CON equ	0001h		; console I/O debug
+DBG_FIO equ	0002h		; file read/write debug
+DBG_SRH	equ	0004h		; search first/next debug
+DBG_ERR equ	8000h		; error debug
+DBG_ODT	equ	0100h		; debug with ODT
+
+;DEBUG	equ	DBG_ERR or DBG_SRH
+;DEBUG	equ	DBG_ODT
+DEBUG	equ	FALSE
+
+; Include files and externals
+
+	; RSX280 definitions (list off)
+	list	off
+	include SYSFN.INC
+	include	QIO.INC
+	include FCB.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	ERRORS.INC
+	list	on
+
+; Control Characters
+ETX	equ	03h
+BS	equ	08h
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+TAB	equ	09h
+CTRLZ	equ	1Ah
+RUBOUT	equ	7Fh
+
+;*******************************************************************
+; CP/M memory sizing
+; (consult the TKB map file before changing this)
+;
+; Note: Build this program with a load address of 0000h.
+
+  if DEBUG ;and DBG_ODT
+memsize	equ	56		; 56KB memory size with ODT
+  else
+memsize	equ	62		; 61KB memory size
+  endif
+topmem	equ	memsize*1024
+cpmoffs	equ	topmem-20*1024	; based on standard CP/M 2.2
+
+; Where CP/M expects things to be
+cpmwarm	equ	00000h		; warm boot jump
+cpmiob	equ	00003h		; I/O byte
+cpmddr	equ	00004h		; default drive
+cpmentry equ	00005h		; BDOS jump vector
+cpmfcb1	equ	0005ch		; FCB 1
+cpmfcb2	equ	0006ch		; FCB 2
+cpmdma	equ	00080h		; default DMA address and command line
+cpmtpa	equ	00100h		; transient programs are loaded here
+cpmccp	equ	03400h+cpmoffs	; CCP is implemented by this program
+cpmbdos	equ	03c00h+cpmoffs	; BDOS contains emulation code
+cpmbios	equ	04a00h+cpmoffs	; BIOS only emulates character I/O
+
+; CP/M File Control Block offsets
+fcbdrive equ	0		; drive code
+fcbname	equ	1		; file name
+fcbext	equ	9		; file type (extension)
+fcbex	equ	12		; file extent
+fcbs1	equ	13		; s1
+fcbubytes equ	fcbs1		; s1 used for unfilled bytes field
+fcbs2	equ	14		; s2
+fcbmodnum equ	fcbs2		; s2 used for module number
+fcbrc	equ	15		; record count
+fcbdm0	equ	16		; disk allocation map
+fcbcr	equ	32		; current CP/M record
+fcbran	equ	33		; random access record number
+fcbranh	equ	35		; random access record high byte (24-bit)
+
+fcbnamlen equ	15		; name length for search matching
+fcblen	equ	36		; length of CP/M FCB
+
+fcbid	equ	24		; internal file ID
+fcbxid	equ	26		; RSX280 file ID (inode and seq number)
+fcbmode	equ	30		; file mode
+fcbmagic equ	31		; set to magic number if file open
+
+empty	equ	0E5h		; deleted or empty directory entry
+recsiz	equ	128		; record size (CP/M sector size)
+maxdir	equ	1024		; number of directory entries
+dirlen	equ	32		; directory entry length (CP/M)
+dirspr	equ	recsiz/dirlen	; directory entries per sector
+dskmsk	equ	dirspr-1	; mask for directory entry
+maxext	equ	31		; maximum extent value
+dircnt	equ	maxdir/dirspr	; number of directory sectors
+
+; magic number of open file
+;
+; The emulator writes this to the CP/M FCB when a file is open
+; (along with the RSX280 LUN of the open file).
+MAGIC	equ	05Eh
+
+; RSX280 Logical Unit Numbers
+LUN_F1	equ	1		; emulator file access LUN #1
+LUN_F2	equ	2		; emulator file access LUN #2
+LUN_F3	equ	3		; emulator file access LUN #3
+LUN_F4	equ	4		; emulator file access LUN #4
+LUN_TI	equ	5		; terminal LUN (TI:)
+LUN_SY	equ	6		; LUN for rename/delete file
+LUN_D	equ	7		; LUN for user's directory file
+LUN_IX	equ	8		; LUN for accessing INDEXF.SYS
+
+; Event flags
+EFN_TI	equ	1		; event flag for AST terminal input
+EFN_TO	equ	2		; event flag for console output
+EFN_F1	equ	3		; event flag for emulation file I/O
+EFN_SY	equ	7		; event flag for rename/delete I/O
+EFN_D	equ	8		; event flag for directory file
+EFN_IX	equ	9		; event flag for INDEXF.SYS
+
+; Open File table offsets
+F_LNK	equ	0		; link to next entry in LRU list
+F_FID	equ	F_LNK+2		; file ID
+F_LUN	equ	F_FID+2		; LUN for this channel
+FTSIZE	equ	F_LUN+1		; table entry size
+
+flag_r	equ	00000001b
+flag_w	equ	00000010b
+flag_rw	equ	flag_r OR flag_w
+
+NFILES	equ	4		; max number of simultaneously open files
+				; (as many as LUNs reserved for file access)
+
+; Console terminal queue offsets
+TQ.IP	equ	0		; input pointer
+TQ.OP	equ	TQ.IP+1		; output pointer
+TQ.BUF	equ	TQ.OP+1		; buffer
+
+ttibsz	equ	80		; terminal input buffer size
+	page
+	subttl	Transient Program Area
+;*******************************************************************
+;
+; CP/M transient program .COM files are loaded here
+
+	cseg	; The majority of the emulator is in the code segment
+	org	0
+
+	defs	cpmtpa		; Page-zero area
+
+tpa::
+	; For RSX280 we load the CP/M .COM file into the TPA
+	; region ourselves (essentially this program behaves
+	; functionally like the CP/M Console Command Processor).
+	; A future enhancement may be to include loading the
+	; Digital Research CCP from CP/M 2.2 or one of its
+	; replacements.
+
+; One big region to load CP/M binaries into
+;
+	defs	cpmbdos-cpmtpa	; Rest of TPA
+	page
+	subttl	BDOS
+;*******************************************************************
+;
+; BDOS emulator
+;
+; This is at the standard CP/M 2.2 address for programs
+; to access. The emulator set-up and control routines
+; are embedded here too. These begin at the entry-point
+; labelled MAIN. When an emulated program exits, it
+; either does a Warm Boot (JP 0/RST 0) or return (if the
+; stack hasn't been modified) and the emulator closes any
+; open files and prompts for the next CP/M command.
+; To exit back to RSX280, type Ctrl-Z then Return to the
+; X> prompt.
+;
+bdos::
+	nop			; make the BDOS look like real CP/M
+	nop			; (it starts with 6 NOPs)
+	nop
+	nop
+	nop
+	nop
+entry:
+	ld	(oldstk),sp	; save and switch stack
+	ld	sp,tmpstk
+	ex	de,hl
+	ld	(arg),hl
+	ld	a,c
+	ld	(func),a 	; BDOS function number
+	push	iy		; RSX280 routines use IY
+	push	ix
+	push	hl
+	pop	iy		; (arg) also into IY
+	call	bdos2
+	pop	ix
+	pop	iy
+	ex	de,hl		; save return val in DE
+	ld	sp,(oldstk)	; restore stack
+	ld	hl,(arg)
+	ex	de,hl		; restore orig contents of DE
+	ld	a,(func)
+	ld	c,a		; restore original contents of C
+	ld	a,l		; get return value into A
+	ld	b,h		; and B for strict compatibility
+	ret
+
+bdos2:
+	cp	maxbdosfn+1
+	jp	nc,ret_hl_0	; function number too big
+	add	a,a
+	ld	hl,bdostable	; index into table
+	add	hl,a
+	ld	hl,(hl)
+	jp	(hl)		; go there, function just returns above
+
+;*******************************************************************
+; BDOS function dispatch table (keep this in cseg)
+
+bdostable:
+	defw	done		; 0 - system reset
+	defw	read_console	; 1 - console read
+	defw	write_console	; 2 - console write
+	defw	no_good		; 3 - reader input
+	defw	no_good		; 4 - punch output
+	defw	no_good		; 5 - list output
+	defw	direct_console	; 6 - direct console I/O
+	defw	no_good		; 7 - get IO byte
+	defw	no_good		; 8 - set IO byte
+	defw	print_string	; 9 - print string
+	defw	rdbuf		; 10 - read console buffer
+	defw	console_status	; 11 - get console status
+	defw	return_version	; 12 - get version
+	defw	reset_dos	; 13 - reset disk system
+	defw	select_disk	; 14 - select disk
+	defw	openfile 	; 15 - open file
+	defw	closefile 	; 16 - close file
+	defw	search_first	; 17 - search for first file
+	defw	search_next	; 18 - search for next file
+	defw	delete		; 19 - delete file
+	defw	readfile	; 20 - read next record
+	defw	writefile	; 21 - write next record
+	defw	makefile	; 22 - create file
+	defw	rename		; 23 - rename file
+	defw	get_dlog	; 24 - get login vector
+	defw	current_disk	; 25 - get current disk
+	defw	set_dma		; 26 - set disk DMA address
+	defw	get_alv		; 27 - get allocation vector
+	defw	no_good		; 28 - write protect disk
+	defw	ret_hl_0	; 29 - get read-only vector
+	defw	no_good		; 30 - set file attributes
+	defw	get_dpba	; 31 - get addr(dpb params)
+	defw	ret_hl_0	; 32 - set/get user code
+	defw	readrandom	; 33 - read random
+	defw	writerandom	; 34 - write random
+	defw	comp_filesize	; 35 - compute file size
+	defw	setrandom	; 36 - set random record
+	defw	reset_drive 	; 37 - reset drive
+	defw    no_good		; 38 - access drive (MP/M only)
+	defw	no_good		; 39 - free drive (MP/M only)
+	defw	writerandom	; 40 - write random with zero fill
+; end of BDOS dispatch table
+
+maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
+
+;*******************************************************************
+; BDOS call (function 1) read console
+
+read_console:
+	call	_conin
+	call	echoc		; Echo character
+	jr	c,rc_1		; Non-printing?
+	push	af
+	ld	c,a
+	call	tabout
+	pop	af
+
+rc_1:	ld	l,a		; return result in A and HL
+	ld	h,0
+	ret
+
+;*******************************************************************
+; BDOS call (function 2) write console
+;
+; On entry: IYL contains the character
+
+write_console:
+	ld	a,iyl		; was (arg)
+	jp	writechar
+
+;*******************************************************************
+; BDOS call (function 6) direct console I/O
+;
+; On entry: IYL contains the input/output flag (value 0FFh)
+; or the character
+
+direct_console:
+	push	rc_1		; return via rc_1
+	ld	a,iyl
+	inc	a		; 0FFh?
+	jr	z,direct_input	; yes, return character if available
+	inc	a		; 0FEh?
+	jr	z,direct_status	; yes, return status
+	jr	write_console	; else output char
+
+direct_status:
+	call	char_avail
+	ld	a,h
+	or	l
+	ret
+
+direct_input:
+	call	direct_status
+	ret	z		; no char available, return zero
+	jp	_conin
+
+;*******************************************************************
+; BDOS call (function 9) print string
+;
+; On entry: IY points to the string terminated by a '$'
+
+print_string:
+	ld	a,(iy+0)
+	cp	'$'
+	jp	z,$FLUSH	; done - flush buffer and return
+	call	writechar
+	inc	iy
+	jr	print_string
+
+;*******************************************************************
+; BDOS call (function 10) read console buffer
+;
+; We'll use code similar to the original DRI BDOS for
+; reading the console buffer (for an authentic "feel")
+;
+; Returns with HL pointing to number of bytes in buffer
+
+rdbuf:	ld	a,(column)	; save cursor position
+	ld	(strtcol),a	;  for processing Ctrl-X and Ctrl-H
+	ld	hl,(arg)	; point HL to buffer
+	ld	a,h		; is pointer NULL
+	or	l
+	jr	nz,rdbufg
+	ld	hl,cpmdma	; yes, use default DMA buffer
+rdbufg:	ld	c,(hl)		; first byte is buffer size in C
+	inc	hl
+	push	hl		; save pointer to available space
+	ld	b,0		; number of chars input is in B
+readnx:	push	bc		; save count and buf size
+	push	hl		; save buf pointer
+readn0:	call	conin		; get next character to A
+	and	7Fh		; strip parity
+	pop	hl		; restore buf pointer
+	pop	bc		;  count and size
+	cp	CR		; end of line?
+	jp	z,readen
+	cp	LF		; treat LF like a CR
+	jp	z,readen
+	cp	BS		; backspace?
+	jr	nz,noth		; no
+	ld	a,b		; yes, ignore at line beginning
+	or	a
+	jr	z,readnx
+	dec	b		; backup one character
+	ld	a,(column)
+	ld	(compcol),a
+	jr	linelen
+noth:	cp	RUBOUT		; rubout?
+	jr	nz,notrub
+	ld	a,b
+	or	a		; ignore at start of line
+	jr	z,readnx
+	ld	a,(hl)		; echo previous character
+	dec	b
+	dec	hl
+	jr	rdech1
+notrub:	cp	05h		; physical line end (Ctrl-E)?
+	jr	nz,note
+	push	bc
+	push	hl
+	call	crlf
+	xor	a
+	ld	(strtcol),a
+	jr	readn0
+	; left out the detection of Ctrl-P for printer toggle
+note:	cp	18h		; cancel (Ctrl-X)?
+	jr	nz,notx
+	pop	hl
+backx:	ld	a,(strtcol)	; backup the cursor
+	ld	hl,column
+	cp	(hl)
+	jr	nc,rdbuf
+	dec	(hl)		; move cursor back 1
+	call	backsp
+	jr	backx
+notx:	cp	15h		; Ctrl-U (cancel line)?
+	jr	nz,notu
+	call	crlfp		; physical end-of-line
+	pop	hl
+	jp	rdbuf
+notu:	cp	12h		; Ctrl-R?
+	jr	nz,notr
+linelen:
+	push	bc		; re-type the current line
+	call	crlfp
+	pop	bc
+	pop	hl		; HL back to beginning of line buf
+	push	hl
+	push	bc
+rep0:
+	ld	a,b
+	or	a		; have we done the whole line yet?
+	jr	z,rep1
+	inc	hl		; no, get next character
+	ld	c,(hl)
+	dec	b		; count it
+	push	bc
+	push	hl
+	call	ctlout
+	pop	hl
+	pop	bc
+	jr	rep0
+rep1:
+	push	hl
+	ld	a,(compcol)
+	or	a
+	jr	z,readn0
+	ld	hl,column
+	sub	(hl)
+	ld	(compcol),a
+back1:
+	call	backsp
+	ld	hl,compcol
+	dec	(hl)
+	jr	nz,back1
+	jp	readn0
+notr:
+rdecho:
+	inc	hl
+	ld	(hl),a		; store character in buffer
+	inc	b		; and count it
+rdech1:
+	push	bc
+	push	hl
+	ld	c,a
+	call	ctlout
+	pop	hl
+	pop	bc
+	ld	a,(hl)		; was it a Ctrl-C?
+	cp	ETX
+	ld	a,b
+	jr	nz,notc
+	cp	1		; only if at start of line
+	jp	z,done		; exit program back to command input
+notc:
+	cp	c		; have we filled the buffer?
+	jp	c,readnx	; no
+readen:
+	inc	hl
+	ld	(hl),0		; store a null terminator in the buffer
+
+	pop	hl		; end the line and save the
+	ld	(hl),b		;  number of characters entered
+
+	push	hl
+	ld	c,CR
+	call	conout
+	pop	hl
+	ret
+
+; New line on console
+crlf:
+	ld	c,CR
+	call	conout
+	ld	c,LF
+	jr	conout
+
+; Space
+space:	ld	c,' '
+	jr	conout
+
+; Backspace cursor
+backsp:	call	pctlh
+	call	space
+pctlh:
+	ld	c,BS
+;	jr	conout
+
+	; fall through
+
+; Console output and keep track of the cursor position.
+; Also does primitive flow-control using Ctrl-S.
+; Character to output is in C
+conout:	ld	a,(compcol)
+	or	a
+	jr	nz,compout	; output char and update position
+	push	bc
+	call	conbrk		; check for Ctrl-S
+	pop	bc
+	push	bc
+	ld	a,c		; output character to console
+	call	$TTOUT
+	pop	bc
+	; No printer echo (was here)
+compout:
+	ld	a,c		; recall character
+	ld	hl,column
+	cp	RUBOUT
+	ret	z		; ignore NULs
+	inc	(hl)		; increment column
+	cp	' '
+	ret	nc		; return if printable
+	dec	(hl)		; decrement column
+	ld	a,(hl)
+	or	a
+	ret	z		; return if at column 0
+	ld	a,c
+	cp	BS		; is it a backspace?
+	jr	nz,notbacksp
+	dec	(hl)		; yes, decrement column
+	ret
+
+notbacksp:
+	cp	LF
+	ret	nz
+	ld	(hl),0		; LF resets column to 0
+	ret
+
+;*******************************************************************
+; BDOS call (function 11) console input status
+
+console_status:
+	call	char_avail
+	ld	a,l
+	or	h
+	ret	z		; no char available
+	jp	ret255
+
+;*******************************************************************
+; BDOS call (function 12) return version number
+
+return_version:
+	ld	hl,022h		; pretend to be CP/M 2.2
+	ret
+
+;*******************************************************************
+; BDOS call (function 13) reset disk system (and DMA address)
+
+reset_dos:
+	ld	hl,0
+	ld	(dlog),hl	; reset login vector
+	ld	hl,cpmdma
+	ld	(dmaadr),hl	; reset DMA address
+	ld	a,(cpmddr)
+	ld	iyl,a
+	jp	sel_1		; re-login default disk
+
+;*******************************************************************
+; BDOS call (function 14) select disk
+;
+; On entry: IYL contains the selected disk (0..15)
+
+select_disk:
+	ld	a,(cpmddr)
+	cp	iyl		; is it the current disk?
+	jp	z,ret_hl_0	; yes
+sel_1:	ld	c,iyl
+	call	_seldsk		; call BIOS select disk
+	ld	a,h
+	or	l		; valid drive?
+	jr	z,invalid_drive	; no, return error
+	ldw	hl,(hl+14)
+	ld	(alloca),hl	; store alloc vector address
+	ld	a,iyl
+	ld	(cpmddr),a	; store disk code
+	ld	hl,(dlog)
+	call	shrhl
+	rr	l		; disk logged-in?
+	jp	c,ret_hl_0	; yes, return
+	ld	hl,1
+	ld	a,iyl
+	call	shlhl		; shift mask
+	ex	de,hl
+	ld	hl,(dlog)
+	ld	a,l
+	or	e		; else set bit in login vector
+	ld	l,a
+	ld	a,h
+	or	d
+	ld	h,a
+	ld	(dlog),hl
+	jp	login		; activate this disk and return
+				;  (build allocation vector)
+invalid_drive:
+	ld	hl,04ffh	; "invalid drive" error
+	ret
+
+; Shift right HL by amount A
+shrhl:	or	a
+	ret	z
+	ld	b,a
+shr_1:	srl	h
+	rr	l
+	djnz	shr_1
+	ret
+
+; Shift left HL by amount A
+shlhl:	or	a
+	ret	z
+	ld	b,a
+shl_1:	add	hl,hl
+	djnz	shl_1
+	ret
+
+;*******************************************************************
+; BDOS call (function 15) open file.
+;
+; On entry: IY -> pointer to FCB
+
+openfile:
+  if DEBUG and DBG_FIO
+	call	$PSTR
+	defb	'BDOS-I-Open FCB at ',0
+	ld	hl,(arg)
+	call	$HLHEX
+  endif ;DEBUG
+
+	; test for reopen
+	ld	a,(iy+fcbmagic)
+	cp	MAGIC
+	jr	nz,open2
+	ldw	hl,(iy+fcbid)	; the file was open
+	call	FNDFIL		; see if still in FTABLE
+	call	nc,CLOSEF	; yes, close it
+
+open2:	ld	c,flag_rw
+	call	_open		; open file for Read/Write
+	inc	hl		; HL is -1 on error
+	ld	a,h		; is it a valid LUN?
+	or	l
+ if 0
+	jr	nz,open_ok	; yes, we opened it
+
+	ld	(iy+fcbdrive),2	; no, now try to open it
+	ld	c,flag_r	;  in the SY:[CPM] directory (B:)
+	call	_open		;   for read-only access
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l		; is it opened?
+ endif
+	jr	z,ret255	; no
+
+open_ok:
+	ret
+
+no_good:
+ret255:
+	ld	hl,255		; return error
+	ret
+
+;*******************************************************************
+; BDOS call (function 16) close file
+;
+; On entry: IY -> pointer to FCB
+
+closefile:
+	ld	a,(iy+fcbmagic)
+	or	a
+	jr	z,cls_2		; file not open (error?)
+	ldw	hl,(iy+fcbid)
+	call	FNDFIL		; file number still cached?
+	jr	c,cls_1		; no, already closed
+	call	CLOSEF		; else close it
+	jr	c,ret255
+cls_1:	xor	a
+	ld	(iy+fcbmagic),a
+cls_2:	ld	h,a		; Success. (closed file is
+	ld	l,a		;  always with directory code = 0)
+	ldw	(iy+fcbid),hl
+	ret
+
+;*******************************************************************
+; BDOS call (function 17) search first
+;
+; On entry: IY -> pointer to FCB
+
+search_first:
+  if DBG_SRH and DEBUG
+	call	$PSTR
+	defb	'S1st-I-FCB',0
+	call	dumpfcb
+  endif ;DEBUG
+
+	call	search_setup	; setup FCB and open directory
+	jr	c,sf_err
+	call	search		; search and construct directory entry
+
+dir_to_user:
+	ld	hl,(buffa)	; copy directory buffer to user
+	ld	de,(dmaadr)	;  DMA address
+	ld	bc,recsiz
+	ldir
+	ld	a,(lret)
+	ld	l,a		; L and A are directory entry code 0..3
+	ld	h,0
+	ret
+
+sf_err:				; Search encountered an error
+	ld	(errno),a	; save the RSX280 error code
+  if DBG_SRH and DEBUG
+	push	af		; show the error code
+	call	$PSTR
+	defb	'S1st-E-Err=',0
+	pop	af
+	call	$AHEX
+  endif ;DEBUG
+	jp	ret255
+
+search_setup:
+	xor	a
+	ld	(lret),a	; clear return result code
+	ld	a,(diropn)	; is directory already open?
+	or	a
+	ld	c,LUN_D		; yes, close it
+	call	nz,CLOSYS	; ignore errors
+
+	ld	a,(iy+fcbdrive)
+	cp	'?'		; '?' in drive code?
+	jr	nz,ss_1		; no
+	ld	a,(cpmddr)	; yes, use default disk
+	inc	a
+ss_1:	ld	de,FDB_D
+	call	SETDEV		; map CP/M drive to RSX280 device name
+	ret	c
+
+	ld	de,FDB_D+F.NAME
+	ld	bc,9
+	ldir			; copy directory name to file name field
+	ld	hl,FDB_D	; FDB address in HL
+	ld	c,LUN_D
+	call	OPNSYS		; open directory
+	ret	c
+
+	ld	a,00000001b	; mark directory file as open
+	ld	(diropn),a	;  and not end of file (bit 7 off)
+
+	ld	a,(idxopn)	; is INDEXF.SYS open?
+	or	a
+	ld	c,LUN_IX	; yes, close it
+	call	nz,CLOSYS	; ignore errors
+
+	ld	hl,FDB_D+F.DEV
+	ld	de,FDB_IX+F.DEV
+	ld	bc,3
+	ldir			; same device and unit
+
+	ld	hl,FDB_IX	; FDB address in HL
+	ld	c,LUN_IX
+	call	OPNSYS		; open INDEXF.SYS
+	ret	c
+
+	ld	a,00000001b
+	ld	(idxopn),a	; remember INDEXF.SYS is open
+
+	ld	c,0		; length assuming '?' true
+	ld	hl,(arg)	; if drive code is '?'
+	ld	a,(hl)
+	cp	'?'		;  we match all files on the
+	jr	z,qselect	;   current drive
+
+	; IY also points to CP/M FCB
+	ld	a,(iy+fcbex)	; get extent from CP/M FCB
+	cp	'?'		; if extent is not wildcard then clear
+	jr	z,ss_2		; module number (s2 byte)
+	ld	(iy+fcbmodnum),0
+
+ss_2:	ld	(iy+fcbdrive),0	; only single drive, no user areas
+	ld	c,fcbnamlen	; length to match
+
+qselect:
+  if DBG_SRH and DEBUG
+	push	bc		; show match length
+	call	$PSTR
+	defb	'Srch-I-Matchlen=',0
+	ld	a,c
+	call	$AHEX
+	pop	bc
+  endif ;DEBUG
+	xor	a
+	ret
+
+;******************************************************************
+; BDOS call (function 18) search next
+
+search_next:
+  if DBG_SRH and DEBUG
+	call	$PSTR		; show we've been called
+	defb	'Snxt',0
+  endif ;DEBUG
+
+	ld	iy,(searcha)	; point to FCB from search_first
+
+  if DBG_SRH and DEBUG
+	call	dumpfcb
+  endif ;DEBUG
+
+	call	searchn		; search for next match
+	jp	dir_to_user
+	
+; Search for directory element of length C. The
+; address of the CP/M FCB is saved at SEARCHA for
+; the search_next call to use.
+;
+search:	ld	a,0FFh
+	ld	(dirloc),a	; assume not found
+	ld	hl,searchl
+	ld	(hl),c		; save search length and
+	ld	(searcha),iy	;  pointer to CP/M FCB
+	call	set_end_dir	; init dcnt to 0FFFFh
+
+	; rewind to start of RSX280 directory
+	ld	hl,0		; seek to start of directory file
+	ld	(dirrec),hl	; directory entry pointer to beginning
+	ld	(dirfsize),hl	; clear previous file size too
+	ld	hl,16
+	ld	(bcnt),hl	; init file block counter
+
+  if DBG_SRH and DEBUG
+	push	hl		; show DEBC for dir file seek
+	push	bc
+	push	de
+	call	$PSTR
+	defb	'dirr=',0
+	pop	hl
+	push	hl
+	call	$HLHEX
+	pop	hl
+	ex	(sp),hl
+	push	hl
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+
+	; fall through into search next
+
+; Search for the next directory element
+searchn:
+	ld	c,FALSE
+	call	read_dir	; read next directory element
+	call	end_of_dir
+	jr	z,search_fin	; we reached the end - stop search
+
+	ld	de,(searcha)	; DE points to user FCB
+	ld	a,(de)		; keep searching if first char is 0E5h
+	cp	empty
+	jr	z,searchnext
+	push	de		; are we past the end of directory?
+	call	compcdr
+	pop	de
+	jr	nc,search_fin	; yes, stop search
+
+searchnext:
+  if DBG_SRH and DEBUG
+	push	hl		; show directory sector count
+	push	de
+	push	bc
+	call	$PSTR
+	defb	'srch=',0
+	ld	hl,(dcnt)
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+	call	getdptra	; HL = buffa + dptr
+	ld	a,(searchl)	;  and search length to C
+	ld	c,a
+	ld	b,0		; B counts up, C counts down
+
+searchloop:
+	ld	a,c
+	or	a
+	jr	z,endsearch
+	ld	a,(de)
+	cp	'?'		; wildcard is '?'
+	jr	z,searchok	; matches, so try next char
+	ld	a,b		; have we reached past the extent
+	cp	fcbubytes
+	jr	z,searchok
+	cp	fcbex		; is it the extent field?
+	ld	a,(de)		; fetch FCB value
+	jr	z,searchext	; skip to search extent
+	sub	(hl)
+	and	7Fh		; mask to 7-bits
+	jr	nz,searchn	; skip if not matched
+	jr	searchok	; it matched
+
+searchext:
+	; A has the FCB character to match
+	; attempt an extent number match
+	push	bc
+	ld	c,(hl)		; directory character to C
+	call	compext		; compare char
+	pop	bc
+	jr	nz,searchn	; skip if no match
+
+searchok:
+	; Current character matches
+	inc	de
+	inc	hl
+	inc	b
+	dec	c
+	jr	searchloop
+
+endsearch:
+	; Entire name matches, return dir position
+	ld	a,(dcnt)
+	and	dskmsk
+	ld	(lret),a	; L return is position
+	ld	hl,dirloc
+	ld	a,(hl)		; was it located?
+	rla
+	ret	nc		; no, it's 0FFh
+	xor	a
+	ld	(hl),a		; yes, change it to zero
+	ret
+
+search_fin:
+	call	set_end_dir
+	ld	a,0FFh
+	ld	(lret),a
+	ret
+
+set_end_dir:
+	ld	hl,-1		; set dir count to -1
+	ld	(dcnt),hl
+	ret
+
+end_of_dir:
+	ld	hl,dcnt		; return Z flag if at end
+	ld	a,(hl)		;  of directory
+	inc	hl
+	cp	(hl)
+	ret	nz
+	inc	a		; 0FFh becomes 0
+	ret
+
+; Get pointer into fake directory buffer to HL
+getdptra:
+	ld	hl,(buffa)
+	ld	a,(dptr)
+	add	hl,a
+	ret
+
+; Check if we're past the end of the directory
+compcdr:
+	ld	de,(dcnt)	; directory counter to DE
+	ld	hl,(cdrmaxa)	; address of maximum to HL
+	ld	a,e
+	sub	(hl)		; low(dcnt) - low(cdrmax)
+	inc	hl
+	ld	a,d
+	sbc	a,(hl)		; high(dcnt) - high(cdrmax)
+	ret			; Carry is set if cdrmax > dcnt
+
+; Compare extent number in A with that in C
+; Return non-zero if they don't match.
+compext:
+	push	bc
+	push	af
+	ld	a,(extmsk)
+	cpl
+	ld	b,a		; B has negated form of extent mask
+	ld	a,c
+	and	b
+	ld	c,a		; low bits removed from C
+	pop	af
+	and	b		; low bits removed from A
+	sub	c
+	and	maxext
+	pop	bc
+	ret
+
+; Read next directory entry
+read_dir:
+	ld	de,(dirmax)	; maximum dir entries -1 to DE
+	ld	hl,(dcnt)	; increment directory entry count
+	inc	hl
+	ld	(dcnt),hl
+	ex	de,hl
+	cpw	hl,de		; dcnt > dirmax?
+	ex	de,hl
+	jr	nc,read_dir0	; no
+	jr	set_end_dir	; yes, set dcnt to end of directory
+
+read_dir0:
+	ld	a,l
+	and	dskmsk		; use the lower 2 bits of dcnt
+	mult	a,dirlen	;  to point to directory entry
+	ld	a,l
+	ld	(dptr),a	; save pointer
+	or	a		; non-zero means we already
+	ret	nz		;  have read the next entry
+
+	push	bc
+	call	rd_dir		; read next directory sector
+	pop	bc
+	ret
+
+rd_dir:	; Read directory into the sector pointed to by BUFFA
+	; constructing a fake CP/M style directory sector
+
+	ld	hl,(dirfsize)	; are there more extents
+	ld	a,h		;  for the previous file?
+	or	l
+	jp	nz,rd_more	; yes, do them
+
+	; Read next directory entry
+rd_nxtd:
+	ld	a,(diropn)	; have we reached the end of the
+	rla			;  directory file?
+	jr	c,rd_blank	; yes, make an empty extent
+
+	xor	a
+	ld	(extent),a	; clear extent value
+
+	ld	hl,(dirrec)
+	call	DREAD		; read next directory entry
+	jr	c,rd_end_dir	; Any error, assume end-of-dir
+	ld	a,c		; bytes read
+	cp	DESZ
+	jr	z,rd_n1
+
+rd_end_dir:
+	; no more files, just fill an empty extent record
+	ld	hl,diropn
+	set	7,(hl)		; mark end-of-file reached
+
+rd_blank:
+	call	getdptra	; point HL to CP/M FCB entry
+	ld	a,EMPTY
+	ld	b,dirlen
+rd_b0:	ld	(hl),a		; fill it with E5's
+	inc	hl	
+	djnz	rd_b0
+	jp	rd_next
+
+rd_n1:
+	incw	(dirrec)	; bump directory record counter
+
+	ld	ix,direntry	; point to directory file entry
+
+  if DBG_SRH and DEBUG
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'dir ',0
+	ldw	hl,(ix+DE.INDX)	; print index file entry number
+	call	$HLHEX
+	call	$SPACE
+	push	ix
+	pop	hl
+	inc	hl
+	inc	hl
+	ld	b,12		; print filename
+dbg_1:	ld	a,(hl)
+	inc	hl
+	call	$TTOUT
+	djnz	dbg_1
+	call	$SPACE
+	ldw	hl,(ix+DE.VER)	; print version
+	call	$HLHEX
+	pop	hl
+	pop	bc
+  endif ;DEBUG
+
+	ld	hl,(ix+DE.VER)	; only use version 1 files
+	dec	hl		; make it zero
+	ld	a,h		; is it zero?
+	or	l
+	jr	nz,rd_nxtd
+
+	ld	a,(ix+DE.NAME+8) ; don't allow 9-character names
+	cp	' '		;  (it must be a space)
+	jp	nz,rd_nxtd
+
+	ldw	hl,(ix+DE.INDX)	; get file inode number
+	ld	a,h
+	or	l		; is it zero?
+	jp	z,rd_nxtd	; yes, skip to next directory entry
+
+	ld	(idxrec),hl
+
+  if DBG_SRH and DEBUG
+	push	hl
+	push	bc
+	push	de
+	call	$PSTR
+	defb	'idxr=',0
+	pop	hl
+	push	hl
+	call	$HLHEX
+	pop	hl
+	ex	(sp),hl
+	push	hl
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+
+	call	IXREAD
+	jp	c,rd_end_dir	; error reading index is also the end
+
+  if DBG_SRH and DEBUG
+	push	hl
+	push	bc
+	call	$PSTR
+	defb	'idx',0
+	ld	hl,idxentry
+	ld	bc,IESZ
+	call	$DUMPM
+	pop	bc
+	pop	hl
+  endif ;DEBUG
+
+	ld	ix,idxentry	; is it a file?
+	ld	a,(ix+IE.ATTR)	; get the attributes
+	and	FA.FILE or FA.CTG ; a file or contiguous
+;	bit	FA.FILE,(ix+IE.ATTR)
+;	jp	nz,rd_nxtd	; no, read next dir entry
+	jp	z,rd_nxtd	; no, read next dir entry
+
+	ldw	hl,(ix+IE.LCNT)	; if link count is zero
+	ld	a,h		;  this file has been deleted
+	or	l
+	jp	z,rd_nxtd	; skip to next entry
+
+	ld	hl,(ix+IE.LBCN)
+	ld	de,127		; round last block byte count to upper
+	add	hl,de		;  CP/M record limit
+	add	hl,hl		; move top 3 bits of result (9..7)
+	ld	a,h		;  to 2..0
+	and	7
+	ld	e,a		; prepare for addition (D still = 0)
+	ld	hl,(ix+IE.USED) ; assume file has less than 65536 blocks
+	jr	z,sz_1
+	dec	hl		; don't count partially filled block (yet)
+sz_1:	xor	a
+	add	hl,hl		; multiply 512-byte blocks by 4
+	rla			;  to obtain number of 128-byte records
+	add	hl,hl		;   with result in AHL
+	rla
+	add	hl,de		; add records contained in last partial block
+	rla
+	ld	e,a		; result now in DEHL
+	ld	d,0
+
+	; DEHL now has the number of used sectors for this file.
+	; We can have up to 128 sectors (128-byte) per extent
+	; and extents range between 0 and 31 (32 of them), The
+	; maximum filesize is 65536 sectors (8M bytes), therefore
+	; we don't do larger than 65535 sectors (i.e. quit if the
+	; high 16-bits of the size is not zero).
+	ld	(dirfsize),hl	; save low 16-bits
+	ld	a,d		; is high 16-bits non-zero?
+	or	e
+	jp	nz,rd_nxtd	; yes, silently ignore huge files
+
+rd_more:
+  if DBG_SRH and DEBUG
+	call	$PSTR
+	defb	'size=',0
+	ld	hl,(dirfsize)
+	call	$HLHEX
+  endif ;DEBUG
+
+	call	getdptra	; point DE to directory sector
+	ld	(hl),0		; file is in user area 0
+	inc	hl
+	ex	de,hl
+	ld	hl,direntry+DE.NAME
+	ld	bc,8		; copy filename (8-chars)
+	ldir
+	inc	hl		; skip 9th char
+	ld	bc,3		; then extension (3-chars)
+	ldir
+	; DE now points to the extent byte
+	ld	hl,(dirfsize)	; get file size in sectors to HL
+	ld	bc,(exsiz)
+	inc	bc
+	cpw	hl,bc		; is it less than a full extent?
+	jr	c,rd_single	; yes - only a single extent left
+
+	ld	a,(extent)	; copy extent byte
+	ld	bc,(exsiz)	; record count is one full extent
+	sbc	hl,bc		; subtract extent sectors (note CY clear)
+	ld	(dirfsize),hl	; save for next extent
+	call	rd_store	; store extent and record count
+	inc	(extent)	; increment extent
+	jr	rd_next
+
+rd_single:
+	ld	a,(extent)	; get extent
+	ld	c,l		; get remaining sectors
+	ld	b,h
+	call	rd_store	; store extent and record count
+	ldw	(dirfsize),0	; clear size of file
+
+rd_next:
+  if DBG_SRH and DEBUG
+	call	$PSTR
+	defb	'entry',0
+    if 1
+	call	getdptra	; print out directory entry
+	ld	bc,dirlen
+    else
+	ld	hl,(buffa)
+	ld	bc,128
+    endif
+	call	$DUMPM
+	call	$TTGC
+	cp	'Q'
+	jp	z,$EXIT
+  endif ;DEBUG
+
+	ld	a,(dptr)	; point to next dir entry
+	add	dirlen		;  (add 32)
+	and	7Fh		; mask to 7-bit within a sector
+	ld	(dptr),a
+	jp	nz,rd_dir	; do next entry
+
+	ret			; done if dptr is zero
+
+; Store extent, record count and a fake block alloc map (for STAT and
+; SDIR) in the fake directory entry. On input, DE points to the extent
+; byte in directory entry, A contains extent and BC the record count
+; for this extent.
+rd_store:
+	push	bc		; save record count
+	push	de		; save pointer
+	ld	l,a
+	ld	h,0
+	call	shift_extent	; HL = extent SHL extmsk
+	ex	de,hl
+	rl	c		; shift 7th bit of rc
+	rl	b		;  into overflow byte of rc
+	srl	c		; restore rc
+	ld	a,c
+	or	a
+	jr	nz,rd_s1
+	dec	b		; adjust if remainder is zer0
+	ld	c,80h
+rd_s1:	ld	a,e
+	or	b
+	ld	e,a		; DE = logical extent number
+	pop	hl		; pop pointer to dir entry into HL
+	ld	a,e
+	and	maxext
+	ld	(hl),a		; store low bits of extent
+	inc	hl
+	ld	(hl),0		; clear s1
+	inc	hl
+	ex	de,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	ld	(hl),d		; store excess into s2
+	inc	hl
+	ld	(hl),c		; store rc
+	ex	de,hl
+
+	inc	de		; point to start of alloc block map
+	pop	bc		; pop record count
+	ld	hl,(blkmsk)
+	ld	h,0
+	add	hl,bc		; round to upper block limit
+	ld	a,(blkshf)
+	call	shrhl		; divide by records/block
+	ld	b,l		; result into B
+	ld	c,8+1		; we know we have a large disk (16-bit blk#)
+	ex	de,hl		; get FCB dmap address into HL
+	ld	de,(bcnt)
+rd_s2:	ldw	(hl),de		; store block number
+	inc	hl		; advance to next field
+	inc	hl
+	inc	de
+	dec	c
+	djnz	rd_s2		; loop
+	ld	(bcnt),de	; remember block number for next file
+	dec	c		; dir entry full?
+	ret	z		; yes
+	ld	b,c
+	ld	de,0
+rd_s3:	ldw	(hl),de		; else clear the remaining fields
+	inc	hl
+	inc	hl
+	djnz	rd_s3
+	ret
+
+;*******************************************************************
+; BDOS call (function 19) delete file
+;
+; On entry: IY -> pointer to FCB
+
+delete:
+	; TODO:
+	; - check for file open?
+
+	call	getname		; convert CP/M FCB to RSX280 FDB
+	push	hl
+	ld	a,(iy+fcbdrive)
+	ld	de,FDB_F1
+	call	SETDIR
+	pop	hl
+	call	_unlink
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jp	z,ret255
+	jp	ret_hl_0
+
+;*******************************************************************
+; BDOS call (function 20) read file sequential
+;
+; On entry: IY -> pointer to FCB
+
+readfile:
+	call	GETFIL		; get file entry into IX
+	jp	c,ret255
+
+	push	iy
+	pop	hl
+	call	compute_cr	; get CP/M record number from FCB fields
+	call	read128		; read sector to dmaadr
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jr	z,r_eof
+	ld	a,c		; all 128 bytes read?
+	or	a
+	jr	z,ret_hl_1	; none read - is EOF
+	cp	128
+	jr	nc,r_ok		; yes
+
+	ld	hl,(dmaadr)	; no, only partial record
+	add	hl,bc
+	ld	(hl),CTRLZ	; add an end-of-file marker
+r_ok:
+	call	next_record	; bump sequential record number
+	jp	ret_hl_0	; no errors
+
+r_eof:
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'EOF-I-Reading File ID='
+	ldw	hl,(iy+fcbid)
+	call	$HLHEX
+  endif ;DEBUG
+	ld	a,(errno)
+	cp	E.EOF		; is it end-of-file?
+	jp	nz,ret255
+ret_hl_1:
+	ld	hl,1		; yes
+	ret
+
+next_record:
+	ld	a,(iy+fcbcr)
+	inc	a
+	ld	(iy+fcbcr),a
+	cp	128
+	ret	c
+	ld	(iy+fcbcr),0
+	ld	a,(iy+fcbex)
+	inc	a
+	ld	(iy+fcbex),a
+	cp	32
+	ret	c
+	ld	(iy+fcbex),0
+	ld	a,(iy+fcbs2)
+	rla			; "unmodified" bit to carry
+	inc	a		; inc doubled value
+	inc	a
+	rra			; restore value and shift bit back in
+	ld	(iy+fcbs2),a
+	ret
+
+;*******************************************************************
+; BDOS call (function 21) write file sequential
+;
+; On entry: IY -> pointer to FCB
+
+writefile:
+	call	GETFIL		; get file entry into IX
+	jp	c,ret255
+
+	push	iy
+	pop	hl
+	call	compute_cr	; compute record number
+	call	write128	; write sector from dmaadr to disk
+	ld	h,b
+	ld	l,c
+	cpw	hl,128
+	jp	nz,ret255
+
+	call	next_record	; bump sequential record number
+wr_success:
+	res	7,(iy+fcbs2)	; reset "unmodified file" bit in S2
+	jp	ret_hl_0
+
+;*******************************************************************
+; CPM bdos call (function 22) make (create) a file
+;
+; On entry: IY -> pointer to FCB
+
+makefile:
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'BDOS-MAKEFILE',0
+	call	dumpfcb
+  endif ;DEBUG
+
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'CREAT-I-file ',0
+	push	hl
+	call	$PRFCB
+	pop	hl
+  endif ;DEBUG
+
+	; just call _open
+	ld	c,flag_w	; open for Write will create
+	call	_open		;  a new file (a new version)
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jp	z,ret255
+	ret
+
+;*******************************************************************
+; BDOS call (function 23) rename file
+;
+; On entry: IY -> pointer to FCB
+;
+; The first filename at fcb.name is renamed to the one given
+; at fcb.dm (16 byte offset).
+
+rename:
+	push	iy		; save pointer to CP/M FCB
+  if DBG_FIO and DEBUG
+	call	dumpfcb
+  endif ;DEBUG
+	ld	a,16
+	add	iy,a		; point to the new name
+	call	getname		; convert CP/M FCB to RSX280 FDB
+	ld	hl,FDB_F1
+	ld	de,FDBNEW	; copy to the new name FDB
+	ld	bc,FINFSZ
+	ldir
+;**TODO we should do a lookup to get the highest version number
+	pop	iy		; restore IY and now the old name
+	call	getname		; convert CP/M FCB to RSX280 FDB
+	ld	hl,FDB_F1
+	ld	de,FDBOLD
+	ld	bc,FINFSZ
+	ldir
+
+;**TODO same as above - should lookup to get version number
+	ld	ix,FDBOLD
+	ld	hl,1
+	ldw	(ix+F.VER),hl
+	ld	(ix+F.ATTR),a	; filename, ext and vers valid
+	ld	a,FN.NAME or FN.EXT or FN.VER
+	ld	(ix+F.ATTR),a	; filename and ext are valid
+	ld	a,(iy+fcbdrive)
+	ld	de,FDBOLD
+	call	SETDIR
+
+	ld	ix,FDBNEW
+	ld	hl,1
+	ldw	(ix+F.VER),hl
+	ld	a,FN.NAME or FN.EXT or FN.VER
+	ld	(ix+F.ATTR),a	; filename and ext are valid
+	ld	a,(iy+fcbdrive)
+	ld	de,FDBNEW
+	call	SETDIR
+
+	ld	de,(FDBOLD+F.DEV) ; use old device name
+	ld	a,(FDBOLD+F.UNIT)
+	ld	c,a
+	ld	b,LUN_SY
+     	sc	.ALUN		; assign LUN to do the rename
+	jr	c,rn_err
+
+rn_3:
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'RENAME-I-from "',0
+	ld	hl,oldnam
+	call	$MSGHL
+	call	$PRINT
+	defb	'" to "',0
+	ld	hl,newnam
+	call	$MSGHL
+	call	$PRINT
+	defb	'"',0
+    if 0
+	ld	hl,FDBOLD
+	call	dumpfdb
+	ld	hl,FDBNEW
+	call	dumpfdb
+    endif
+  endif ;DEBUG
+
+	ld	hl,qrenam
+	SC	.QIO		; do the rename
+	jr	c,rn_err
+	ld	a,(FIOSB)
+	or	a
+	jr	nz,rn_err
+
+	ld	hl,0
+	or	a
+	ret	z
+
+rn_err:
+	ld	(errno),a
+  if DBG_ERR and DEBUG
+	push	af
+	call	$PSTR
+	defb	'RENAME-E-Error=',0
+	pop	af
+	call	$AHEX
+  endif ;DEBUG
+	ld	hl,-1
+	ret
+
+;*******************************************************************
+; BDOS call (function 24) get login vector
+
+get_dlog:
+	ld	hl,(dlog)
+	ret
+
+;*******************************************************************
+; BDOS call (function 25) get current disk
+
+current_disk:
+	ld	hl,(cpmddr)
+	ld	h,0
+	ret
+
+;*******************************************************************
+; BDOS call (function 26) set DMA address
+
+set_dma:
+	ld	(dmaadr),iy
+	ret
+
+;*******************************************************************
+; BDOS call (function 27) get allocation vector
+
+get_alv:
+	ld	hl,(alloca)
+	ret
+
+;*******************************************************************
+; BDOS call (function 31) get address of disk parameter block
+
+get_dpba:
+	ld	hl,dpb
+	ret
+
+;*******************************************************************
+; BDOS call (function 33) read random
+
+readrandom:
+	call	GETFIL		; get file entry into IX
+	jp	c,ret255
+
+	ldw	bc,(iy+fcbran)
+	ld	a,(iy+fcbranh)
+	call	read128		; read CP/M record to dmaadr
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jp	z,ret_err
+	call	set_seq_pos
+	ld	h,b		; bytes read to HL
+	ld	l,c
+	ld	a,l
+	cp	128		; nread < 128
+	jr	nc,ret_hl_0
+	jp	ret_hl_1	; EOF
+ret_hl_0:
+	ld	hl,0
+	ret
+
+ret_err:
+	ld	a,(errno)
+	cp	E.EOF
+	jp	z,ret_hl_1
+	jp	ret255
+
+set_seq_pos:
+	ld	hl,(iy+fcbran)
+	ld	a,l
+	and	7Fh
+	ld	(iy+fcbcr),a
+	add	hl,hl
+	rl	e		; save high bit
+	ld	a,h
+	and	1Fh
+	ld	(iy+fcbex),a	; store extent
+	ld	a,h
+	rr	e
+	rra			; shift high bit back in
+	rra			; now shift extent overflow bits into position
+	rra
+	rra
+	rra
+	and	0Fh
+	ld	e,a
+	ld	a,(iy+fcbs2)
+	and	80h
+	or	e
+	ld	(iy+fcbs2),a	; store s2
+	ret
+
+;*******************************************************************
+; BDOS call (function 34) write random
+
+writerandom:
+	call	GETFIL		; get file entry into IX
+	jp	c,ret255
+
+	ldw	bc,(iy+fcbran)
+	ld	a,(iy+fcbranh)
+	call	write128	; set FCB record pos and write record
+	call	set_seq_pos
+	ld	h,b
+	ld	l,c		; bytes written to HL
+	cpw	hl,128
+	jp	nz,ret255
+	jp	wr_success
+
+;*******************************************************************
+; BDOS call (function 35) compute file size
+;
+; On entry: IY -> FCB Address
+
+comp_filesize:
+	call	search_setup	; setup FCB and open directory
+	jp	c,sf_err
+
+	ld	c,fcbex		; Search up to the extent field
+	call	search
+	ld	de,0		; Zero the random record number
+	ldw	(iy+fcbran),de	;  (24-bit) in the FCB
+	ld	(iy+fcbranh),e
+getsize:
+	call	end_of_dir	; Have we reached the end
+	ret	z		; Yes - done
+	call	getdptra	; Point HL to directory entry
+	call	compute_rr	; compute random records to BC
+	ld	e,a		; save possible carry
+	ld	a,c
+	sub	(iy+fcbran)	; compare with random record
+	ld	a,b
+	sbc	a,(iy+fcbran+1)
+	ld	a,e
+	sbc	a,(iy+fcbranh)
+	jr	c,getnextsize	; Carry if ran > directory
+	ld	(iy+fcbranh),e
+	ldw	(iy+fcbran),bc
+getnextsize:
+	call	searchn
+	jr	getsize
+
+; Compute current record to BC
+
+compute_cr:
+	ld	de,fcbcr	; offset to current-record
+	jr	c1		; continue via common code
+
+; Compute random records to BC
+
+compute_rr:
+	ld	de,fcbrc	; offset to record-count
+c1:	ex	de,hl
+	add	hl,de
+	ld	c,(hl)		; fetch rc (0..127)
+	ld	b,0
+	ld	hl,fcbex	; point to extent offset
+	add	hl,de
+	ld	a,(hl)		; get extent (0..31)
+	rrca			; get low bit
+	and	80h		;  into MSB
+	add	a,c		; add to rc
+	ld	c,a
+	ld	a,0
+	adc	a,b		;  with carry
+	ld	b,a
+	ld	a,(hl)		; get extent again
+	rrca			; drop low bit (already added to rc)
+	and	0Fh		; remainder is 0..15
+	add	a,b		; add to high byte of record-count
+	ld	b,a
+	ld	hl,fcbmodnum
+	add	hl,de		; point to S2 byte (0..15..31)
+	ld	a,(hl)
+	add	a,a		; get it into high nibble
+	add	a,a
+	add	a,a
+	add	a,a
+	push	af		; save possible carry
+	add	a,b		; add to total record count
+	ld	b,a
+	push	af		; possible second carry
+	pop	hl
+	ld	a,l
+	pop	hl
+	or	l
+	and	01h		; carry out is in bit 0 of A
+	ret
+
+;*******************************************************************
+; BDOS call (function 36) set random record. Max file length 8192 K
+;
+; On entry: IY -> pointer to FCB
+
+setrandom:
+	;** We ignore high 8 bits of record number (always zero)
+	push	iy
+	pop	hl
+	call	compute_cr
+	ldw	(iy+fcbran),bc
+	ld	(iy+fcbranh),a
+	ret
+
+;*******************************************************************
+; BDOS call (function 37) reset drive
+
+reset_drive:
+	ld	hl,(arg)	; argument is a drive vector
+	dec	hl		; (only 1 drive A: - bit 0)
+	ld	a,h
+	or	l
+	jp	nz,ret_hl_0	; not drive A: - just return zero
+	; A and HL is zero
+	ld	(logged),a	; Flag Drive A: idle (not logged in)
+	ret
+
+	page
+	subttl	Internal emulator routines
+;*******************************************************************
+; read 128 bytes to (dmaadr)
+;
+; Called with IX = FTABLE entry, IY = CP/M FCB address
+; ABC = record number.
+
+; Under RSX280 - returns bytes read in BC and status in HL
+; (0=no errors, -1=error with reason in errno variable)
+; Also Carry flag is set on error.
+
+read128:
+	push	ix
+	ld	ix,qread
+	call	SETREC		; set block, offset and length in QIO structure
+	pop	ix
+
+    if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'READ-I-LUN=',0
+	ld	a,(ix+F_LUN)
+	call	$AHEX
+	call	$PRINT
+	defb	' into ',0
+	ld	hl,(dmaadr)
+	call	$HLHEX
+	call	$CRLF
+    endif ;DEBUG
+
+	ld	hl,(dmaadr)	; point to buffer
+	ld	a,(ix+F_LUN)	; get LUN
+	call	READF		; read sector
+	; number of bytes read is returned in BC, CY set on error
+	ld	hl,0		; no error status
+	ret	nc		; done
+	ld	(errno),a	; put error code into errno
+	dec	hl		; -1 = error
+	ret			; Carry still set
+
+;*******************************************************************
+; write 128 bytes
+;
+; Returns bytes written in BC
+
+write128:
+	push	ix
+	ld	ix,qwrite
+	call	SETREC		; set block, offset and length in qwrite
+	pop	ix
+
+	ld	hl,(dmaadr)	; point to buffer
+	ld	a,(ix+F_LUN)	; get LUN
+	call	WRITEF		; write sector
+	ld	hl,0		; no error status
+	ret	nc		; done
+	ld	(errno),a	; put error code into errno
+	dec	hl		; -1 = error
+	ret			; Carry still set
+	page
+	subttl	Emulator Control
+;*******************************************************************
+; CP/M Emulator set-up
+;
+; main(argc, argv)
+
+main::	ld	sp,bdos		; switch to local stack on top of TPA
+	xor	a
+	ld	(diropn),a	; directory not open
+	ld	(idxopn),a	; INDEXF.SYS not open
+	call	INILRU		; clear file access table
+
+	ld	hl,drvmap+3
+	ld	c,GD.TSK	; fetch the current directory
+	sc	.GDIR
+	jp	c,m1		; some problem, return error
+				; TODO: an error here should be fatal
+
+	ld	a,(hl)		; is there a current directory?
+	cp	' '
+	jr	nz,m2		; yes
+m1:	ex	de,hl
+;;	ld	hl,mdfn		; no - use master directory
+;;	ld	bc,9
+;;	ldir			; construct directory filename
+
+m2:	ld	ix,TTQ
+	call	qinit		; set-up terminal queue
+
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUN_TI
+	SC	.ALUN		; assign TI: to LUN_TI
+	call	ATTACH		; attach with ASTs
+	call	TTCLR		; clear output buffer
+
+	call	BANNER		; output banner and drive assignment map
+
+	ld	hl,0		; IOBYTE = 0, current drive = A:
+	ld	(cpmiob),hl	;  set both
+
+  if DEBUG and DBG_ODT
+	call	ODT$IN
+	ld	hl,0
+	add	hl,sp
+	ex	de,hl
+	ld	hl,$+6
+	call	ODT$
+  endif
+  if DEBUG eq FALSE
+	ld	hl,sstvt
+	SC	.SVTBL		; specify SST vector table
+  endif	;NOT DEBUG
+
+reentry:
+	; make BDOS and BIOS entry points
+	ld	a,0c3h
+	ld	(cpmwarm),a	; warm boot JP
+	ld	(cpmentry),a	; BDOS entry JP
+	ld	hl,warmboot
+	ld	(cpmwarm+1),hl
+	ld	hl,entry
+	ld	(cpmentry+1),hl
+
+	ld	c,13
+	call	entry		; reset BDOS
+
+getcmd:	call	$CRLF		; output prompt
+	ld	a,(cpmddr)
+	add	'A'
+	call	$TTOUT
+	ld	a,'>'
+	call	$TTOUT
+
+	ld	a,2		; cursor position
+	ld	(column),a
+	xor	a		; reset flag to allow console echo
+	ld	(compcol),a
+
+	ld	de,ttibuf	; point HL to input buffer text
+	ld	c,10
+	call	cpmentry	; read console buffer
+
+	ld	a,(hl)		; how many characters entered?
+	or	a
+	jr	z,getcmd	; none
+
+	inc	hl
+	ld	a,(hl)		; look for Ctrl-Z
+	cp	CTRLZ
+	jp	z,$EXIT		; yes, exit
+
+	call	getnb		; skip white-space
+	jr	z,getcmd	; Z means there was nothing
+	cp	CR		; EOL?
+	jr	z,getcmd
+
+	ex	ix,hl
+	ld	hl,COMFCB
+	call	fillfcb		; try to get a file name
+
+	ld	hl,COMFCB+1
+	ld	a,(hl)
+	cp	' '		; empty FCB?
+	jr	nz,m_3		; no
+	dec	hl
+	ld	a,(hl)
+	or	a		; drive specified?
+	jr	z,m_3		; no
+
+	dec	a
+	ld	e,a
+	ld	c,14
+	call	cpmentry	; else select drive
+	jp	getcmd
+
+m_3:	ld	hl,COMEXT
+	ld	de,COMFCB+fcbext
+	ld	bc,3
+	ldir			; add .COM file type
+
+	ld	de,COMFCB	; open the COM file
+	ld	c,15
+	call	cpmentry	; use BDOS calls
+	inc	a		; returns -1 on error
+	jr	nz,arg_5	; opened
+
+	ld	de,COMFCB
+	ld	a,2		; try disk B: (SY:[CPM])
+	ld	(de),a
+	ld	c,15		; open the COM file
+	call	cpmentry	; use BDOS calls
+	inc	a		; returns -1 on error
+	jr	nz,arg_5	; opened
+
+notfnd:
+	call	$CRLF
+	ld	hl,COMFCB+1	; not found
+	ld	b,8
+nf1:	ld	a,(hl)		; output file name
+	cp	' '
+	jr	z,nf2
+	call	$TTOUT
+	inc	hl
+	djnz	nf1
+nf2:	call	$PRINT		; followed by a '?'
+	defb	'?',CR,LF,0	;  for unknown command
+	jp	getcmd
+
+arg_5:	ld	de,tpa		; TPA address
+ldcom1:	push	de
+	ld	c,26		; set DMA address
+	call	cpmentry
+	ld	de,COMFCB
+	ld	c,20		; read sector into TPA
+	call	cpmentry
+	or	a
+	pop	de
+	jr	nz,ldcom2	; an error? (most likely end of file)
+	ld	hl,128
+	add	hl,de		; advance pointer
+	cpw	hl,bdos-256	; don't overwrite the BDOS or our stack
+	ccf
+	jr	c,ldcom2	; too big
+	ex	de,hl
+	jr	ldcom1		; next sector
+
+ldcom2:	ld	(topcom),de
+	push	af
+	ld	de,COMFCB
+	ld	c,16		; close file
+	call	cpmentry
+	pop	af
+	jr	nc,ldcom3
+	call	$PRINT
+	defb	'BAD LOAD',0
+	jr	notfnd		; error
+
+ldcom3:	; .COM file loaded
+	ld	hl,(topcom)
+	cpw	hl,tpa		; anything loaded?
+	jp	z,notfnd	; no - treat as an error [note: CP/M 2 allows
+				;       this, which can be used as a trick to
+				;        re-run a program already in the TPA]
+
+	; now set-up the CP/M default
+	; File Control Block at 005Ch
+	ex	ix,hl		; point to command tail
+	push	hl		; remember address
+	call	getnb		; skip blanks
+	ex	ix,hl
+	ld	hl,cpmfcb1	; point HL to first FCB area
+	call	fillfcb		; copy to FCB
+
+	ex	ix,hl
+	call	getnb
+	ex	ix,hl
+	ld	hl,cpmfcb2	; point HL to second FCB area
+	call	fillfcb		; copy to FCB
+
+	; Now copy the command tail to 0081h, store length into 0080h
+	pop	hl		; restore address of command tail
+	ld	de,cpmdma+1	; destination is default CP/M buffer
+	ld	c,0
+m_1:	ld	a,(hl)
+	call	UCASE		; uppercase and copy the command tail,
+	ld	(de),a		;  including the null terminator
+	or	a
+	jr	z,m_2
+	inc	hl
+	inc	de
+	inc	c
+	cp	0Dh
+	jr	nz,m_1
+m_2:	ld	a,c		; get length
+	ld	(cpmdma),a
+
+  if DBG_SRH and DEBUG
+	push	hl
+	call	dumppg0		; show page zero to see it's all OK
+	pop	hl
+  endif
+
+	ld	de,cpmdma
+	ld	c,26
+	call	cpmentry	; set default DMA address
+
+	call	crlf		; program starts on a new line
+
+	ld	sp,bdos		; set stack pointer to base of BDOS
+
+	; Program loaded - off we go!
+	ld	hl,getcmd	; push a return address
+	push	hl		; to return to the CPM X> prompt
+	jp	tpa		; start transient program
+
+;*******************************************************************
+; Login the default directory and build an allocation vector
+;
+login:	ld	hl,(dmaadr)	; save CP/M DMA address on stack
+	push	hl
+
+	ldw	(blocks),0	; zero block count
+	ld	hl,(alloca)
+	xor	a		; clear allocation vector
+	ld	b,a		;  (allocation vector is 256 bytes)
+lo_0:	ld	(hl),a
+	inc	hl
+	djnz	lo_0
+
+	call	compute_exsiz	; compute extent size
+	ld	(exsiz),hl
+
+	ld	hl,bufdir	; use directory sector buffer
+	ld	(dmaadr),hl	; set dma address
+	ld	iy,logfcb	; prepare to discover all
+	ld	(arg),iy	;  files in the current
+	call	search_first	;  directory
+	jr	lo_1
+
+log_next:
+	call	search_next
+
+lo_1:	ld	a,l		; directory entry pointer
+	cp	0FFh		; done
+	jr	z,log_it
+
+	mult	a,dirlen	; point HL to this directory
+	addw	hl,bufdir	;  entry
+	push	hl
+	pop	ix		; IX now points to entry
+	ld	a,(hl)		; Is it deleted file?
+	cp	empty
+	jr	z,log_next	; yes, next one please
+
+	ld	a,(ix+fcbrc)	; get the record count
+	ld	h,0
+	ld	l,a
+	ld	a,(blkmsk)
+	inc	a		; sectors per block
+	divu	hl,a		; divide to get number of blocks
+	push	af
+	ld	a,l		; check for remainder
+	or	a
+	jr	z,lo_2		; none
+	pop	af		; increment block count
+	inc	a
+	jr	lo_3
+lo_2:	pop	af
+lo_3:	ld	d,0
+	ld	e,a		; A has block count - > DE
+	ld	hl,(blocks)	; update total block count
+	add	hl,de
+	ld	(blocks),hl
+	jr	log_next	; next file
+
+log_it:	ld	a,1
+	ld	(logged),a
+	ld	de,0
+	ld	hl,(blocks)	; now build allocation vector
+	divuw	dehl,8		; calculate number of bytes in vector
+				;  to set, remainder in E (0..7)
+	ld	b,h
+	ld	c,l
+	ld	hl,(alloca)
+lo_4:	ld	a,b
+	or	c
+	jr	z,lo_5
+	ld	(hl),0FFh
+	inc	hl
+	dec	bc
+	jr	lo_4
+lo_5:	ld	a,e
+	or	a
+	jr	z,lo_7		; no remaining blocks
+	xor	a
+lo_6:	scf			; calculate 2**E
+	rra
+	dec	e
+	jr	nz,lo_6
+lo_7:	ld	(hl),a		; store into vector
+
+	pop	hl		; restore CP/M DMA address
+	ld	(dmaadr),hl
+
+	jp	ret_hl_0	; return success with HL = 0
+
+compute_exsiz:
+	ld	hl,128		; max rc value
+shift_extent:
+	ld	a,(extmsk)
+	or	a
+	ret	z
+ce_1:	add	hl,hl
+	dec	a
+	jr	nz,ce_1
+	ret
+
+;*******************************************************************
+;
+; int open(char *fcb,int flag)
+;
+; Open a file with the given CP/M name and access mode flag
+;
+; Input: IY = CP/M FCB address, C = file mode.
+;
+; Returns the LUN of the open file in HL (or -1 on error)
+;
+_open:
+	ld	(iy+fcbmode),c	; store file mode
+	call	NEWFIL		; get a new file table entry
+
+	call	_open1		; open/create the file
+	jr	nc,op_7
+
+	ld	c,a
+	ld	a,(iy+fcbmode)
+	cp	flag_rw		; failed, r/w mode?
+	ld	a,c
+	jr	nz,op_err	; no, return error
+	ld	(iy+fcbmode),flag_r
+
+	call	_open1		; else try opening the file in r/o mode
+	jr	c,op_err
+
+op_7:	ldw	hl,(ix+F_FID)
+	ldw	(iy+fcbid),hl	; save the file number
+	ld	(iy+fcbmagic),MAGIC ; make it magic (opened)
+
+	ld	hl,(FDB_F1+F.INODE)
+	ldw	(iy+fcbxid),hl
+	ld	hl,(FDB_F1+F.SEQNO)
+	ldw	(iy+fcbxid+2),hl
+
+	xor	a
+	ld	(iy+fcbcr),a
+ if 0
+	lda	hl,(iy+fcbex)	; now point HL to EX byte
+	ld	b,fcbid-fcbex	; B = count, A still 0
+op_4:	ld	(hl),a		; clear EX S1 S2 RC and
+	inc	hl		;  disk map bytes only up to
+	djnz	op_4		;   where we put the LUN
+ endif
+
+	ld	(iy+fcbs2),c	; set S2 flag according to mode
+
+op_ok:	ld	l,(ix+F_LUN)	; return the LUN of opened file
+	ld	h,0
+	or	a		; clear carry
+	ret
+
+op_err:	ld	(errno),a	; save RSX280 error in errno
+	ld	hl,-1
+	scf
+	ret
+
+; Reopen a file to resume a r/w operation. The file was previously
+; closed to make space in FTABLE and still is considered open by the
+; application.
+
+; Input: IY = CP/M FCB address, IX = new FTABLE entry
+
+_reopen:
+	ld	a,(iy+fcbmode)	; get old file mode
+	cp	flag_w		; write mode (new file)?
+	jr	nz,op_5		; no
+	ld	a,flag_rw	; else change it to r/w (file exists)
+	ld	(iy+fcbmode),a
+
+op_5:	call	_open1		; reopen the file
+	jr	c,op_err
+
+	ld	hl,(FDB_F1+F.INODE)
+	cpw	hl,(iy+fcbxid)	; ensure the file is still the same
+	jr	nz,op_6
+	ld	hl,(FDB_F1+F.SEQNO)
+	cpw	hl,(iy+fcbxid+2)
+	jr	z,op_ok
+
+op_6:	; the file was externally modified, this should be trated
+	; as a fatal error such as "media changed"
+
+	call	CLOSEF		; close the file and free FTABLE entry
+	xor	a
+	ld	(iy+fcbmagic),a
+	ld	l,a
+	ld	h,a
+	ld	(iy+fcbid),hl
+	jr	op_err
+
+_open1:
+	call	getname		; convert to RSX280 FDB
+	ld	a,(iy+fcbdrive)	; get CP/M drive code
+	ld	de,FDB_F1
+	call	SETDIR		; convert to RSX280 device and dir
+	ret	c
+
+	ld	a,(iy+fcbmode)	; is it an open for Read?
+	cp	flag_r
+	jr	z,op_2		; yes, open existing file
+	cp	flag_rw		; or Read/Write?
+	jr	z,op_3		; yes, open existing file
+
+	cp	flag_w		; are there other mode bits (other than WR)
+	jr	z,op_1
+	ld	a,E.BADOP	; we don't support them for now.
+	scf
+	ret
+
+op_1:	call	CREATF		; create a new file
+	ret	c
+	ld	c,00000000b	; reset "unmodified file" S2 bit
+	ret
+
+op_2:	call	OPENR		; open existing file
+	ret	c
+	ld	c,10000000b	; set "unmodified file" S2 bit
+	ret
+
+op_3:	call	OPENRW		; open existing file
+	ret	c
+	ld	c,10000000b	; set "unmodified file" S2 bit
+	ret
+
+;*******************************************************************
+; unlink(char *path)
+_unlink:
+    if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'UNLINK-I-Delete file "',0
+	push	hl
+	call	$MSGHL
+	pop	hl
+	call	$PRINT
+	defb	'"',0
+	scf
+    endif ;DEBUG
+
+	ld	de,FDBDEL	; copy filename
+	ld	bc,FINFSZ
+	ldir
+
+	ld	ix,FDBDEL
+	ld	hl,1
+	ldw	(ix+F.VER),hl
+	ld	a,(ix+F.ATTR)
+	or	FN.NAME or FN.EXT or FN.VER
+	ld	(ix+F.ATTR),a	; filename, ext and vers valid
+
+	ld	de,(FDBDEL+F.DEV)
+	ld	a,(FDBDEL+F.UNIT)
+	ld	c,a
+	ld	b,LUN_SY
+	sc	.ALUN		; assign the LUN
+	jr	c,ul_err
+
+	ld	hl,qdel
+	SC	.QIO		; do the delete
+	jr	c,ul_err
+	ld	a,(FIOSB)
+	or	a
+	jr	nz,ul_err
+	ld	hl,0
+	or	a
+	ret	z
+
+ul_err:	ld	(errno),a
+	ld	hl,-1
+	ret
+
+;*******************************************************************
+; Init FDB fields. Called with IX = FDB address.
+
+INIFDB:	xor	a
+	ld	(ix+F.ATTR),a	; clear field mask
+	ld	(ix+F.DEV),'S'	; set default device and unit
+	ld	(ix+F.DEV+1),'Y'
+	ld	(ix+F.UNIT),a
+	ld	b,9
+	push	ix
+ini1:	ld	(ix+F.DIR),' '	; clear directory
+	ld	(ix+F.NAME),' '	; and file name
+	inc	ix
+	djnz	ini1
+	pop	ix
+	ld	b,3
+	push	ix
+ini2:	ld	(ix+F.EXT),' '	; clear extension
+	inc	ix
+	djnz	ini2
+	pop	ix
+	ld	(ix+F.VER),a	; clear version
+	ld	(ix+F.VER+1),a
+	ld	(ix+F.WLDC),a	; clear wildcard mask
+	ret
+
+; Set RSX280 device and directory in FDB_F1 according to the FCB disk code.
+; Called with A = disk code, DE = FDB address.
+
+SETDIR:	call	set_1		; index into map table
+	ret	c
+	ld	bc,3+9		; copy device name, unit number and directory
+	ld	a,FN.DEV OR FN.DIR
+	jr	set_3
+
+; Same as above, but set only device and unit. Returns HL pointing to
+; directory name.
+
+SETDEV:	call	set_1		; index into map table
+	ret	c
+	ld	bc,3		; copy only device name and unit number
+	ld	a,FN.DEV
+set_3:	push	de
+	ex	de,hl
+	addw	hl,F.DEV	; point to F.DEV field
+	ex	de,hl
+	ldir			; copy bytes
+	ex	(sp),hl
+	ld	de,F.ATTR
+	add	hl,de
+	or	(hl)
+	ld	(hl),a		; set valid field bits
+	pop	hl
+	ret			; note carry is clear
+
+set_1:	or	a		; default disk?
+	jr	nz,set_2	; no, use it
+	ld	a,(cpmddr)	; else fetch default disk code
+	and	0Fh		; strip user area bits
+	inc	a		; make it base 1
+set_2:	dec	a
+	cp	2		; ensure is within limits
+	ccf
+	ret	c		; else (TODO) bomb with a 'Select' error
+	mult	a,3+9
+	ld	bc,drvmap
+	add	hl,bc		; index into drive map table
+	ret			; note Carry is clear
+
+; Open a file for read, assumes FDB_F1 has been setup.
+; Called with IX = FTABLE entry.
+
+OPENR:	call	CLOSEF		; just in case
+	ld	de,(FDB_F1+F.DEV)
+	ld	a,(FDB_F1+F.UNIT)
+	ld	c,a
+	ld	b,(ix+F_LUN)
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	a,b		; set LUN in QIO block
+	ld	(qopenr+Q.LUN),a
+	ld	hl,qopenr
+opne0:	SC	.QIO		; open file for read
+	ret	c
+	ld	a,(FIOSB)
+	or	a
+	scf
+	ret	nz
+	ld	hl,(nxtfid)
+	ldw	(ix+F_FID),hl	; success
+	inc	hl
+	ld	(nxtfid),hl
+	ld	a,b
+	ld	(qrattr+Q.LUN),a
+	ld	hl,qrattr
+	SC	.QIO		; read attributes
+	jr	c,opne1
+	ld	a,FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	ld	(FDB_F1+F.ATTR),a ; now we have all bits
+	ld	a,(FIOSB)
+	or	a
+	ret	z
+opne1:	push	af
+	call	CLOSEF
+	pop	af
+	ret
+
+; Open file for read and write, assumes FDB_F1 has been setup.
+; Called with IX = FTABLE entry.
+
+OPENRW:	call	CLOSEF		; just in case
+	ld	de,(FDB_F1+F.DEV)
+	ld	a,(FDB_F1+F.UNIT)
+	ld	c,a
+	ld	b,(ix+F_LUN)
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	a,b		; set LUN in QIO block
+	ld	(qopenw+Q.LUN),a
+	ld	hl,qopenw
+	jr	opne0		; continue via common code
+
+; Create file, assumes FDB_F1 has been setup
+; Called with IX = FTABLE entry.
+
+CREATF:	call	CLOSEF		; just in case
+	ld	de,(FDB_F1+F.DEV)
+	ld	a,(FDB_F1+F.UNIT)
+	ld	c,a
+	ld	b,(ix+F_LUN)
+	SC	.ALUN		; assign LUN
+	ret	c
+	ld	a,b		; set LUN in QIO block
+	ld	(qcreat+Q.LUN),a
+	ld	hl,qcreat
+	jr	opne0		; continue via common code
+
+; Close file. Called with IX = FTABLE entry.
+
+CLOSEF:	ldw	hl,(ix+F_FID)	; paranoia check
+	ld	a,h		; is the file open?
+	or	l
+	ret	z		; no, return
+	ld	de,(nxtfid)
+	dec	de		; same as last used file ID?
+	cpw	hl,de
+	jr	nz,cls1
+	ld	(nxtfid),hl	; yes, reuse it
+cls1:	ld	hl,0
+	ldw	(ix+F_FID),hl	; clear file ID in table entry
+	ld	a,(ix+F_LUN)	; set LUN in QIO block
+	ld	(qclose+Q.LUN),a
+	ld	hl,qclose
+	SC	.QIO		; and close file
+	ret	c		; error, queue failed
+	ld	a,(FIOSB)	; check result code
+	or	a		; success?
+	ret	z		; yes
+	scf			; no, return with Carry set
+	ret
+
+; Convert 128-byte CP/M record number to 512-byte disk block and offset
+; in QIO block.
+; Record number in ABC, QIO block address in IX.
+
+SETREC:	ld	e,a		; record number now in EBC
+	ld	a,c
+	and	3		; 4 CP/M records in a block
+	rrca
+	rrca			; *64
+	ld	l,a
+	ld	h,0
+	add	hl,hl		; *128
+	ldw	(ix+Q.OFS),hl	; offset
+	srl	e
+	rr	b
+	rr	c
+	srl	e
+	rr	b
+	rr	c		; /4
+	ld	d,0
+	ldw	(ix+Q.BLK),bc	; blkno
+	ldw	(ix+Q.BLK+2),de
+	ld	hl,128
+	ldw	(ix+Q.LEN),hl	; len
+	ret
+
+; Read disk data. Called with destination buffer address in HL and LUN
+; in A. Assumes Q.BLK, Q.OFS and Q.LEN have been set in QIO structure.
+; Returns number of bytes read in BC, Carry set on error.
+
+READF:	ld	(qread+Q.LUN),a	; store LUN
+	ld	(qread+Q.BUF),hl; store buffer address in QIO block
+	ld	hl,qread	; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	bc,0
+	ret	c		; return if queuing failed
+	ld	a,(FIOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	bc,(FIOSB+2)	; return number of bytes read in BC
+	xor	a		; clear Carry to indicate success
+	ret
+
+; Write data to disk.
+; Assumes Q.BLK, Q.OFS and Q.LEN have been set in QIO structure.
+; Called with buffer address in HL and LUN in A.
+; Returns number of bytes written in BC, Carry set on error.
+
+WRITEF:	ld	(qwrite+Q.LUN),a  ; store LUN
+	ld	(qwrite+Q.BUF),hl ; store buffer address in QIO block
+	ld	hl,qwrite	; load address of QIO block
+	SC	.QIO		; queue operation
+	ld	bc,0
+	ret	c		; return if queuing failed
+	ld	a,(FIOSB)	; check result code
+	or	a		; success?
+	scf
+	ret	nz		; no, return with Carry set
+	ld	bc,(FIOSB+2)	; return number of bytes written in DE
+	xor	a
+	ret
+
+; Open system file (directory or index).
+; Called with HL = FDB of system file to open, and C = LUN
+
+OPNSYS:	push	hl
+	call	CLOSYS		; just in case
+	pop	hl
+	ld	(qopsys+Q.P1),hl
+	ld	de,F.DEV
+	add	hl,de
+	ld	a,c
+	ld	(qopsys+Q.LUN),a
+	ld	b,c
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	c,(hl)
+	SC	.ALUN
+	ret	c
+	ld	hl,qopsys
+	SC	.QIO		; open index file
+	ret	c
+	ld	a,(FIOSB)
+	or	a
+	ret	z
+	scf
+	ret
+
+; Close system file (directory or index).
+
+CLOSYS:	ld	a,c		; set LUN
+	ld	(qclsys+Q.LUN),a
+	ld	hl,qclsys
+	SC	.QIO		; and close file
+	ret			; don't care about errors
+
+; Read index file entry. Called with 1-based entry number in HL
+
+IXREAD:	ld	a,h
+	or	l
+	ld	a,E.INV
+	scf
+	ret	z
+	ld	de,IESZ		; read only a single entry
+	ld	(qread+Q.LEN),de
+	dec	hl
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	e,h
+	and	1Fh
+	ld	d,a		; DE = inode / 8 = relative block number
+	ld	(qread+Q.BLK),de
+	ld	h,0
+	add	hl,hl		; HL = (inode % 8) * 64 = offset within block
+	ld	(qread+Q.OFS),hl
+	ld	hl,0
+	ld	(qread+Q.BLK+2),hl
+	ld	hl,idxentry	; dest buffer
+	ld	a,LUN_IX	; LUN
+	jp	READF		; read entry and return
+
+; Read directory entry. Called with entry number in HL.
+
+DREAD:	ld	de,DESZ
+	ld	(qread+Q.LEN),de
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	add	hl,hl
+	rla
+	ld	e,h		; DE = entry / 32 = relative block number
+	and	07h
+	ld	d,a
+	ld	(qread+Q.BLK),de
+	ld	h,0
+	add	hl,hl		; HL = (entry % 32) * 15 = offset within block
+	ld	(qread+Q.OFS),hl
+	ld	hl,0
+	ld	(qread+Q.BLK+2),hl
+	ld	hl,direntry	; dest buffer
+	ld	a,LUN_D		; LUN
+	jp	READF		; read entry and return
+
+; Init FTABLE LRU list.
+
+INILRU:	ld	ix,FTABLE
+	ld	(ftop),ix
+	ld	b,NFILES-1
+	ld	c,LUN_F1
+ini_1:	lda	hl,(ix+FTSIZE)	; point to next entry
+	ldw	(ix+F_LNK),hl	; chain entries in a single-linked list
+	ld	de,0
+	ldw	(ix+F_FID),de
+	ld	(ix+F_LUN),c
+	inc	c		; next LUN
+	ex	ix,hl
+	djnz	ini_1		; loop
+	ldw	(ix+F_LNK),de	; last entry
+	ldw	(ix+F_FID),de
+	ld	(ix+F_LUN),c
+	inc	de
+	ld	(nxtfid),de	; first file ID = 1
+	ret
+
+; Find file ID in FTABLE LRU list. Returns with CY set if the file is
+; not in the list. Called with HL = file ID
+
+FNDFIL:	ld	ix,(ftop)
+	ld	b,NFILES
+ff_1:	cpw	hl,(ix+F_FID)
+	ret	z
+	ldw	ix,(ix+F_LNK)
+	djnz	ff_1
+	scf
+	ret
+
+; Find file ID in FTABLE LRU list. If the file is not present, then the
+; LRU one is closed, the entry is reassigned to the file which is in turn
+; reopened. Called with IY = CP/M FCB address, returns IX = FTABLE entry.
+
+GETFIL:	ld	a,(iy+fcbmagic)
+	cp	MAGIC		; ensure file is open
+	scf
+	ret	nz
+	ldw	hl,(iy+fcbid)	; get file ID
+	ld	a,h		; ensure is valid
+	or	l
+	scf
+	ret	z
+	ld	ix,ftop		; get pointer to head of list
+	push	ix		; push prev pointer
+	ldw	ix,(ix)		; get address of first entry in list
+gf_1:	cpw	hl,(ix+F_FID)	; this one?
+	jr	z,gf_2		; yes, move it to top and return
+	ldw	de,(ix+F_LNK)	; get address of next entry
+	ld	a,d		; end of chain?
+	or	e
+	jr	z,gf_3		; yes
+	ex	(sp),ix		; push new prev, discard old
+	ld	ixl,e
+	ld	ixh,d		; next entry
+	jr	gf_1		; loop to process it
+
+gf_2:	pop	hl		; pop prev pointer
+	jp	relink		; move entry to top of list
+
+gf_3:	pop	hl		; cleanup stack
+	call	NEWFIL		; get a free entry
+	ldw	hl,(iy+fcbid)
+	ldw	(ix+F_FID),hl	; assign file to this entry
+	ld	c,(iy+fcbmode)
+	call	_reopen		; reopen the file
+	inc	hl
+	ld	a,h
+	or	l
+	ret	nz
+	scf
+	ret
+
+; Get a free FTABLE entry. If none is available (all possible files are
+; open), then the LRU one is closed, the entry freed, linked to top and
+; returned.
+; Returns IX = FTABLE entry.
+
+NEWFIL:	ld	ix,ftop		; get pointer to head of list
+	push	ix		; push prev
+	ldw	ix,(ix)		; get address of first entry in list
+new_1:	ldw	hl,(ix+F_FID)
+	ld	a,h
+	or	l		; is this entry free?
+	jr	z,new_2		; yes, return it
+	ldw	hl,(ix+F_LNK)
+	ld	a,h		; no, is this the last entry (LRU)?
+	or	l
+	jr	z,new_2		; yes
+	ex	(sp),ix		; push new prev, discard old
+	ex	ix,hl		; next entry
+	jr	new_1		; loop to process it
+
+new_2:	pop	hl		; pop prev
+	call	relink		; move entry to top of list
+	call	CLOSEF		; close old file on this LUN and free entry
+	;jr	c,...		; TODO: an error here should be fatal
+	ret
+
+relink:	; move entry to the top of list
+	; here with IX = entry, HL = prev
+	ldw	bc,(ix+F_LNK)
+	ldw	(hl),bc		; unlink the entry
+	ld	hl,(ftop)
+	ld	(ix+F_LNK),hl	; and move it to the top of the list
+	ld	(ftop),ix	; store new top of table
+	ret			; return success
+	page
+	subttl	BIOS
+	cseg
+
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+
+  if tobios and 8000h		; negative (sign bit on)
+    if2
+	.printx /*** ERROR: BDOS area overflowed into BIOS area ***/
+    endif
+  else
+	defs	tobios
+  endif
+
+;*******************************************************************
+;
+; The BIOS jump table.
+
+bios::	jp	_boot		;0 Cold Boot
+warmboot:
+	jp	done		;1 Warm Boot
+	jp	_conist		;2 Console Input Status
+	jp	_conin		;3 Console Input
+	jp	_conout		;4 Console Output
+	jp	dummy		;5 List Output
+	jp	dummy		;6 Punch Output
+	jp	_rdreof		;7 Reader Input
+	jp	dummy		;8 Home
+	jp	_seldsk		;9 Select Disk
+	jp	dummy		;10 Set Track
+	jp	dummy		;11 Set Sector
+	jp	dummy		;12 Set DMA Transfer Address
+	jp	dummy		;13 Read Sector
+	jp	dummy		;14 Write Sector
+	jp	dummy		;15 List Output Status
+	jp	dummy		;16 Sector Translate
+
+;*******************************************************************
+;
+; BIOS console input
+_conin:
+	jp	$TTGC		; get a character into A
+
+; BIOS console output
+_conout:
+	ld	a,c
+	jp	writechar
+
+; BIOS console input status
+_conist:
+	call	char_avail
+	ld	a,h
+	or	l
+	ret	z		; no char available
+	ld	a,0ffh
+	ret
+
+; BIOS reader input
+_rdreof:
+	ld	a,CTRLZ		; always end-of-file
+	ret
+
+; BIOS select disk
+_seldsk:
+	ld	hl,0		; assume error return value
+	ld	a,(numdrv)
+	dec	a
+	cp	c		; valid drive?
+	ret	c		; no, error
+	multu	a,16
+	ld	de,dph0
+	add	hl,de
+	ret
+
+; Dummy routine for unsupported BIOS calls
+dummy:
+	ld	hl,biosmsg
+	call	$MSGHL
+
+	; fall through
+
+; end of program run
+done:
+	;Prompt for next CP/M program
+	ld	sp,bdos		; back to our stack
+	call	$FLUSH
+
+  if DEBUG and NOT DBG_ODT
+	call	$PSTR
+	defb	'CPM-I-Program exit',CR,LF,0
+  endif ;DEBUG
+	call	close_all
+	jp	reentry		; go and get next emulator command
+
+; Privileged instruction trap
+prvec:	ex	(sp),hl
+	push	af
+	ld	a,(hl)
+	cp	0FBh		; EI? TODO: enable ASTs
+	jr	z,prv1
+	cp	0F3h		; DI? TODO: disable ASTs
+	jr	z,prv1
+	cp	0DBh		; IN?
+	jr	z,prv2
+	cp	0D3h		; OUT?
+	jr	nz,prv3
+prv2:	inc	hl
+prv1:	inc	hl
+prv4:	pop	af
+	ex	(sp),hl
+	ret			; return to next instruction
+
+prv3:	call	$PRINT		; bomb on anything else
+	defb	CR,LF,'Priv instr',CR,LF,0
+	jp	done
+
+; Special BIOS functions
+_boot:
+	ld	a,c
+	xor	b
+	cp	55h
+	jr	nz,done
+	ld	a,c
+	dec	a
+	jp	z,$EXIT
+	dec	a
+	jr	z,getmap
+	jr	done
+getmap:	ld	hl,numdrv
+	ret
+	page
+	subttl	Support routines
+
+;** These can be relocated into BDOS area when debugging is disabled
+
+;*******************************************************************
+; Output banner and CP/M drive to RSX280 directory assignment table.
+
+BANNER:	call	$PRINT
+	defb	CR,LF,'CP/M 2.2 emulator ',0
+	ld	hl,VERSION
+	call	$MSGHL		; output version
+$PRMAP:	ld	hl,drvmap
+	ld	e,2		; two drives supported so far
+	ld	c,'A'
+pm1:	ld	a,c
+	call	$TTOUT		; output CP/M drive name
+	call	$PRINT
+	defb	': = ',0
+	ld	a,(hl)		; output RSX280 device name
+	inc	hl
+	call	$TTOUT
+	ld	a,(hl)
+	inc	hl
+	call	$TTOUT
+	ld	a,(hl)
+	inc	hl
+	call	$ADEC		; output unit number
+	call	$PRINT
+	defb	':[',0
+	ld	b,9
+pm2:	ld	a,(hl)
+	inc	hl
+	cp	' '
+	call	nz,$TTOUT
+	djnz	pm2
+	call	$PRINT
+	defb	']',CR,LF,0
+	inc	c
+	dec	e
+	jr	nz,pm1
+	ret
+
+;*******************************************************************
+; Unsolicited character input AST routine
+TTAST:	ex	(sp),hl		; fetch character from stack, save HL
+	push	de
+	push	bc
+	push	ix
+	ld	ix,TTQ
+	ld	c,l		; get char into reg C for qput
+;;	ld	a,c
+;;	cp	ETX		; ^C ?
+;;	call	z,qinit		; clear input queue if yes
+	call	qput		; store char in queue
+	ld	e,EFN_TI
+	SC	.SETF		; set event flag
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX		; exit AST
+
+;*******************************************************************
+; Check if any character is available in the console buffer
+;
+; Returns A=0 and Z flag-bit set if none available
+;
+$TTGST:	call	$FLUSH
+	push	ix
+	ld	ix,TTQ
+	ld	a,(ix+TQ.OP)
+	sub	(ix+TQ.IP)
+	pop	ix
+	ret
+
+;*******************************************************************
+; Single-character input, no echo
+$TTGC:	call	$FLUSH		; send pending output to terminal
+	push	ix
+	push	hl
+	push	de
+	push	bc
+ci1:	ld	e,EFN_TI
+	SC	.CLEF		; clear event flag
+	ld	ix,TTQ
+	call	qget		; get char from input queue
+	jr	nc,ci2
+	ld	e,EFN_TI	; if none ready
+;;	SC	.WTSE		;  then wait
+	SC	.STSE
+	jr	ci1
+ci2:	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+;*******************************************************************
+; Reset terminal input queue
+qinit:	xor	a
+	ld	(ix+TQ.IP),a
+	ld	(ix+TQ.OP),a
+	ret
+
+;*******************************************************************
+; Fetch character from queue
+qget:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z		; return if buffer empty
+	ld	e,a
+	inc	a
+	and	3Fh
+	ld	(ix+TQ.OP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+TQ.BUF)	; get char
+	pop	ix
+	or	a
+	ret
+
+;*******************************************************************
+; Store character in queue
+qput:	ld	a,(ix+TQ.IP)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+TQ.OP)
+	scf
+	ret	z		; return if buffer full
+	ld	(ix+TQ.IP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+TQ.BUF),c	; store char
+	pop	ix
+	or	a
+	ret
+
+;*******************************************************************
+; Character output (buffered)
+$TTOUT: push	hl
+	ld	hl,(ttoptr)
+	ld	(hl),a		; store char in buffer
+	inc	hl		; advance pointer
+	ld	(ttoptr),hl
+	pop	hl
+	push	bc
+	ld	c,a
+	ld	a,(ttocnt)
+	inc	a		; increase byte counter
+	ld	(ttocnt),a
+	cp	128		; buffer full?
+	ld	a,c
+	pop	bc
+	jr	nc,$FLUSH	; output it if yes
+	cp	CR		; CR?
+	jr	z,$FLUSH	; flush buffer if yes
+	cp	LF		; LF?
+	ret	nz		; return if not, else flush buffer
+
+;*******************************************************************
+; Flush any queued output to console
+$FLUSH: ld	a,(ttocnt)
+	or	a		; check in case the function is called
+	ret	z		; separately
+	push	bc
+	push	de
+	push	hl
+snd0:	xor	a
+	ld	(ttoqio+Q.SUBF),a
+	ld	hl,(ttocnt)	; bytes to write
+	ld	h,a
+	ld	(ttoqio+Q.LEN),hl
+	ld	hl,0
+	ld	(QIOSB+2),hl	; clear counter of bytes sent
+	ld	hl,ttoqio
+	SC	.QIO		; .QIOW
+	ld	hl,(QIOSB+2)	; fetch byte count
+	ld	a,h
+	or	l		; anything sent?
+	jr	z,snd0		; keep trying if not
+	ld	a,(ttocnt)
+	sub	l		; all bytes sent?
+	ld	(ttocnt),a
+	ld	de,ttobuf
+	jr	z,snd1		; return if yes
+	ld	c,a		; else prepare counter of bytes to move
+	ld	b,0
+	ld	h,b		; just in case
+	add	hl,de		; HL = src (ttobuf+sent), DE = dst (ttobuf)
+	ldir			; shift buffer, we'll send the remainder later
+snd1:	ld	(ttoptr),de	; set new buffer pointer (ttobuf+diff)
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+;*******************************************************************
+TTCLR:	push	hl
+	ld	hl,ttobuf
+	ld	(ttoptr),hl
+	xor	a
+	ld	(ttocnt),a
+	pop	hl
+	ret
+
+;*******************************************************************
+; return number of available input chars in HL
+
+char_avail:
+	call	$FLUSH		; make sure all is output first
+;;	ld	hl,0
+;;	call	$TTGST		; is there any char in queue?
+;;	ret	z		; no, return 0 in HL and carry set
+	ld	hl,(TTQ)	; TQ.IP in L, TQ.OP in H
+	ld	a,l
+	cp	h		; if TQ.OP > TQ.IP the ring
+	jr	nc,ca_1		;  buffers have wrapped
+	add	a,64		; (TTQ input queue is 64 bytes)
+ca_1:	sub	h
+	ld	h,0
+	ld	l,a		; return count and carry clear
+	ret
+
+;*******************************************************************
+; write one char from A to stdout
+
+writechar:
+	push	hl		; don't change HL
+	ld	c,a
+	call	conout		; output keeping track of cursor
+	pop	hl
+	ret
+
+;*******************************************************************
+;
+; Close any open files
+close_all:
+	ld	ix,(ftop)
+	ld	b,NFILES
+cla_1:	ldw	hl,(ix+F_FID)
+	ld	a,h
+	or	l
+	call	nz,CLOSEF
+	ldw	ix,(ix+F_LNK)
+	djnz	cla_1
+;;	ret
+
+close_dir:
+	ld	a,(diropn)	; close directory
+	or	a
+	jr	z,cla_3
+	ld	c,LUN_D
+	call	CLOSYS
+	xor	a
+	ld	(diropn),a
+cla_3:	ld	a,(idxopn)	; close INDEXF.SYS
+	or	a
+	ret	z
+	ld	c,LUN_IX
+	call	CLOSYS
+	xor	a
+	ld	(idxopn),a
+	ret
+
+;*******************************************************************
+; Utility routines
+;
+; Convert char in A to uppercase
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+;*******************************************************************
+; If A contains space, control, or one of <=>:;_ then set Z flag bit
+delimiter:
+	call	UCASE
+	cp	' '
+	jr	c,retz
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'='
+	ret	z
+	cp	'>'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'_'
+	ret
+retz:	xor	a
+	ret
+
+;*******************************************************************
+; Convert CP/M FCB name to RSX280 FDB.
+; Illegal filename characters are replaced with a dash "-"
+;
+; on entry: IY -> pointer to FCB
+;
+; on exit : HL -> pointer to FDB
+
+getname:
+	push	ix
+	ld	ix,FDB_F1
+	call	INIFDB		; initialize FDB
+	pop	ix
+	ld	de,FDB_F1+F.NAME
+	lda	hl,(iy+fcbname)	; get address of name
+	ld	b,8		;  up to 8 characters
+g_l1:	ld	a,(hl)
+	inc	hl
+	or	a		; is it NUL?
+	jr	z,g_l2		; yes
+	cp	' '		; is it blank?
+	jr	z,g_l2		; yes
+	call	chmap		; fix-up for RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l1
+
+g_l2:	ld	de,FDB_F1+F.EXT
+	lda	hl,(iy+fcbext)	; get address of file extension
+	ld	b,3		; now up to 3 characters
+g_l3:	ld	a,(hl)
+	inc	hl
+	or	a		; NUL?
+	jr	z,g_l4
+	cp	' '		; blank?
+	jr	z,g_l4
+	call	chmap		; fix-up for RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l3
+g_l4:	; We don't include the version number
+	ld	a,FN.NAME OR FN.EXT
+	ld	(FDB_F1+F.ATTR),a
+	ld	hl,FDB_F1	; return pointer to name
+	ret
+
+;*******************************************************************
+; convert illegal RSX280 filename character to a '-'.
+; (only A..Z and 0..9 are allowed).
+chmap:
+	and	07Fh		; no parity, 7-bit only
+	cp	'$'		; '$' is OK
+	ret	z
+	cp	'0'
+	jr	c,chill
+	cp	'9'+1
+	ret	c		; '0'-'9' is OK
+	cp	'A'
+	jr	c,chill
+	cp	'Z'+1
+	ret	c		; 'A'-'Z' is OK
+	cp	'a'
+	jr	c,chill
+	cp	'z'+1
+	jr	nc,chill
+	sub	a,32		; 'a'-'z' is uppercased
+	ret
+chill:	ld	a,'-'		; illegal is an '-'
+	ret
+
+;*******************************************************************
+; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
+
+fillfcb:
+	ld	(hl),0		; default to current drive
+	ld	a,(ix+1)
+	cp	':'		; drive specified?
+	jr	nz,ff_nodrv	; no
+	ld	a,(ix)
+	or	a
+	jr	z,ff_nodrv
+	call	UCASE
+	sub	'A'-1
+	ld	(hl),a		; else store drive code
+	inc	ix
+	inc	ix
+ff_nodrv:
+	inc	hl		; advance HL to fcbname
+	push	hl		; save and init with spaces
+	ld	b,8+3		;  to simplify the copy
+	ld	a,' '
+ff_blnk:
+	ld	(hl),a
+	inc	hl
+	djnz	ff_blnk
+	xor	a
+	ld	b,33-12
+ff_blnk1:
+	ld	(hl),a		; clear the rest of the FCB
+	inc	hl
+	djnz	ff_blnk1
+	pop	hl		; restore pointer to fcbname
+
+	ld	b,8		; name part is up to 8 chars
+ff_nam:	ld	a,(ix+0)
+	call	delimiter	; is it a delimiter?
+	ret	z		; yes - done
+	inc	ix
+	cp	'.'		; filename delimiter
+	jr	z,ff_ext
+	cp	'*'		; wildcard?
+	jr	z,ff_nwild
+	ld	(hl),a		; store in FCB
+	inc	hl
+	djnz	ff_nam
+
+	; fall through here if name > 8 chars
+ff_skp:
+	ld	a,(ix+0)	; skip rest of name part
+	call	delimiter
+	ret	z		; delimiter - done
+	inc	ix
+	cp	'.'
+	jr	z,ff_exte
+	jr	ff_skp
+
+	; wildcard to rest of fcbname
+ff_nwild:
+	ld	(hl),'?'	; fill rest of filename
+	inc	hl		;  with '?'
+	djnz	ff_nwild
+
+	; advance in filename until '.' or end
+ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
+	inc	ix
+	or	a
+	ret	z
+	cp	'.'
+	jr	nz,ff_nsk
+
+ff_ext:	ld	a,b
+	or	a		; all 8 characters?
+	jr	z,ff_exte	; yes
+
+ff_adv	inc	hl		; no advance to fcbext
+	djnz	ff_adv
+
+ff_exte:
+	ld	b,3		; now we do fcbext
+ff_enxt:
+	ld	a,(ix+0)
+	call	delimiter
+	ret	z		; delimiter - done
+	inc	ix
+	cp	'*'		; wildcard ext?
+	jr	z,ff_ewild
+	ld	(hl),a
+	inc	hl
+	djnz	ff_enxt
+	ret
+
+ff_ewild:
+	ld	(hl),'?'	; wildcard for rest
+	inc	hl		;  of fcbext
+	djnz	ff_ewild
+	ret
+
+;*******************************************************************
+; Get next non-blank char.
+;
+; On entry: HL -> character string
+; On exit:  HL -> first non-space character in string
+;	    Z flag set if end of string reached
+;
+getnb:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	hl
+	jr	getnb
+
+;*******************************************************************
+; Copy NUL terminated string pointed to by HL to DE
+;
+; Pointers are advanced to allow concatenation.
+; The terminating NUL is copied. Spaces are skipped.
+strcpy:
+s_lo:	ld	a,(hl)
+	cp	' '
+	jr	z,s_sp
+	ld	(de),a
+	or	a
+	ret	z		; end of string
+	inc	hl
+	inc	de
+	jr	s_lo
+s_sp:	xor	a		; space means end too
+	ld	(de),a
+	ret
+
+;*******************************************************************
+; return length of NUL terminated string pointed to by HL in A
+strlen:
+	push	hl
+	push	bc
+	ld	c,0
+sl_lo:
+	ld	a,(hl)
+	or	a
+	jr	z,sl_12
+	inc	c
+	inc	hl
+	jr	sl_lo
+sl_12:	ld	a,c
+	pop	bc
+	pop	hl
+	ret
+
+;*******************************************************************
+; These routines are for the emulator.  They do not update
+; the cursor position like their CP/M counterparts
+;
+;Newline
+$CRLF:	call	$PRINT
+	defb	CR,LF,0
+	ret
+
+$PSTR:
+	call	$CRLF
+	ld	a,'%'
+	call	$TTOUT
+
+;Print in-line message terminated by a NUL
+$PRINT:
+	ex	(sp),hl
+	call	$MSGHL
+	ex	(sp),hl
+	ret
+
+;Print message pointed to by HL terminated by a NUL
+$MSGHL:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	call	$TTOUT
+	jr	$MSGHL
+
+;Print FCB contents
+$PRFCB:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,p1
+	add	a,'A'-1
+	call	$TTOUT
+	ld	a,':'
+	call	$TTOUT
+p1:	ld	b,8
+	call	p2
+	ld	a,'.'
+	call	$TTOUT
+	ld	b,3
+p2:	ld	a,(hl)
+	inc	hl
+	call	$TTOUT
+	djnz	p2
+	ret
+
+;*******************************************************************
+;
+; CP/M BDOS emulator variables
+
+biosmsg:
+	defb	"Unimplemented BIOS call"
+	defb	CR,LF,0
+biosml	equ	$-biosmsg-1
+
+oldstk:	defs	2		; saved stack pointer
+arg:	defs	2		; entry argument from DE
+func:	defs	2		; entry function code from C
+dmaadr:	defs	2		; current DMA address
+dlog:	defw	0		; logged-in disks
+errno:	defs	1		; RSX280 error code
+lret:	defs	1		; directory search result code
+dirloc:	defs	1		; directory entry located in search
+
+;*******************************************************************
+;
+; Debugging routines
+
+  if DEBUG
+
+; Print three spaces
+$SPACE3:
+	call	$SPACE
+	call	$SPACE
+
+;Print space
+$SPACE:	ld	a,' '
+	jp	$TTOUT
+
+;Print contents of HL in hexadecimal
+$HLHEX:	ld	a,h
+	call	$AHEX
+	ld	a,l
+
+;Print contents of A in hexadecimal
+$AHEX:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	$CHEX
+	pop	af
+$CHEX:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	jp	$TTOUT
+
+    if 1
+; Dump memory starting at address in HL for BC bytes
+$DUMPM:	push	hl		; save address and
+	push	bc		;  count on stack
+dm_0:	call	$CRLF
+	call	$HLHEX		; print address in hex
+	ld	a,':'
+	call	$TTOUT
+	call	$SPACE
+	ld	a,l
+	and	0Fh
+	jr	z,dm_1
+dm_7:	push	af		; space align
+	call	$SPACE3
+	pop	af
+	dec	a
+	jr	nz,dm_7
+dm_1:	ld	a,(hl)		; fetch next
+	call	$AHEX		;  and output it in hex
+	call	$SPACE
+	inc	hl
+	dec	bc
+	ld	a,l		; have we done 16?
+	and	0Fh
+	jr	z,dm_9		; yes
+dm_2:	ld	a,b		; have we finished?
+	or	c
+	jr	nz,dm_1		; not zero - keep going
+	ld	a,l
+dm_10:	and	0Fh		; space align
+	jr	z,dm_9
+	push	af
+	call	$SPACE3
+	pop	af
+	inc	a
+	jr	dm_10
+
+dm_9:	pop	bc
+	pop	hl		; go back 16
+	ld	a,l
+	and	0Fh
+	jr	z,dm_3
+dm_8:	push	af		; space align
+	call	$SPACE
+	pop	af
+	dec	a
+	jr	nz,dm_8
+dm_3:	ld	a,(hl)		; and output them in ASCII
+	and	7Fh
+	cp	7Fh
+	jr	z,dm_5
+	cp	' '
+	jr	nc,dm_4
+dm_5:	ld	a,'.'
+dm_4:	call	$TTOUT
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	z,dm_6
+	ld	a,l
+	and	0Fh
+	jr	nz,dm_3		; repeat until we're done
+	push	hl		; re-save pointer
+	push	bc
+	jr	dm_0
+
+dm_6:
+	jp	$CRLF
+    endif ;0
+
+    if 1
+dumpfdb:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'fdb at ',0
+	call	$HLHEX
+	call	$CRLF
+	ld	bc,FINFSZ
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+;
+dumpfcb:
+	push	bc
+	call	$PSTR
+	defb	'fcb at ',0
+	push	iy		; CP/M FCB pointer is in IY
+	ex	(sp),hl		; move it to HL and save old HL
+	call	$HLHEX
+	call	$CRLF
+	ld	bc,fcblen
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 1
+dumppg0:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'page0',0
+	ld	hl,0000h
+	ld	bc,100h
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 0
+dumptpa:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'tpa',0
+	ld	bc,(topcom)
+	dec	b
+	ld	hl,tpa
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 0
+; Dump out the FSR and FDB in hex.  IX points to FSR
+;
+dumpfsr:
+	push	bc
+	push	hl		; save HL and BC
+	call	$PSTR		; start by dumping the FDB
+	defb	'FDB',CR,LF,0
+	ldw	hl,(ix+FC.FDB)	; point HL to FDB
+	ld	bc,FINFSZ
+	call	$DUMPM
+	call	$PSTR		; now the FSR
+	defb	'FSR',CR,LF,0
+	push	ix		; get the FSR pointer to HL
+	pop	hl
+	ld	bc,FCSIZ
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif ;0
+
+  endif ;DEBUG
+
+;Print contents of A in decimal, no leading zeros
+$ADEC:	push	de
+	push	bc
+	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	call	$TTOUT
+	inc	d
+	ld	a,d		; return length in A
+	pop	bc
+	pop	de
+	ret
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad4
+	inc	d
+	dec	d
+	jr	z,ad5
+ad4:	call	$TTOUT
+	inc	d
+ad5:	pop	af
+	ret
+
+;*******************************************************************
+; Console handlers
+;
+; Read console character to A
+conin:	ld	hl,kbchar	; any previous character seen?
+	ld	a,(hl)
+	ld	(hl),0
+	or	a
+	ret	nz		; yes, return it
+	jp	_conin		; else call BIOS
+
+; Read console character with echo
+conech:	call	conin
+	call	echoc
+	ret	c
+	push	af
+	ld	c,a
+	call	tabout
+	pop	af
+	ret
+
+; Check for printable char in A
+;
+; Return Z bit set if terminator found
+; and Carry set if non-printable
+echoc:
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	TAB
+	ret	z
+	cp	BS
+	ret	z
+	cp	' '
+	ret
+
+; Check for character ready
+conbrk:	ld	a,(kbchar)
+	or	a
+	jr	nz,conb1	; skip if active kbchar
+	call	_conist		; call BIOS
+	and	1
+	ret	z		; none available
+	call	_conin		; call BIOS to read it
+	cp	13h		; is it a Ctrl-S?
+	jr	nz,conb0
+	call	_conin		; yes, get another char
+	cp	ETX		; is it a Ctrl-C?
+	jp	z,done		; yes, exit the program
+	xor	a		; no, return with zero in A
+	ret
+
+conb0:	ld	(kbchar),a	; save character
+conb1:	ld	a,1		; return non-zero
+	ret
+
+; Show a control character in printable form
+ctlout:	ld	a,c
+	call	echoc
+	jr	nc,tabout	; not a control char
+	push	af
+	ld	c,'^'		; output caret
+	call	conout
+	pop	af
+	or	'@'		; make it printable
+	ld	c,a
+tabout:	ld	a,c
+	cp	TAB		; tab?
+	jp	nz,conout
+tab0:
+	call	space		; expand tabs to the right number
+	ld	a,(column)	;  of spaces
+	and	07h
+	jr	nz,tab0
+	ret
+
+; Cancel RDLIN input line ready for re-input
+crlfp:
+	ld	c,'#'		; signal a deleted line with a "#"
+	call	conout
+	call	crlf
+crlfp0:	ld	a,(column)	; move the cursor back to starting
+	ld	hl,strtcol	; position
+	cp	(hl)
+	ret	nc
+	call	space
+	jr	crlfp0
+
+;*******************************************************************
+; Detach console terminal
+DETACH: ld	hl,IO.DET	; change function code to detach
+	ld	(attqio+Q.FUNC),hl
+	; fall through
+
+; Attach console terminal with ASTs
+ATTACH:	ld	hl,attqio
+	SC	.QIO		; .QIOW
+	ret	c		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; clear carry
+	ret	z
+	scf
+	ret
+
+;*******************************************************************
+; Exit program and return to RSX280
+;
+$EXIT:	call	close_all	; close all files
+
+	call	$FLUSH		; flush any pending output
+	ld	c,LUN_TI
+	call	DETACH
+	ld	hl,EX.SUC	; exit to monitor with success
+	SC	.EXIT
+	halt			; we should never get here
+
+  if DEBUG and DBG_ODT
+	page
+	subttl	ODT debugging
+;*******************************************************************
+; ODT support routines
+
+	extrn	ODT$,ODT$IN
+	public	ODT$CI,ODT$CO,ODT$CS,ODT$EX
+
+ODT$CI:	jp	$TTGC
+ODT$CO:	ld	a,c
+	jp	$TTOUT
+ODT$CS:	jp	$TTGST
+ODT$EX:	call	$FLUSH
+	ld	hl,EX.SUC
+	SC	.EXIT
+  endif
+
+	page
+	subttl	Variables
+;*******************************************************************
+
+VERSION: defb	memsize/10+'0',memsize mod 10 +'0','K V0.99'
+  if DEBUG
+	defb	' [DEBUG]'
+  endif ;DEBUG
+	defb	CR,LF,'Use ^Z followed by Return/Enter to exit.'
+	defb	CR,LF,0
+
+COMFCB:	defs	36		; CP/M FCB for .COM file
+COMEXT:	defb	'COM'
+
+searcha:
+	defs	2		; search address
+searchl:
+	defs	1		; search length
+
+dptr:	defs	1		; directory entry pointer 0,32,64,96
+dcnt:	defs	2		; directory counter
+bcnt:	defs	2		; fake file block counter
+exsiz:	defs	2		; extent size in sectors
+
+alloca:	defw	0		; current alloc vector address
+
+direntry:
+	defs	DESZ		; directory file record
+dirfsize:
+	defs	2		; 16-bit file size in sectors
+
+diropn:	defb	0		; directory file is open flag
+dirrec:	defs	2
+idxopn:	defb	0		; INDEXF.SYS file is open flag
+idxentry:
+	defs	IESZ		; index file record
+idxrec:	defs	2
+
+topcom:	defs	2
+
+; BIOS Disk Parameter Header
+; We simulate two 8MB drives with blocksize 4096
+; and 1024 directory entries
+dph0::	defw	0		; no sector translation
+cdrmax:	defw	maxdir		; scratchpad - current directory maximum
+curtrk:	defw	0		; scratchpad - current track
+currec:	defw	0		; scratchpad - current record
+buffa:	defw	bufdir		; pointer to directory sector buffer
+	defw	dpb		; disk parameter header
+	defw	0		; no check vector
+	defw	alv0		; allocation vector
+
+dph1::	defw	0		; no sector translation
+	defw	maxdir		; scratchpad - current directory maximum
+	defw	0		; scratchpad - current track
+	defw	0		; scratchpad - current record
+	defw	bufdir		; pointer to directory sector buffer
+	defw	dpb		; disk parameter header
+	defw	0		; no check vector
+	defw	alv1		; allocation vector
+
+dpb::
+sectpt:	defw	128		; SPT sectors per track, 512 tracks
+blkshf:	defb	5		; BSH block shift factor (block size 4096)
+blkmsk:	defb	31		; BLM block mask
+extmsk:	defb	1		; EXM extent mask
+maxall:	defw	2048-1		; DSM (disk size in 4K blocks-reserved)-1
+dirmax:	defw	maxdir-1	; DRM (1024 dir entries)
+dirblk:	defb	0FFh,0h		; AL0, AL1 (need 8 groups for directory)
+chksiz:	defw	0		; CKS check vector size (none = fixed disk)
+offset:	defw	0		; OFF reserved tracks (1 track is 16Kb)
+
+cdrmaxa:
+	defw	cdrmax
+
+; Search directory sector buffer
+bufdir:	defs	recsiz		; the faked directory sector
+extent:	defs	1		; the faked extent number
+
+logged:	defs	1		; the drive is logged-in (if non zero)
+blocks:: defs	2		; blocks used
+logfcb:	defb	'?'		; search fcb to get all files
+	defb	'????????'	; filename
+	defb	'???'		; filetype
+	defb	'?','?','?',0	; ex, s1, s2 and rc
+	defs	16		;  on the emulated drive
+
+alv0::	defs	((2048-1) shr 3)+1	; DSM/8+1
+alv1::	defs	((2048-1) shr 3)+1	; DSM/8+1
+
+; CP/M drive to RSX280 device and directory assignment table
+numdrv:	defb	2		   ; number of emulated drives
+drvmap:	defb	'SY',0,'         ' ; A: = SY:[UsrDir]
+	defb	'SY',0,'CPM      ' ; B: = SY:[CPM]
+
+; RSX280 filename strings
+; enough for filename.ext;1 (15 chars including NUL terminator)
+delnam:
+newnam:	defs	16		; holds old name for rename
+oldnam:	defs	16		; holds new name for rename
+
+; QIO commands for console terminal
+IO.ATA	equ	IO.ATT OR (TF.AST SHL 8)	; attach with AST
+;
+attqio:	QIOW$	IO.ATA,LUN_TI,EFN_TO,QIOSB,,<TTAST>	; attach console
+ttoqio:	QIOW$	IO.WVB,LUN_TI,EFN_TO,QIOSB,,<ttobuf,,0>	; console output
+
+; QIO status
+QIOSB:	defs	4
+
+; Console terminal input queue
+TTQ:	defs	1		; input position
+	defs	1		; output position
+	defs	64		; buffer
+
+; Console input line
+ttiptr:	defw	ttibuf		; pointer to buffer
+ttibuf:	defb	ttibsz		; first byte has size
+	defb	0		; number of characters in buffer
+	defs	ttibsz+2	; the line buffer
+
+; Console output line
+ttocnt:	defb	0		; output count
+ttoptr:	defw	ttobuf		; output pointer
+ttobuf:	defs	128		; buffer
+
+; BDOS console storage (RDBUF)
+compcol:
+	defb	0		; output flag (non zero means no output)
+strtcol:
+	defb	0		; starting position for cursor
+column:	defb	0		; cursor position (0=start of line)
+kbchar:	defb	0
+
+; SST vector table to trap Z80 instructions that are privileged on the
+; Z280 (ei, di, in, out).
+
+sstvt:	dw	0,0		; EPU instructions
+	dw	prvec		; privileged instruction
+	dw	0,0,0,0,0	; and the rest
+
+; We use QIO to access files. The LUN field will be set prior to the
+; particular call. The same event flag number is used for all requests.
+
+IOACR	equ	IO.ACC OR ((SF.ACR OR SF.SHR) SHL 8)
+IOACRW	equ	IO.ACC OR ((SF.ACR OR SF.ACW OR SF.SHR) SHL 8)
+
+qcreat:	QIOW$	IO.CRE,0,EFN_F1,FIOSB,,<FDB_F1,0,0>
+qopenr:	QIOW$	IOACR,0,EFN_F1,FIOSB,,<FDB_F1>
+qopenw:	QIOW$	IOACRW,0,EFN_F1,FIOSB,,<FDB_F1>
+qclose: QIOW$	IO.DEA,0,EFN_F1,FIOSB
+qrattr: QIOW$	IO.RAT,0,EFN_F1,FIOSB,,<FDB_F1,FINFSZ>
+qread:	QIOW$	IO.RVB,0,EFN_F1,FIOSB,,<,128,,,,>
+qwrite:	QIOW$	IO.WVB,0,EFN_F1,FIOSB,,<,128,,,,>
+
+qopsys:	QIOW$	IOACR,0,EFN_D,FIOSB,,<0>
+qclsys:	QIOW$	IO.DEA,0,EFN_D,FIOSB
+
+qrenam:	QIOW$	IO.REN,LUN_SY,EFN_F1,FIOSB,,<FDBOLD,FDBNEW>
+qdel:	QIOW$	IO.DEL,LUN_SY,EFN_F1,FIOSB,,<FDBDEL>
+
+; Use a separate QIO status block for file operations to prevent the
+; debugger from changing it during console I/O.
+FIOSB:	defs	4
+
+; File Descriptor Blocks
+
+FDB_F1:	defs	FINFSZ
+
+; FDBs for file rename/delete
+
+FDBDEL:				; delete uses same as rename FDB
+FDBNEW:	defs	FINFSZ		; new name FDB
+FDBOLD:	defs	FINFSZ		; old name FDB
+
+FDB_D:	defw	0		; directory FDB
+	defb	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	defb	'SY',0
+	defb	'MASTER   '
+	defb	'         ','DIR'
+	defw	1
+	defs	FINFSZ-($-FDB_D)
+
+FDB_IX:	defw	0		; INDEXF.SYS FDB
+	defb	FN.DEV OR FN.DIR OR FN.NAME OR FN.EXT OR FN.VER
+	defb	'SY',0
+mdfn:	defb	'MASTER   '
+	defb	'INDEXF   ','SYS'
+	defw	1
+	defs	FINFSZ-($-FDB_IX)
+
+; File access table (LRU list)
+
+FTABLE:	defs	NFILES*FTSIZE	; the table
+FTOP:	defs	2		; pointer to first entry in LRU list
+nxtfid:	defs	2		; next file-id
+
+;*******************************************************************
+;
+; Stack
+	cseg
+
+	.even			; even address boundary
+
+	defs	256
+tmpstk:
+
+	end	main

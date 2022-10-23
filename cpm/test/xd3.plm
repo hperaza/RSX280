@@ -1,0 +1,403 @@
+$title('Extended DIR Program');
+$nomargin;
+$object(100h,0A40h);
+
+/*********************************************************************
+ *                                                                   *
+ *     (Yet Another) Extended Directory Listing Program for CP/M     *
+ *                                                                   *
+ *********************************************************************/
+
+declare TRUE  literally '0FFh';
+declare FALSE literally '0';
+
+declare CR literally '0Dh';
+declare LF literally '0Ah';
+
+declare MAXFILES literally '1024';
+
+bdoshl: external 5h (c,de) address hl;
+bdosa:  external 5h (c,de) byte a;
+bdos:   external 5h (c,de);
+
+declare nfiles address;   /* total number of files */
+declare disk byte;        /* specified disk */
+declare curdsk byte;      /* current disk */
+declare blksz byte;       /* disk block size in kbytes */
+declare dsksz address;    /* total disk size in kbytes */
+declare kbused address;   /* space used by listed files, in kbytes */
+declare bsh byte;         /* disk block shift factor */
+declare dsm address;      /* disk size in blocks */
+
+declare dpb$addr address, dpb based dpb$addr structure (
+    spt address,
+    bsh byte, blm byte, exm byte,
+    dsm address, drm address,
+    al0 byte, al1 byte,
+    cks address, offs address
+);
+
+declare fcb structure (
+    drive byte, name(8) byte, ext(3) byte,
+    ex byte, s1 byte, s2 byte, rc byte,
+    al(16) byte,
+    crec byte, r0 byte, r1 byte, r2 byte
+) at 5Ch;                 /* using default CP/M FCB */
+
+declare dir$entry$addr address, dir$entry based dir$entry$addr structure (
+    userno byte, name(8) byte, ext(3) byte,
+    ex byte, s1 byte, s2 byte, rc byte,
+    al(16) byte
+);
+
+declare buffer(128) byte at 80h;  /* using default CP/M buffer */
+
+declare file$table(MAXFILES) structure (
+    name(8) byte, ext(3) byte,
+    size address
+);
+
+declare ix(MAXFILES) address;     /* array with indexes to file table */
+
+declare i byte;           /* some            */
+declare j address;        /*  miscellaneous  */
+declare k byte;           /*   variables     */
+
+declare stack(256) address;
+declare cpm$sp address;
+
+/* CP/M interface routines */
+
+exit: procedure;
+    stackptr = cpm$sp;
+    return;
+end exit;
+
+put$char: procedure (c);
+    declare c byte;
+    call bdos(2, c and 7Fh);
+end put$char;
+
+sel$dsk: procedure (disk);
+    declare disk byte;
+    call bdos(14, disk);
+end sel$dsk;
+
+search$first: procedure (fcb) byte;
+    declare fcb address;
+    return bdosa(17, fcb);
+end search$first;
+
+search$next: procedure (fcb) byte;
+    declare fcb address;
+    return bdosa(18, fcb);
+end search$next;
+
+get$dsk: procedure byte;
+    return bdosa(25, 0);
+end get$dsk;
+
+set$dma: procedure (dma$addr);
+    declare dma$addr address;
+    call bdos(26, dma$addr);
+end set$dma;
+
+get$dpb: procedure address;
+    return bdoshl(31, 0);
+end get$dpb;
+
+get$allocv: procedure address;
+    return bdoshl(27, 0);
+end get$allocv;
+
+/* Output null-terminated string */
+
+put$str: procedure(str);
+    declare str address;
+    declare c based str byte;
+
+    do while c <> 0;
+        call put$char(c);
+        str = str + 1;
+    end;
+end put$str;
+
+/* Output newline */
+
+crlf: procedure;
+    call put$char(CR);
+    call put$char(LF);
+end crlf;
+
+/* Get disk parameters */
+
+disk$parm: procedure;
+    dpb$addr = get$dpb;
+    bsh = dpb.bsh;
+    dsm = dpb.dsm + 1;  /* dpb.dsm contains dsm - 1 */
+    i = bsh - 3;
+    if i = 0 then
+        blksz = 1;
+    else
+        blksz = shl(1, i);
+    dsksz = dsm * blksz - (dpb.drm + 32) / 32;
+end disk$parm;
+
+/* Compare memory at address p1 with p2, length n.
+   Return TRUE if they match, FALSE if not. */
+
+equal: procedure (p1, p2, n) byte;
+    declare (p1, p2) address, n byte;
+    declare mem1 based p1 byte, mem2 based p2 byte;
+
+    do while n > 0;
+        if mem1 <> mem2 then return FALSE;
+        p1 = p1 + 1;
+        p2 = p2 + 1;
+        n = n - 1;
+    end;
+    return TRUE;
+end equal;
+
+/* Read directory entries */
+
+read$files: procedure;
+    declare eq byte;
+    /* using global i, j, k */
+
+    /* search for all extents of every file */
+    fcb.ex = '?';
+
+    nfiles = 0;
+    call set$dma(.buffer);
+
+    /* collect entries */
+    i = search$first(.fcb);
+    do while i <> 0FFh;
+        dir$entry$addr = .buffer(i * 32);
+        j = nfiles + 1;
+        eq = FALSE;
+        do while (j := j - 1) > 0 and not eq;
+            if equal(.file$table(j-1).name, .dir$entry.name, 11) then do;
+                file$table(j-1).size = dir$entry.ex * 128 + dir$entry.rc;
+                eq = TRUE;
+            end;
+        end;
+        if not eq then do;
+            do k = 0 to 10;  /* note: name and ext */
+                file$table(nfiles).name(k) = dir$entry.name(k);
+            end;
+            file$table(nfiles).size = dir$entry.rc + 128 * dir$entry.ex;
+            if (nfiles := nfiles + 1) >= MAXFILES then do;
+                /* abort */
+                call put$str(.('Too many files',CR,LF,0));
+                /* restore default disk and return to CP/M */
+                if curdsk <> disk then call sel$dsk(curdsk);
+                call exit;
+            end;
+        end;
+        i = search$next(.fcb);
+    end;
+end read$files;
+
+/* Compute disk free space */
+
+free$space: procedure address;
+    declare (allocv, blocks) address;
+    declare (b, mask) byte;
+    declare allocb based allocv byte;
+    /* using global j */
+
+    allocv = get$allocv;
+
+    blocks = dsm;
+    mask = 80h;
+    b = allocb;
+    do j = 1 to dsm;
+        if (b and mask) <> 0 then blocks = blocks - 1;
+        mask = shr(mask, 1);
+        if mask = 0 then do;
+            mask = 80h;
+            allocv = allocv + 1;
+            b = allocb;
+        end;
+    end;
+
+    return blocks * blksz;
+end free$space;
+
+/* Sort the file table */
+
+sort: procedure;
+    declare (flag, c1, c2, k) byte, (i, j, temp) address;
+
+    /* initialize the index array */
+    do i = 0 to nfiles - 1; ix(i) = i; end;
+
+    if nfiles < 2 then return;
+
+    /* sort the files - swap the indexes, not the entries */
+    do i = 0 to nfiles - 2;
+        do j = i + 1 to nfiles - 1;
+            flag = TRUE;
+            k = 0;
+            do while k < 11 and flag;  /* note: name and ext */
+                c1 = file$table(ix(i)).name(k);
+                c2 = file$table(ix(j)).name(k);
+                if c1 <> c2 then do;
+                    if c1 > c2 then do;
+                        temp = ix(i);
+                        ix(i) = ix(j);
+                        ix(j) = temp;
+                    end;
+                    flag = FALSE;
+                end;
+                k = k + 1;
+            end;
+        end;
+    end;
+end sort;
+
+/* Output value in decimal with the specified precision (width) */
+
+put$dec: procedure (value, filler, width);
+    declare value address;
+    declare (filler, width) byte;
+    declare (i, digit) byte;
+    declare divisor address;
+
+    divisor = 10000;
+    do i = 1 to 4;
+        if width > 5 - i then do;
+            digit = value / divisor;
+            if digit = 0 then do;
+                if filler <> 0 then call put$char(filler);
+            end;
+            else do;
+                call put$char(digit + '0');
+                filler = '0';
+            end;
+            value = value mod divisor;
+        end;
+        divisor = divisor / 10;
+    end;
+    if width > 0 then
+        call put$char(value + '0');
+
+end put$dec;
+
+/* Display file entry */
+
+display$entry: procedure (e);
+    declare e address;
+    declare i byte;
+    declare (frecs, filesz) address;
+
+    do i = 0 to 10;                    /* note: name and ext */
+        call put$char(file$table(e).name(i));
+        if i = 7 then call put$char('.');
+    end;
+    call put$char(' ');
+    frecs = file$table(e).size;        /* file size in records */
+    if frecs = 0 then
+        filesz = 0;
+    else do;
+        frecs = frecs - 1;
+        filesz = shr(frecs, bsh) + 1;  /* file size in blocks */
+    end;
+    filesz = blksz * filesz;           /* convert file size to kbytes */
+    kbused = kbused + filesz;
+    call put$dec(filesz, ' ', 4);
+    call put$char('K');
+end;
+
+/* List the files in 3 columns */
+
+list$files: procedure;
+    declare flag byte;
+    declare (i, j, k, rows) address;
+
+    kbused = 0;
+    if nfiles > 0 then do;
+        rows = (nfiles + 2) / 3;  /* 3 columns: where to break rows */
+        if rows < 18 then rows = 18;
+        flag = FALSE;
+        k = 0;
+        do while not flag;
+            do i = 0 to nfiles by rows;
+                if (j := k + i) < nfiles then do;
+                    if i > 0 then call put$str(.('         ', 0));
+                    call display$entry(ix(j));
+                end;
+                else do;
+                    if k >= nfiles then do;
+                        i = nfiles + 1;
+                        flag = TRUE;
+                    end;
+                end;
+            end;
+            call crlf;
+            k = k + 1;
+            if k >= rows then flag = TRUE;
+        end;
+    end;
+    else do;
+        do i = 1 to 24; call put$char(' '); end;
+        call put$str(.('******** No files ********', CR, LF, 0));
+    end;
+
+    call crlf;
+    call put$str(.('        ', 0));
+    call put$dec(nfiles, ' ', 4);
+    call put$str(.(' files using ', 0));
+    call put$dec(kbused, 0, 5);
+    call put$str(.('K bytes, ', 0));
+    call put$dec(free$space, 0, 5);
+    call put$str(.('K bytes free.', CR, 0));
+end list$files;
+
+/* main section */
+
+main: do;
+    cpm$sp = stackptr;
+    stackptr = .stack + size(stack);
+
+    curdsk = get$dsk;
+    if fcb.drive <> 0 then do;
+        /* if drive specified, switch to it */
+        disk = fcb.drive - 1;
+        call sel$dsk(disk);
+        fcb.drive = 0;
+    end;
+    else
+        disk = curdsk;
+
+    /* if no filename or extension specified, default to *.* */
+    if fcb.name(0) = ' ' and fcb.ext(0) = ' ' then
+        do i = 0 to 10; fcb.name(i) = '?'; end;  /* note: name and ext */
+
+    /* get disk parameters */
+    call disk$parm;
+
+    /* collect entries */
+    call read$files;
+
+    /* display header */
+    do i = 1 to 27; call put$char(' '); end;
+    call put$str(.('Directory, drive ', 0));
+    call put$char(disk + 'A');
+    call crlf;
+    call crlf;
+
+    /* sort the files */
+    call sort;
+
+    /* output the file table */
+    call list$files;
+
+    /* restore default disk and return to CP/M */
+    if curdsk <> disk then call sel$dsk(curdsk);
+    call exit;
+end main;
+
+eof

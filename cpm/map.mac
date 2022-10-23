@@ -1,0 +1,352 @@
+	.Z280
+
+; MAP command for CP/M emulator: sets or display emulated drive assignments.
+;
+; Usage:
+;   MAP                     -- without arguments displays current mapping
+;   MAP d:=ddn:[directory]  -- map ddn:[directory] to CP/M drive d:
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+WBOOT	equ	0000h
+BDOS	equ	0005h
+CPMBUF	equ	0080h
+
+	cseg
+
+start::	ld	(oldsp),sp
+	ld	sp,stack
+
+	call	getmap		; get address of assignment table
+	jp	c,err1
+
+	ld	(drvmap),hl	; remember it
+
+	ld	hl,CPMBUF
+	ld	c,(hl)
+	ld	b,0
+	inc	hl
+	push	hl
+	add	hl,bc
+	ld	(hl),0		; just in case
+	pop	hl
+
+	call	skipb		; skip blanks
+	or	a		; empty command tail?
+	jp	z,show		; yes, display current assignment
+
+	call	getdrv		; get CP/M drive letter
+	jp	c,errsn		; on error, exit
+
+	ld	de,(drvmap)
+	ld	a,(de)		; get number of emulated drives
+	dec	a
+	cp	c		; compare
+	jp	c,err2		; error if out of range
+
+	call	chkeq		; '=' must follow
+	jp	c,errsn
+
+	call	getdev		; get RSX280 device name and unit
+	jp	c,errsn		; on error, exit
+
+	call	getdir		; get RSX280 directory name
+	jp	c,errsn		; on error, exit
+
+	ld	a,(drvnum)	; get drive code
+	ld	bc,3+9		; entry length
+	mult	a,c		; obtain offset
+	ld	de,(drvmap)	; get address of assignment table
+	inc	de		; skip number of drives
+	add	hl,de		; index into table
+	ex	de,hl		; dest in DE
+	ld	hl,devnam	; src in HL
+	ldir			; copy entry
+
+	jp	WBOOT		; exit via warm boot to reset BDOS
+
+show:	ld	hl,(drvmap)
+	ld	e,(hl)		; get number of emulated drives
+	inc	hl
+	ld	c,'A'
+s1:	ld	a,c
+	call	PUTCH		; output CP/M drive letter
+	call	PRINT
+	db	': = ',0
+	ld	a,(hl)
+	inc	hl
+	call	PUTCH		; output RSX280 device name
+	ld	a,(hl)
+	inc	hl
+	call	PUTCH
+	ld	a,(hl)
+	inc	hl
+	call	ADEC		; output RSX280 unit number
+	call	PRINT
+	db	':[',0
+	ld	b,9
+s2:	ld	a,(hl)
+	inc	hl
+	cp	' '
+	call	nz,PUTCH	; output RSX280 directory name
+	djnz	s2
+	call	PRINT
+	db	']',CR,LF,0
+	inc	c		; next drive letter
+	dec	e
+	jr	nz,s1		; loop until all entries are displayed
+
+exit:	ld	sp,(oldsp)
+	ret
+
+; Skip blanks
+
+skipb:	ld	a,(hl)		; get char
+	or	a		; end of line?
+	ret	z		; yes, return
+	cp	' '		; space?
+	jr	z,skp1		; yes, skip
+	cp	TAB		; TAB?
+	ret	nz		; no, return
+skp1:	inc	hl
+	jr	skipb		; loop
+
+; Parse CP/M drive name, return drive code
+
+getdrv:	ld	a,(hl)		; get char
+	call	ucase		; convert to uppercase
+	sub	'A'		; obtain drive code
+	ret	c		; return if invalid
+	cp	10h
+	ccf
+	ret	c
+	ld	(drvnum),a	; else store drive code
+	ld	c,a
+	inc	hl
+	ld	a,(hl)
+	cp	':'		; ':' must follow
+	scf
+	ret	nz
+	inc	hl
+	or	a
+	ret
+
+; Parse RSX280 device name and unit
+
+getdev:	ld	de,devnam	; dest buffer for RSX280 name
+	ld	a,(hl)		; get 1st letter
+	inc	hl
+	call	ucase		; convert to uppercase
+	call	isletr		; validate
+	ret	c
+	ld	(de),a		; store it
+	inc	de
+	ld	a,(hl)		; get 2nd letter
+	inc	hl
+	call	ucase		; convert to uppercase
+	call	isletr		; validate
+	ret	c
+	ld	(de),a		; store it
+	inc	de
+	call	getdec		; get unit number
+	ret	c
+	ld	a,c
+	ld	(de),a		; store it
+	ld	a,(hl)
+	cp	':'		; ':' must follow
+	scf
+	ret	nz
+	inc	hl
+	or	a
+	ret
+
+; Parse RSX280 directory name
+
+getdir:	ld	de,dirnam	; dest buffer for RSX280 directory name
+	push	de
+	ld	a,' '
+	ld	b,9
+gd1:	ld	(de),a		; clear buffer
+	inc	de
+	djnz	gd1
+	pop	de
+	call	skipb
+	cp	'['		; directory name must be enclosed in brackets
+	scf
+	ret	nz
+	inc	hl
+	ld	b,9		; up to 9 chars long
+gd2:	ld	a,(hl)
+	cp	']'
+	jr	z,gd3
+	call	ucase		; convert to uppercase
+	call	valid
+	ret	c
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	gd2
+	ld	a,(hl)
+	cp	']'
+	scf
+	ret	nz		; error, name too long or invalid terminator
+gd3:	ld	a,b
+	cp	9		; directory name can't be empty
+	scf
+	ret	z
+	or	a
+	ret
+
+; Parse 8-byte decimal number
+
+getdec:	ld	c,0
+get1:	ld	a,(hl)
+	sub	'0'
+	ccf
+	ret	nc
+	cp	9+1
+	ret	nc
+	ld	b,a
+	ld	a,c
+	add	a,a		; *2
+	ret	c
+	add	a,a		; *4
+	ret	c
+	add	a,c		; *5
+	ret	c
+	add	a,a		; *10
+	ret	c
+	add	a,b		; +digit
+	ret	c
+	ld	c,a
+	inc	hl
+	jr	get1
+
+; Utility routines
+
+chkeq:	call	skipb
+	cp	'='		; check for equal sign
+	scf
+	ret	nz
+	inc	hl
+	call	skipb
+	or	a
+	ret
+
+isletr:	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+isdigt:	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+valid:	call	isletr
+	ret	nc
+	call	isdigt
+	ret
+
+ucase:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+; Error display routines
+
+errsn:	call	PRINT
+	db	'Syntax error',CR,LF,0
+	jp	exit
+
+err1:	call	PRINT
+	db	'Function not supported',CR,LF,0
+	jp	exit
+
+err2:	call	PRINT
+	db	'Invalid drive letter',CR,LF,0
+	jp	exit
+
+; Console I/O routines
+
+PUTCH:	push	hl
+	push	de
+	push	bc
+	ld	e,a
+	ld	c,2
+	call	BDOS		; output char
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+PRINT:	ex	(sp),hl
+p1:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,p2
+	call	PUTCH
+	jr	p1
+p2:	ex	(sp),hl
+	ret
+
+ADEC:	push	de
+	push	bc
+	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	call	PUTCH
+	pop	bc
+	pop	de
+	ret
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad4
+	inc	d
+	dec	d
+	jr	z,ad5
+ad4:	call	PUTCH
+	inc	d
+ad5:	pop	af
+	ret
+
+; Get address of drive assignment table (emulator-specific)
+
+getmap:	ld	c,2
+	ld	a,55h
+	xor	c
+	ld	b,a
+	ld	hl,(WBOOT+1)
+	ld	l,0
+	call	(hl)
+;;	scf
+	ret
+
+	dseg
+
+drvmap:	ds	2		; address of assignment table
+drvnum:	ds	1		; CP/M drive code
+devnam:	ds	3		; !  keep  ! RSX280 device name and unit number
+dirnam:	ds	9		; !together! RSX280 directory name
+
+oldsp:	ds	2		; CP/M stack pointer
+	ds	256		; space for local stack
+stack	equ	$
+
+	end	start
