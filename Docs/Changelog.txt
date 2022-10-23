@@ -7545,3 +7545,10 @@ BUGS:
 - Got SAV working!
 
 
+22/10/22
+
+- vol180, 'vmr' command: allow installing tasks up to 64K in size if system
+  is RXS280.
+
+- LDR: refuse to load empty (zero size) task images.
+
