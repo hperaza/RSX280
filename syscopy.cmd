@@ -23,7 +23,7 @@ asn 'dev'=sy:
 asn 'dev'=lb:
 set /dir=[system]
 pip [master]system.sys;*,[master]system.sym;*/de/nm
-pip [master]system.sys=rsx180.sys/cd/co/bl:180
+pip [master]system.sys=rsx180.sys/cd/co/bl:512
 pip [master]system.sym=rsx180.sym/cd
 vmr @sysvmr
 ini 'dev'/wb
