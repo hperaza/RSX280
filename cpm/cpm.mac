@@ -79,6 +79,7 @@ CR	equ	0Dh
 LF	equ	0Ah
 FF	equ	0Ch
 TAB	equ	09h
+CTRLS	equ	13h
 CTRLZ	equ	1Ah
 RUBOUT	equ	7Fh
 
@@ -203,9 +204,64 @@ tpa::
 	; Digital Research CCP from CP/M 2.2 or one of its
 	; replacements.
 
+	subttl	Emulator Control
+;*******************************************************************
+; CP/M Emulator set-up: one-time initialization code which will be
+; overwritten by the CP/M application
+
+main::	ld	sp,bdos		; switch to local stack on top of TPA
+	xor	a
+	ld	(diropn),a	; directory not open
+	ld	(idxopn),a	; INDEXF.SYS not open
+	call	INILRU		; clear file access table
+
+	ld	hl,drvmap+3
+	ld	c,GD.TSK	; fetch the current directory
+	sc	.GDIR
+	jr	c,m1		; some problem, return error
+				; TODO: an error here should be fatal
+
+	ld	a,(hl)		; is there a current directory?
+	cp	' '
+	jr	nz,m2		; yes
+m1:	ex	de,hl
+;;	ld	hl,mdfn		; no - use master directory
+;;	ld	bc,9
+;;	ldir			; construct directory filename
+
+m2:	ld	ix,TTQ
+	call	qinit		; set-up terminal queue
+
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUN_TI
+	SC	.ALUN		; assign TI: to LUN_TI
+	call	ATTACH		; attach with ASTs
+	call	SETBIN		; set raw mode
+	call	TTCLR		; clear output buffer
+
+	call	BANNER		; output banner and drive assignment map
+
+	ld	hl,0		; IOBYTE = 0, current drive = A:
+	ld	(cpmiob),hl	;  set both
+
+  if DEBUG and DBG_ODT
+	call	ODT$IN
+	ld	hl,0
+	add	hl,sp
+	ex	de,hl
+	ld	hl,$+6
+	call	ODT$
+  endif
+  if DEBUG eq FALSE
+	ld	hl,sstvt
+	SC	.SVTBL		; specify SST vector table
+  endif	;NOT DEBUG
+	jp	reentry		; jump to the emulated CCP
+
 ; One big region to load CP/M binaries into
 ;
-	defs	cpmbdos-cpmtpa	; Rest of TPA
+	defs	cpmbdos-cpmtpa-($-main)	; Rest of TPA
 	page
 	subttl	BDOS
 ;*******************************************************************
@@ -334,7 +390,15 @@ rc_1:	ld	l,a		; return result in A and HL
 
 write_console:
 	ld	a,iyl		; was (arg)
-	jp	writechar
+write_check:
+	call	writechar	; output character
+	ld	ix,TTQ
+	call	qpeek		; key pressed?
+	ret	c		; no
+	cp	CTRLS		; was it ^S?
+	ret	nz		; no
+	call	qget		; pop the ^S
+	jp	qget		; anything else continues
 
 ;*******************************************************************
 ; BDOS call (function 6) direct console I/O
@@ -349,7 +413,8 @@ direct_console:
 	jr	z,direct_input	; yes, return character if available
 	inc	a		; 0FEh?
 	jr	z,direct_status	; yes, return status
-	jr	write_console	; else output char
+	ld	a,iyl
+	jp	writechar	; else output char
 
 direct_status:
 	call	char_avail
@@ -371,7 +436,7 @@ print_string:
 	ld	a,(iy+0)
 	cp	'$'
 	jp	z,$FLUSH	; done - flush buffer and return
-	call	writechar
+	call	write_check
 	inc	iy
 	jr	print_string
 
@@ -1862,59 +1927,10 @@ write128:
 	dec	hl		; -1 = error
 	ret			; Carry still set
 	page
+
 	subttl	Emulator Control
 ;*******************************************************************
-; CP/M Emulator set-up
-;
-; main(argc, argv)
-
-main::	ld	sp,bdos		; switch to local stack on top of TPA
-	xor	a
-	ld	(diropn),a	; directory not open
-	ld	(idxopn),a	; INDEXF.SYS not open
-	call	INILRU		; clear file access table
-
-	ld	hl,drvmap+3
-	ld	c,GD.TSK	; fetch the current directory
-	sc	.GDIR
-	jp	c,m1		; some problem, return error
-				; TODO: an error here should be fatal
-
-	ld	a,(hl)		; is there a current directory?
-	cp	' '
-	jr	nz,m2		; yes
-m1:	ex	de,hl
-;;	ld	hl,mdfn		; no - use master directory
-;;	ld	bc,9
-;;	ldir			; construct directory filename
-
-m2:	ld	ix,TTQ
-	call	qinit		; set-up terminal queue
-
-	ld	de,'TI'
-	ld	c,0
-	ld	b,LUN_TI
-	SC	.ALUN		; assign TI: to LUN_TI
-	call	ATTACH		; attach with ASTs
-	call	TTCLR		; clear output buffer
-
-	call	BANNER		; output banner and drive assignment map
-
-	ld	hl,0		; IOBYTE = 0, current drive = A:
-	ld	(cpmiob),hl	;  set both
-
-  if DEBUG and DBG_ODT
-	call	ODT$IN
-	ld	hl,0
-	add	hl,sp
-	ex	de,hl
-	ld	hl,$+6
-	call	ODT$
-  endif
-  if DEBUG eq FALSE
-	ld	hl,sstvt
-	SC	.SVTBL		; specify SST vector table
-  endif	;NOT DEBUG
+; Minimalist Console Command Processor
 
 reentry:
 	; make BDOS and BIOS entry points
@@ -3043,13 +3059,22 @@ qget:	ld	a,(ix+TQ.OP)
 	inc	a
 	and	3Fh
 	ld	(ix+TQ.OP),a
-	ld	d,0
+qget1:	ld	d,0
 	push	ix
 	add	ix,de
 	ld	a,(ix+TQ.BUF)	; get char
 	pop	ix
 	or	a
 	ret
+
+;*******************************************************************
+; Return front character from queue without removing it
+qpeek:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z		; return if buffer empty
+	ld	e,a
+	jr	qget1
 
 ;*******************************************************************
 ; Store character in queue
@@ -3833,13 +3858,17 @@ DETACH: ld	hl,IO.DET	; change function code to detach
 
 ; Attach console terminal with ASTs
 ATTACH:	ld	hl,attqio
-	SC	.QIO		; .QIOW
+att:	SC	.QIO		; .QIOW
 	ret	c		; if queuing failed
 	ld	a,(QIOSB)	; fetch return code
 	or	a		; clear carry
 	ret	z
 	scf
 	ret
+
+; Set console mode to binary
+SETBIN:	ld	hl,ttset
+	jr	att
 
 ;*******************************************************************
 ; Exit program and return to RSX280
@@ -3977,6 +4006,8 @@ IO.ATA	equ	IO.ATT OR (TF.AST SHL 8)	; attach with AST
 ;
 attqio:	QIOW$	IO.ATA,LUN_TI,EFN_TO,QIOSB,,<TTAST>	; attach console
 ttoqio:	QIOW$	IO.WVB,LUN_TI,EFN_TO,QIOSB,,<ttobuf,,0>	; console output
+ttset:	QIOW$	SF.SMC,LUN_TI,EFN_TO,QIOSB,,<ttmode,2>	; set console raw mode
+ttmode:	defb	TC.BIN,1
 
 ; QIO status
 QIOSB:	defs	4

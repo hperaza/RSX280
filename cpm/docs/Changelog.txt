@@ -157,4 +157,7 @@ Starting from Tony Nicholson's V0.99
 - Trap Z280 privileged instructions, ignore DI, EI, IN and OUT; abort CP/M
   program on all others.
 
+- Put the terminal in binary mode, else e.g. Wordstar-like editors that use
+  ^S to move the cursor will not work. BDOS functions 2 and 9 now check for
+  ^S to pause the output; BDOS function 6 and BIOS CONOUT do not.
 
