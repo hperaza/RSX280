@@ -312,7 +312,7 @@ Changelog
 
 22/12/21
 
-- ODT: align neately the output of the D command when address is not a
+- ODT: align neatly the output of the D command when address is not a
   multiple of 16 (borrowing code from Tony Nicholson's CP/M emulator).
 
 
@@ -321,4 +321,108 @@ Changelog
 - Kernel: fixed a bug in the MMUINI routine: must divide PDR by 16 and not
   by 4 in order to obtain page address (case of MMU in system mode).
 
+
+06/11/22
+
+- Kernel: the Z280 doesn't seem to care for the unused address bits in the
+  SAL, SAH, DAL and DAH registers, so we're not forcing them to 1 (neither
+  does the CPU280 ROM code, and the Z280 docs are not entirely clear about
+  this.)
+
+
+08/11/22
+
+- Kernel: fixed another bug in the MMUINI routine: the low nibble of the
+  physical address in the PDR was being cleared by mistake.
+
+
+10/11/22
+
+- Porting the system to the CPU280 platform:
+  * writing a floppy boot loader.
+  * porting the terminal device driver: only two terminals supported (TT0:
+    on the Z280 internal UART, TT1: on the on-board 81C17.)
+  * porting the floppy device driver: the CPU280 supports up to 4 floppies,
+    at this point only 3.5" HD floppies are supported.
+
+
+11/11/22
+
+- CPU280 port:
+  * modified the main Makefile so the target platform could be selected,
+    as well as system image name and size, etc. (done via a simple makefile
+    include file that sets the appropriate variables.)
+  * got the floppy bootloader working, but requires launching it from CP/M
+    until the CPU280 ROM is modified to support booting non-CP/M disks.
+  * wrote a simple CP/M application to boot RSX280 floppies.
+  * writing CPU280 kernel system-dependent routines (mainly to read the
+    RTC clock and any relevant NVRAM data such as CPU freq. and mem size.)
+
+
+12/11/22
+
+- CPU280 port:
+  * using DMA3 for memory-to-memory copy ($MCOPY routine), as the RDY signal
+    of the DMA2 is not asserted by default on the CPU280.
+  * DMA3 in continuous mode may interfere with floppy DMA transfers even
+    when the DMA0 used by the floppy driver has higher priority, as in
+    the Z280 a higher-priority DMA request cannot preempt a lower-priority
+    one that is in progress.
+  * got the terminal driver working.
+
+
+13/11/22
+
+- Kernel monitor/debugger:
+  * the 'I' and 'O' commands now take a 'W' (word) modifier (e.g. 'IW40').
+    Before, the word modifier had to be passed as a non-zero 3rd parameter
+    for the 'I' command, and for the 'O' it was simply not supported.
+  * the 'E' command now accepts a bank number as a second parameter.
+
+
+14/11/22
+
+- CPU280 port:
+  * first working version of the floppy disk driver, the system boots and
+    runs as expected! but the driver still needs polishing.
+  * the floppy driver now displays a small light show using the on-board
+    LEDs to show it is alive.
+
+
+15/11/22
+
+- CPU280 port, floppy driver:
+  * in case of errors, the I/O operation is retried up to 5 times.
+  * new wait-for-interrupt routines yields control back to system (and
+    other tasks) until an interrupt or timeout happens, then continues
+    I/O processing via fork block.)
+
+
+17/11/22
+
+- CPU280 port:
+  * $MCOPY now uses DMA3 in single-transaction mode, else a background
+    floppy disk I/O operation will fail with a DMA Overrun Error if a
+    memory-to-memory operation is in progress; the downside being slower
+    memory-to-memory transfers.
+
+- Kernel, CHKWD routine: save/restore I/O page before calling the device
+  timeout entry point.
+
+
+26/11/22
+
+- CPU280 port: certain device-driver-related problems remain:
+  * TT1 interrupts (Rx or Tx) causes disk I/O to fail often with a 'DMA
+    overrun' error. TT0 interrupts do not seem to affect disk data transfers.
+    The problem is observed mostly when running DMP (which uses asynchronous
+    double-buffered I/O) on TT1, but also when running tasks simultaneously
+    on TT0 and TT1 that access the disk. Switching FDC I/O waiting code from
+    fork-process-driven to static wait loops (but interrupt-flag-driven)
+    seems to fix the problem at the cost of degraded system performance.
+    Thus, a device driver bug or even a kernel problem is not excluded.
+  * TT0 Rx interrupts randomly affect TT1 Tx operation, causing the terminal
+    driver to end prematurely an output operation for no apparent reason,
+    with characters still waiting in the output buffer. Disabling the CPU
+    cache fixed the problem (?).
 
