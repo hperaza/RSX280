@@ -1,0 +1,2272 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DEV TT: terminal driver (CPU280 version, fully interrupt-driven)   ;
+;                                                                      ;
+;   Two terminals are supported:                                       ;
+;    TT0: = Z280's builtin UART                                        ;
+;    TT1: = on-board 81C17                                             ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+;                                                                      ;
+; The terminal driver is perhaps the most complex driver of RSX280,    ;
+; just as in RSX-11M. In addition to handling task input/output, the   ;
+; terminal driver "listens" for user input when idle. If the user      ;
+; starts typing at the terminal when no task is waiting for input      ;
+; ("unsolicited" input), the characters are placed in a buffer and     ;
+; then queued to the CLI assigned to the terminal (normally MCR).      ;
+; This is, in fact, the mechanism used by a CLI to receive a command   ;
+; (a CLI never attaches to the terminal and never issues a terminal    ;
+; read command). In addition, the user can use Ctrl-C to temporarily   ;
+; interrupt an input/output operation in progress in order to send     ;
+; explicitly a command to the CLI, and the input/output operation is   ;
+; resumed afterwards.                                                  ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	CPU280.INC
+
+	include	ERRORS.INC
+	include	QIO.INC
+	include	IOPKT.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	DCB.INC
+	include	AST.INC
+	include BDRATES.INC
+	include	CLICB.INC
+	include	SYSCONF.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+ESC	equ	1Bh
+
+; Device-dependent UCB parameters
+
+UX.BDR	equ	UCBSZ + 0	; default/current baud rate (1 byte)
+UX.MOD	equ	UX.BDR + 1	; mode bits (2 bytes)
+UX.SBF	equ	UX.MOD + 2	; subfunction code (1 byte)
+UX.BFP	equ	UX.SBF + 1	; address of buffer in user space (2 bytes)
+UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
+UX.CNT	equ	UX.BNK + 2	; byte count (2 bytes)
+UX.CXF	equ	UX.CNT + 2	; count of bytes transferred (2 bytes)
+UX.PRM	equ	UX.CXF + 2	; optional prompt addr in user space (2 bytes)
+UX.PRL	equ	UX.PRM + 2	; optional prompt length (2 bytes)
+UX.UBF	equ	UX.PRL + 2	; address of unsolicited input buffer (2 bytes)
+UX.UCC	equ	UX.UBF + 2	; unsolicited character count (1 byte)
+UX.VFC	equ	UX.UCC + 1	; vertical format control (2 bytes)
+UX.TMO	equ	UX.VFC + 2	; timeout counter (2 bytes)
+UX.TQ	equ	UX.TMO + 2	; address of typeahead queue (2 bytes)
+UX.OQ	equ	UX.TQ + 2	; address of output queue (2 bytes)
+UX.TXP	equ	UX.OQ + 2	; pointer to transmit buffer (2 bytes)
+UX.TXB	equ	UX.TXP + 2	; bank for the pointer above (2 bytes)
+UX.TXC	equ	UX.TXB + 2	; count of bytes to transmit (2 bytes)
+UX.RXG	equ	UX.TXC + 2	; get receiver char routine addr (2 bytes)
+UX.RXE	equ	UX.RXG + 2	; receiver queue check routine addr (2 bytes)
+UX.RXC	equ	UX.RXE + 2	; purge receiver queue routine addr (2 bytes)
+UX.TXK	equ	UX.RXC + 2	; transmitter restart routine addr (2 bytes)
+UX.SSP	equ	UX.TXK + 2	; set serial speed routine address (2 bytes)
+UX.AST	equ	UX.SSP + 2	; unsolicited char AST routine addr (2 bytes)
+
+; Device-dependent SCB fields
+
+SX.IFB	equ	SCBSZ + 0	; fork block for input process (7 bytes)
+SX.OFB	equ	SX.IFB + 7	; fork block for output process (7 bytes)
+SX.TFB	equ	SX.OFB + 7	; fork block for timeout process (7 bytes)
+
+; Terminal sub-function bit numbers. These MUST correspond to the TF.xxx
+; mask values defined in the QIO.INC file.
+
+TB.AST	equ	0		; attach with AST
+TB.RNE	equ	0		; read with no echo
+TB.RAL	equ	1		; read all bits (unfiltered)
+TB.WAL	equ	1		; write all bits
+TB.TMO	equ	2		; read with timeout
+TB.WBT	equ	3		; break-through write
+TB.CCO	equ	4		; cancel ^O
+TB.XOF	equ	5		; send XOFF
+
+; Mode bit numbers
+
+UM.INP	equ	0		; set if processing input
+UM.OUT	equ	1		; set if processing output
+UM.UNS	equ	2		; set if processing unsolicited input
+UM.OFP	equ	3		; set if output fork process is queued
+UM.IFP	equ	4		; set if input fork process is queued
+UM.TFP	equ	5		; set if timeout fork process is queued
+
+U2.XOF	equ	0		; set if output stopped with ^S
+U2.OCC	equ	1		; set if ^C received while in output mode
+U2.CTC	equ	2		; set if processing ^C
+U2.CTR	equ	3		; set if processing ^R
+U2.PRM	equ	4		; set if displaying prompt
+U2.CTO	equ	5		; set if output is suppressed by ^O
+U2.DEL	equ	6		; set if deleting chars
+U2.TMO	equ	7		; set if timeout expired
+
+TTBFSZ	equ	132	;80	; terminal buffer size
+
+; Terminal I/O queue offsets
+
+TQ.MSK	equ	0		; pointer wrap-around mask
+TQ.IP	equ	TQ.MSK+1	; input pointer
+TQ.OP	equ	TQ.IP+1		; output pointer
+TQ.BUF	equ	TQ.OP+1		; start of buffer
+
+; Default terminal chacteristics
+
+DEFTC	equ	(1 SHL TC.SMR) OR (1 SHL TC.SCP) OR (1 SHL TC.ANS)
+
+DBGTRP	equ	1		; set to true to enable ^T trap to system
+				;  debugger-monitor from system console
+
+	extrn	SETHVC,GETPKT,IODONE,QMCR,QAST,$UGETB,$UPUTB
+	extrn	LNKFQB,$ALLOC,$FREE,$CLIST,$VALTB
+
+; NOTE: the DCB will be constructed dynamically by the kernel in system
+; memory, since the device driver can reside on its own bank or partition.
+
+	cseg
+
+DEVTT::	db	'TT'		; device name
+	db	2		; 2 units
+	dw	ucbt0		; pointer to list of UCBs
+	jp	init		; entry points
+	jp	ioreq
+	jp	iokill
+	jp	tmout
+
+	dseg
+
+ucbt0:	dw	ucbt1		; link to next
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb0		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	db	S.UNK		; UX.BDR
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	2		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.PRL
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	ds	2		; UX.VFC
+	dw	0		; UX.TMO
+	dw	tt0tq		; UX.TQ
+	dw	tt0oq		; UX.OQ
+	ds	2		; UX.TXP
+	ds	2		; UX.TXB
+	dw	0		; UX.TXC
+	dw	getc0		; UX.RXG
+	dw	chkrx0		; UX.RXE
+	dw	clrx0		; UX.RXC
+	dw	kick0		; UX.TXK
+	dw	tt0spd		; UX.SSP
+	dw	0		; UX.AST
+
+ucbt1:	dw	0		; link to next
+	db	1		; unit 1
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	scb1		; pointer to SCB
+	dw	0		; redirect pointer
+	db	(1 SHL UC.ATT)	; control bits
+	db	(1 SHL DV.TTY)	; unit characteristics, lo
+	db	DEFTC		; terminal chacteristics, hi
+	dw	0		; TCB of attached task
+	dw	0		; no ACP
+	dw	0		; not logged in
+	db	S.19K2		; UX.BDR
+	ds	2		; UX.MOD
+	ds	1		; UX.SBF
+	ds	2		; UX.BFP buffer address in user space
+	ds	2		; UX.BNK user bank
+	ds	2		; UX.CNT byte count (remaining)
+	ds	2		; UX.CXF bytes processed
+	ds	2		; UX.PRM
+	ds	2		; UX.PRL
+	ds	2		; UX.UBF
+	ds	1		; UX.UCC
+	ds	2		; UX.VFC
+	dw	0		; UX.TMO
+	dw	tt1tq		; UX.TQ
+	dw	tt1oq		; UX.OQ
+	ds	2		; UX.TXP
+	ds	2		; UX.TXB
+	dw	0		; UX.TXC
+	dw	getc1		; UX.RXG
+	dw	chkrx1		; UX.RXE
+	dw	clrx1		; UX.RXC
+	dw	kick1		; UX.TXK
+	dw	tt1spd		; UX.SSP
+	dw	0		; UX.AST
+
+scb0:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+	dw	0		; SX.IFB
+	db	0		;  bank
+	dw	iproc		;  routine address
+	dw	ucbt0		;  context (IY)
+	dw	0		; SX.OFB
+	db	0		;  bank
+	dw	oproc0		;  routine address
+	dw	ucbt0		;  context (IY)
+	dw	0		; SX.TFB
+	db	0		;  bank
+	dw	tproc		;  routine address
+	dw	ucbt0		;  context (IY)
+
+scb1	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+	dw	0		; SX.IFB
+	db	0		;  bank
+	dw	iproc		;  routine address
+	dw	ucbt1		;  context (IY)
+	dw	0		; SX.OFB
+	db	0		;  bank
+	dw	oproc1		;  routine address
+	dw	ucbt1		;  context (IY)
+	dw	0		; SX.OFB
+	db	0		;  bank
+	dw	tproc		;  routine address
+	dw	ucbt1		;  context (IY)
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Initialization.
+
+init:	ld	(ttdcb),de	; store DCB address for timeout routine
+	push	ix
+	push	iy
+	ld	iy,ucbt0
+ini0:	res	US.BSY,(iy+U.ST)
+	ldw	ix,(iy+U.SCB)	; get SCB address into IX
+	ld	hl,0
+	ldw	(ix+S.CPKT),hl
+	xor	a
+	ld	(ix+S.ST),a
+	ldw	(iy+UX.MOD),hl	; clear all mode bits
+	ld	(iy+UX.UCC),a	; clear unsolicited char count
+	ldw	(iy+UX.UBF),hl	; clear user buffer address
+	ldw	(iy+UX.PRM),hl	; clear IO.RPR prompt address
+	ldw	(iy+UX.PRL),hl	; clear IO.RPR prompt length
+	ldw	(iy+UX.TXC),hl	; clear TX count
+	ldw	ix,(iy+UX.TQ)
+	call	qinit		; init typeahead queue
+	ldw	ix,(iy+UX.OQ)
+	call	qinit		; init output queue
+	ldw	iy,(iy+U.LNK)	; get next UCB into IY
+	ld	a,iyh
+	or	iyl
+	jr	nz,ini0
+	call	tt0ini		; hardware-specific init for primary port
+	call	tt1ini		; hardware-specific init for secondary port
+	ld	iy,ucbt0
+ini1:	ld	a,(iy+UX.BDR)	; get default baud rate
+	ld	hl,(iy+UX.SSP)
+	call	(hl)		; set serial speed
+	ldw	iy,(iy+U.LNK)	; get next UCB into IY
+	ld	a,iyh
+	or	iyl
+	jr	nz,ini1
+	pop	iy
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; I/O request handling, called by the kernel with IY = UCB address.
+
+ioreq:	bit	U2.OCC,(iy+UX.MOD+1) ; ^C processing pending?
+	jr	z,ioreq1	     ; branch if not
+	res	U2.OCC,(iy+UX.MOD+1) ; else clear flag
+	call	ctlc0		; and start unsolicited input to MCR
+	jp	proc6
+
+ioreq1:	call	GETPKT		; dequeue I/O packet, return address in IX
+	ret	c		; return if unit busy or no work to do
+	ldw	bc,(ix+I.TCB)	; get TCB address of requesting task
+	ld	hl,T.PCB
+	add	hl,bc		; index into PCB field, keep TCB address
+	ldw	de,(hl)		;  in BC for SF.SMC
+	ld	hl,P.BASE
+	add	hl,de		; index into subpartition base
+	ldw	hl,(hl)		; get task base page (bank)
+	ldw	(iy+UX.BNK),hl	; save it
+	ld	de,I.QDB
+	add	ix,de		; point to QDB
+	ldw	hl,(ix+Q.BUF)	; get buffer address
+	ldw	(iy+UX.BFP),hl
+	ldw	hl,(ix+Q.LEN)	; get number of bytes to transfer
+	ldw	(iy+UX.CNT),hl
+	ld	hl,0
+	ldw	(iy+UX.CXF),hl	; clear count of bytes processed
+	ldw	(iy+UX.TXC),hl	; clear count of bytes to transmit
+	ld	a,(ix+Q.SUBF)	; subfunction code
+	ld	(iy+UX.SBF),a
+	ld	a,(ix+Q.FUNC)	; check function code
+	set	US.BSY,(iy+U.ST)
+	cp	IO.RLB
+	jp	z,ttrlb
+	cp	IO.RPR
+	jp	z,ttrpr
+	cp	IO.WLB
+	jp	z,ttwlb
+	cp	IO.ATT
+	jp	z,ttatt
+	cp	IO.DET
+	jp	z,ttdet
+	cp	SF.GMC
+	jp	z,ttgmc
+	cp	SF.SMC
+	jp	z,ttsmc
+	jp	ierr		; invalid function, send error code to
+				;  user, free packet and exit via IODONE
+
+;-----------------------------------------------------------------------
+
+; Timeout entry point.
+
+tmout:	ld	iy,ucbt0
+	ld	c,0		; timeout active flag
+tmo1:	ldw	hl,(iy+UX.TMO)
+	ld	a,l		; timeout active for this unit?
+	or	h
+	jr	z,tmo2		; skip it if not
+	dec	hl
+	ldw	(iy+UX.TMO),hl
+	ld	a,h
+	or	l		; counter reached zero?
+	jr	nz,tmo3		; branch if not
+	call	tfpq		; schedule timeout fork process
+	jr	tmo2
+tmo3:	ld	c,1		; set flag to reload timer
+tmo2:	ldw	iy,(iy+U.LNK)	; next UCB
+	ld	a,iyh
+	or	iyl
+	jr	nz,tmo1		; loop until all scanned
+	ld	a,c
+	or	a
+	ret	z		; no timeouts pending, return
+tmarm:	ld	hl,(ttdcb)
+	ld	de,D.TCNT
+	add	hl,de
+	ld	de,TCKSEC
+	ldw	(hl),de		; reload counter
+	ret
+
+; Timeout fork block process
+
+tproc:	res	UM.TFP,(iy+UX.MOD)
+	set	U2.TMO,(iy+UX.MOD+1) ; set timeout flag
+	bit	UM.UNS,(iy+UX.MOD)   ; processing unsolicited input?
+	jr	z,tp1		     ; no
+	ldw	hl,(iy+UX.RXC)
+	call	(hl)		; else purge input
+	ld	c,15h		; and fake a ^U
+	call	procch
+	ret	nc
+	jp	proc6		; restart the transmitter and return
+
+tp1:	bit	UM.INP,(iy+UX.MOD)
+	ret	z
+	ld	bc,E.TMO
+	jp	iend1
+
+;-----------------------------------------------------------------------
+
+; Kill outstanding I/O: clear input and output buffers.
+; I/O kill point, called with IY = UCB address.
+
+iokill:	call	ttclr		; reset input queue and clear I/O count
+	bit	US.BSY,(iy+U.ST)
+	ld	bc,E.ABOP
+	call	nz,iend1	; end I/O and free packet if terminal was busy
+	xor	a
+	ret
+
+ttclr:	push	ix
+	ldw	ix,(iy+UX.TQ)	; get address of typeahead queue into IX
+	call	qinit		; clear it
+	ld	hl,0
+	ldw	(iy+UX.CNT),hl	; end any I/O packet processing in progress
+	ldw	(iy+UX.TXC),hl
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle 'read with prompt' function.
+
+ttrpr:	ldw	de,(ix+Q.PRB)	     ; get address of prompt string
+	ldw	(iy+UX.PRM),de
+	ldw	bc,(ix+Q.PRL)	     ; get prompt length
+	ldw	(iy+UX.PRL),bc
+	ld	a,d
+	or	e		     ; user specified a prompt string?
+	call	nz,chkbuf	     ; yes, validate prompt buffer
+	jp	c,iend1
+	call	chkiob		     ; validate dest buffer
+	jp	c,iend1
+	ldw	hl,(ix+Q.PVF)	     ; get prompt vertical format control
+	ldw	(iy+UX.VFC),hl
+	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+	ld	a,(iy+UX.CNT)
+	or	(iy+UX.CNT+1)	     ; null count?
+	jp	z,iend		     ; terminate input if yes
+	call	prompt		     ; request display of prompt
+	res	UM.OUT,(iy+UX.MOD)
+	set	UM.INP,(iy+UX.MOD)   ; set input mode bit
+  if 0
+	ldw	hl,(iy+UX.TXK)
+	call	c,(hl)		     ; restart transmitter if necessary
+	jr	ttr1		     ; continue below
+  else
+	jr	nc,ttr1		     ; if no valid prompt, start input operation
+	ldw	hl,(iy+UX.TXK)
+	call	(hl)		     ; else restart transmitter
+	set	U2.CTR,(iy+UX.MOD+1) ; and prepare to output prompt *and* buffer
+	ret
+  endif
+
+; Handle read function.
+
+ttrlb:	call	chkiob		     ; validate user buffer
+	jp	c,iend1
+	ld	hl,0
+	ldw	(iy+UX.PRM),hl
+	ldw	(iy+UX.PRL),hl
+	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+	ld	a,(iy+UX.CNT)
+	or	(iy+UX.CNT+1)	     ; null count?
+	jp	z,iend		     ; terminate input if yes
+	res	UM.OUT,(iy+UX.MOD)
+	set	UM.INP,(iy+UX.MOD)   ; set input mode bit
+ttr1:	di
+	call	ifpq		     ; schedule input fork process
+	ei
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle write function.
+
+ttwlb:	call	chkiob		     ; validate user buffer
+	jp	c,iend1
+	ldw	hl,(ix+Q.VFC)	     ; get vertical format control word
+	ldw	(iy+UX.VFC),hl
+	ld	a,(iy+U.ATT)
+	or	(iy+U.ATT+1)	     ; task attached?
+	jr	z,wlb1		     ; branch if not - reset ^O
+	bit	TB.CCO,(iy+UX.SBF)   ; cancel ^O?
+	jr	z,wlb2		     ; branch if not
+wlb1:	res	U2.CTO,(iy+UX.MOD+1)
+wlb2:	bit	U2.CTO,(iy+UX.MOD+1) ; ^O active?
+	call	nz,supres	     ; suppress output if yes
+	call	vfpre		     ; output leading vfc
+	ld	a,(iy+UX.CNT)
+	or	(iy+UX.CNT+1)	     ; anything to send?
+	jr	nz,wlb3		     ; branch if yes
+	call	vfpost		     ; else output trailing vfc
+	ldw	ix,(iy+UX.OQ)
+	call	qsize		     ; vfc queued?
+	jp	z,iend		     ; no, terminate operation
+wlb3:	res	UM.INP,(iy+UX.MOD)
+	set	UM.OUT,(iy+UX.MOD)
+	bit	U2.XOF,(iy+UX.MOD+1) ; check XON/XOFF
+	ret	nz
+	bit	UM.OUT,(iy+UX.MOD)   ; check output mode
+	ret	z
+	ld	hl,(iy+UX.TXK)
+	jp	(hl)		     ; and restart the transmitter
+
+;-----------------------------------------------------------------------
+
+; Handle attach notification
+
+ttatt:	bit	TB.AST,(ix+Q.SUBF)   ; attach with AST?
+	jr	z,noast		     ; branch if not
+	set	US.AST,(iy+U.ST)     ; else set mode bit in UCB
+	ldw	hl,(ix+Q.P1)	     ; get AST routine address
+	ldw	(iy+UX.AST),hl	     ; store in UCB
+	jp	iend
+noast:	res	US.AST,(iy+U.ST)
+	jp	iend
+
+; Handle detach notification
+
+ttdet:	res	TC.BIN,(iy+U.CW+1)   ; clear binary mode
+	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+	res	US.AST,(iy+U.ST)     ; clear AST mode
+	ldw	ix,(iy+UX.TQ)	     ; IX = typeahead queue
+	di
+	call	qinit		     ; flush input
+	ei
+	jp	iend
+
+;-----------------------------------------------------------------------
+
+; Handle 'get multiple characteristics' function
+
+ttgmc:	call	chkiob		; validate user buffer
+	jp	c,iend1
+	ex	de,hl		; HL = address of buffer in user space
+	ldw	de,(iy+UX.BNK)	; DE = user bank, length still in BC
+	srl	b
+	rr	c		; length now in words
+ttgmc1:	ld	a,b
+	or	c
+	jp	z,iend		; exit loop when zero
+	call	$UGETB		; get byte from user space
+	inc	hl
+	cp	8		; ensure bit value is in range
+	jr	nc,ttgmc4
+	push	bc
+	ld	b,a
+	ld	a,(iy+U.CW+1)	; get terminal characteristics byte
+	rlca
+	inc	b
+ttgmc2:	rrca			; move bit to LSB
+	djnz	ttgmc2
+	and	01h
+ttgmc3:	call	$UPUTB		; store result
+	inc	hl
+	ldw	bc,(iy+UX.CXF)
+	inc	bc
+	inc	bc
+	ldw	(iy+UX.CXF),bc
+	pop	bc
+	dec	bc
+	jr	ttgmc1
+
+ttgmc4:	sub	8		; TC.SPD?
+	jp	nz,ierr
+	push	bc
+	ld	a,(iy+UX.BDR)	; get speed code
+	jr	ttgmc3
+
+;-----------------------------------------------------------------------
+
+; Handle 'set multiple characteristics' function.
+; BC still points to TCB of requesting task (see ioreq routine).
+
+ttsmc:	push	bc		; save TCB address of requester
+	call	chkiob		; validate user buffer
+	pop	bc		; restore TCB address
+	jp	c,iend1
+	bit	US.PUB,(iy+U.ST); public unit?
+	jr	nz,ttsmc0	; yes, anybody can change settings
+	ld	hl,T.ATTR
+	add	hl,bc
+	bit	TA.PRV,(hl)	; privileged task?
+	jr	nz,ttsmc0	; branch if yes
+	ld	hl,T.TI
+	add	hl,bc
+	push	iy
+	pop	de
+	ld	a,(hl)
+	cp	e		; else unit (UCB) must match
+	ld	bc,E.PRIV
+	jp	nz,iend1
+	inc	hl
+	ld	a,(hl)
+	cp	d
+	jp	nz,iend1
+ttsmc0:	ldw	hl,(iy+UX.BFP)	; HL = address of buffer in user space
+	ldw	de,(iy+UX.BNK)	; DE = user bank
+	ldw	bc,(iy+UX.CNT)	; BC = length in bytes
+	srl	b
+	rr	c		; length now in words
+ttsmc1:	ld	a,b
+	or	c
+	jp	z,iend		; exit loop when zero
+	call	$UGETB		; get byte from user space
+	inc	hl
+	cp	8		; ensure bit value is in range
+	jr	nc,ttsmc5
+	push	bc
+	ld	b,a
+	ld	a,80h
+	inc	b
+ttsmc2:	rlca			; obtain bit mask
+	djnz	ttsmc2
+	ld	c,a
+	call	$UGETB		; get bit state
+	inc	hl
+	or	a		; set or clear?
+	ld	a,c
+	jr	z,ttsmc3	; branch if clear
+	or	(iy+U.CW+1)
+	ld	(iy+U.CW+1),a	; set terminal characteristics bit
+	jr	ttsmc4
+ttsmc3:	cpl
+	and	(iy+U.CW+1)
+	ld	(iy+U.CW+1),a	; clear terminal characteristics bit
+ttsmc4:	ldw	bc,(iy+UX.CXF)
+	inc	bc
+	inc	bc
+	ldw	(iy+UX.CXF),bc
+	pop	bc
+	dec	bc
+	jr	ttsmc1
+
+ttsmc5:	sub	8		; TC.SPD?
+	jp	nz,ierr
+	push	bc
+	call	$UGETB		; get speed code
+	push	af
+	inc	hl
+	push	hl
+	ld	hl,(iy+UX.SSP)
+	call	(hl)
+	pop	hl
+	jr	c,ttsmc6
+	pop	af
+	ld	(iy+UX.BDR),a	; store new speed in UCB
+	jr	ttsmc4
+
+ttsmc6:	pop	af
+	pop	bc
+	jp	ierr
+
+;-----------------------------------------------------------------------
+
+; Ensure user buffer is within task limits, 'chkbuf' is an alternate
+; entry point.
+
+chkiob:	ldw	de,(ix+Q.BUF)	; get buffer address
+	ldw	bc,(ix+Q.LEN)	; get buffer size
+chkbuf:	push	ix
+	push	hl
+	ldw	ix,(iy+U.SCB)	; get SCB address
+	ldw	ix,(ix+S.CPKT)	; get address of current packet
+	ldw	ix,(ix+I.TCB)	; get TCB address of requesting task
+	call	$VALTB		; validate user buffer
+	pop	hl
+	pop	ix
+	ret	nc
+	ld	bc,E.INV
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process vertical format control word.
+
+; If the high byte of vfc is zero, then the low byte is interpreted as
+; a FORTRAN-style carriage control char:
+;   ' ' (single space)     -> LF,string,CR
+;   '0' (double space)     -> LF,LF,string,CR
+;   '1' (page eject)       -> FF,string,CR (or LF,LF,LF,LF,string,CR)
+;   '+' (overprint)        -> string,CR
+;   '$' (prompting output) -> LF,string
+;   00h (internal vertical format) -> string
+;   any other character value is interpreted as ' '
+;
+; If the high byte of vfc is non-zero, then the value is interpreted as
+; screen coordinates for cursor positioning, with the top-left corner of
+; the screen at (1,1):
+;   low byte  = column position
+;   high byte = row position, if hi-bit is set then the clear screen
+;               before positioning the cursor
+
+vfpre:	ld	a,(iy+UX.VFC+1)	; cursor control?
+	or	a
+	jr	nz,vfcur	; yes
+	ld	a,(iy+UX.VFC)	; get vertical format char
+	or	a		; null?
+	ret	z		; yes, return - no carriage control
+	cp	'+'		; '+'?
+	ret	z		; yes, return - stay there
+	ldw	ix,(iy+UX.OQ)
+	cp	'1'		; '1'?
+	ld	c,FF		; yes, output a formfeed
+	jp	z,qput
+	cp	'0'		; '0'?
+	ld	c,LF		; yes, output two linefeeds
+	call	z,qput
+	jp	qput		; '$', ' ' and anything else - single linefeed
+
+vfpost:	ld	a,(iy+UX.VFC+1)	; cursor control?
+	or	a
+	ret	nz		; yes, return
+	ld	a,(iy+UX.VFC)	; get vertical format char
+	or	a		; null?
+	ret	z		; yes, return - no carriage control
+	cp	'$'		; '$'?
+	ret	z		; yes, return - stay there
+	ldw	ix,(iy+UX.OQ)
+	ld	c,CR		; anything else - output a carriage return
+	jp	qput
+
+vfcur:	ldw	ix,(iy+UX.OQ)	; get output queue address
+	ld	a,(iy+U.CW+1)	; get mode
+	ld	b,(iy+UX.VFC+1)	; get row
+	bit	7,b		; high bit of row set?
+	call	nz,vfcls	; yes, clear screen
+	bit	TC.ANS,a	; ANSI mode?
+	jr	nz,vfc2		; yes
+	ld	c,ESC		; else output a VT52 cursor control sequence
+	call	qput
+	ld	c,'Y'
+	call	qput
+	ld	a,b		; row
+	call	vfc1
+	ld	a,(iy+UX.VFC)	; column
+vfc1:	add	20h-1		; make base zero and add offset
+	ld	c,a
+	jp	qput
+
+vfc2:	ld	c,ESC		; output a VT100/ANSI cursor control sequence
+	call	qput
+	ld	c,'['
+	call	qput
+	ld	a,b		; row
+	call	qdec
+	ld	c,';'
+	call	qput
+	ld	a,(iy+UX.VFC)	; column
+	call	qdec
+	ld	c,'H'
+	jp	qput
+	
+qdec:	ld	d,0
+	ld	b,100
+	call	ad1
+	ld	b,10
+	call	ad1
+	add	a,'0'
+	ld	c,a
+	jp	qput
+
+ad1:	ld	c,'0'-1
+ad2:	inc	c
+	sub	b
+	jr	nc,ad2
+	add	a,b
+	push	af
+	ld	a,c
+	cp	'0'
+	jr	nz,ad3
+	inc	d
+	dec	d
+	jr	z,ad4
+ad3:	call	qput
+	ld	d,1
+ad4:	pop	af
+	ret
+
+vfcls:	push	af
+	res	7,b		; clear hi-bit of row
+	bit	TC.ANS,a	; ANSI mode?
+	jr	nz,vfc3		; yes
+	ld	c,ESC		; else output VT52 clear screen sequence
+	call	qput
+	ld	c,'H'
+	call	qput
+	ld	c,ESC
+	call	qput
+	jr	vfc4
+
+vfc3:	ld	c,ESC
+	call	qput
+	ld	c,'['
+	call	qput
+	ld	c,'2'
+	call	qput
+vfc4:	ld	c,'J'
+	call	qput
+	pop	af
+	ret
+
+;-----------------------------------------------------------------------
+
+; Characters ^C, ^O, ^S, ^Q and ^X require immediate processing (unless
+; terminal is in binary mode). All others are moved to the typeahead
+; queue for processing during the next input operation.
+
+iproc:	push	iproc		; push return address
+
+	ldw	hl,(iy+UX.RXG)
+	call	(hl)		; get RX char
+	ldw	ix,(iy+UX.TQ)	; IX = typeahead queue
+	jr	c,proc2		; jump if input queue empty
+
+proc7:	ld	c,a
+
+	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
+	jr	nz,proc1	   ; branch if yes
+
+	cp	03h		; ^C
+	jp	z,ctrlc		; clear typeahead queue, cancel ^S, queue ^C
+
+	cp	13h		; ^S
+	jp	z,ctrls
+
+	cp	11h		; ^Q
+	jp	z,ctrlq
+
+	cp	0Fh		; ^O
+	jp	z,ctrlo
+
+	cp	18h		; ^X
+	jp	z,ctrlx
+
+proc1:	di
+	call	qput		; store char in typeahead queue
+	ei
+	ret			; loop until all chars in inp queue processed
+
+; Process char(s) waiting in the typeahead queue. If an input operation
+; is in progress, then send the char to the application. Else start an
+; unsolicited input to MCR.
+
+; Here with IX = typeahead queue
+
+proc2:	ld	hl,proc5
+	ex	(sp),hl		; switch return address
+
+	bit	UM.INP,(iy+UX.MOD) ; input operation in progress?
+	jr	nz,proc4	   ; process char if yes
+	bit	US.BSY,(iy+U.ST)   ; unit busy (output or r/w chracteristics)?
+;;	ret	nz		   ; return if yes
+	jr	nz,proc3	   ; branch if yes
+	ld	a,(iy+U.ATT)
+	or	(iy+U.ATT+1)	   ; task attached?
+	jr	z,proc4		   ; process char if not (unsolicited input)
+	bit	US.AST,(iy+U.ST)   ; attached with AST?
+	jr	nz,proc4	   ; process char if yes
+proc3:	call	qpeek
+	ret	c
+	cp	03h		; ^C?
+	ret	nz		; return if not, else process it now
+proc4:	di
+	call	qget		; get char from typeahead queue
+	ei
+	ret	c		; return if queue empty
+	ld	hl,iproc
+	ex	(sp),hl		; switch return address (loop)
+	ld	c,a
+	call	procch		; process single char
+	ret	nc
+proc6:	ldw	hl,(iy+UX.TXK)
+	jp	(hl)		; restart transmitter if necessary
+
+proc5:	res	UM.IFP,(iy+UX.MOD) ; clear the 'input fork process queued' bit
+	ldw	hl,(iy+UX.RXE)	; HL = receiver queue check routine address
+	call	(hl)		; note order: check done after clearing UM.IFP
+	jp	nz,iproc	;  bit in order to avoid race condition
+	bit	TB.TMO,(iy+UX.SBF)
+	ret	z
+	ldw	hl,(iy+U.SCB)
+	ldw	hl,(hl+S.CPKT)
+	ldw	hl,(hl+I.QDB+Q.TMO)
+	ld	a,h
+	or	l		; null timeout value?
+	jp	z,tp1		; yes, end input now
+	ret
+
+ctrlo:	bit	UM.INP,(iy+UX.MOD) ; ^O ignored in input mode
+	ret	nz
+	bit	UM.UNS,(iy+UX.MOD)
+	ret	nz
+	ld	a,(iy+UX.MOD+1)
+	xor	1 SHL U2.CTO	; toggle ^O state
+	ld	(iy+UX.MOD+1),a
+	bit	U2.CTO,a
+	ret	z
+supres:	di
+	ld	a,(iy+UX.CNT)	; suppress output by skipping any
+	add	a,(iy+UX.CXF)	;  remaining chars
+	ld	(iy+UX.CXF),a
+	ld	a,(iy+UX.CNT+1)
+	adc	a,(iy+UX.CXF+1)
+	ld	(iy+UX.CXF+1),a
+	xor	a
+	ld	(iy+UX.CNT),a
+	ld	(iy+UX.CNT+1),a
+	ei
+	ret
+
+ctrls:	set	U2.XOF,(iy+UX.MOD+1) ; stop output
+	ret
+
+ctrlq:	res	U2.XOF,(iy+UX.MOD+1) ; resume output
+	push	iy
+	call	proc6		; restart transmitter
+	pop	iy
+	ret	nc		; return if there are characters to send
+	ld	a,(iy+UX.CNT)	; else check count
+	or	(iy+UX.CNT+1)
+	ret	nz		; nothing left, return
+	di
+	call	chkend		; else (possibly) terminate output operation
+	ei
+	ret
+
+ctrlc:	di
+	call	qinit		; purge typeahead queue
+	ei
+	jp	proc1		; queue ^C
+
+ctrlx:	di
+	call	qinit		; purge typeahead queue
+	ei
+	ret
+
+; Process received char. Called in fork processing mode with IY = UCB and
+; char in C. Returns with CY set if the transmitter needs to be restarted.
+
+procch:	ldw	ix,(iy+UX.OQ)	; IX = output queue
+
+	call	chktmo
+
+	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
+	jr	nz,pcb1		   ; branch if yes
+
+	; filter out certain chars that may have been left in the queue
+	; from a previous TC.BIN mode
+
+	ld	a,c
+	or	a		; null?
+	ret	z
+	cp	0Fh		; ^O ?
+	ret	z
+	cp	13h		; ^S ?
+	ret	z
+	cp	11h		; ^Q ?
+	ret	z
+
+	bit	TC.SMR,(iy+U.CW+1) ; input uppercase conversion enabled?
+	call	z,ucase
+
+pcb1:	bit	US.BSY,(iy+U.ST)   ; terminal busy?
+	jr	z,pch0		   ; jump if not
+
+	bit	UM.INP,(iy+UX.MOD) ; input mode?
+	jr	nz,pch2		   ; jump if yes, process normally
+
+	ldw	hl,(iy+U.ATT)
+	ld	a,h
+	or	l		; unit attached?
+	jr	z,pch3		; jump if not
+
+	bit	US.AST,(iy+U.ST); attached with AST?
+	jp	nz,sndast	; jump if yes, queue an AST and return
+
+pch3:	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
+	ret	nz		   ; return if yes
+
+	ld	a,c
+	cp	03h		; ^C ?
+	jp	z,ctlc0		; jump if yes
+	or	a
+	ret
+
+pch0:	ldw	hl,(iy+U.ATT)
+	ld	a,h
+	or	l		; unit attached?
+	jr	z,pch1		; jump if not, start unsolicited input
+
+	bit	US.AST,(iy+U.ST); attached with AST?
+	jp	nz,sndast	; jump if yes, queue an AST
+
+	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
+	ret	nz		   ; return if yes
+
+	ld	a,c		; else check char
+	cp	03h		; ^C?
+	jr	z,pch1		; jump if yes (invoke MCR prompt)
+
+	xor	a		;  (clear CY, do not restart the transmitter)
+	ret			; else ignore char, as unsolicited input
+				;  to MCR not permitted if device is attached
+
+pch1:	push	bc
+	call	unsol		; if terminal not busy, begin unsolicited input
+	pop	bc
+	ccf
+	ret	nc		; if terminal slaved
+
+pch2:	bit	TC.BIN,(iy+U.CW+1) ; binary mode?
+	jr	nz,pch4		   ; branch if yes
+
+	ld	a,c
+	cp	08h		; backspace?
+	jp	z,bkspc
+
+	cp	7Fh		; del?
+	jp	z,bkspc
+
+	call	delend
+
+	cp	03h		; ^C ?
+	jp	z,ctlc0
+
+	cp	12h		; ^R
+	jp	z,ctrlr
+
+	cp	15h		; ^U
+	jp	z,ctrlu
+
+pch4:	call	store		; store char in buffer (char in reg C)
+	ld	a,c		; get char back in A
+
+	cp	0Dh		; CR
+	jp	z,eol		; ends input
+
+	cp	1Bh		; ESC
+	jp	z,escape	; ends input, but does not get echoed
+
+	cp	1Ah		; ^Z
+	jp	z,ctrlz		; ends input
+
+	dec	b		; do not echo char if buffer is full
+	ret	nz
+
+	cp	20h		; any other control char?
+	jr	nc,echo		; jump if not
+
+ctrl:	ld	b,c
+	ld	c,'^'
+	call	echo
+	ld	a,b
+	add	a,40h
+	ld	c,a
+echo:	or	a
+	bit	TB.RNE,(iy+UX.SBF)
+	ret	nz		; echo only if TF.RNE not set
+	bit	TC.NEC,(iy+U.CW+1)
+	ret	nz		; and if in echo mode
+	di
+	call	qput		; echo it
+	scf			; kick transmitter after return
+	ei
+	ret
+
+ucase:	ld	a,c
+	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ld	c,a
+	ret
+
+ctlc0:	set	U2.CTC,(iy+UX.MOD+1) ; set ^C flag
+	res	U2.XOF,(iy+UX.MOD+1) ; clear ^S state
+	bit	UM.UNS,(iy+UX.MOD)   ; already processing unsolicited input?
+	jr	nz,ccnew	     ; jump if yes, restart operation
+
+	bit	US.BSY,(iy+U.ST)     ; terminal busy?
+	jr	z,ccnew		     ; jump if not, start unsolicited input
+
+	set	U2.OCC,(iy+UX.MOD+1) ; set ^C pending flag
+
+	bit	UM.INP,(iy+UX.MOD)   ; input mode?
+	ld	c,03h
+	call	nz,escape	     ; end input operation if yes
+	scf			     ; wait for I/O operation to finish
+	ret
+
+ccnew:	res	U2.XOF,(iy+UX.MOD+1) ; clear ^S state
+	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+	call	unsol		     ; start unsolicited input
+	ccf
+	ret	nc		; return if terminal slaved
+	call	prompt		; display MCR prompt
+	scf			; restart transmitter upon return
+	ret
+
+unsol:	bit	TC.SLV,(iy+U.CW+1)
+	scf
+	ret	nz
+
+	; init MCR input buffer
+
+	ld	(iy+UX.UCC),0	; clear unsolicited character count
+	ldw	hl,(iy+UX.UBF)
+	ld	a,h
+	or	l		; buffer already allocated?
+	jr	nz,uns1		; jump if yes
+	ld	bc,TTBFSZ
+	push	ix
+	push	iy
+	di
+	call	$ALLOC		; else allocate buffer
+	ei
+	pop	iy
+	pop	ix
+	ret	c		; return if $ALLOC failed
+	ldw	(iy+UX.UBF),hl	; set buffer address in UCB
+uns1:	set	US.BSY,(iy+U.ST) ; set busy bit
+	ldw	hl,(iy+U.SCB)
+	ld	(hl+S.ST),1
+	set	UM.UNS,(iy+UX.MOD) ; set unsolicited input flag
+	res	UM.OUT,(iy+UX.MOD) ; clear output mode
+	set	UM.INP,(iy+UX.MOD) ; set input mode
+chktmo:	or	a
+	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
+	ld	hl,120
+	jr	nz,ctmo1	   ; yes, set a 2-minute timeout
+	bit	UM.INP,(iy+UX.MOD)
+	ret	z
+	bit	TB.TMO,(iy+UX.SBF) ; read with timeout?
+	ret	z		   ; no, return
+	ldw	hl,(iy+U.SCB)
+	ldw	hl,(hl+S.CPKT)
+	ldw	hl,(hl+I.QDB+Q.TMO)
+	ld	a,h
+	or	l		; null timeout value?
+	ret	z
+ctmo1:	ldw	(iy+UX.TMO),hl	; init timeout counter
+	call	tmarm		; arm global device timeout
+	xor	a
+	ret
+
+ctrlr:	call	ctrl		; output ^R
+	ld	c,CR
+	call	qput
+	call	prompt		; display prompt
+	jr	nc,ctr1		; jump if no prompt was specified
+	set	U2.CTR,(iy+UX.MOD+1) ; else set ^R flag
+	scf			; and kick transmitter
+	ret
+
+ctr1:	ld	c,LF		; no prompt, restart on a new line
+	call	qput
+	call	prepcr		; prepare to output input buffer
+	scf			; always restart the transmitter to force
+	ret			;  output of CR/LF
+
+; Prepare to output whatever we have in the input buffer.
+; This routine will be called immediately in response to ^R if no user prompt
+; is provided, or by nextch after the prompt has been output.
+; Preserves IX.
+
+prepcr:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
+	jr	nz,ctr2		   ; jump if yes - send UX.UBF
+	ldw	bc,(iy+UX.CXF)	; else send user input buffer
+	ld	a,b
+	or	c		; anything to send?
+	ret	z		; return if not
+	bit	TB.RNE,(iy+UX.SBF)
+	ret	nz		; echo only if TF.RNE not set
+	bit	TC.NEC,(iy+U.CW+1)
+	ret	nz		; and if in echo mode
+	di
+	ldw	hl,(iy+UX.BFP)	; else setup pointers and counters
+	or	a
+	sbc	hl,bc
+	ldw	(iy+UX.TXP),hl
+	ldw	hl,(iy+UX.BNK)
+	ldw	(iy+UX.TXB),hl
+	ldw	(iy+UX.TXC),bc
+	ei
+	scf			; kick transmitter
+	ret
+
+ctr2:	ldw	hl,(iy+UX.UBF)	; valid buffer?
+	ld	a,h
+	or	l
+	scf
+	ret	z		; return if not
+	di
+	ldw	(iy+UX.TXP),hl
+	ldw	hl,(iy+U.DCB)
+	ldw	hl,(hl+D.BANK)	; $SBANK
+	ld	h,0		; !!! 8-bit D.BANK
+	ldw	(iy+UX.TXB),hl
+	ld	l,(iy+UX.UCC)
+	ld	h,0
+	ldw	(iy+UX.TXC),hl	; set count
+	ei
+	scf			; kick transmitter
+	ret
+
+ctrlu:	call	ctrl
+	bit	UM.UNS,(iy+UX.MOD)
+	jr	nz,cu1		; end unsolicited input, if active
+	call	prompt
+	jr	c,rsinp
+	di
+	ld	c,CR
+	call	qput
+	ld	c,LF
+	call	qput
+	ei
+rsinp:	ldw	bc,(iy+UX.CXF)
+	ld	a,b
+	or	c
+	scf
+	ret	z
+	di
+	ldw	hl,(iy+UX.BFP)
+	xor	a
+	sbc	hl,bc
+	ldw	(iy+UX.BFP),hl	; reset buffer start address
+	ldw	hl,(iy+UX.CNT)
+	add	hl,bc
+	ldw	(iy+UX.CNT),hl	; reset number of bytes to transfer
+	ld	hl,0
+	ldw	(iy+UX.CXF),hl	; clear processed char count
+	ei
+	scf
+	ret
+
+cu0:	ld	c,15h		; echo ^U
+	call	ctrl
+cu1:	xor	a
+	ld	(iy+UX.UCC),a
+	ld	c,CR
+	call	stoubf		; return an empty line
+	jp	eol
+
+bkspc:	bit	UM.UNS,(iy+UX.MOD)
+	jr	nz,bs1		; jump if processing unsolicited input
+	ldw	hl,(iy+UX.CXF)
+	ld	a,h
+	or	l
+	scf
+	ret	z
+	dec	hl
+	ldw	(iy+UX.CXF),hl
+	ldw	hl,(iy+UX.BFP)
+	dec	hl
+	ldw	(iy+UX.BFP),hl
+	incw	(iy+UX.CNT)
+	ldw	de,(iy+UX.BNK)
+	call	$UGETB
+	jr	bs2
+
+bs1:	ld	a,(iy+UX.UCC)
+	or	a
+	ret	z
+	dec	a
+	ld	(iy+UX.UCC),a
+	ld	e,a
+	ldw	hl,(iy+UX.UBF)	; get address of unsolicited input buffer
+	ld	a,h
+	or	l		; valid?
+	ret	z		; return if not
+	ld	d,0
+	add	hl,de		; index into buffer
+	ld	a,(hl)
+bs2:	bit	TC.SCP,(iy+U.CW+1) ; scope mode?
+	jr	z,bs4		   ; branch if not
+	cp	20h		; deleting control char?
+	call	c,bs3		; erase it twice from screen if yes
+bs3:	or	a
+	bit	TB.RNE,(iy+UX.SBF)
+	ret	nz		; erase only if reading with echo
+	bit	TC.NEC,(iy+U.CW+1)
+	ret	nz		; and if in echo mode
+	ld	hl,bstr
+	ld	b,bslen
+	call	qstr
+	scf			; restart transmitter
+	ret
+
+bs4:	call	delst
+	ld	c,a
+	cp	20h
+	jp	c,ctrl
+	jp	echo
+
+delst:	bit	U2.DEL,(iy+UX.MOD+1)
+	ret	nz
+	set	U2.DEL,(iy+UX.MOD+1)
+	jr	dele
+
+delend:	bit	U2.DEL,(iy+UX.MOD+1)
+	ret	z
+	res	U2.DEL,(iy+UX.MOD+1)
+dele:	push	af
+	push	bc
+	ld	c,'/'
+	call	echo
+	pop	bc
+	pop	af
+	ret
+
+bstr:	db	8,' ',8
+bslen	equ	$ - bstr
+
+; TODO: it may happen that after a ^R, CR or ^Z the buffer is processed and
+; freed before the transmitter had time to display everything (especially
+; after a ^R). To overcome that race condition we could set a flag here and
+; only call iend/uend in nextch when the transmitter finishes sending.
+
+ctrlz:	call	ctrl		; echo ^Z
+	ld	c,CR
+eol:	di
+	call	qput		; echo CR
+	ei
+escape:	res	U2.CTO,(iy+UX.MOD+1) ; cancel ^O
+	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
+	jr	nz,ueol		   ; jump if yes
+	push	iy
+	ld	b,c		; get terminator char in B
+	ld	c,0		; success code in C
+	call	iend1
+	pop	iy
+	scf
+	ret
+
+ueol:	ldw	hl,(iy+UX.UBF)	; get address of unsolicited input buffer
+	ld	a,h
+	or	l		; valid?
+	ret	z		; return if not
+	ld	e,(iy+UX.UCC)	; get character count into DE
+	ld	d,0
+	push	iy
+	push	hl
+	call	QMCR		; send command to MCR, IY = UCB
+	pop	hl
+	ld	de,TTBFSZ
+	di
+	call	$FREE		; free buffer
+	ei
+	pop	iy
+	xor	a
+	ld	(iy+UX.UBF),a
+	ld	(iy+UX.UBF+1),a
+	res	UM.UNS,(iy+UX.MOD)   ; clear unsolicited input flag
+	res	U2.CTC,(iy+UX.MOD+1) ; clear ^C flag
+	res	U2.TMO,(iy+UX.MOD+1) ; clear timeout flag
+	res	UM.INP,(iy+UX.MOD)   ; clear input mode flag
+	res	US.BSY,(iy+U.ST)     ; clear busy flag
+	ld	hl,0
+	ldw	(iy+UX.TMO),hl	; clear timeout counter
+	ldw	de,(iy+U.SCB)	; get SCB address into DE
+	ld	hl,S.ST
+	add	hl,de
+	ld	(hl),0		; clear status byte in SCB
+
+	call	ioreq		;;; in case we interrupted something
+				;;; (needed since ueol does not call IODONE!)
+
+	scf			; restart transmitter
+	ret
+
+; Store char (in reg C) into task's buffer or unsolicited input buffer
+; according to current mode. Returns B=1 if char stored, or B=0 if
+; buffer is full.
+
+store:	ld	b,0
+	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
+	jr	nz,stoubf	   ; jump if yes
+
+	ldw	hl,(iy+U.SCB)
+	ld	de,S.CPKT
+	add	hl,de
+	ld	a,(hl)		; check for a valid I/O packet
+	inc	hl
+	or	(hl)
+	ret	z		; else ignore input
+
+	ldw	hl,(iy+UX.CNT)	; check remaining count
+	ld	a,h
+	or	l
+	jr	z,st1
+
+	ldw	hl,(iy+UX.BFP)	; get user buffer address into HL
+	ldw	de,(iy+UX.BNK)	; and bank into DE
+	ld	a,c
+	call	$UPUTB		; store char in user space
+	inc	hl
+	ldw	(iy+UX.BFP),hl	; store new buffer pointer
+	incw	(iy+UX.CXF)	; increment count of bytes processed
+	ldw	hl,(iy+UX.CNT)	; decrement remaining count
+	dec	hl
+	ldw	(iy+UX.CNT),hl
+	ld	a,h
+	or	l
+	ld	a,c
+st1:	ld	c,ESC		; force end of input if buffer is full
+	ret	z
+	ld	b,1
+	ld	c,a
+	ret
+
+stoubf:	ldw	hl,(iy+UX.UBF)
+	ld	a,h		; buffer should have been already allocated
+	or	l
+	ret	z		; else error - ignore char
+	ld	a,(iy+UX.UCC)
+	ld	e,a		; get UX.UCC value into E
+	ld	d,0
+	add	hl,de		; index into buffer
+	ld	(hl),c		; store char in MCR buffer
+	inc	a
+	cp	TTBFSZ
+	jp	nc,cu0
+	ld	(iy+UX.UCC),a
+	ld	b,1
+	ret
+
+; setup display of prompt
+
+prompt:	bit	UM.UNS,(iy+UX.MOD) ; processing unsolicited input?
+	jr	z,pruser	; jump if not - display user prompt
+	ld	b,1		; get ^C prompt
+	bit	U2.CTC,(iy+UX.MOD+1) ; processing ^C?
+	jr	nz,prm1		; jump if yes
+	dec	b		; else get default prompt
+prm1:	ld	hl,0
+	ldw	(iy+UX.VFC),hl	; no vfc for CLI prompt
+	call	cliprm		; get prompt from CLICB
+	ld	b,0		; prompt address in HL, length in BC
+	ex	de,hl
+	ldw	hl,(iy+U.DCB)
+	ldw	hl,(hl+D.BANK)	; $SBANK
+	ld	h,0		; !!! 8-bit D.BANK
+	ex	de,hl
+	jr	prm2
+pruser:	ldw	hl,(iy+UX.PRM)	; did user specify a prompt?
+	ld	a,h
+	or	l
+	ret	z		; return with CY clear if not
+	push	hl
+	call	vfpre		; queue leading vertical format string
+	pop	hl
+	ldw	bc,(iy+UX.PRL)	; get length (may be zero)
+	ldw	de,(iy+UX.BNK)	; task bank
+prm2:	ldw	(iy+UX.TXP),hl	; else set address of string to display
+	ldw	(iy+UX.TXC),bc	; set length
+	ldw	(iy+UX.TXB),de	; set bank
+	set	U2.PRM,(iy+UX.MOD+1) ; set 'display prompt' bit
+	scf			; and return with CY set
+	ret
+
+; send char in C to task via AST
+
+sndast:	ldw	ix,(iy+U.ATT)	; get TCB addr of attached task into IX
+	ld	l,c		; arg lo = char
+	ld	h,(iy+U.UNIT)	; arg hi = unit number
+	push	hl
+	ld	hl,0
+	add	hl,sp		; pointer to AST args
+	ldw	de,(iy+UX.AST)	; get AST routine address
+	ld	c,2		; arg length
+	ld	a,AST.UC	; AST type
+	push	iy
+	call	QAST		; queue AST to task
+	pop	iy
+	pop	hl
+	xor	a		; ignore errors
+	ret
+
+;-----------------------------------------------------------------------
+
+; This is called from kernel in fork processing mode.
+
+iend:	ld	bc,0		; success code
+	jr	iend1
+ierr:	ld	bc,E.BADOP	; error code = invalid operation
+iend1:	push	bc
+	di
+	res	UM.INP,(iy+UX.MOD) ; clear input mode bit
+	res	UM.OUT,(iy+UX.MOD) ; clear output mode bit
+	res	US.BSY,(iy+U.ST)   ; clear busy bit
+	res	U2.TMO,(iy+UX.MOD+1)
+
+	; need this to restart input processing after *output* operation
+	call	ifpq		; schedule input fork process
+
+	ei
+	pop	bc		; error/success code in BC
+	ldw	de,(iy+UX.CXF)	; transfer count in DE
+	jp	IODONE		; store result and end operation
+
+; Get next char to send, either from local output queue or from requesting
+; task's buffer.
+; Called with IY = UCB. Returns CY set if no more chars to send.
+; Do not call from the interrupt routine.
+
+FF4	equ	1		; test code - translate FF to 4xLF
+				; (for future SET /[NO]FORMFEED support)
+
+nextch:	call	nextc		; get the char
+  IF FF4
+	ret	c
+	cp	FF		; form-feed?
+	jr	nz,nxch3	; return if not
+	ld	c,LF		; else convert it to four line-feeds
+	ld	b,4-1
+	ldw	ix,(iy+UX.OQ)
+ff1:	call	qput
+	djnz	ff1
+	ld	a,c
+nxch3:	or	a
+  ENDIF
+	ret
+
+nextc:	bit	U2.XOF,(iy+UX.MOD+1) ; return with CY set if output stopped
+	scf
+	ret	nz
+	ldw	ix,(iy+UX.OQ)	; handle pending chars in output queue first
+	call	qget
+	ret	nc
+	bit	U2.PRM,(iy+UX.MOD+1) ; displaying prompt?
+	jr	z,nxch0		     ; jump if not
+	call	nxuch		; else fetch byte from prompt in user space
+	ret	nc		; got one, return it
+	res	U2.PRM,(iy+UX.MOD+1) ; else clear 'display prompt' bit
+	call	vfpost		; queue trailing vf string for prompt
+	call	nxch4		; ^R redisplay of prompt?
+	jr	nc,nxch5	; no, return trailing vfc of prompt, if any
+	call	nxch5		; yes, but handle vfc of prompt first
+	ret	nc
+	jr	nxch0		; no vfc, so redisplay buffer
+
+nxch5:	ld	ix,(iy+UX.OQ)
+	jp	qget
+
+nxch4:	xor	a		; clear CY
+	bit	U2.CTR,(iy+UX.MOD+1) ; ^R redisplay of prompt?
+	ret	z		; return CY clear if not
+  if 1
+	call	ifpq		; else schedule typeahead buffer processing
+  endif
+	call	prepcr		; and prepare to output input buffer
+	ret	c		; return CY if something to send
+	res	U2.CTR,(iy+UX.MOD+1) ; otherwise clear ^R bit
+	ret			; and return
+
+nxch0:	call	nxuch		; else get byte from task space
+	jr	c,nxch1		; branch if end of buffer
+	bit	U2.CTR,(iy+UX.MOD+1) ; ^R redisplay of buffer?
+	ret	z		; return unmodified char and CY clear if not
+nxch2:	cp	20h		; control char?
+	ret	nc		; return if not
+	add	a,40h		; else echo it as ^x
+	ld	c,a
+	call	qput		; note IX still = UX.OQ from above
+	ld	a,'^'
+	or	a
+	ret
+
+nxch1:	res	U2.CTR,(iy+UX.MOD+1) ; clear ^R bit
+	bit	US.BSY,(iy+U.ST)     ; busy?
+	ret	z		     ; return if not (note CY still set)
+	bit	UM.OUT,(iy+UX.MOD)   ; output mode?
+	ret	z		     ; return if not (note CY still set)
+	ldw	ix,(iy+U.SCB)
+	ld	a,(ix+S.CPKT)	; check current packet address
+	or	(ix+S.CPKT+1)	; anything being processed?
+	scf			; return CY if not
+	ret	z
+	ldw	hl,(iy+UX.CNT)	; check byte counter
+	ld	a,h
+	or	l
+	scf
+	ret	z		; nothing else to send, return with CY set
+	dec	hl		; decrement byte counter
+	ldw	(iy+UX.CNT),hl	; save value back
+	ld	a,h
+	or	l		; all output?
+	call	z,vfpost	; yes, queue output of trailing vfc
+	incw	(iy+UX.CXF)	; increment count of bytes processed
+	ldw	hl,(iy+UX.BFP)	; get user buffer address into HL
+	ldw	de,(iy+UX.BNK)	; and bank into DE
+	call	$UGETB		; get char from user space
+	inc	hl
+	ldw	(iy+UX.BFP),hl	; save next address
+	or	a
+	ret
+
+nxuch:	ldw	hl,(iy+UX.TXC)	; check UX.TXC
+	ld	a,h
+	or	l		; anything to send?
+	scf
+	ret	z		; return CY if not
+	dec	hl		; else decrement count
+	ldw	(iy+UX.TXC),hl
+	ldw	hl,(iy+UX.TXP)
+	ldw	de,(iy+UX.TXB)
+	call	$UGETB		; get byte from task space
+	inc	hl
+	ldw	(iy+UX.TXP),hl
+	or	a
+	ret
+
+; Check for end of output operation
+
+chkend:	bit	US.BSY,(iy+U.ST)   ; check busy flag
+	ret	z		   ; return if not set
+	bit	U2.XOF,(iy+UX.MOD+1)
+	ret	nz
+	bit	UM.OUT,(iy+UX.MOD) ; check output flag
+	ret	z		   ; return if not set
+	jp	iend		   ; else end output operation
+
+; Schedule output fork block process. Call with interrupts disabled.
+
+ofpq:	bit	UM.OFP,(iy+UX.MOD) ; fork process already scheduled?
+	ret	nz		   ; return if yes
+	set	UM.OFP,(iy+UX.MOD) ; else set flag
+	ldw	ix,(iy+U.SCB)	   ; get SCB address into HL
+	ld	de,SX.OFB
+	add	ix,de		   ; point to output fork block process 
+	jp	LNKFQB		   ; queue fork block and return
+
+; Schedule input fork block process. Call with interrupts disabled.
+
+ifpq:	bit	UM.IFP,(iy+UX.MOD) ; fork process already queued?
+	ret	nz		   ; return if yes
+	set	UM.IFP,(iy+UX.MOD) ; else set flag
+	ldw	ix,(iy+U.SCB)	   ; get SCB address
+	ld	de,SX.IFB
+	add	ix,de		   ; point to input fork block process 
+	jp	LNKFQB		   ; queue fork block and return
+
+; Schedule timeout fork block process. Call with interrupts disabled.
+
+tfpq:	bit	UM.TFP,(iy+UX.MOD) ; fork process already queued?
+	ret	nz		   ; return if yes
+	set	UM.TFP,(iy+UX.MOD) ; else set flag
+	ldw	ix,(iy+U.SCB)	   ; get SCB address
+	ld	de,SX.TFB
+	add	ix,de		   ; point to timeout fork block process 
+	jp	LNKFQB		   ; queue fork block and return
+
+;-----------------------------------------------------------------------
+; Hardware-dependent section
+;-----------------------------------------------------------------------
+
+;***********************************************************************
+;*                                                                     *
+;*      Unit 0 routines                                                *
+;*                                                                     *
+;***********************************************************************
+
+; Init TT0:
+
+tt0ini:	ld	ix,tt0iq
+	call	qinit		; init software receiver queue
+	ld	ix,tt0xq
+	call	qinit		; init software transmitter queue
+
+	ld	de,TT0RX
+	ld	hl,(ucbt0+U.DCB)
+	ld	a,(hl+D.BANK)
+	ld	c,a
+	ld	a,13		; RX uses interrupt vector 13
+	call	SETHVC
+
+	ld	de,TT0TX
+	ld	hl,(ucbt0+U.DCB)
+	ld	a,(hl+D.BANK)
+	ld	c,a
+	ld	a,14		; TX uses interrupt vector 14
+	call	SETHVC
+
+  if 0
+	iopage	CTP
+	ld	a,10001000b	; CT1: continuous, timer, output
+	out	(CR1),a
+	ld	a,11100000b	; enable CT1
+	out	(CS1),a
+	ld	a,S.115K2
+	call	tt0spd
+  endif
+
+	iopage	UARTP
+	ld	a,10000001b	; enable TX, but disable interrupts
+	out	(TCS),a
+	ld	a,11000000b	; enable RX and RX interrupts
+	out	(RCS),a
+  if 0
+	ld	a,11001010b	; 8 data bits, no parity, clk rate x16
+	out	(UCR),a
+  endif
+	in	a,(RDR)		; discard any spurious char
+	in	a,(RDR)
+	ret
+
+; Set serial speed, A = baud rate code
+
+tt0spd:	dec	a		; skip S.0
+	ret	m
+	cp	S.115K2		; ensure within allowed range
+	ccf
+	ret	c
+	iopage	CTP
+	ld	hl,brdiv0	; get divisor table address
+	add	a,a
+	add	hl,a		; index into table (A is still positive)
+	ldw	hl,(hl)		; fetch value
+	dec	hl		; -1 for counter
+	ld	c,TC1
+	outw	(c),hl
+  if 1
+	ld	a,10001000b	; CT1: continuous, timer, output
+	out	(CR1),a
+	ld	a,11100000b	; enable CT1
+	out	(CS1),a
+  endif
+	iopage	UARTP
+  if 0
+	ld	a,11001010b	; 8 data bits, no parity, clk rate x16
+	out	(UCR),a
+  else
+	in	a,(UCR)
+	set	3,a		; select CT1 as clock source
+	out	(UCR),a
+  endif
+	in	a,(RDR)		; discard any spurious char
+	in	a,(RDR)
+	xor	a		; success
+	ret	
+
+; Baud rate divisors for clk rate = 7.3728MHz / 2 / 16 = 230400 Hz
+
+brdiv0:	dw	4608		; S.50
+	dw	3072		; S.75
+	dw	2095		; S.110		; 2094.55
+	dw	1713		; S.134
+	dw	1536		; S.150
+	dw	1152		; S.200
+	dw	768		; S.300
+	dw	384		; S.600
+	dw	192		; S.1200
+	dw	128		; S.1800
+	dw	115		; S.2000	; 115.2
+	dw	96		; S.2400
+	dw	64		; S.3600
+	dw	48		; S.4800
+	dw	32		; S.7200
+	dw	24		; S.9600
+	dw	16		; S.14K4
+	dw	12		; S.19K2
+	dw	8		; S.28K8
+	dw	6		; S.38K4
+	dw	4		; S.57K6
+	dw	3		; S.76K8
+	dw	2		; S.115K2
+
+;-----------------------------------------------------------------------
+
+; TT0 transmitter restart routine.
+
+kick0:	call	refill		; refill output queue
+	iopage	UARTP
+	in	a,(TCS)
+	set	6,a		; (re)enable TX interrupts
+	out	(TCS),a
+	in	a,(TCS)
+	and	01h		; check transmitter buffer empty bit
+	ret	z
+	di
+	ld	ix,tt0xq
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k0		; branch if not
+	out	(TDR),a		; else send char to restart transmitter
+	ret			; and return
+k0:	in	a,(TCS)
+	res	6,a		; disable TX interrupts
+	out	(TCS),a
+	ret
+
+; TT0 output fork process: refill queue and restart transmitter or end output
+; accordingly.
+
+oproc0:	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	call	refill		; refill output queue
+	di
+	call	qsize		; anything in output queue?
+	ei
+	jp	z,chkend	; end output operation if not
+	ld	hl,(iy+UX.TXK)
+	jp	(hl)		; else restart transmitter
+
+; Refill transmitter queue
+
+refill:	ld	ix,tt0xq	; IX = transmitter queue
+r1:	di
+	call	qsize
+	ei
+	cp	(ix+TQ.MSK)	; mask = queue size - 1
+	ret	nc		; return if queue is full
+	push	ix
+	call	nextch		; anything (else) to send?
+	pop	ix
+	ret	c		; return if not
+	ld	c,a
+	di
+	call	qput		; else store char in queue
+	ei
+	jr	r1		; and loop to process next
+
+; TT0 get RX character
+
+getc0:	ld	ix,tt0iq	; IX = input queue
+	di
+	call	qget		; get char from TT0 input queue
+	ei
+	ret
+
+; Check RX input queue, returns Z if queue is empty
+
+chkrx0:	ld	ix,tt0iq
+	di
+	call	qempty
+	ei
+	ret
+
+; Purge RX queue
+
+clrx0:	ld	ix,tt0iq
+	di
+	call	qinit
+	ei
+	ret
+
+;-----------------------------------------------------------------------
+
+; TT0 interrupt handling routines.
+; Interrupts are already disabled by the interrupt stub in system space.
+; AF, HL, DE, BC and the I/O page also have been saved.
+
+; Z280 transmitter interrupt
+
+TT0TX:	push	ix
+	push	iy
+	iopage	UARTP
+	ld	iy,ucbt0
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,tx1		; stop output if XOFF bit is set
+	ld	ix,tt0xq
+	call	qget		; get next char to send
+	jr	c,tx1		; jump if no more chars
+	out	(TDR),a		; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,tx2		; yes
+	jr	tx3		; no
+tx1:	in	a,(TCS)
+	res	6,a		; disable further ESCC TX interrupts
+	out	(TCS),a		;  or TX will keep interrupting forever
+tx2:	call	ofpq		; setup process to refill queue
+tx3:	pop	iy
+	pop	ix
+	ret
+
+; Z280 receiver interrupt
+
+TT0RX:	push	ix
+	push	iy
+	iopage	UARTP
+	ld	iy,ucbt0
+	ld	ix,tt0iq
+rx1:	in	a,(RDR)		; fetch char
+	ld	c,a
+  IF DBGTRP
+	cp	14h		; ^T = debug trap
+	call	z,$DBTRP##	; enter debugger with ints disabled
+  ENDIF
+	call	qput		; save it in input queue
+	in	a,(RCS)		; check if more available
+	bit	4,a
+	jr	nz,rx1		; loop until rx buffer empty
+	call	ifpq		; fork input process
+	pop	iy
+	pop	ix
+	ret
+
+;***********************************************************************
+;*                                                                     *
+;*      Unit 1 routines                                                *
+;*                                                                     *
+;***********************************************************************
+
+; Init TT1 (81C17)
+
+tt1ini:	ld	ix,tt1iq
+	call	qinit		; init software receiver queue
+	ld	ix,tt1xq
+	call	qinit		; init software transmitter queue
+
+	ld	de,TT1INT
+	ld	hl,(ucbt1+U.DCB)
+	ld	a,(hl+D.BANK)
+	ld	c,a
+	ld	a,3		; 81C17 uses interrupt vector 3 (INTB)
+	call	SETHVC
+
+	ld	a,S.19K2
+tt1spd:	dec	a		; skip S.0
+	ret	m
+	cp	S.115K2		; ensure within allowed range
+	ccf
+	ret	c
+	ld	hl,brcod1
+	add	hl,a
+	ld	a,(hl)
+	or	a
+	scf
+	ret	m		; error if unsupported
+	ld	e,a
+	iopage	BOARDP
+	ld	a,11011010b	; reset, disable TX/RX, CP2 active
+	out	(UartCtl),a
+	res	7,a		; reset low
+	out	(UartCtl),a
+	ld	a,01000101b
+	out	(UartDat),a	; mode ctrl
+	ld	a,11000000b
+	out	(UartDat),a	; int mask
+	ld	a,e
+	out	(UartDat),a	; baud rate select reg
+	ld	a,01000110b
+	out	(UartCtl),a	; enable RX only
+	in	a,(UartDat)
+	in	a,(UartDat)	; discard any spurious char
+	ret
+
+; Baud rate codes for 81C17
+
+brcod1:	db	0		; S.50
+	db	-1		; S.75
+	db	1		; S.110
+	db	2		; S.134
+	db	3		; S.150
+	db	-1		; S.200
+	db	4		; S.300
+	db	5		; S.600
+	db	6		; S.1200
+	db	7		; S.1800
+	db	8		; S.2000
+	db	9		; S.2400
+	db	10		; S.3600
+	db	11		; S.4800
+	db	12		; S.7200
+	db	13		; S.9600
+	db	-1		; S.14K4
+	db	14		; S.19K2
+	db	-1		; S.28K8
+	db	15		; S.38K4
+	db	-1		; S.57K6
+	db	-1		; S.76K8
+	db	-1		; S.115K2
+
+;-----------------------------------------------------------------------
+
+; TT1 transmitter restart routines.
+
+kick1:	call	refil1		; refill output queue
+k11:	iopage	BOARDP
+	ld	a,01100110b	; (re)enable TX
+	out	(UartCtl),a
+	in	a,(UartCtl)
+	bit	6,a		; TX buffer empty?
+	ret	z		; still transmitting, return
+	di
+	ld	ix,tt1xq
+	call	qget		; anything in transmitter queue?
+	ei
+	jr	c,k12		; no
+	out	(UartDat),a	; yes, send char
+	ret
+k12:	ld	a,01000110b	; disable TX if nothing to send
+	out	(UartCtl),a
+	ret
+
+; TT1 output fork process: refill transmitter FIFO.
+
+oproc1:	res	UM.OFP,(iy+UX.MOD) ; clear 'output fork process pending' flag
+	call	refil1		; refill output queue
+	di
+	call	qsize		; anything to output?
+	ei
+	jp	z,chkend	; no, end output operation
+	jp	k11		; else restart transmitter
+
+refil1:	ld	ix,tt1xq	; IX = transmitter queue
+rf1:	di
+	call	qsize
+	ei
+	cp	(ix+TQ.MSK)	; mask = queue size - 1
+	ret	nc		; return if queue full
+	push	ix
+	call	nextch		; anything (else) to send?
+	pop	ix
+	ret	c		; no, return
+	ld	c,a
+	di
+	call	qput		; else store char in queue
+	ei
+	jr	rf1		; and loop
+
+; TT1 get RX character
+
+getc1:	ld	ix,tt1iq	; IX = input queue
+	di
+	call	qget		; get char from TT1 input queue
+	ei
+	ret
+
+; TT1 check RX input queue, returns Z if queue is empty
+
+chkrx1:	ld	ix,tt1iq
+	di
+	call	qempty
+	ei
+	ret
+
+; TT1 purge RX queue
+
+clrx1:	ld	ix,tt1iq
+	di
+	call	qinit
+	ei
+	ret
+
+;-----------------------------------------------------------------------
+
+; TT1 interrupt handling routine.
+; Interrupts are already disabled by the interrupt stub in system space.
+; AF, HL, DE, BC and the I/O page register also have been saved.
+
+; 81C17 interrupts
+
+TT1INT:	push	ix
+	push	iy
+	iopage	BOARDP
+	ld	iy,ucbt1
+chk:	in	a,(UartCtl)
+	bit	7,a		; RX data available?
+	jr	nz,crx		; yes
+	bit	6,a		; TX buffer empty?
+	jr	z,cret		; no, return
+
+	bit	U2.XOF,(iy+UX.MOD+1)
+	jr	nz,ctx1		; stop output if XOFF bit is set
+	ld	ix,tt1xq
+	call	qget		; get next char to send
+	jr	c,ctx1		; jump if no more chars
+	out	(UartDat),a	; else send char
+	call	qsize
+	cp	16		; time to refill queue?
+	jr	c,ctx2		; yes
+	jr	chk		; no
+
+ctx1:	ld	a,01000110b	; disable further TX interrupts
+	out	(UartCtl),a
+ctx2:	call	ofpq		; setup process to refill queue
+	jr	cret		; and return (don't check TX bit again)
+
+crx:	ld	ix,tt1iq
+	in	a,(UartDat)	; fetch char
+	ld	c,a
+	call	qput		; store in queue
+	call	ifpq		; setup input fork process
+cret:	pop	iy
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+; Queue handling routines
+;-----------------------------------------------------------------------
+
+; Add char to queue. IX = queue, C = char. Returns CY if queue full.
+; Modifies A and DE.
+
+qput:	ld	a,(ix+TQ.IP)
+	ld	e,a
+	inc	a
+	and	(ix+TQ.MSK)
+	cp	(ix+TQ.OP)
+	scf
+	ret	z		; buffer full
+	ld	(ix+TQ.IP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+TQ.BUF),c	; buf[ipos]
+	pop	ix
+	or	a
+	ret
+
+; Add a string of chars to queue. IX = queue, HL = string address,
+; B = length
+
+qstr:	ld	a,b
+	or	a
+	ret	z
+qstr1:	ld	c,(hl)
+	di
+	call	qput
+	ei
+	inc	hl
+	djnz	qstr1
+	ret
+
+; Get char from queue. IX = queue, returns A = char, or CY if queue empty.
+; Modifies DE.
+
+qget:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z		; buffer empty
+	ld	e,a
+	inc	a
+	and	(ix+TQ.MSK)
+	ld	(ix+TQ.OP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+TQ.BUF)	; buf[opos]
+	pop	ix
+	or	a
+	ret
+
+; Peek char from queue. IX = queue, returns A = char, or CY if queue empty.
+; Modifies DE.
+
+qpeek:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z		; buffer empty
+	ld	e,a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+TQ.BUF)	; buf[opos]
+	pop	ix
+	or	a
+	ret
+
+; Init queue. IX = queue.
+
+qinit:	xor	a
+	ld	(ix+TQ.IP),a
+	ld	(ix+TQ.OP),a
+	ret
+
+; Get number of bytes in queue. IX = queue, returns A = # of bytes.
+
+qsize:	ld	a,(ix+TQ.OP)
+	sub	(ix+TQ.IP)
+	ret	nc		; size = opos - ipos
+	ret	nz
+	add	a,(ix+TQ.MSK)
+	inc	a		; queue capacity = mask + 1
+	ret
+
+; IX = queue, returns Z if queue is empty
+
+qempty:	ld	a,(ix+TQ.IP)
+	sub	(ix+TQ.OP)
+	or	a		; clear CY to avoid extraneous errors
+	ret
+
+; IX = queue, returns Z if queue is full
+
+qfull:	ld	a,(ix+TQ.IP)
+	inc	a
+	and	(ix+TQ.MSK)
+	sub	(ix+TQ.OP)
+	or	a		; clear CY to avoid extraneous errors
+	ret
+
+; Get CLI prompt from CLICB. B=0 for default prompt, else ^C prompt.
+
+; TODO: get the CLI associated to the terminal.
+
+cliprm:	ld	de,($CLIST)	; get head of CLI list
+	ld	a,d
+	or	e		; CLI set?
+	ld	hl,nulprm	; return null string if not
+	ld	c,a		; null length in C
+	ret	z
+	ld	hl,CL.DPL
+	add	hl,de
+	ld	c,(hl)		; get length of default prompt
+	inc	hl
+	ld	a,(hl)		; get length of ^C prompt
+	ld	hl,CL.DAT
+	add	hl,de		; point to start of strings
+	inc	b
+	dec	b
+	ret	z		; this is the one we want
+	ld	b,0
+	add	hl,bc		; else return the second string
+	ld	c,a		; length in C
+	ret
+
+nulprm:	db	0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ttdcb:	ds	2		; terminal DCB address
+
+; Terminal I/O queues
+
+TTQ	MACRO	size
+	IF	size AND (size-1)
+	ERROR	Queue size must be a power of 2
+	ENDIF
+	IF	size LT 2
+	ERROR	Queue size must be greater than 2
+	ENDIF
+	db	size-1		; mask
+	ds	1		; ipos
+	ds	1		; opos
+	ds	size		; buf
+	ENDM
+
+tt0iq:	TTQ	32		; receiver queue
+tt0tq:	TTQ	32		; typeahead queue
+tt0oq:	TTQ	32		; output queue
+tt0xq:	TTQ	32		; transmitter queue
+
+tt1iq:	TTQ	32		; receiver queue
+tt1tq:	TTQ	32		; typeahead queue
+tt1oq:	TTQ	32		; output queue
+tt1xq:	TTQ	32		; transmitter queue
+
+	END

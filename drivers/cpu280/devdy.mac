@@ -1,0 +1,1405 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DEV DY: floppy disk driver (CPU280 version)                        ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	CPU280.INC
+
+	include	DCB.INC
+	include	QIO.INC
+	include	IOPKT.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	SYSCONF.INC
+	include	ERRORS.INC
+
+	public	DEVDY
+
+	extrn	SETHVC,GETPKT,IODONE,$UGETB,$UPUTW,LNKFQB,$ERSEQ,$SBANK
+	extrn	$VALTB,$SBASE,NVRAM,NVOK
+
+; 3.5" 1.44M floppy parameters
+
+SPT	equ	18		; 512-byte sectors per track
+TRKS	equ	160		; number of tracks
+
+; FDC error codes
+
+TIMOUT	equ	80h		; timeout accessing FDC
+ERSEEK	equ	40h		; seek operation failed
+ERRFDC	equ	20h		; FDC has failed
+ERRCRC	equ	10h		; bad CRC on diskette read
+ERRDMA	equ	08h		; DMA overrun on operation
+RCNFND	equ	04h		; requested sector not found
+WPRT	equ	02h		; write attempted on write-protected disk
+ERRMRK	equ	01h		; address mark not found
+
+; Misc equates
+
+FDCTMO	equ	1 * TCKSEC	; FDC command timeout
+SEEKTM	equ	3 * TCKSEC	; seek timeout
+MSPIN	equ	TCKSEC / 2	; motor spinup time
+MONTIM	equ	5 * TCKSEC	; motor on time
+
+; Device-dependent UCB parameters
+
+UX.BFP	equ	UCBSZ + 0	; address of buffer in user space (2 bytes)
+UX.BNK	equ	UX.BFP + 2	; user bank (2 bytes)
+UX.TRK	equ	UX.BNK + 2	; last track number (1 byte)
+UX.CNT	equ	UX.TRK + 1	; byte count (2 bytes)
+
+;-----------------------------------------------------------------------
+
+	CSEG
+
+; Device descriptor table - must be at the start of the file
+
+DEVDY:	db	'DY',4		; device name and number of units
+	dw	UCBDY0		; address of UCB list
+	jp	INIT		; entry points
+	jp	IOREQ
+	jp	IOKILL
+	jp	TMOUT
+
+	DSEG
+
+UCBDY0:	dw	UCBDY1		; link to next UCB
+	db	0		; unit 0
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	ds	2		; UX.BFP
+	ds	2		; UX.BNK
+	ds	1		; UX.TRK
+	ds	2		; UX.CNT
+
+UCBDY1:	dw	UCBDY2		; link to next UCB
+	db	1		; unit 1
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	ds	2		; UX.BFP
+	ds	2		; UX.BNK
+	ds	1		; UX.TRK
+	ds	2		; UX.CNT
+
+UCBDY2:	dw	UCBDY3		; link to next UCB
+	db	2		; unit 2
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	ds	2		; UX.BFP
+	ds	2		; UX.BNK
+	ds	1		; UX.TRK
+	ds	2		; UX.CNT
+
+UCBDY3:	dw	0		; link to next UCB
+	db	3		; unit 3
+	db	0		; status byte
+	ds	2		; back pointer to DCB (set by kernel)
+	dw	SCB		; pointer to SCB
+	dw	0		; redirect pointer
+	db	0		; control bits
+	dw	(1 SHL DV.REC) OR (1 SHL DV.DIR) OR (1 SHL DV.MNT)
+	dw	0		; TCB address of attached task
+	dw	0		; TCB address of ACP task
+	dw	0		; LCB address of owner
+	ds	2		; UX.BFP
+	ds	2		; UX.BNK
+	ds	1		; UX.TRK
+	ds	2		; UX.CNT
+
+SCB:	db	0		; status byte
+	dw	0		; head of I/O packet list
+	dw	0		; address of current I/O packet
+
+fblk:	dw	0
+	db	0
+	dw	ICONT		; fork block for end-of-interrupt process
+	dw	0
+
+mblk:	dw	0
+	db	0
+	dw	MTRON		; fork block for motor-on delay
+	dw	0
+
+	CSEG
+
+;-----------------------------------------------------------------------
+
+INIT:	ld	(DYDCB),de
+	ld	ix,UCBDY0
+ini1:	res	US.BSY,(ix+U.ST); clear busy bit
+	ld	(ix+UX.TRK),-1	; set recalibration required for all drives
+	ldw	ix,(ix)
+	ld	a,ixh
+	or	ixl
+	jr	nz,ini1
+	ld	hl,0
+	ldw	(SCB+S.CPKT),hl
+	xor	a
+	ld	(SCB+S.ST),a	; clear busy state
+
+	ld	(dcnt),a	; clear all timeout counters
+	ld	(mcnt),a
+	ld	(icnt),hl
+	ld	(motim),hl
+	ld	(INTFLG),a	; clear interrupt flag
+	ld	(IPF),a		;  and interrupt pending flag
+
+	ld	hl,(DYDCB)
+	ld	de,D.TCNT
+	add	hl,de
+	ld	de,1		; arrange for the timeout entry to be
+	ldw	(hl),de		;  called every clock tick
+	ld	(lcnt),6
+
+	ld	de,FDCINT
+	ld	hl,(UCBDY0+U.DCB)
+	ld	a,(hl+D.BANK)
+	ld	c,a
+	ld	a,4		; FDC uses INTC
+	call	SETHVC		; setup interrupt vector
+
+	call	RESET		; reset FDC
+	call	SPECIFY
+	ld	a,(ERFLAG)
+	or	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Handle I/O request, called by the kernel with IY = UCB.
+
+IOREQ:	call	GETPKT		; dequeue I/O packet, return address in IX
+	ret	c		; return if unit busy or no work to do
+	ld	(ESP),sp	; remember entry SP
+	ld	(UCBADR),iy	; save UCB address for interrupt routines
+	set	US.BSY,(iy+U.ST)
+	ldw	bc,(ix+I.TCB)	; get TCB address of requesting task into BC
+	ld	hl,T.PCB
+	add	hl,bc		; index into PCB field
+	ldw	de,(hl)		; get PCB address into DE
+	ld	hl,P.BASE
+	add	hl,de		; index into subpartition base
+	ldw	hl,(hl)
+	ldw	(iy+UX.BNK),hl	; save it
+	ld	de,I.QDB
+	add	ix,de		; point to QDB
+	ldw	de,(ix+Q.BUF)	; get buffer address
+	ldw	(iy+UX.BFP),de
+  IF 1
+	ld	hl,T.ATTR
+	add	hl,bc
+	bit	TA.PRV,(hl)	; task privileged?
+	jr	z,iorq0		; branch if not
+	ld	hl,T.ST
+	add	hl,bc
+	bit	TS.SUP,(hl)	; task in supervisor mode?
+	jr	z,iorq0		; branch if not
+	ld	a,40h
+	dec	a
+	cp	d		; UX.BFP in kernel space?
+	jr	nc,iorq0	; branch if not
+	ld	hl,($SBANK)
+	ldw	(iy+UX.BNK),hl	; else adjust bank
+iorq0:
+  ENDIF
+	ldw	hl,(ix+Q.LEN)	; get buffer size
+	ldw	(iy+UX.CNT),hl
+	ldw	de,(ix+Q.BLK)	; get block number
+	ldw	hl,(ix+Q.BLK+2)
+	ld	(BLKNO),de
+	ld	(BLKNO+2),hl
+	ld	a,(ix+Q.FUNC)	; check function code
+	cp	IO.RLB
+	jp	z,FDREAD
+	cp	IO.WLB
+	jp	z,FDWRITE
+	cp	IO.RPB
+	jp	z,FDREAD
+	cp	IO.WPB
+	jp	z,FDWRITE
+	cp	IO.FMT
+	jp	z,FDFMT
+	cp	IO.SEC
+	jp	z,FDSEC
+	jp	ierr		; invalid function, send error code
+				;  and free packet via IODONE
+
+;-----------------------------------------------------------------------
+
+; Cancel current I/O operation, not implemented (disk I/O operations
+; are normally allowed to terminate).
+
+IOKILL:
+	ret
+
+;-----------------------------------------------------------------------
+
+; Sense characteristics (right now returns the storage size in blocks)
+
+FDSEC:	ld	hl,4
+	call	CHKLEN		; ensure user buffer is large enough
+	jp	c,ierr
+	call	CHKBUF		; ensure buffer is within task limits
+	jp	c,ierr
+	ldw	hl,(iy+UX.BFP)
+	ldw	de,(iy+UX.BNK)
+	ld	bc,TRKS*SPT	; blocks = tracks * sectors
+	call	$UPUTW		; store lo-word
+	ld	bc,0
+	call	$UPUTW		; store hi-word
+	ld	de,4		; DE = transfer count
+	ld	bc,E.OK		; BC = result code
+	jp	iend1		; finish operation
+
+;-----------------------------------------------------------------------
+
+; Read a block (number in BLKNO) from drive U.UNIT to memory buffer
+; UX.BFP in bank UX.BNK
+
+FDREAD:	call	CHKBLK		; validate block number and buffer size
+	jp	c,ierr
+	call	CHKBUF		; ensure buffer is within task limits
+	jp	c,ierr
+	ld	hl,(BLKNO)
+	divu	hl,SPT		; track = blkno / SPT, sector = remainder
+	ld	(TRACK),a
+	ld	a,l
+	ld	(SECTOR),a
+	ld	a,(ERFLAG)
+	or	a
+	call	nz,IRESET
+	jp	DSKRD
+
+; Write a block (number in BLKNO) from memory buffer UX.BFP bank UX.BNK
+; to drive U.UNIT.
+
+FDWRITE:call	CHKBLK		; validate block number and buffer size
+	jp	c,ierr
+	call	CHKBUF		; ensure buffer is within task limits
+	jp	c,ierr
+	ld	hl,(BLKNO)
+	divu	hl,SPT		; track = blkno / SPT, sector = remainder
+	ld	(TRACK),a
+	ld	a,l
+	ld	(SECTOR),a
+	ld	a,(ERFLAG)
+	or	a
+	call	nz,IRESET
+	jp	DSKWR
+
+; Format track (number in BLKNO) of drive U.UNIT using track table from
+; UX.BFP in bank UX.BNK
+
+FDFMT:	call	CHKBUF		; ensure buffer is within task limits
+	jp	c,ierr
+	ld	hl,(BLKNO)
+	ld	de,TRKS-1
+	call	cphlde		; validate track number
+	jp	c,ierr
+	ld	a,l
+	ld	(TRACK),a
+	ld	a,(ERFLAG)
+	or	a
+	call	nz,IRESET
+	ld	a,(ix+Q.SUBF)	; get subfunction code
+	or	a
+	jp	z,FORMAT
+	dec	a
+	jp	z,VERIFY
+	jp	ierr
+
+; Ensure block number is within limits, and that the user buffer is large
+; enough
+
+CHKBLK:	ld	hl,512
+	call	CHKLEN		; at least one full block
+	ret	c
+	ld	hl,(BLKNO+2)
+	ld	a,h
+	or	l
+	scf
+	ret	nz		; block number obviously too large
+	ld	de,(BLKNO)
+	ld	hl,TRKS*SPT
+	call	cphlde		; CY if HL (total) > DE (blkno)
+	ccf
+	ret
+
+; Ensure user buffer is large enough. Called with HL = length.
+
+CHKLEN:	ldw	de,(iy+UX.CNT)
+cphlde:	ld	a,d
+	cp	h
+	ret	nz		; CY if DE (bufsiz) < HL (length)
+	ld	a,e
+	cp	l
+	ret
+
+; Ensure user buffer is within task limits.
+
+CHKBUF:	ldw	ix,(iy+U.SCB)	; get SCB address
+	ldw	ix,(ix+S.CPKT)	; fetch current packet address
+	ldw	de,(ix+I.QDB+Q.BUF) ; get buffer address
+	ldw	bc,(ix+I.QDB+Q.LEN) ; get buffer size
+	ldw	ix,(ix+I.TCB)	    ; get TCB address
+	or	a		    ; clear CY
+	bit	TA.PRV,(ix+T.ATTR)  ; task privileged?
+	jr	z,cb1		    ; no
+	bit	TS.SUP,(ix+T.ST)    ; kernel database mapped to task space?
+	ret	nz		; yes, allow operation
+cb1:	jp	$VALTB		; validate task buffer
+
+;-----------------------------------------------------------------------
+
+; Perform a disk controller reset.
+;
+; Input:
+;   None.
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure and error is in ERFLAG.
+; Modifies A.
+
+RESET:	call	RESFDC
+	xor	a
+	ld	(mstat),a
+	out	(Mot_Off),a	; motors off
+	ld	a,FDCTMO
+	ld	(dcnt),a
+	ei
+r1:	ld	a,(INTFLG)
+	or	a
+	jr	nz,r2
+	ld	a,(dcnt)
+	or	a
+	jr	nz,r1
+	ld	a,(ERFLAG)
+	or	TIMOUT
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	scf
+	ret
+r2:	xor	a
+	ld	(INTFLG),a
+	ret
+
+RESFDC:	iopage	BOARDP
+	xor	a
+	ld	(ERFLAG),a
+	ld	a,10001000b	; Special Mode, DMA, reset
+	out	(FdcLdOR),a
+	in	a,(FdcLdCR)	; read DRS register to complete operation
+	ld	a,10001100b	; lift reset bit
+	out	(FdcLdOR),a
+	in	a,(FdcSta)
+	ret
+
+IRESET:	call	RESFDC
+	ld	hl,FDCTMO	; an interrupt may happen
+	call	WTINT		;  if switching from non-DMA mode
+	call	SPECIFY		; issue SPECIFY command
+	ret
+
+;-----------------------------------------------------------------------
+
+; Send specify command to FDC
+;
+; Input:
+;   None.
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure and error is in ERFLAG.
+; Assumes BOARDP I/O page has been set.
+; Modifies A and C.
+
+SPECIFY:ld	a,03h		; Specify command
+	call	OUT72
+	ld	a,13h		; defaults: SRT=0Dh (3ms), HLT=01h (4ms)
+	ld	c,a
+	and	0Fh		; keep only SRT
+	neg			; make 2's complement
+	rla			; move to high nibble
+	rla
+	rla
+	rla
+	or	0Fh		; add maximum HUT
+	call	OUT72
+	ld	a,c		; restore timing byte for HLT
+	rra			; move HLT down to count * 4
+	rra
+	rra
+	and	1Eh		; kill possible junk, ensure mode=DMA
+	call	OUT72
+	out	(Drv_0),a	; FDC DRV low for High Density
+	xor	a		; data rate for 1.44Mb floppies: 500kb/s
+	out	(FdcLdCR),a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read one sector from diskette.
+;
+; Input:
+;   IY = UCB address
+;   Memory variables as follow:
+;   SECTOR = Sector to read
+;   TRACK  = Track number
+; Output:
+;   FDCRES = Controller status bytes
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL and BC
+
+DSKRD:	ldw	(dmaset),DMARD	; read from floppy, write to mem
+	ld	e,46h		; FDC read command
+	jr	rwop
+
+;-----------------------------------------------------------------------
+
+; Write one sector to diskette.
+;
+; Input:
+;   IY = UCB address
+;   Memory variables as follow:
+;   SECTOR = Sector to write
+;   TRACK  = Track number
+; Output:
+;   FDCRES = Controller status bytes
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL, BC and DE.
+
+DSKWR:	ldw	(dmaset),DMAWR	; read from mem, write to floppy
+	ld	e,45h		; FDC write command
+	jr	rwop
+
+;-----------------------------------------------------------------------
+
+; Format track.
+;
+; Input:
+;   IY = UCB address
+;   Memory variables as follow:
+;   TRACK  = Track number
+; Output:
+;   FDCRES = Controller status bytes
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL and BC
+
+FORMAT:	ldw	(dmaset),DMAWR	; read from mem, write to floppy
+	ld	e,4Dh		; FDC format track command
+	jr	rwop
+
+;-----------------------------------------------------------------------
+
+; Verify track.
+;
+; Input:
+;   IY = UCB address
+;   Memory variables as follow:
+;   TRACK  = Track number
+; Output:
+;   FDCRES = Controller status bytes
+;   ERFLAG = Operation status. Zero means success.
+; Modifies A, HL and BC
+
+VERIFY:	ldw	(dmaset),DMAVFY	; read from floppy, write to mem
+	ld	e,02h		; FDC read track command
+
+; ----- common entry point for all operations
+
+rwop:	ld	(tries),5	; max retries
+rw1:	push	de
+	ld	hl,(dmaset)
+	call	(hl)		; setup DMA
+	pop	de
+
+	ldw	(motim),MONTIM	; reset motor-on counter
+	ld	a,(mstat)
+	or	a		; motor on?
+	jr	nz,rw2		; jump if yes
+	ld	a,1
+	ld	(mstat),a
+	iopage	BOARDP
+	out	(Mot_On),a	; else start it up
+	call	MWAIT		; wait for motor spinup, will return
+				;  as fork process
+
+; ----- do the seek operation
+
+rw2:	push	rwerr		; dummy return on stack for OUT72, SEEK
+				;  and RECAL? errors below
+	iopage	BOARDP
+	call	SPECIFY		; send specify command
+	ret	c
+	call	RECAL?		; recalibrate drive if necessary
+	ret	c
+
+; ----- send out the parameters to the controller
+
+	iopage	BOARDP
+	xor	a
+	ld	(INTFLG),a	; clear interrupt flag
+
+	ld	a,e		; recover the command
+	cp	4Dh		; format command?
+	jp	z,fmt1		; jump if yes
+
+	call	SEEK		; move to correct track
+	ret	c		; if error, then exit via rwerr
+
+	xor	a
+	ld	(INTFLG),a	; clear interrupt flag
+
+	ld	a,e
+	call	OUT72		; output command to controller
+	ld	d,(iy+U.UNIT)	; get driver number (unit) into D
+	ld	a,(TRACK)	; odd tracks are on side 1
+	and	1		; get the current head number
+	ld	b,a
+	rlca
+	rlca			; move it to bit 2
+	or	d		; add drive number
+	call	OUT72
+	ld	a,(TRACK)
+	srl	a		; cylinder number
+	call	OUT72
+	ld	a,b		; head number
+	call	OUT72
+	ld	a,e
+	sub	56h		; verify track?
+	jr	z,rw3
+	ld	a,(SECTOR)	; sector number
+rw3:	inc	a		; sectors begin at 1
+	ld	b,a
+	call	OUT72
+	ld	a,2		; 512 bytes/sector
+	call	OUT72
+	ld	a,e
+	cp	56h		; verify track?
+	ld	a,SPT
+	jr	z,rw4
+	ld	a,b		; final sector
+rw4:	call	OUT72
+	ld	a,1Bh		; gap length
+	call	OUT72
+	ld	a,0FFh		; DTL
+	call	OUT72
+
+; ----- wait for operation to end
+
+rw5:	ld	hl,FDCTMO	; timeout value
+	call	WTINT		; wait for interrupt
+	ret	c		; timeout
+	call	rwend		; check FDC results
+	ret	c
+	pop	hl		; can now discard that dummy ret addr
+	ld	bc,E.OK
+	jp	iend		; success, end I/O
+
+; ----- error, recalibrate drive and retry operation (TODO: reset FDC?)
+
+rwerr:	call	DMASTOP		; stop DMA
+	push	de
+	call	RESULT		; flush the results buffer
+	pop	de
+	ld	(iy+UX.TRK),-1	; set recalibration required flag
+	ld	hl,tries
+	dec	(hl)		; decrement retry count
+	ld	bc,E.IO
+	jr	z,iend		; if zero, give up
+	call	IRESET		; else reset controller
+	jp	rw1		; and try again
+
+; ----- end I/O
+	
+ierr:	ld	bc,E.BADOP	; error code = invalid operation
+iend:	call	getcnt		; get number bytes processed into DE
+iend1:	res	US.BSY,(iy+U.ST)
+	jp	IODONE		; store result and end operation
+
+getcnt:	ld	a,c
+	or	a
+	ld	de,512
+	ret	z
+	ld	de,0
+	ret
+
+; ----- format operation, seek already done
+
+fmt1:	call	SEEK		; move to track, but ignore errors
+
+	iopage	DMAP
+	ld	c,DCR0
+	ld	hl,SPT*4	; 4 bytes/sector
+	outw	(c),hl
+
+	iopage	BOARDP
+	ld	a,4Dh		; format track command
+	call	OUT72
+	ld	d,(iy+U.UNIT)	; get drive number into D
+	ld	a,(TRACK)
+	and	1		; head
+	rlca
+	rlca			; move to bit 2
+	or	d		; add drive number
+	call	OUT72		; drive and side
+	ld	a,2		; 512 bytes
+	call	OUT72		; sector size
+	ld	a,SPT
+	call	OUT72		; final sector number
+	ld	a,108
+	call	OUT72		; gap-3 length
+	ld	a,0E5h
+	call	OUT72		; sector filler byte, FDC running
+	jp	rw5
+
+;-----------------------------------------------------------------------
+
+; Finish disk I/O operation. This section of code is processed via fork
+; after the FDC interrupt happens and the result registers are read.
+
+rwend:	call	DMASTOP		; stop DMA
+	ld	a,(ERFLAG)	; check for FDC error
+	or	a
+	ld	a,E.IO
+	scf
+	ret	nz
+
+; ----- check the results returned by the controller
+
+	ld	hl,FDCRES
+	ld	a,(hl)		; get ST0
+	and	0C0h		; test for normal operation
+	ret	z		; return with A=0 on success
+	cp	40h		; test for abnormal termination
+	ld	c,ERRFDC
+	jr	nz,rw6		; not abnormal, bad FDC
+
+; ----- abnormal termination, find out why
+
+	inc	hl
+	ld	a,(hl)		; get ST1
+	rla			; test for EOT found
+;;	ld	c,RCNFND
+;;	jr	c,rw6		; normal for P112 and CPU280
+	rla
+	rla			; test for CRC error
+	ld	c,ERRCRC
+	jr	c,rw6
+	rla			; test for DMA overrun
+	ld	c,ERRDMA
+	jr	c,rw6
+	rla
+	rla			; test for record not found
+	ld	c,RCNFND
+	jr	c,rw6
+	rla			; test for write protect
+	ld	c,WPRT
+	jr	c,rw6
+	rla			; test missing address mark
+	ld	c,ERRMRK
+	jr	c,rw6
+	xor	a		; return success
+	ret
+
+rw6:	ld	a,(ERFLAG)
+	or	c
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	ld	a,E.IO
+	scf			; return error
+	ret
+
+;-----------------------------------------------------------------------
+
+; Send a byte to the FDC controller after testing for correct direction
+; and controller ready. This routine will time out if the byte is not
+; accepted within a reasonable amount of time, setting the diskette
+; status on completion.
+;
+; Input:
+;   A = Byte to output
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure and error is in ERFLAG.
+;        If a failure has occurred, the return is made one level higher
+;        than the caller of OUT72. This removes the requirement of
+;        testing after every call of OUT72.
+; Assumes I/O page is set to BOARDP.
+; Modifies A.
+
+OUT72:	push	af
+	ld	a,FDCTMO	; count for time out
+	ld	(dcnt),a
+	ei
+out2:	in	a,(FdcSta)	; get the status
+	and	0C0h		; test direction and ready bits
+	cp	80h		; it is ready?
+	jr	z,out1		; yes, so output
+	ld	a,(dcnt)
+	or	a
+	jr	nz,out2
+	ld	a,(ERFLAG)
+	or	TIMOUT		; error condition
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	pop	af
+	pop	af		; discard the return address
+	scf			; indicate error to caller
+	ret
+out1:	pop	af		; get byte to output
+	out	(FdcDat),a
+	or	a		; clear CF
+	ret
+
+;-----------------------------------------------------------------------
+
+; Recalibrate the drive if it has not been accessed since the drive
+; reset command was issued.
+;
+; Input:
+;   U.UNIT = Drive number
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure, ERFLAG set accordingly.
+; Assumes I/O page is set to BOARDP.
+; Modifies A, HL.
+
+RECAL?:	ld	a,(iy+UX.TRK)
+	inc	a		; test for recalib. required
+	or	a		; ensure CY is clear
+	ret	nz		; no recalib.
+
+	ld	b,2
+rc3:	xor	a
+	ld	(INTFLG),a	; clear interrupt flag
+	ld	a,(ERFLAG)
+	and	NOT (ERRFDC OR ERSEEK)
+	ld	(ERFLAG),a
+	ld	a,07h		; recalibrate command
+	call	OUT72
+	ld	a,(iy+U.UNIT)	; drive number
+	call	OUT72
+	ld	hl,SEEKTM
+	call	WTINT		; wait for the interrupt
+	ret	c		; if timeout, return error
+	ld	a,(ERFLAG)	; check FDC error flag
+	and	ERRFDC
+	scf
+	ret	nz		; if FDC failed, return error
+	ld	a,(FDCRES)	; get the first status byte
+	and	0D0h		; test for AT/IC and EC flags
+	jr	z,rc2		; success
+	djnz	rc3		; if first time error, retry (track > 76)
+	jp	skerr		; else flag error
+
+rc2:	ld	(iy+UX.TRK),a	; set track number to zero (clears recal. flag)
+	ret			; return with CY clear
+
+;-----------------------------------------------------------------------
+
+; Move the head on the drive to the specified track. Assumes the drive
+; has been recalibrated as necessary and thus in sync with controller.
+;
+; Input:
+;   TRACK  = track to seek to
+;   U.UNIT = drive number
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure, ERFLAG set accordingly.
+; Assumes I/O page is set to BOARDP.
+; Modifies A, C.
+
+SEEK:	ld	a,(TRACK)
+	cp	(iy+UX.TRK)	; are we there yet?
+	ret	z		; yes
+	xor	a
+	ld	(INTFLG),a	; clear interrupt flag
+	ld	a,0Fh		; seek command to FDC
+	call	OUT72
+	ld	d,(iy+U.UNIT)	; get drive number into D
+	ld	a,(TRACK)	; odd tracks are on side 1
+	ld	c,a
+	and	1		; get the current head number
+	rlca
+	rlca			; move it to bit 2
+	or	d		; add drive number
+	call	OUT72
+	srl	c
+	ld	a,c		; half-track number
+	call	OUT72
+sk1:	ld	hl,SEEKTM
+	call	WTINT		; wait for the interrupt
+	ret	c		; if timeout, return error
+	ld	a,(ERFLAG)	; check FDC error flag
+	or	a
+	scf
+	ret	nz		; if FDC failed, return error
+	di
+	xor	a
+	ld	(INTFLG),a
+	ld	a,(FDCRES)	; get the first status byte
+	ei
+	bit	5,a		; seek complete?
+	jr	z,sk1		; no
+	and	0C0h
+	jr	nz,skerr
+	ld	a,(FDCRES+1)
+	cp	c		; correct cylinder?
+	jr	nz,skerr	; no
+	ld	a,(TRACK)
+	ld	(iy+UX.TRK),a	; remember last track
+	ret			; good return
+
+skerr:	ld	a,(ERFLAG)
+	or	ERSEEK
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	scf
+	ret			; return with CY set if error
+
+;-----------------------------------------------------------------------
+
+; Set up the DMA for read operation.
+;
+; Input:
+;   IY = UCB address
+; Output:
+;   None.
+; Modifies A.
+
+DMARD:	push	hl
+	push	bc
+	iopage	DMAP
+
+	ld	c,TDR0
+	ld	hl,0
+	outw	(c),hl		; disable DMA while we mess around
+
+	ld	c,DAL0
+	ldw	hl,(iy+UX.BFP)	; dst address
+	outw	(c),hl		; set low half of address
+	ld	e,h		; save high nibble
+	ld	d,0
+	ldw	hl,(iy+UX.BNK)
+	addw	hl,($SBASE)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,de
+	inc	c		; DAH0
+	outw	(c),hl		; set high half of address
+
+	ld	c,SAL0
+	ld	hl,FdcDack	; src I/O address
+	outw	(c),hl
+	inc	c		; SAH0
+	ld	hl,BOARDP*256
+	outw	(c),hl
+
+	ld	c,DCR0
+	ld	hl,512
+	outw	(c),hl		; set count
+
+	ld	c,TDR0
+	ld	hl,0E080h	; burst, read, byte size, inc mem addr
+	outw	(c),hl
+
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set up the DMA for write operation.
+;
+; Input:
+;   IY = UCB address
+; Output:
+;   None.
+; Modifies A.
+
+DMAWR:	push	hl
+	push	bc
+	iopage	DMAP
+
+	ld	c,TDR0
+	ld	hl,0
+	outw	(c),hl		; disable DMA while we mess around
+
+	ld	c,DAL0
+	ld	hl,FdcDack	; dst I/O address
+	outw	(c),hl
+	inc	c		; DAH0
+	ld	hl,BOARDP*256
+	outw	(c),hl
+
+	ld	c,SAL0
+	ldw	hl,(iy+UX.BFP)	; src address
+	outw	(c),hl		; set low half of address
+	ld	e,h		; save high nibble
+	ld	d,0
+	ldw	hl,(iy+UX.BNK)
+	addw	hl,($SBASE)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,de
+	inc	c		; SAH0
+	outw	(c),hl		; set high half of address
+
+	ld	c,DCR0
+	ld	hl,512
+	outw	(c),hl		; set count
+
+	ld	c,TDR0
+	ld	hl,0808Ch	; burst, write, byte size, inc mem addr
+	outw	(c),hl
+
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set up the DMA for verify operation.
+;
+; Input:
+;   IY = UCB address
+; Output:
+;   None.
+; Modifies A.
+
+DMAVFY:	push	hl
+	push	bc
+	iopage	DMAP
+
+	ld	c,TDR0
+	ld	hl,0
+	outw	(c),hl		; disable DMA while we mess around
+
+	ld	c,DAL0
+	ldw	hl,RESULT	; dst address
+	outw	(c),hl		; set low half of address
+	ld	e,h		; save high nibble
+	ld	d,0
+	ldw	hl,($SBANK)	; DCB+D.BANK
+	addw	hl,($SBASE)
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,de
+	inc	c		; DAH0
+	outw	(c),hl		; set high half of address
+
+	ld	c,SAL0
+	ld	hl,FdcDack	; src I/O address
+	outw	(c),hl
+	inc	c		; SAH0
+	ld	hl,BOARDP*256
+	outw	(c),hl
+
+	ld	c,DCR0
+	ld	hl,512
+	outw	(c),hl		; set count
+
+	ld	c,TDR0
+	ld	hl,0E084h	; burst, read, byte size, fixed mem addr
+	outw	(c),hl
+
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Stop (disable) DMA channel 0.
+;
+; Input:
+;   None.
+; Output:
+;   None.
+
+DMASTOP:push	hl
+	push	bc
+	iopage	DMAP
+	ld	c,TDR0
+	ld	hl,0
+	outw	(c),hl
+	pop	bc
+	pop	hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Wait for an interrupt to occurr. Saves context and returns to the
+; system after setting and timeout counter. Execution will be resumed
+; via fork block transparently to the caller.
+;
+; Input:
+;   HL = timeout value in clock ticks.
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure and error is in ERFLAG.
+; Modifies A.
+
+FORKWT	equ	0	; disable fork-process-driven I/O wait
+			;  until an obscure bug/problem gets fixed.
+
+WTINT:	di
+	ld	a,(INTFLG)	; just in case
+	or	a
+	jr	nz,w1
+	ld	a,1
+	ld	(IPF),a		; set interrupt pending flag
+	ld	(icnt),hl	; init timeout counter
+ if FORKWT
+	push	de		; save only what's worth saving
+	push	bc
+	ld	hl,(ESP)
+	subw	hl,sp
+	ld	(LEN),hl	; save stack frame length
+	ld	c,l
+	ld	b,h
+	subw	hl,hl
+	add	hl,sp
+	ld	de,RSAV
+	ldir			; save context (stack frame)
+	ld	sp,(ESP)	; rewind stack
+	ei
+	ret			; and go back to system
+ else
+	ei
+	ld	hl,IPF
+x1:	ld	a,(hl)
+	or	a
+	jr	nz,x1
+	jr	x2
+ endif
+
+w1:	xor	a
+	ld	(INTFLG),a
+	ei
+	ret
+
+; Fork process continues here after interrupt or timeout
+
+ICONT:	iopage	BOARDP
+	ld	(ESP),sp	; save new entry SP (fork process may be
+	subw	hl,hl		;  entered from a different system stack level)
+	add	hl,sp
+	ld	bc,(LEN)
+	subw	hl,bc
+	ld	sp,hl		; alloc space for saved stack frame
+	ex	de,hl
+	ld	hl,RSAV
+	ldir			; restore context
+	pop	bc		; then restore saved registers
+	pop	de
+ if FORKWT eq 0
+x2:
+ endif
+	ld	a,(INTFLG)
+	or	a
+	jr	nz,w1		; interrupt happened, return with CY clear
+	ld	a,(ERFLAG)
+	or	TIMOUT		; nothing happened, interrupt timed out
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	scf			; error return
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read anything that the FDC has to say following an interrupt.
+;
+; Input:
+;   None.
+; Output:
+;   CY = 0 on success
+;   CY = 1 on failure (time out in waiting for status).
+;        FDCRES area has status bytes loaded into it.
+; Modifies A.
+
+RESULT:	iopage	BOARDP
+	ld	hl,FDCRES	; pointer to data area
+	ld	b,7		; max status bytes
+	call	WTRQM		; wait for RQM
+	jr	c,rs5
+	bit	5,a		; test CB bit
+	jr	z,rs2		; jump if not busy
+
+rs1:	; read R/W result
+
+	call	WTRQM
+	jr	c,rs5
+	rla
+	ret	nc
+	in	a,(FdcDat)	; get the data
+	ld	(hl),a		; store the byte
+	inc	hl
+	djnz	rs1		; decrement status counter and go back for more
+	call	WTRQM
+	jr	c,rs5
+	rla
+	ret	nc
+	ld	c,ERRFDC
+	jr	rs5
+
+rs2:	; Sense Interrupt Status
+
+	ld	a,08h		; sense interrupt command
+	out	(FdcDat),a	; this will generate another interrupt
+	call	WTRQM
+	jr	c,rs5
+	in	a,(FdcDat)	; read ST0
+	ld	(hl),a
+	inc	hl
+	cp	80h
+	ret	z		; invalid command
+	call	WTRQM
+	jr	c,rs5
+	in	a,(FdcDat)
+	ld	(hl),a
+	ret
+
+rs5:	ld	a,(ERFLAG)
+	or	c
+	ld	(ERFLAG),a
+	incw	($ERSEQ)
+	scf			; set error return
+	ret
+
+WTRQM:	ld	de,100h
+wtr1:	in	a,(FdcSta)
+	rla
+	ccf
+	ret	nc
+	dec	de
+	ld	a,d
+	or	e
+	jr	nz,wtr1
+	ld	c,TIMOUT
+	scf
+	ret
+
+;-----------------------------------------------------------------------
+
+; FDC interrupt routine. AF, BC, DE, HL and I/O page have been already
+; saved by the system.
+
+FDCINT:	iopage	BOARDP
+	in	a,(FdcSta)	; test for FDC interrupt
+	rla
+	ret	nc		; ignore if not FDC
+	call	RESULT		; read results
+	ld	a,1
+	ld	(INTFLG),a	; signal interrupt occurred
+	call	INTEND		; fork end of interrupt process
+	ld	hl,0
+	ld	(icnt),hl	; disable timeout counter
+	ret
+
+; Queue fork block to continue driver process after interrupt or timeout.
+; Called from the interrupt handler above or the timeout routine with
+; interrupts disabled.
+
+INTEND:	ld	hl,IPF
+	ld	a,(hl)
+	or	a		; interrupt pending?
+	ret	z		; no, return
+	ld	(hl),0		; clear flag
+ if FORKWT eq 0
+	ret
+ endif
+	push	ix
+	ld	hl,(UCBADR)
+	ld	(fblk+5),hl
+	ld	ix,fblk
+	call	LNKFQB		; preserves BC, IX and IY
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; This routine is called at each clock interrupt with interrupts
+; disabled. It implements the different timeout functions.
+
+TMOUT:	ld	hl,(DYDCB)
+	ld	de,D.TCNT
+	add	hl,de
+	ld	de,1		; re-arm the timeout process
+	ldw	(hl),de
+	call	LEDS
+
+	ld	hl,(motim)	; point to FDC motor-on timer
+	ld	a,h
+	or	l		; already timed out?
+	jr	z,tm1		; jump if yes
+	dec	hl		; otherwise count down
+	ld	(motim),hl
+	ld	a,h
+	or	l
+	call    z,MTROFF	; stop motors if timed out
+
+tm1:	ld	hl,(icnt)	; check FDC interrupt timeout counter
+	ld	a,h		; already expired?
+	or	l
+	jr	z,tm2		; yes, ignore it
+	dec	hl		; else count down
+	ld	(icnt),hl
+	ld	a,h		; just timed out?
+	or	l
+	call	z,INTEND	; yes, fork end of interrupt process
+
+tm2:	ld	hl,mcnt		; check motor spin-up
+	ld	a,(hl)
+	or	a		; timed out?
+	jr	z,tm3		; jump if yes
+	dec	(hl)		; just timed out?
+	call	z,MCONT		; yes, queue fork block to resume operation
+
+tm3:	ld	hl,dcnt		; check FDC access timeout counter
+	ld	a,(hl)
+	or	a		; timed out?
+	ret	z		; return if yes
+	dec	(hl)		; else count down
+	ret
+
+LEDS:	ld	hl,lcnt
+	dec	(hl)
+	ret	nz
+	ld	(hl),6
+	iopage	BOARDP
+	ld	hl,lcnt+1
+	inc	(hl)
+	ld	a,(hl)
+	and	06h
+	ld	hl,lseq
+	add	hl,a
+	ld	c,(hl)
+	out	(c),a
+	inc	hl
+	ld	c,(hl)
+	out	(c),a
+	ret
+
+lseq:	db	ld1_off,ld2_on
+	db	ld2_off,ld3_on
+	db	ld3_off,ld2_on
+	db	ld2_off,ld1_on
+
+;-----------------------------------------------------------------------
+
+; Motor wait (clock tick driven, will return to caller as a fork process)
+
+MWAIT:	pop	hl		; pop return (continue) address
+	ld	(RSAV),hl	; save it
+	ld	(RSAV+2),de	; save also drive number and command
+	ld	a,MSPIN
+	ld	(mcnt),a	; setup spin-up timer
+	ret			; return one level higher
+
+MCONT:	push	ix
+	ld	hl,(UCBADR)
+	ld	(mblk+5),hl
+	ld	ix,mblk
+	call	LNKFQB		; queue fork block
+	pop	ix
+	ret
+
+MTRON:	iopage	BOARDP		; just in case
+	ld	(ESP),sp	; reset entry SP
+	ld	de,(RSAV+2)	; restore drive number and command
+	ld	hl,(RSAV)
+	jp	(hl)		; continue execution after call to MWAIT
+
+;-----------------------------------------------------------------------
+
+; Motor off (clock tick driven)
+
+MTROFF:	xor	a
+	ld	(mstat),a	; clear flag
+	iopage	BOARDP
+	out	(Mot_Off),a	; turn motors off
+	ret
+
+;-----------------------------------------------------------------------
+
+	DSEG
+
+DYDCB::	ds	2	; address of our DCB
+
+BLKNO:	ds	4	; number of block to read
+TRACK:	ds	1	; track
+SECTOR:	ds	1	; sector to read
+ERFLAG:	ds	1	; error flags
+
+ESP:	ds	2	; saved entry SP
+RSAV:	ds	20	; register and stack frame save area for fork block
+LEN:	ds	2	; length of saved context
+UCBADR:	ds	2	; saved UCB address for interrupt routine context
+
+dmaset:	ds	2	; DMA setup routine address
+mstat:	ds	1	; motor status
+motim:	ds	2	; motor on time counter
+mcnt:	ds	1	; motor spin-up counter
+lcnt:	ds	2	; LED light show counter
+dcnt:	ds	1	; FDC I/O timeout counter
+icnt:	ds	2	; FDC interrupt timeout counter
+tries:	ds	1	; R/W retry count
+
+FDCRES:	ds	7	; status bytes for FDC
+
+IPF::	ds	1	; interrupt pending flag
+INTFLG:	ds	1	; non-zero means interrupt happened
+
+	END
