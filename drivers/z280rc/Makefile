@@ -2,8 +2,8 @@
 ZXCC = zxcc
 
 # Path to CP/M utilities
-ZSM4 = ../Tools/cpm/zsm4.com
-LBR  = ../Tools/cpm/lbr.com
+ZSM4 = ../../Tools/cpm/zsm4.com
+LBR  = ../../Tools/cpm/lbr.com
 
 .PREFIX:
 .PREFIX: .mac .rel
