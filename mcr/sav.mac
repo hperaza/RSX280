@@ -620,7 +620,6 @@ CKCOT:	ld	ix,($CTCB)
 msgcl:	db	'Console logging still active',0
 
 ; Ensure all tasks are installed from LB:
-; TODO: allow SY: if redirected to same device as LB:?
 
 CKTDEV:	ld	hl,($TLIST)
 ct1:	ld	a,h
@@ -799,7 +798,7 @@ DMOLB:
 
 	; TODO:
 	; - on failure, check for 'dismount in progress' bit
-	;   * is set, wait 1 second and check again, retrying 5..18 times
+	;   * if set, wait 1 second and check again, retrying 5..10 times
 	;   * if not set, error
 
 dm1:	ld	ix,$MVTBL
