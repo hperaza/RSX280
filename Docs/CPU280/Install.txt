@@ -1,0 +1,225 @@
+Generating the system
+=====================
+
+The system is normally compiled and generated under Linux in order to avoid
+a chicken-and-egg problem. A CP/M assembler and a linker running under an
+emulator are used to compile the kernel and system tasks. The final system
+generation is done with a Linux utility, source code included.
+
+It may be possible to build the system under Windows with e.g. CygWin, but I
+haven't tried it.
+
+The Makefile on the top-level directory of the project is used to automate
+the building process.
+
+Please note that there are several RSX280 applications that are now in
+different GitHub repositories. Right now these are:
+
+  ZSM4     (./progdev/zsm4)
+  BASIC11  (./progdev/basic11)
+  TED      (./ted)
+
+You can either copy the contents of the corresponding repository into the
+appropriate directory, or use a soft link to point to the copy of the
+repository.
+
+
+Pre-requisites
+--------------
+
+- John Elliott's zxcc CP/M emulator (http://www.seasip.demon.co.uk/Cpm/)
+
+- The CP/M utilities from the Tools/cpm directory:
+
+  * ZSM4 Macro-Assembler
+  * Digital Research's LINK 1.31
+  * TKB task builder 2.00
+  * Object Code Librarian LBR
+
+- The Linux utilities from the Tools/linux directory:
+
+  * mktask
+  * cksboot
+  * sym2inc
+  * vol180
+
+- A C compiler (e.g. gcc) to build the Linux utilities.
+
+
+Steps
+-----
+
+ 1. Compile the Linux tools:
+
+      make linux-tools
+
+ 2. Install zxcc and copy the CP/M utilities to a place where zxcc can find
+    them.
+
+ 3. Edit the Config.make file, select (uncomment) the 'platform = cpu280'
+    line and comment out the z280rc one. Select and/or edit the remaining
+    options as necessary to match your target device.
+
+ 4. Edit the inc/sysconf.inc.cpu280 file to select e.g. which drivers you want
+    included in the system, etc. (normally no modifications will be necessary
+    for Tilmann Reh's CPU280 board.)
+
+ 5. Update the include files in all source directories:
+
+      make update-incs
+
+ 6. Build the kernel image:
+
+      make system
+
+    This command also builds the floppy disk bootstrap program.
+
+    The kernel image resides on the system memory partition (first 64K of
+    memory) and contains the kernel itself, the system common, the startup
+    code and the device drivers.
+
+ 7. Build the system libraries:
+
+      make libs
+
+ 8. Build MCR and the Indirect Command Processor:
+
+      make cli
+
+ 9. Build the system utilities:
+
+      make utils
+
+    This will build the MCR external commands, the privileged utilities,
+    and PIP, RMD, TED, VDO, ZAP.
+
+    Note: DR Link may complain about an 'Unrecognized Item' while linking
+    certain utilities. That's because it does not recognize one particular
+    ZSM4 extension (IDENT pseudo-op), and the warning can be safely ignored.
+
+10. Build the program-development applications:
+
+      make progdev
+
+    This will build MAC (ZSM4), TKB, MKT, LBR and BASIC.
+
+11. Optionally, build the test programs and a few simple ASCII games
+    (the games require a VT100 or similar):
+
+      make test
+      make games
+
+Steps 6 to 11 above can be done with a single 'make all' command.
+
+
+Creating a bootable floppy disk image
+-------------------------------------
+
+ 1. Create a bare-bone disk image:
+
+      make disk-image
+
+    This creates a 1.44Mb disk image containing several empty directories,
+    copies the system image and the startup command file to it, and installs
+    the floppy bootloader.
+
+ 2. Copy the system files, utilities, help files and program development
+    applications:
+
+      make copy-system
+      make copy-utils
+      make copy-help
+      make copy-progdev
+
+    Note: The vol180 application may output a bunch of 'File not found'
+    messages. That is normal, since the copy script tries first to delete
+    any existing files before copying the new ones, and at this point the
+    disk image is pretty much empty.
+
+ 3. If desired, copy the test programs, BASIC examples, and the ASCII games:
+
+      make copy-basic
+      make copy-test
+      make copy-games
+
+ 4. Configure the system image:
+
+      make sysvmr
+
+The steps 2 and 3 above can be done with a single 'make copy-all' command.
+
+Once the CF partition image is ready, it can be copied to a real CF card
+with a command like this:
+
+  dd if=floppy.img of=/dev/fd0 bs=512
+
+where
+
+  /dev/fd0   is the floppy disk device name (check the Linux log files, or
+             use the dmesg command to figure out the correct device name on
+             your system, you don't want to overwrite your Linux disks!),
+  bs=512     sets the block size,
+
+
+Booting the system
+------------------
+
+To boot RSX280, you will need to boot first CP/M and use the supplied
+boot.com program (see the DiskImages directory of this repository) to boot
+RSX280. This is because the original CPU280 ROM can only boot CP/M:
+
+
+  E>b:boot
+  Enter drive to boot from: B
+  Place system disk on drive B and press return...
+
+  CPU280 2048K RSX280 V6.36
+  
+  >RED DY1:=LB:
+  >RED DY1:=SY:
+  >MOU DY1:
+  >@SY0:[SYSTEM]STARTUP.CMD
+  >* Please enter Time and Date (HR:MN DD-MMM-YYYY) [S T:1M]:
+  >tim
+  17:24:51 26-Nov-2022
+  >set /colog=on
+  >set /colog/nocoterm
+  >pip [syslog]*.*/pu:50
+  >upt
+  Up 0 days, 0 hours, 0 minutes and 18.22 seconds.
+  >@ <EOF>
+  >
+
+The current version uses an account file, and thus a password is required
+to login into other accounts. The image built above have the following
+accounts:
+
+  username  password
+  --------  --------
+  SYSTEM    rsx180     (note *not* rsx280)
+  USER
+  TEST      test
+  BASIC     basic
+  GAMES     games
+
+Note that user names are case-insensitive, but passwords are not! You can
+use the ACNT program (RUN $ACNT) to add/remove/modify user accounts.
+
+To shutdown RSX280, use the SHUTUP program:
+
+  >run $shutup
+  RSX280 SHUTDOWN PROGRAM
+
+  Enter minutes to wait before shutdown: 0
+  OK to shutdown? [Y/N]: y
+
+  SHUTUP -- System shutdown initiated -- 26-Nov-2022 18:04:23
+  SHUTUP -- All further logins are disabled
+
+  26-Nov-2022 18:04:26 System is now shutting down
+
+  >SET /COLOG=OFF
+  >DMO DY1:/DEV
+
+  SHUTUP -- Operation complete
+
