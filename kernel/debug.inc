@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -27,6 +27,7 @@
 
 CR	equ	0Dh
 LF	equ	0Ah
+TAB	equ	09h
 
 FALSE	equ	0
 TRUE	equ	NOT FALSE
@@ -50,11 +51,23 @@ $DBMON:	di
 	call	print		; output prompt
 	call	getln		; get command
 	push	$DBMON		; push return address
+	xor	a
+	ld	(argset),a
 	ld	hl,lnbuf
-	ld	a,(hl)
+	call	skipbl		; skip blanks and get command char
 	or	a
 	ret	z		; ignore empty lines
+	inc	hl
+	ld	(lnptr),hl
 	call	uc		; convert command char to uppercase
+	cp	'X'		; show regs?
+	jp	z,showregs
+	cp	'M'		; show MMU regs?
+	jp	z,showmmu
+	cp	'I'		; input/output commands may have a word	modifier
+	call	z,chkmod
+	cp	'W'
+	call	z,chkmod
 	push	af
 	call	get_args	; parse command and get arguments
 	ld	bc,(arg3)	; load arguments into registers
@@ -89,10 +102,6 @@ $DBMON:	di
 	jp	z,inport
 	cp	'O'		; output?
 	jp	z,outport
-	cp	'X'		; show regs?
-	jp	z,showregs
-	cp	'M'		; show MMU regs?
-	jp	z,showmmu
 	cp	'N'		; continue?
 	jp	z,continue
 	cp	'W'		; word?
@@ -103,6 +112,18 @@ error:	call	cr_lf
 	ld	a,'?'		; unknown command
 	call	mon_putch
 	jr	$DBMON
+
+chkmod:	ld	c,a
+	ld	a,(hl)
+	call	uc
+	cp	'W'
+	ld	a,c
+	ret	nz
+	inc	hl
+	ld	(lnptr),hl
+	ld	hl,argset
+	set	7,(hl)
+	ret
 
 prompt:	db	CR,LF,"Z280>",0
 
@@ -121,7 +142,7 @@ get:	call	mon_getch	; get char
 	jr	c,get		; ignore any other control chars
 	ld	c,a
 	ld	a,b
-	cp	20		; max length reached?
+	cp	30-1		; max length reached?
 	jr	nc,get		; ignore extra input if yes
 	ld	a,c
 	call	mon_putch	; echo char
@@ -165,6 +186,18 @@ print:	ld	a,(hl)
 	inc	hl
 	jr	print
 
+; skip blanks
+
+skip1:	inc	hl
+skipbl:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip1
+	cp	TAB
+	jr	z,skip1
+	ret
+
 ; get command line arguments
 
 get_args:
@@ -172,14 +205,17 @@ get_args:
 	ld	(arg1),hl	; unspecified args default to zero
 	ld	(arg2),hl
 	ld	(arg3),hl
-	ld	de,lnbuf+1
+	ld	de,(lnptr)
+	ld	c,01h
 	call	gethex		; get first arg
 	ld	(arg1),hl
 	ld	(arg2),hl
 	ret	c
+	ld	c,02h
 	call	gethex		; get second arg
 	ld	(arg2),hl
 	ret	c
+	ld	c,04h
 	call	gethex		; get third arg
 	ld	(arg3),hl
 	ret	c
@@ -189,40 +225,54 @@ get_args:
 
 gethex:	ld	hl,0
 gh1:	ld	a,(de)
-	call	uc
-	inc	de
-	or	a
+	or	a		; end of command line?
 	scf
-	ret	z
-	cp	','
-	ret	z
+	ret	z		; yes, return with CY flag set
+	inc	de
 	cp	' '
 	jr	z,gh1
-	sub	'0'
+	cp	','
+	ret	z
+	call	tohex
 	jp	c,error
-	cp	10
-	jr	c,dig
-	cp	11h
+	call	adddig
 	jp	c,error
-	cp	17h
-	jp	nc,error
-	sub	7
-dig:	ld	c,a
-	ld	b,0
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	add	hl,hl
-	jp	c,error
-	add	hl,bc
+	ld	a,(argset)
+	or	c		; set bit if argument present
+	ld	(argset),a
 	jr	gh1
+
+adddig:	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,a
+	ret
+
+tohex:	call	uc
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	nc
+	cp	11h
+	ret	c
+	cp	17h
+	ccf
+	ret	c
+	sub	7
+	ret
 
 ; compare addresses and return one level higher if they match
 
-next:	call	?stop
-	cpw	hl,de
-	jr	z,cmp_eq
-	inc	hl
+next:	call	?stop		; check for ^C abort
+	cpw	hl,de		; end address reached?
+	jr	z,cmp_eq	; return one level higher if yes
+	inc	hl		; else increment HL and return
 	ret
 cmp_eq:	inc	sp
 	inc	sp
@@ -234,9 +284,9 @@ cmp_eq:	inc	sp
 	or	a
 	ret	z
 	call	mon_getch
-	cp	3
+	cp	3		; ^C aborts
 	jp	z,ctrlc
-	cp	13h	; CTRL/S
+	cp	13h		; ^S suspends output
 	ret	nz
 	call	mon_getch
 	cp	3
@@ -272,57 +322,89 @@ m1:	add	hl,bc
 ; Dump region addr1...addr2
 
 dump:	push	hl
-	push	bc
+	ld	l,c
+	ld	h,b
+	ld	a,(argset)
+	bit	2,a		; bank specified?
+	jr	nz,dmp1		; yes
+	ld	hl,0		; else default to system bank
+dmp1:	call	ubank		; select user bank
+	pop	hl
+
+dmp2:	call	out_addr	; output address
+	push	hl
+	call	dmps3		; align start
+dmph:   ldup	a,(hl)		; get byte
+	call	outbyte		; output as hexadecimal
+	call	?stop		; check for ^C abort
+	cpw	hl,de
+	jr	z,enddmp	; exit loop when done
+	inc	hl
+	ld	a,l
+	and	0Fh		; max 16 bytes per line
+	jr	nz,dmph
+	pop	hl
+	call	dmpa		; dump ASCII as well
+	jr	dmp2
+
+enddmp:	inc	hl
+	ld	a,l
+	neg	a
+	ld	l,a
+	call	dmps3		; align end
+	pop	hl
+dmpa:	ld	c,1
+	call	dmps		; align start
+dmpa1:	ldup	a,(hl)		; get byte
+	cp	' '		; printable?
+	jr	c,outdot
+	cp	7Fh
+	jr	c,char
+outdot:	ld	a,'.'		; output a dot if non-printable
+char:	call	mon_putch
+	call	?stop		; check for ^C abort
+	cpw	hl,de
+	ret	z		; return when done
+	inc	hl
+	ld	a,l
+	and	0Fh		; max 16 chars per line
+	jr	nz,dmpa1
+	ret
+
+dmps3:	ld	c,3
+dmps:	ld	a,l
+	and	0Fh
+	ret	z
+	push	de
+	ld	b,a
+	ld	e,c
+dmp4:	ld	d,e
+dmp5:	call	space
+	dec	d
+	jr	nz,dmp5
+	djnz	dmp4
+	pop	de
+	ret
+
+; select user bank (in HL)
+
+ubank:	push	hl
 	iopage	MMUP
 	xor	a
 	out	(PDR),a
 	pop	hl
-	ld	a,h
-	or	l		; bank specified?
-	jr	nz,dmp0		; yes
-	ld	hl,(mmu_pdr+32)	; else default to system bank
-	jr	dmp3
-dmp0:	add	hl,hl
+	addw	hl,($SBASE)
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-dmp3:	set	3,l
+	add	hl,hl
+	set	3,l
 	ld	c,BMP
 	ld	b,16
 	ld	a,10h
-dmp1:	outw	(c),hl
+ub1:	outw	(c),hl
 	add	hl,a
-	djnz	dmp1
-	pop	hl
-dmp2:	call	out_addr
-	push	hl
-dmph:   ldup	a,(hl)
-	call	outbyte
-	call	?stop
-	cpw	hl,de
-	jr	z,enddmp
-	inc	hl
-	ld	a,l
-	and	0Fh
-	jr	nz,dmph
-	pop	hl
-	call	dmpa
-	jr	dmp2
-enddmp:	pop	hl
-dmpa:	ldup	a,(hl)
-	cp	' '
-	jr	c,outdot
-	cp	7Fh
-	jr	c,char
-outdot:	ld	a,'.'
-char:	call	mon_putch
-	call	?stop
-	cpw	hl,de
-	ret	z
-	inc	hl
-	ld	a,l
-	and	0Fh
-	jr	nz,dmpa
+	djnz	ub1
 	ret
 
 ; F addr1,addr2,byte
@@ -382,69 +464,99 @@ scont:	call	next
 
 ; E addr[,bank]
 ; Examine and modify memory starting at addr
-; TODO: bank
 
-exam:	call	out_addr
-	ld	a,(hl)
+exam:	ex	de,hl
+	ld	a,(argset)
+	bit	1,a		; bank specified?
+	jr	nz,e1		; yes
+	ld	hl,0		; else default to system bank
+e1:	call	ubank		; select user bank
+	ex	de,hl
+e3:	call	out_addr
+	ldup	a,(hl)		; fetch byte from user space
 	call	outbyte
 	push	hl
 	call	getln
 	pop	hl
 	ld	de,lnbuf
 	ld	a,(de)
-	or	a
-	jr	z,cont
+	or	a		; skip this location?
+	jr	z,cont		; yes
+	cp	'.'		; end?
+	ret	z		; yes
 	push	hl
 	call	gethex
 	ld	a,l
 	pop	hl
-	ld	(hl),a
+	ldup	(hl),a		; store new value
 cont:	inc	hl
-	jr	exam
+	jr	e3
 
-; I port[,iopage][,wflag] wflag = 0 for byte else word
+; I[W] port[,iopage]
 ; Input from port
 
-inport:	call	cr_lf
+inport:	ld	a,(argset)
+	bit	1,a
+	jr	nz,i1
+	ld	de,0
+i1:	call	cr_lf
+	ld	a,e
+	call	ahex		; output I/O page
+	ld	a,':'
+	call	mon_putch
 	ld	a,l
-	call	ahex
+	call	ahex		; output port address
 	ld	a,'='
 	call	mon_putch
 	ex	de,hl
-	push	bc
 	ld	c,IOP
 	ldctl	(c),hl		; select I/O page
 	ex	de,hl
-	pop	bc
-	ld	a,b
-	or	c
-	ld	c,l
-	ld	b,0
+	ld	c,l		; get port address into BC
+	ld	b,h
+	ld	a,(argset)
+	bit	7,a		; word mode?
 	jr	z,iw
-	in	hl,(c)
+	inw	hl,(c)		; yes
 	jp	hlhex
-iw:	in	a,(c)
+iw:	in	a,(c)		; no
 	jp	ahex
 
-; O port,byte[,iopage]
+; O[W] port,value[,iopage]
 ; Output to port
 
 outport:push	hl
 	ld	l,c
-	ld	l,b
 	ld	c,IOP
 	ldctl	(c),hl		; select I/O page
-	pop	bc
-	;ld	b,0
-	ld	a,e
-	out	(c),a
+	pop	bc		; get port address into BC
+	ex	de,hl		; and value to output into HL
+	ld	a,(argset)
+	bit	7,a		; word mode?
+	jr	z,ow
+	outw	(c),hl		; yes
+	ret
+ow:	ld	a,l
+	out	(c),a		; no
 	ret
 
-; W addr
+; W addr[,bank]
 ; Display word at addr
 
-word:	call	out_addr
-	ld	hl,(hl)
+word:	ex	de,hl
+	ld	a,(argset)
+	bit	1,a		; bank specified?
+	jr	nz,dw1		; yes
+	ld	hl,0		; else default to system bank
+dw1:	call	ubank		; select user bank
+	ex	de,hl
+	call	out_addr
+	ldup	a,(hl)		; fetch word from user space
+	ld	e,a
+	inc	hl
+	ldup	a,(hl)
+	ld	d,a
+	ex	de,hl
 	jp	hlhex
 
 	IF	CMD_B
@@ -862,13 +974,19 @@ $DBMSG:	ex	(sp),hl
 	push	af
 	push	bc
 	push	hl
+	ld	c,IOP
+	ldctl	hl,(c)
+	ex	(sp),hl
 dms0:	ld	a,(hl)
 	inc	hl
 	or	a
 	jr	z,dms2
 	call	mon_putch
 	jr	dms0
-dms2:	pop	hl
+dms2:	ex	(sp),hl
+	ld	c,IOP
+	ldctl	(c),hl
+	pop	hl
 	pop	bc
 	pop	af
 	ex	(sp),hl
@@ -876,12 +994,15 @@ dms2:	pop	hl
 
 ;;	dseg
 
-arg1:	ds	2
-arg2:	ds	2
-arg3:	ds	2
-lnbuf:	ds	21
+arg1:	ds	2		; first command argument
+arg2:	ds	2		; second command argument
+arg3:	ds	2		; third command argument
+argset:	ds	1		; bit mask of specified arguments
 
-pgm_iop:ds	2
+lnbuf:	ds	30		; command line buffer
+lnptr:	ds	2		; command line pointer
+
+pgm_iop:ds	2		; saved user registers
 pgm_usp:ds	2
 pgm_iy:	ds	2
 pgm_ix:	ds	2
@@ -902,6 +1023,6 @@ mmu_pdr:ds	64
 brkadr:	ds	2
 brkval:	ds	1
 
-	ds	48
+	ds	48		; debugger stack
 mon_stack:
 
