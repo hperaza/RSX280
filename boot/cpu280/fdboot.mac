@@ -1,0 +1,445 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 2004-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;   DY: 3.5" 1.44M floppy boot loader, CPU280 version.                 ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	title	'Floppy Boot Loader'
+
+	.Z280
+
+	include	Z280.INC
+	include	CPU280.INC
+
+	public	FDBOOT,FDBTSZ
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+system	equ	0100h
+cmdline	equ	0080h
+
+; Expected state:
+; - system mode
+; - loaded into RAM at logical address 0000h, physical address 800000h
+; - MMU enabled (obviously, since we're running from RAM and the RAM on the
+;   CPU280 is placed at 800000h)
+
+; TODO:
+; - WtInt timeout?
+; - if possible, use ROM services!
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+FDBOOT	equ	$
+
+	.phase	0000h
+
+Boot:	jp	Load
+
+	dw	ldr - Boot + datofs
+
+Load:	di			; disable all ints
+	iopage	MMUP
+
+	ld	a,31		; use system page 15 for the loader
+	out	(PDR),a
+	ld	c,DSP
+	ld	hl,880Ah	; map top page to 88000h (512K max system size)
+	outw	(c),hl
+
+	ld	hl,ldr
+	ld	de,Loader
+	ld	bc,size
+	ldir			; copy loader to top page
+	jp	Loader		; and continue from there
+
+ldr:
+	.dephase
+	.phase	0F000h
+
+Loader:	ld	sp,0
+
+	ld	a,16		; use system page 0 to load system
+	out	(PDR),a
+	ld	c,DSP
+	ld	hl,800Ah	; physical addr 80000h (start of RAM)
+	outw	(c),hl
+
+  IF 0
+	ld	c,MMCR
+	ld	hl,3BFFh	; enable system address translate (redundant,
+	outw	(c),hl		;  since we're running from RAM @8xxxxxh)
+  ENDIF
+
+	ld	a,(BDev)	; drive (0..3) in reg A (1=B)
+	call	DskSel
+	ld	hl,1		; blocks are 16-bit max for floppies
+	ld	de,Buffer
+	call	LdBlk		; load home block
+
+  IF 0	; no space to do a proper volume signature verification
+
+check	defl	0
+	irpc	c,<VOL180>
+check	defl	check + '&c'
+	endm
+
+	ld	de,Buffer
+	ld	b,6
+	xor	a
+vfy:	add	a,(hl)		; verify volume signature
+	inc	hl
+	djnz	vfy
+	cp	low check
+	jp	z,NoBoot
+
+  ENDIF
+
+	ld	hl,(Buffer+72)	; LBN of system image file
+;;	ld	a,h
+;;	or	l
+;;	jp	z,NoBoot
+	exx
+	ld	hl,(Buffer+76)	; system image size
+;;	ld	a,h
+;;	or	l
+	exx
+;;	jp	z,NoBoot
+
+loopp:	ld	b,8		; blocks per page
+	ld	de,0000h	; start of page zero
+loop:	push	hl
+	push	bc
+	call	LdBlk
+	pop	bc
+	pop	hl
+	inc	hl		; next blk
+	exx
+	dec	hl
+	ld	a,h
+	or	l
+	exx
+	jr	z,gosys
+	ld	de,(BufPtr)
+	djnz	loop		; continue until page is full
+	push	hl
+	iopage	MMUP
+	ld	c,DSP
+	inw	hl,(c)
+	ld	a,10h
+	add	hl,a		; next physical page
+	outw	(c),hl
+	pop	hl
+	jr	loopp
+
+gosys:	iopage	MMUP
+
+	; PDR still = 16 (logical system page 0)
+
+	ld	b,15
+	ld	c,BMP
+	ld	hl,800Ah
+	ld	a,10h
+smap:	outw	(c),hl
+	add	hl,a
+	djnz	smap
+	ld	hl,cmdline+1
+	ld	(hl),'D'
+	inc	hl
+	ld	(hl),'Y'
+	inc	hl
+	ld	a,(PDrive)
+	and	03h
+	ld	(hl),a
+	jp	system		; start system
+
+;=======================================================================
+;	Floppy I/O routines
+;=======================================================================
+
+; Select floppy drive for all further accesses. Here are all global
+; pointers and variables that are set in such a way to facilitate easy
+; R/W access.
+
+DskSel:	ld	(PDrive),a	; save drive to PDrive for FDC
+	iopage	BoardP
+	ld	a,84h		; FDC Special Mode (already set), non-DMA
+	out	(FdcLdOR),a
+
+	ld	hl,Steps	; point to 'Specify'
+	ld	b,3
+	call	FdcCom		; issue SPECIFY command (FDC timing)
+	call	SetStp		; set clock for step rate
+
+	out	(Mot_On),a	; turn motor ON
+	ld	hl,0
+dly:	dec	hl		; delay
+	ld	a,h
+	or	l
+	jr	nz,dly
+
+	call	Recal		; recalibrate drive
+	ld	a,c
+	and	11010000b	; check AT/IC and EC flags
+	call	nz,Recal	; retry if error (Track > 76)
+	xor	a
+	ld	(CurTrk),a
+	jp	SetClk		; go set FDC clock rate again for I/O
+
+; Read absolute block from disk.
+
+LdBlk:	ld	(BufPtr),de
+	divu	hl,18		; A=track, L=sector
+	ld	h,a
+	inc	l		; sectors start at 1
+	ld	(Sector),hl	; save Track and Sector
+
+; Sector Read. Read errors cause the operation to be retried several times
+; before an error is reported.
+
+DskRd:	iopage	BoardP
+	call	Seek		; motor on, position head
+	ld	b,5		; retries
+rd1:	push	bc
+	ld	a,46h		; MFM flag + FDC command 'READ DATA'
+	ld	b,9
+	call	FdcCo2		; output FDC command
+	ld	hl,(BufPtr)
+	call	FdcRd		; read sector (polled)
+	ld	(BufPtr),hl
+	ld	hl,Result	; point to Result
+	ld	b,7
+rd2:	call	GetByt		; read result
+	ld	(hl),a		; store it
+	inc	hl		; advance pointer
+	djnz	rd2
+	pop	bc
+	call	ErrChk		; error?
+	ret	z		; no, return (with A=0)
+	djnz	rd1		; try again
+	jp	IOErr		; error return
+
+; Check FDC status values for errors (basically after Result Phase).
+; Return with Z (ok) or NZ (Error), only AF used.
+; Since individual sectors can only be processed via the corresponding EOT,
+; this check is used on all R/W 'Abnormal Termination' operations.
+
+ErrChk:	ld	hl,Result
+	ld	a,(hl)		; FDC Status 0
+	and	10010000b	; Normal and Abnormal termination are OK!
+	ret	nz		; Invalid Command or Equipment Check (Home)
+	inc	hl
+	ld	a,(hl)		; FDC Status 1
+	and	00110111b	; DE,OR,ND,NW,MA are errors (ignore EN)
+	ret	nz
+	inc	hl
+	ld	a,(hl)		; FDC Status 2
+	and	01110111b	; CM,DD,WC,SN,BC,MD are errors (SH is OK)
+	ret
+
+; Send command to FDC.
+; On entry, HL points to command bytes, and B contains the command length.
+; Assumes BoardP selected.
+
+FdcCom:	ld	c,FdcDat
+fdc1:	in	a,(FdcSta)
+	rla
+	jr	nc,fdc1		; wait until FDC RQM (Request for Master)
+	outi			; output command/data bytes to FDC
+	jr	nz,fdc1		; loop until all output
+	ret
+
+; Output command to FDC and wait for interrupt.
+
+FdcCo2:	ld	hl,CList
+	ld	(hl),a
+	call	FdcCom		; output FDC command
+WtInt:	in	a,(FdcSta)
+	rla
+	jr	nc,WtInt	; wait for RQM
+	ret
+
+; Recalibrate drive.
+
+Recal:	ld	a,07h		; FDC command 'RECALIBRATE'
+	ld	b,2
+	; fall thru FdcCo3
+
+; Output command to FDC and Sense Interrupt Status, returns ST0 in reg C.
+
+FdcCo3:	call	FdcCo2		; output FDC command
+si1:	call	WtInt
+	ld	a,08h		; FDC Sense Interrupt Status
+	out	(FdcDat),a	; command to FDC
+	call	GetByt		; read ST0
+	cp	80h
+	jr	z,si1		; invalid command, try again
+	ld	c,a		; save ST0
+	call	GetByt		; read PCN
+	bit	5,c		; command complete?
+	jr	z,si1		; no, try again
+	ret
+
+; Polled FDC read
+
+FdcRd:	ld	c,FdcDat
+frd1:	call	WtInt
+	bit	6,a		; in execution phase? (EXM)
+	ret	z		; no, we're done
+	ini			; read one byte
+	jr	frd1
+
+; Get a byte from FDC
+
+GetByt:	in	a,(FdcSta)
+	rla
+	jr	nc,GetByt	; wait for RQM
+	in	a,(FdcDat)
+	ret
+
+; Seek to the specified track.
+; Assumes P112-type 3.5" HD (80 trks, 18 secs, 2 heads, 1/2-trk overflow)
+
+Seek:	ld	hl,(Sector)	; L=Sector, H=Track
+	ld	a,l		; sector in A
+	ld	(PSect),a	; save physical sector number
+	ld	(EOT),a		; EOT due to missing Terminal Count
+	srl	h		; half-track overflow: track/2, head --> CY
+	ld	b,0		; head number for side 0
+	ld	a,(PDrive)
+	res	2,a		; if Side 0, reset HEAD bit
+	jr	nc,s0		; Side 0: PDrive unchanged
+	set	2,a		; Side 1: set HEAD bit for FDC
+	inc	b		; head number for Side 1
+s0:	ld	(PDrive),a
+	ld	a,b
+	ld	(Head),a	; head number in ID field
+	ld	a,h		; physical track number in A
+	ld	(PTrack),a	; save for R/W routine
+	cp	80		; do not seek if track number is too big
+	ret	nc
+	ld	hl,CurTrk
+	cp	(hl)
+	jr	z,SetClk	; already on track, seek not necessary
+	ld	(hl),a		; otherwise save the current track
+	ld	a,0Fh		; FDC 'SEEK'
+	ld	b,3
+	call	FdcCo3		; output command and sense interrupts
+	; fall-thru: FDC clock rate again for I/O
+
+; Set FDC clock rates according to drive type and current format.
+; SetStp sets the clock rate to the value required for the proper step rate.
+; Assumes BoardP I/O page is selected.
+
+SetClk:	out	(Drv_0),a	; FDC-DRV LOW: 'High Density'
+SetStp:	xor	a		; 0 for 80T
+	out	(FdcLdCR),a	; CR := 0 --> 500 KHz for 80T
+	ret
+
+; Error output routines.
+
+NoBoot:	ld	de,SysMsg
+	jr	Error
+
+IOErr:	ld	de,LdeMsg
+Error:	iopage	UARTP
+	call	PMsg
+	di
+	halt
+
+PMsg:	ld	a,(de)
+	or	a
+	ret	z
+	ld	c,a		; TODO: handshake?
+cwait:	in	a,(tcs)
+	rra
+	jr	nc,cwait
+	ld	a,c
+	out	(tdr),a
+	inc	de
+	jr	PMsg
+
+; Error messages
+
+LdeMsg:	defz	'I/O error',cr,lf
+;VolMsg:	defz	'Invalid volume',cr,lf
+SysMsg:	defz	'No system',cr,lf
+
+; SPECIFY Step Rate command for 3.5" HD.
+; The step rate is specified at 8" clock (1ms step units).
+
+Steps:	defb	3		; SPECIFY command
+	defb	0DFh		; SRT=3ms, HUT=240ms
+	defb	03h	;P112	; HLT=4ms, non-DMA
+;	defb	23h	;CPU280
+
+;-----------------------------------------------------------------------
+
+; Command to Floppy Controller (always 9 bytes):
+
+CList:	defb	0		; command byte
+PDrive:	defb	0		; drive number and head
+PTrack:	defb	0		; track number  (C)
+Head:	defb	0		; head number   (H)
+PSect:	defb	1		; sector number (R)
+FdcN:	defb	2		; sector shift  (N) (2=512)
+EOT:	defb	1		; physical end of track (last sector number)
+;GPL:	defb	1Bh	;P112	; gap length (R/W)
+GPL:	defb	4	;CPU280	; gap length (R/W)
+DTL:	defb	0FFh		; data length to be read or written (if N=0)
+
+datofs	equ	$ - Loader
+
+BDev:	defb	0
+
+size	equ	$ - Loader
+
+	IF	0
+
+CurTrk:	defs	1		; current physical track
+Result:	defs	7		; 7 Byte FDC result codes
+Sector:	defs	1		; !    do not    !
+Track:	defs	1		; ! change order !
+BufPtr:	defs	2
+Buffer	equ	$
+
+	ELSE
+
+CurTrk	equ	$		; current physical track
+Result	equ	CurTrk + 1	; FDC result bytes
+Sector	equ	Result + 7	; !    do not    !
+Track	equ	Sector + 1	; ! change order !
+BufPtr	equ	Track  + 1	; I/O buffer pointer
+Buffer	equ	BufPtr + 2	; scratch buffer
+
+	ENDIF
+
+	.dephase
+
+FDBTSZ	equ	$ - FDBOOT
+
+	end

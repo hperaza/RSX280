@@ -1,37 +1,15 @@
-# Path to Linux utilities
-ZXCC    = zxcc
-CKSBOOT = ../Tools/linux/cksboot/cksboot
+SHELL=/bin/sh
 
-# Path to CP/M utilities
-ZSM4    = ../Tools/cpm/zsm4.com
-TKB     = ../Tools/cpm/tkb.com
+subdirs = cpu280 z280rc
 
-.PREFIX:
-.PREFIX: .mac .rel
-
-SRCS = fdboot.mac hdboot.mac cfboot.mac
-
-OBJS = $(SRCS:.mac=.rel)
-
-all: fdboot.bin hdboot.bin cfboot.bin
-
-$(OBJS): %.rel: %.mac *.inc
-	$(ZXCC) $(ZSM4) -"=$</l"
-
-fdboot.bin: fdboot.rel
-	$(ZXCC) $(TKB) -"$@=fdboot/ofmt=com/load=0"
-	$(CKSBOOT) $@
-
-hdboot.bin: hdboot.rel
-	$(ZXCC) $(TKB) -"$@,$(basename $@)=hdboot/ofmt=com/load=0"
-	$(CKSBOOT) $@
-
-cfboot.bin: cfboot.rel
-	$(ZXCC) $(TKB) -"$@,$(basename $@)=cfboot/ofmt=com/load=0"
-	$(CKSBOOT) $@
-
-cpboot: fdboot.bin
-	dd if=fdboot.bin of=/dev/fd0
+all:
+	@for i in ${subdirs}; do \
+		echo Making all in $$i ; \
+		(cd $$i; ${MAKE} all) ; \
+	done
 
 clean:
-	rm -f *.bin *.rel *.prn *.sym *.map core *~ *.\$$\$$\$$
+	@for i in ${subdirs}; do \
+		echo Cleaning in $$i ; \
+		(cd $$i; ${MAKE} clean) ; \
+	done
