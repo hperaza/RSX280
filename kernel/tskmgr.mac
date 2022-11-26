@@ -81,12 +81,12 @@
 	extrn	$ERSEQ,$MVTBL,$PHYDV,$LOGDV,SFLAGS,$CPLST,$RNDC,$RNDCT
 	extrn	$RNDH,$RNDL,$SWPC,$SWPCT,$SWPRI
 
-	extrn	SYSENT,SYSSTK,SYSXIT,TICCNT,INTON,$SBANK,$UBANK,$MCOPY
+	extrn	SYSENT,SYSSTK,SYSXIT,TICCNT,INTON,$SBASE,$UBANK,$MCOPY
 	extrn	$ASNTP,DOCLKQ,DISCON,MALLOC,MFREE,$ALLOC,$FREE,CHKPAR
 	extrn	CLRMEM,CLRCVL,CLNAST,IOKILL,QTKTN,QPAR,MCRTCB,LDRTCB
 	extrn	$FNDEV,TFLAG,DOFORK,TRPFLG,MEXTND,CLNCLQ,SRQST,NEWSUB
 
-	if	F$HALT
+	IF	F$HALT
 	extrn	CKCLKQ
 	ENDIF
 
@@ -506,25 +506,26 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 
 	iopage	MMUP
 	xor	a
-	out	(PDR),a
+	out	(PDR),a		; select user PDR 0
 	ld	c,DSP
-	inw	hl,(c)
-	push	hl
-	push	tgo3
-	ex	de,hl
+	inw	hl,(c)		; read old PDR
+	push	hl		; save it
+	push	tgo3		; push return address
+	ld	hl,($SBASE)
+	add	hl,de		; get page zero of new task
+	add	hl,hl		; shift bits into position
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	add	hl,hl
-	set	3,l
-	set	1,l
-	outw	(c),hl
+	set	3,l		; valid
+	set	1,l		; cacheable
+	outw	(c),hl		; set new user PDR 0
     endif
 
 	ld	b,8
 	ld	hl,0		; page zero RST vector address
 tgo1:	ld	a,76h		; halt instruction code
-	ldup	(hl),a
+	ldup	(hl),a		; store in user space
 	ld	a,8
 	add	hl,a
 	djnz	tgo1
@@ -543,9 +544,9 @@ tgo2:	push	ix
 
     if 0
     else
-tgo3:	pop	hl
+tgo3:	pop	hl		; pop old PDR
 	ld	c,DSP
-	outw	(c),hl
+	outw	(c),hl		; restore user task mapping
 	ret
     endif
 
@@ -781,15 +782,8 @@ UNFIX:	bit	TA.FIX,(ix+T.ATTR)
 	scf
 	ret	z
 	res	TA.FIX,(ix+T.ATTR)
-
-	ldw	hl,(ix+T.PCB)
-	ldw	hl,(hl+P.BASE)
-	cpw	hl,($SBANK)	; task in kernel bank/partition (INIT)?
-	ld	a,E.OK
-	ret	z		; return success (A=0) if yes
-
-	call	trqe0		; else release task mem and context block
-	xor	a
+	call	trqe0		; release task mem and context block
+	xor	a		; return success
 	ret
 
 ;-----------------------------------------------------------------------
@@ -999,10 +993,7 @@ tk3:	bit	TA.FIX,(ix+T.ATTR); task fixed in memory?
 	jr	nz,tk31		  ; jump if yes, do not release memory
 
 	call	FRECTX		; delete the context block
-	ldw	hl,(ix+T.PCB)
-	ld	hl,(hl+P.BASE)
-	cpw	hl,($SBANK)	; task in kernel bank/partition (INIT)?
-	call	nz,TFREE	; release task memory if not (IX = TCB address)
+	call	TFREE		; release task memory
 	res	T2.OUT,(ix+T.ST+1)
 	res	T2.CKP,(ix+T.ST+1)
 
