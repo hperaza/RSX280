@@ -26,17 +26,15 @@ SRCS = args.mac \
 	sysdat.mac \
 	sysfn.mac \
 	tskmgr.mac \
+	cpu280.mac \
 	z280rc.mac \
 	startup.mac
-
-INC = tcb.inc \
-	z180.inc
 
 OBJS = $(SRCS:.mac=.rel)
 
 PROG = kernel.lib
 
-all: startup.rel sysdat.rel $(PROG)
+all: startup.rel sysdat.rel cpu280.rel z280rc.rel $(PROG)
 
 .SUFFIXES:		# delete the default suffixes
 .SUFFIXES: .mac .rel
@@ -44,14 +42,18 @@ all: startup.rel sysdat.rel $(PROG)
 $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"="$</l
 
-# Note: startup.rel and sysdat.rel are not included (will be linked first
-# and last, respectively.)
+# Note: startup.rel, sysdat.rel, cpu280.rel and z280rc.rel are not included
+# in the library:
+# - startup.rel will be linked first
+# - sysdat.rel will be linked last
+# - only one of the machine-dependent modules (cpu280.rel, z280rc.rel) will
+#   be included in the system image.
 kernel.lib: $(OBJS)
 	$(ZXCC) $(LBR) -"$@=tskmgr,flags,sndrcv,device,session,connect,ints"
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib,kalloc,mmu,syscom,qio,qldr,qmcr,qtktn,ast"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib,fork,pars,clkq,sysfn,args,z280rc"
+	$(ZXCC) $(LBR) -"$@=src.lib,fork,pars,clkq,sysfn,args"
 	@rm src.lib
 
 clean:
