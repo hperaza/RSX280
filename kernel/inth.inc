@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -30,8 +30,8 @@ FALSE	equ	0
 TRUE	equ	NOT FALSE
 
 	public	TMRINT,$UGETB,$UPUTB,$UGETW,$UPUTW,$MCOPY
-	public	$SBANK,$UBANK,IHSP,IHSTK,UPTIME,TICSEC,TICCNT
-	public	TFLAG
+	public	$SBASE,$SBANK,$UBANK,IHSP,IHSTK,UPTIME
+	public	TICSEC,TICCNT,TFLAG
 
 	extrn	CHKWD,DECCT,DOCLKQ,$CTCB,LNKFQB
 
@@ -204,69 +204,71 @@ $MCOPY:	ld	a,b		; check count
 	push	hl		; push src address (2)
 	push	bc		; push count (2)
 	iopage	DMAP
-	ld	c,TDR2
+	ld	c,TDR3
 	ld	hl,0
 	outw	(c),hl		; disable DMA while we mess around
 
 	pop	hl		; pop count (2)
-	ld	c,DCR2
+	ld	c,DCR3
 	outw	(c),hl		; set DMA count
 
 	pop	hl		; pop src address (2)
-	ld	c,SAL2
-	ld	a,h
-	ld	b,a		; save high nibble
-	or	11110000b	; set DMA bits
-	ld	h,a
+	ld	c,SAL3
+	ld	b,h		; save high nibble
 	outw	(c),hl		; set low half of src address
 	exx
 	push	hl		; get src bank address
 	exx
 	pop	hl
+	addw	hl,($SBASE)
 	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	ld	a,b		; get high nibble of address
-	or	00001111b	; set DMA bits
-	add	l		; add to bank address
-	ld	l,a		;  (can't use 'add hl,a' here because
-	ld	a,h		;   it sign-extends A)
-	adc	0
-	ld	h,a
-	inc	c		; SAH2
+	push	de
+	ld	e,b		; get high nibble of address
+	ld	d,0		; add to bank address
+	add	hl,de		;  (can't use 'add hl,a' here because
+	pop	de		;   it sign-extends A)
+	inc	c		; SAH3
 	outw	(c),hl		; set high half of src address
 
 	ex	de,hl		; get dst address into HL
-	ld	c,DAL2
-	ld	a,h
-	ld	b,a		; save high nibble
-	or	11110000b	; set DMA bits
-	ld	h,a
+	ld	c,DAL3
+	ld	b,h		; save high nibble
 	outw	(c),hl		; set low half of dst address
 	exx
 	push	de		; get dst bank address
 	exx
 	pop	hl
+	addw	hl,($SBASE)
 	add	hl,hl		; shift to bits 4..11
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
-	ld	a,b		; get high nibble of address
-	or	00001111b	; set DMA bits
-	ld	e,a
+	ld	e,b		; get high nibble of address
 	ld	d,0
 	add	hl,de		; add to bank address
-	inc	c		; DAH2
+	inc	c		; DAH3
 	outw	(c),hl		; set high half of dst address
 
 	ld	c,DMCR
-	ld	hl,0F0E0h
+	ld	hl,0F080h
 	outw	(c),hl
 
-	ld	c,TDR2
+	ld	c,TDR3
+ if 0
 	ld	hl,8100h	; continuous, byte size, inc src & dst
 	outw	(c),hl
+ else
+	ld	hl,8000h	; single, byte size, inc src & dst
+	outw	(c),hl
+cpy1:	inw	hl,(c)
+	bit	4,l		; transfer complete?
+	jr	z,cpy1		; no
+ endif
+	ld	hl,0
+	outw	(c),hl		; disable DMA
 
 	pop	bc		; pop count
 	pop	de		; pop dst address
@@ -351,8 +353,9 @@ TFLAG:	ds	1		; bit 0 = clock queue tick elapsed
 				; bit 1 = round-robin interval elapsed
 				; bit 2 = swap interval elapsed
 
-$SBANK:	ds	2		; base of system bank
-$UBANK:	ds	2		; base of current task's bank
+$SBASE:	ds	2		; physical system base
+$SBANK:	ds	2		; logical base of system bank
+$UBANK:	ds	2		; logical base of current task's bank
 
 	.even
 	ds	64		; space for interrupt stack
