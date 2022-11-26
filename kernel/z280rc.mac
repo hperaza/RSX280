@@ -35,15 +35,89 @@
 	include	SYSCONF.INC
 	include	ERRORS.INC
 
+	public	HWINIT		; platform-specific hardware initialization
 	public	CPUSPD		; measure CPU clock frequency and get the
 				;  timer reload value
+	public	MSIZE		; compute total amount of system memory
 	public	GETDT		; get date and time from hardware clock
 	public	SETDT		; write date and time to hardware clock
-	public	NVREAD		; read non-volatile RAM values
 	public	NVRAM		; non-volatile RAM data area
 	public	NVOK		; NV RAM OK flag
 
+	extrn	$MEMSZ
+
 	cseg
+
+;--------------------------------------------------------------------
+
+; Platform-specific initializations. Main hardware initializtaion
+; is done by ZZmon on the Z280RC, here we simply read the DS-1202
+; NVRAM to support future user-defined settings.
+
+HWINIT:	ld	hl,NVRAM	; point to buffer
+	ld	b,24		; 24 bytes to read
+	xor	a		; A = NV memory address
+nv1:	push	af
+	call	rdnv		; read a byte
+	ld	(hl),a		;  and store it
+	inc	hl
+	pop	af
+	inc	a		; increment address
+	djnz	nv1		; loop until done
+
+	; now validate the NV contents
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc1:	or	(hl)
+	inc	hl
+	djnz	nvc1
+	or	a
+	jr	z,nvc4		; fail if all zeros
+
+	ld	hl,NVRAM
+	ld	b,24
+	ld	a,0FFh
+nvc2:	and	(hl)
+	inc	hl
+	djnz	nvc2
+	inc	a
+	jr	z,nvc4		; fail if all ones (0FFh)
+
+	ld	hl,NVRAM
+	ld	b,24
+	xor	a
+nvc3:	add	a,(hl)
+	inc	hl
+	djnz	nvc3
+	or	a
+	ld	a,0FFh
+	jr	z,nvc4
+	inc	a		; fail if bad checksum
+nvc4:	ld	(NVOK),a
+
+	iopage	DMAP
+	ld	c,DMCR
+	ld	hl,0
+	outw	(c),hl		; initialize DMA Master Control Register
+
+	ret
+
+; Read a single byte from the DS-1202 NV RAM
+
+rdnv:	push	bc
+	add	a,a		; shift the address
+	or	0C1h		; add command bits, read mode
+	push	af
+	call	copen		; select the chip
+	pop	af
+	call	wrbyte		; send the command
+	call	rdbyte		; read the byte
+	call	cclose		; deselect chip
+	ld	a,e		; return value in A reg.
+	pop	bc
+	ret
 
 ;--------------------------------------------------------------------
 
@@ -53,11 +127,17 @@
 ; internal timers are clocked at 1/4 of the CPU clock frequency, thus
 ; 3.6864 MHz.
 
-; TODO: compute reload value from TCKSEC - may require chaining
-; two counters if < 100 ticks/sec
+CPUSPD:	ld	hl,36864	; return the reload timer constant
+	ret
 
-CPUSPD:
-	ld	hl,36864	; return the reload timer constant
+;-----------------------------------------------------------------------
+
+; Calculate the total amount of memory on the Z280RC board.
+
+; The Z280RC board has a fixed 2 Mb RAM.
+
+MSIZE:	ld	hl,2048
+	ld	($MEMSZ),hl
 	ret
 
 ;-----------------------------------------------------------------------
@@ -241,7 +321,6 @@ RTC	equ	0A2h		; DS-1302 bit-bang register
 
 rdtime:	call	copen		; set clock to read, returns BC = RTCBBR port
 	push	de
-	push	hl		; preserve ptr
 
 ; Command the DS-1202 for burst read of clock
 
@@ -257,7 +336,6 @@ rdtim:	call	rdbyte
 	dec	d		;   decrement counter
 	jr	nz,rdtim	; ..get another byte if not done
 	call	cclose		; else deselect clock
-	pop	hl		; restore ptr
 	pop	de
 	ret
 
@@ -355,69 +433,6 @@ cclose:	di
 	ei
 	ret
 
-;--------------------------------------------------------------------
-
-; Load the DS-1202 non-volatile memory into RAM and validate contents
-
-NVREAD:	ld	hl,NVRAM	; point to buffer
-	ld	b,24		; 24 bytes to read
-	xor	a		; A = NV memory address
-nv1:	push	af
-	call	rdnv		; read a byte
-	ld	(hl),a		;  and store it
-	inc	hl
-	pop	af
-	inc	a		; increment address
-	djnz	nv1		; loop until done
-
-	; now validate the NV contents.
-
-	ld	hl,NVRAM
-	ld	b,24
-	xor	a
-nvc1:	or	(hl)
-	inc	hl
-	djnz	nvc1
-	or	a
-	jr	z,nvc4		; fail if all zeros
-
-	ld	hl,NVRAM
-	ld	b,24
-	ld	a,0FFh
-nvc2:	and	(hl)
-	inc	hl
-	djnz	nvc2
-	inc	a
-	jr	z,nvc4		; fail if all ones (0FFh)
-
-	ld	hl,NVRAM
-	ld	b,24
-	xor	a
-nvc3:	add	a,(hl)
-	inc	hl
-	djnz	nvc3
-	or	a
-	ld	a,0FFh
-	jr	z,nvc4
-	inc	a		; fail if bad checksum
-nvc4:	ld	(NVOK),a
-	ret
-
-; Read a single byte from the DS-1202 NV RAM
-
-rdnv:	push	bc
-	add	a,a		; shift the address
-	or	0C1h		; add command bits, read mode
-	push	af
-	call	copen		; select the chip
-	pop	af
-	call	wrbyte		; send the command
-	call	rdbyte		; read the byte
-	call	cclose		; deselect chip
-	ld	a,e		; return value in A reg.
-	pop	bc
-	ret
-	
 ;--------------------------------------------------------------------
 
 	dseg
