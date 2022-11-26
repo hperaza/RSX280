@@ -119,9 +119,9 @@ Creating a bootable CF image
 
       make disk-image
 
-    This creates a 32Mb disk image named new.img conaining several empty
-    directories, copies the system image and the startup command file to
-    it, and installs the Compact Flash bootloader.
+    This creates a 32Mb disk image containing several empty directories,
+    copies the system image and the startup command file to it, and installs
+    the Compact Flash bootloader.
 
  2. Copy the system files, utilities, help files and program development
     applications:
