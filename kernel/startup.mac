@@ -33,7 +33,7 @@
 
 	extrn	SYSSTK,MMUINI,INITKM,ININT,SETVEC,INTON,INTOFF
 	extrn	TMRINT,$ASGN,SYSENT,SYSLVL,$PHYDV,$FNPAR,$ALLOC
-	extrn	CLRMEM,UPTIME,NVREAD,LDRTCB,TRQST,$POLSZ,$PLIST
+	extrn	CLRMEM,UPTIME,HWINIT,LDRTCB,TRQST,$POLSZ,$PLIST
 	extrn	$MFLGS,MSIZE,GO
 
 BOOTDV	equ	0081h		; address of the boot device name set
@@ -64,7 +64,7 @@ START::	di
 	ld	a,-1
 	ld	(SYSLVL),a	; we are in system state
 
-	call	NVREAD		; read machine-specific settings
+	call	HWINIT		; platform-specific hardare initialization
 	call	INITKM		; init task manager
 	call	ININT		; init interrupt system
 	call	INTOFF		; make sure interrupts are off
@@ -103,8 +103,6 @@ nopar:	; initialize physical devices
 
 	ld	hl,$PHYDV
 inidev:	ldw	de,(hl)		; get DCB address into DE
-	inc	hl
-	inc	hl
 	ld	a,d
 	or	e		; end of list?
 	jr	z,done		; exit loop if yes
@@ -132,7 +130,7 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	ld	a,(BOOTDV+2)
 	ld	c,a
 	call	$FNDEV##
-;;	jp	c,...
+	jp	c,uncfg
 	push	hl
 	ld	hl,(DEVLB##+3)
 	ld	de,U.RED
@@ -143,7 +141,7 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 	ld	de,'TT'
 	ld	c,0
 	call	$FNDEV
-;;	jp	c,...
+	jp	c,uncfg
 	push	hl
 	ld	hl,(DEVCL##+3)
 	ld	de,U.RED
