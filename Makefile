@@ -5,6 +5,8 @@
 #                                                                      #
 ########################################################################
 
+SHELL=/bin/sh
+
 # Path to Linux utilities
 ZXCC    = zxcc
 VOL180  = ./Tools/linux/vol180/vol180
@@ -25,18 +27,8 @@ sysdirs = boot drivers kernel
 # Source of utilities
 utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap cpm
 
-# Disk device or image to update
-#disk = /dev/fd0
-#disk = floppy.img
-#bootloader = fdboot.bin
-#size = 2880 # 1.44M floppy disk blocks
-#files = 512
-disk = cf-partition.img
-cfdev = /dev/sdb # CF device on linux via USA adapter, make sure is correct!!!
-bootloader = cfboot.bin
-size = 65536 # 32Mb partition size in blocks
-files = 8192 # max number of files
-seek = 65536 # offset to start of partition in CF card
+# Import user settings
+include $(PWD)/Config.make
 
 # Compile a system image, boot sector, mcr, help and utilities
 all: update-incs system filesys libs cli utils progdev test games kermit
@@ -47,6 +39,10 @@ linux-tools:
 
 # Update the system include files in all directories
 update-incs:
+	@if ! cmp -s inc/sysconf.inc.${platform} inc/sysconf.inc; then \
+		ln -sf inc/sysconf.inc.${platform} inc/sysconf.inc; \
+		touch inc/sysconf.inc; \
+	fi
 	@for i in system.inc inc/*inc; do \
 		f=`basename $$i` ; \
 		d=`dirname $$i` ; \
@@ -77,7 +73,8 @@ syssrcs:
 		echo Making all in $$i ; \
 		(cd $$i; ${MAKE} all) ; \
 	done
-	@cp -u drivers/drivers.lib .
+	@cp -u drivers/${platform}/drivers.lib .
+	@cp -u kernel/${platform}.rel .
 	@cp -u kernel/startup.rel .
 	@cp -u kernel/kernel.lib .
 	@cp -u kernel/sysdat.rel .
@@ -87,7 +84,7 @@ syssrcs:
 # fully accessible to privileged tasks. If necessary, use the "d4000" linker
 # option.
 system.sys: $(sysmod)
-	$(ZXCC) $(TKB) -"system.sys,system.sym,system.map=startup/ofmt:com/load=0/cseg=100,kernel.lib,drivers/lb,sysdat"
+	$(ZXCC) $(TKB) -"system.sys,system.sym,system.map=startup/ofmt:com/load=0/cseg=100,kernel.lib,${platform},drivers/lb,sysdat"
 	@cat system.map
 	$(SYM2INC) system.sym system.dat system.inc
 
@@ -196,8 +193,8 @@ clean:
 # system directory, help directory, and a user directory with a
 # few example files.
 disk-image:
-	@echo "new new.img" ${size} ${files} > mkimg.cmd
-	@echo "mount new.img" >> mkimg.cmd
+	@echo "new" ${image} ${size} ${files} > mkimg.cmd
+	@echo "mount " ${image} >> mkimg.cmd
 	@echo "mkdir system 1,1" >> mkimg.cmd
 	@echo "mkdir help 1,2" >> mkimg.cmd
 	@echo "mkdir syslog 1,5" >> mkimg.cmd
@@ -205,10 +202,10 @@ disk-image:
 	@echo "mkdir user 20,2" >> mkimg.cmd
 	@echo "delete system.sys" >> mkimg.cmd
 	@echo "import ./system.sys system.sys /c:512" >> mkimg.cmd
-	@echo "updboot boot/"${bootloader} >> mkimg.cmd
+	@echo "updboot boot/${platform}/${bootloader}" >> mkimg.cmd
 	@echo "cd system" >> mkimg.cmd
 	@echo "import ./acnt.dat acnt.dat" >> mkimg.cmd
-	@echo "import ./startup.cmd startup.cmd" >> mkimg.cmd
+	@echo "import ./startup.cmd.${platform} startup.cmd" >> mkimg.cmd
 	@echo "import ./login.txt login.txt" >> mkimg.cmd
 	@echo "import ./nologin.txt nologin.txt" >> mkimg.cmd
 	@echo ";import ./syslogin.cmd syslogin.cmd" >> mkimg.cmd
@@ -236,9 +233,11 @@ disk-image:
 	@echo "dir cpm" >> mkimg.cmd
 	@echo "dir test" >> mkimg.cmd
 	@echo "quit" >> mkimg.cmd
+	@if [ -f ${image} ]; then \
+		mv -b ${image} ${image}.old ; \
+	fi
 	$(VOL180) < mkimg.cmd
 	@rm mkimg.cmd
-	#@mv new.img $(disk)
 
 # Update a disk image with the system binary, MCR and system libraries.
 # The system image normally resides in the [MASTER] directory. Utilitiles,
@@ -263,8 +262,10 @@ copy-system: system cli
 	@echo "import system.sys rsx280.sys" >> copy.cmd
 	@echo "delete rsx280.sym" >> copy.cmd
 	@echo "import system.sym rsx280.sym" >> copy.cmd
+	@echo "delete startup.cmd" >> copy.cmd
+	@echo "import startup.cmd.${platform} startup.cmd" >> copy.cmd
 	@echo "delete sysvmr.cmd" >> copy.cmd
-	@echo "import sysvmr.cmd sysvmr.cmd" >> copy.cmd
+	@echo "import sysvmr.cmd.${platform} sysvmr.cmd" >> copy.cmd
 	@for i in mcr/*.tsk; do \
 		echo "delete "`basename $$i` >> copy.cmd ; \
 		echo "import "$$i" "`basename $$i`" /c" >> copy.cmd ; \
@@ -279,7 +280,7 @@ copy-system: system cli
 	@echo "import libs/odt/odt.lib odt.lib" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Update a disk image with the privileged and non-privileged utilities.
@@ -322,7 +323,7 @@ copy-utils: cli utils
 	@echo "import cpm/map.com map.com" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy the help files to the [HELP] directory of the disk image.
@@ -334,7 +335,7 @@ copy-help:
 	done
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy the program-development utilities to the disk image
@@ -348,10 +349,28 @@ copy-progdev: progdev
 	@echo "import progdev/t3xz/t3xz.lib t3xz.lib" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
-# Copy some example BASIC-11 programs to the [BASIC] directory of the
+# Copy a reduced set of example BASIC-11 programs to the [BASIC] directory
+# of the disk image. Use for floppies, to leave enough space for system
+# utilities
+reduced-set = acey.bas blackjack.bas buzzwd.bas civilwar.bas cycles.bas \
+	hamurs.bas hangman.bas lunar.bas mandel.bas maze.bas ship.bas \
+	trader.bas trek100.bas weekday.bas
+
+copy-basic-reduced: progdev
+	@echo "cd basic" > copy.cmd
+	@for i in ${reduced-set} ; do \
+		echo "delete "`basename $$i` >> copy.cmd ; \
+		echo "import progdev/basic11/programs/"$$i" "`basename $$i` >> copy.cmd ; \
+	done
+	@echo "dir" >> copy.cmd
+	@echo "quit" >> copy.cmd
+	$(VOL180) $(image) < copy.cmd
+	@rm copy.cmd
+
+# Copy all the BASIC-11 example programs to the [BASIC] directory of the
 # disk image.
 copy-basic: progdev
 	@echo "cd basic" > copy.cmd
@@ -365,7 +384,7 @@ copy-basic: progdev
 	done
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy some CP/M files for the CP/M emulator, the files are placed
@@ -378,7 +397,7 @@ copy-cpm:
 	done
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy some test files to the disk image.
@@ -405,7 +424,7 @@ copy-test: test
 	@echo "import progdev/t3xz/test/mkmaze.cmd mkmaze.cmd" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "exit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy a few simple games to the disk image.
@@ -418,7 +437,7 @@ copy-games: games
 	done
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy Kermit to the disk image.
@@ -432,13 +451,13 @@ copy-kermit: kermit
 	@echo "import kermit/kermit.ini kermit.ini" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
-	$(VOL180) $(disk) < copy.cmd
+	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
 # Copy everything to the disk image.
 copy-all: copy-system copy-utils copy-help \
-          copy-progdev copy-basic copy-test \
-          copy-kermit copy-games copy-cpm
+          copy-progdev copy-basic-reduced copy-test #\
+          #copy-kermit copy-games #copy-cpm
 
 # Configure system
 sysvmr-old:
@@ -448,7 +467,7 @@ sysvmr-old:
 	@echo "copy rsx280.sys [master]system.sys /c" >> vmr.cmd
 	@echo "updboot" >> vmr.cmd
 	@echo "bye" >> vmr.cmd
-	$(VOL180) $(disk) < vmr.cmd
+	$(VOL180) $(image) < vmr.cmd
 	@rm vmr.cmd
 
 sysvmr:
@@ -460,9 +479,22 @@ sysvmr:
 	@echo "delete [master]system.sym" >> vmr.cmd
 	@echo "updboot" >> vmr.cmd
 	@echo "bye" >> vmr.cmd
-	$(VOL180) $(disk) < vmr.cmd
+	$(VOL180) $(image) < vmr.cmd
 	@rm vmr.cmd
 
-# Copy image to compact flash (Z280RC)
-cf-copy:
-	dd if=$(disk) of=$(cfdev) conv=swab bs=512 seek=$(seek)
+# Copy disk image to physical device
+dev-copy:
+	@if [ "${backup}" != "no" ]; then \
+		if [ -f device.backup ]; then \
+			mv -f device.backup device.backup.old ; \
+		fi ; \
+		echo dd if=$(outdev) of=device.backup bs=512 skip=$(offset) ; \
+		dd if=$(outdev) of=device.backup bs=512 skip=$(offset) ; \
+	fi
+	@if [ "${conv}" = "swab" ]; then \
+		echo dd if=$(image) of=$(outdev) conv=swab bs=512 seek=$(offset) ; \
+		dd if=$(image) of=$(outdev) conv=swab bs=512 seek=$(offset) ; \
+	else \
+		echo dd if=$(image) of=$(outdev) bs=512 seek=$(offset) ; \
+		dd if=$(image) of=$(outdev) bs=512 seek=$(offset) ; \
+	fi
