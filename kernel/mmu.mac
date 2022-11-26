@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -37,10 +37,9 @@
 	public	USRMAP		; setup MMU for non-privileged task
 	public	PRVMAP		; setup MMU for privileged task
 	public	INTMAP		; setup MMU for driver interrupt
-	public	MSIZE		; compute total amount of system memory
 	public	CLRMEM		; clear local block of memory
 
-	extrn	$MEMSZ,$SBANK
+	extrn	$SBASE,$SBANK
 
 	cseg
 
@@ -60,28 +59,32 @@ MMUINI:	pop	ix		; pop ret addr, as we may invalidate the stack
 	ld	c,MMCR
 	inw	hl,(c)		; read MMU Master Control Register
 	bit	3,h		; system translate enabled?
-	ld	hl,0		; if not, default starting system page is 0
+	ld	hl,0		; if not, physical system base page is 0
 	jr	z,m1		; branch if still in Z80 mode
 
 	ld	c,DSP
 	inw	hl,(c)		; read system PDR 0
 
-m1:	push	hl
-	ld	de,0
-	divuw	dehl,16
-	ld	($SBANK),hl	; remember base of system bank
-	pop	hl
+m1:	ld	e,l		; remember system PDR 0
+	ld	d,h
 
 	ld	a,l
-	and	0Fh
+	and	0F0h
 	or	0Ah		; valid, writable, cacheable
 	ld	l,a
 	ld	c,BMP		; MMU Block Move Port
-	ld	de,0010h	; one-page increment
+	ld	a,10h		; one-page increment
 	ld	b,16		; 16 PDRs to set
 m2:	outw	(c),hl		; setup system PDRs 0..15
-	add	hl,de
+	add	hl,a
 	djnz	m2
+
+	ex	de,hl		; get system PDR 0 back into HL
+	ld	de,0
+	divuw	dehl,16
+	ld	($SBASE),hl	; remember physical base
+	ld	hl,0
+	ld	($SBANK),hl	; system starts at logical page 0
 
 	ld	c,TCR
 	ld	hl,00000100b
@@ -107,7 +110,8 @@ USRMAP:	ld	c,IOP
 	ld	a,0Ch
 	out	(IP),a		; invalidate all user pages
 
-	ex	de,hl
+	ld	hl,($SBASE)
+	add	hl,de
 	add	hl,hl		; get bits into position
 	add	hl,hl
 	add	hl,hl
@@ -134,10 +138,11 @@ um1:	outw	(c),hl		; setup user PDRs 0..(B)
 
 PRVMAP:	call	USRMAP		; also selects MMU I/O page
 	push	hl		; push orig I/O page (see USRMAP)
-	ld	hl,MMUP
+	ld	l,MMUP
 	ldctl	(c),hl		; C still equals IOP
 
-	ld	hl,($SBANK)	; TODO: do this with otirw
+	ld	hl,($SBASE)	; TODO: do this with otirw
+	addw	hl,($SBANK)
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
@@ -163,7 +168,6 @@ pm1:	outw	(c),hl		; setup user PDRs 4..15
 	ret
 
 ; Set interrupt-mode MMU mapping.
-; TODO: run privileged task in system mode?
 
 INTMAP:	ld	c,IOP
 	ldctl	hl,(c)
@@ -171,17 +175,25 @@ INTMAP:	ld	c,IOP
 	ld	l,MMUP		; select MMU I/O page
 	ldctl	(c),hl
 
-	ex	de,hl
+	ld	hl,($SBASE)
+	add	hl,de
 	add	hl,hl		; TODO: save in the int stub the ready
 	add	hl,hl		;  PDR value
 	add	hl,hl
 	add	hl,hl
+	set	3,l		; valid
+	set	1,l		; cacheable
 	ld	a,16		; note: using system-mode mapping
 	ld	(PDR),a
 	ld	b,4
-	call	im0
+	ld	c,BMP		; MMU Block Move Port
+	ld	a,10h		; one-page increment
+im1:	outw	(c),hl		; setup system PDRs 0..15
+	add	hl,a		; no 'outjmp' fix necessary for internal
+	djnz	im1		;  I/O accesses
 
-	ld	hl,($SBANK)
+	ld	hl,($SBASE)
+	addw	hl,($SBANK)
 	add	hl,hl
 	add	hl,hl
 	add	hl,hl
@@ -191,39 +203,15 @@ INTMAP:	ld	c,IOP
 	set	3,l		; valid
 	set	1,l		; cacheable
 	ld	b,12
-
-im0:	ld	c,BMP		; MMU Block Move Port
+	ld	c,BMP		; MMU Block Move Port
 	ld	a,10h		; one-page increment
-im1:	outw	(c),hl		; setup system PDRs 0..15
+im2:	outw	(c),hl		; setup system PDRs 0..15
 	add	hl,a		; no 'outjmp' fix necessary for internal
-	djnz	im1		;  I/O accesses
+	djnz	im2		;  I/O accesses
 
 	pop	hl
 	ld	c,IOP
 	ldctl	(c),hl
-	ret
-
-;-----------------------------------------------------------------------
-
-; Calculate the total amount of memory on the Z280RC board.
-
-MSIZE:
-  if 0
-	in0	a,(RAMUBR)	; upper RAM bound
-	add	a,1		; to 1st invalid page (set CY)
-	rra			; scale and keep CY
-	in0	l,(RAMLBR)	; lower bound
-	srl	l		; scale similarly
-	sub	l		; available RAM / 8
-	ld	l,a
-	ld	h,8
-	mlt	hl		; HL = size * 1kB
-  else
-;	ld	hl,256
-;	ld	hl,1024
-	ld	hl,2048
-  endif
-	ld	($MEMSZ),hl
 	ret
 
 ;-----------------------------------------------------------------------

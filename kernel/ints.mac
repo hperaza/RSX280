@@ -42,7 +42,7 @@ TRUE	equ	NOT FALSE
 	public	INTON		; enable Z280 interrupts
 	public	INTOFF		; disable Z280 interrupts
 
-	extrn	$ITBL,$SBANK,$ALLOC,IHSP,IHSTK,IUNSET,INTMAP
+	extrn	$ITBL,$SBANK,$SBASE,$ALLOC,IHSP,IHSTK,IUNSET,INTMAP
 	extrn	CPUSPD,TICSEC,TICCNT,UPTIME
 
 	cseg
@@ -81,6 +81,7 @@ iupt:	ld	(hl),a		; clear uptime (A still = 0)
 	; must begin on an 4K page boundary.
 
 	ld	hl,($SBANK)	; get system base bank address
+	addw	hl,($SBASE)
 	add	hl,hl		; get bits into position
 	add	hl,hl
 	add	hl,hl
