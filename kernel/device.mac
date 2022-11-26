@@ -33,6 +33,7 @@
 	include	DCB.INC
 	include	TCB.INC
 	include	ERRORS.INC
+	include	Z280.INC
 
 	public	DLOAD		; add device to table
 	public	CHKWD		; check devices waiting for clock tick
@@ -704,15 +705,20 @@ dchk1:	ldw	de,(ix)		; fetch pointer
 ;   IX = address of prev DCB in list (or list head pointer)
 ;   DE = DCB of device whose timeout has expired
 
+	ld	c,IOP
+	ldctl	hl,(c)
+	push	hl		; save I/O page
 	ld	hl,D.EPT
 	add	hl,de
 	ldw	hl,(hl)		; get driver entry point address into HL
 	ld	de,9		; offset to timeout function is 9
 	add	hl,de		; timeout routine address now in HL
 	call	(hl)		; call timeout entry point
-				; TODO: switch to device bank!
+	pop	hl		;  TODO: switch to device bank!
+	ld	c,IOP
+	ldctl	(c),hl		; restore I/O page
 dchk4:	pop	ix		; get address of (next) DCB into IX
-	jr	dchk1		;   and loop
+	jr	dchk1		;  and loop
 
 ;-----------------------------------------------------------------------
 
