@@ -1,0 +1,390 @@
+;**********************************************************************;
+;                                                                      ;
+;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
+;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	NAME	('CPU280')
+	TITLE	'RSX280 machine-dependent routines'
+
+;----------------------------------------------------------------------;
+;                                                                      ;
+;	Machine-dependent routines - CPU280 board version.             ;
+;                                                                      ;
+;----------------------------------------------------------------------;
+
+	.Z280
+
+	include	Z280.INC
+	include	CPU280.INC
+
+	include	SYSCONF.INC
+	include	ERRORS.INC
+
+	public	HWINIT		; platform-specific hardware initialization
+	public	CPUSPD		; measure CPU clock frequency and get the
+				;  timer reload value
+	public	MSIZE		; compute total amount of system memory
+	public	GETDT		; get date and time from hardware clock
+	public	SETDT		; write date and time to hardware clock
+	public	NVRAM		; non-volatile RAM data area
+	public	NVOK		; NV RAM OK flag
+
+	extrn	$MEMSZ
+
+	cseg
+
+;--------------------------------------------------------------------
+
+; Platform-specific initializations. The CPU280 ROM takes care of
+; most Z280 and peripheral initalizations. Here we only need to
+; disable RTC interrupts (enabled by default bu the CPU280 ROM),
+; and then read the DS1287A NVRAM contents.
+
+HWINIT:	iopage	BOARDP
+	in	a,(rtcb)
+	and	10000111b	; disable RTC interrupts and square wave
+	out	(rtcb),a	;  output
+	in	a,(rtcc)	; clear any pending interrupts
+
+	; read the DS1287A NVRAM
+
+	ld	hl,NVRAM	; point to buffer
+	ld	b,21		; 21 bytes to read
+	ld	c,cpufreq-1
+nv1:	inc	c
+	ini			; read and store a byte
+	jr	nz,nv1		; loop until done
+
+	; now validate the NV contents (note that it is not
+	; checksum-protected; the checksum stored at CheckLo
+	; and CheckHi is the CPU280 ROM checksum)
+
+	ld	hl,NVRAM
+	ld	b,21
+	xor	a
+nv2:	or	(hl)
+	inc	hl
+	djnz	nv2
+	or	a
+	jr	z,nv4		; fail if all zeros
+
+	ld	hl,NVRAM
+	ld	b,21
+	ld	a,0FFh
+nv3:	and	(hl)
+	inc	hl
+	djnz	nv3
+	inc	a
+	jr	z,nv4		; fail if all ones (0FFh)
+
+	ld	a,0FFh		; assume valid
+nv4:	ld	(NVOK),a
+
+	iopage	DMAP
+	ld	c,DMCR
+	ld	hl,0
+	outw	(c),hl		; setup DMA Master Control Register
+
+  if 1
+	ld	c,CCR
+	ldctl	hl,(c)
+	ld	a,l
+	or	01100000b	; disable instruction and data cache
+	ld	l,a
+	ldctl	(c),hl
+  endif
+
+	ret
+
+;--------------------------------------------------------------------
+
+; Measure the system-clock speed and return the reload timer constant.
+
+; The CPU speed is meausured by the CPU280 ROM code, and stored in
+; the NVRAM as a multiple of 614400 Hz. The internal Z280 timers are
+; clocked at 1/4 of the CPU clock frequency (which is 1/2 of the XTAL
+; frequency) and the RSX280 timer typically runs at 100 Hz, thus we
+; multiply the NVRAM value by 614400 / 4 / 100 = 1536.
+
+CPUSPD:	ld	a,(NVOK)
+	or	a		; NVRAM data valid?
+	ld	hl,30720	; no, assume the default 24.576 MHz xtal
+	ret	z
+	ld	a,(NVRAM+cpufreq-cpufreq)
+	exts	a		; A -> HL
+	multuw	1536
+	ret
+
+;-----------------------------------------------------------------------
+
+; Calculate the total amount of memory on the CPU280 board.
+
+; The amount of RAM is determined by the CPU280 ROM code, and stored
+; in the NVRAM as a multiple of 512 Kb blocks.
+
+MSIZE:	ld	a,(NVOK)
+	or	a		; NVRAM data valid?
+	ld	hl,512		; no, assume the minimum 512 Kb
+	ret	z
+	ld	a,(NVRAM+s$mem-cpufreq)
+	ld	h,a		; *256
+	ld	l,0
+	add	hl,hl		; *512
+	ld	($MEMSZ),hl
+	ret
+
+;-----------------------------------------------------------------------
+
+; Get current date and time from DS1287A clock chip and store it
+; at HL address in BCD format (YYYY MM DD hh mm ss dow = 8 bytes).
+
+GETDT:	push	hl
+	ld	hl,timbuf	; point to the destination buffer
+	call	rdtime		; read clock
+	pop	hl
+	ld	a,(ds.year)	; fetch year
+	ld	c,a
+	cp	78h		; 1978
+	ld	a,19h
+	jr	nc,t1
+	ld	a,20h
+t1:	ld	(hl),a
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	ld	a,(ds.mon)	; fetch month
+	ld	(hl),a		; month = 1...12
+	inc	hl
+	ld	a,(ds.day)	; fetch day
+	ld	(hl),a		; day = 1...29,30, or 31
+	inc	hl
+	ld	a,(ds.hour)
+	call	cvhour		; convert hour to 24-hours format (BCD)
+	ld	(hl),a		; hours = 00..23
+	inc	hl
+	ld	a,(ds.min)
+	ld	(hl),a		; minutes = 00..59
+	inc	hl
+	ld	a,(ds.sec)
+	ld	(hl),a		; seconds = 00..59
+	inc	hl
+	ld	a,(ds.dow)
+	ld	(hl),a		; day of week = 1..7
+	xor	a
+	ret
+
+;-----------------------------------------------------------------------
+
+; Set date and time from data @HL, same format as GETDT.
+
+SETDT:	ld	de,timbuf
+	ld	bc,dterr	; push error return address
+	push	bc		;  on stack for convenience
+	inc	hl		; skip century
+	ld	a,(hl)		; get year
+	ld	(ds.year),a
+	inc	hl
+	ld	a,(hl)		; get month
+	or	a
+	ret	z
+	ld	c,12h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.mon),a
+	inc	hl
+	ld	a,(hl)		; get day
+	or	a
+	ret	z
+	ld	c,31h+1
+	call	chkbcd
+	ret	c
+	ld	(ds.day),a
+	inc	hl
+	ld	a,(hl)		; hour
+	ld	c,24h
+	call	chkbcd
+	ret	c
+	res	7,a		; set 24-hour format bit
+	ld	(ds.hour),a
+	inc	hl
+	ld	a,(hl)		; minutes
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.min),a
+	inc	hl
+	ld	a,(hl)		; seconds
+	ld	c,60h
+	call	chkbcd
+	ret	c
+	ld	(ds.sec),a
+	inc	hl
+	ld	a,(hl)
+	or	a
+	ret	z
+	cp	7+1
+	ret	nc
+	ld	(ds.dow),a
+	pop	bc		; discard error return address
+	ld	a,80h
+	ld	(ds.wp),a	; set write-protect bit
+	ld	hl,timbuf
+	call	sttime
+	xor	a
+	ret
+dterr:	ld	a,E.BADOP
+	scf
+	ret
+
+chkbcd:	ld	b,a
+	and	0Fh
+	cp	09h+1		; ensure low-nibble is value BCD
+	ccf
+	ld	a,b
+	ret	c
+	cp	c		; compare against max value, this also
+	ccf			;  validates high-nibble of BCD
+	ret
+
+; convert hour to 24-hour format
+
+cvhour:	bit	6,a		; already in 24-hour format?
+	ret	z		; return if yes
+	res	6,a
+	bit	7,a		; check AM/PM bit
+	ret	z		; return if AM
+	and	1Fh
+	add	a,12h		; correct if PM
+	daa
+	cp	24h		; hour >= 24?
+	ret	c		; return if not
+	sub	24h		; otherwise correct it
+	ret
+
+;-------------------------------------------------------------------------
+
+; Activate the Clock chip and set Date/Time from the string passed in HL.
+
+sttime:	di
+	push	hl
+	iopage	BOARDP
+	pop	hl
+	ld	a,10000010b	; SET mode, no alarms, BCD, 24-hour mode
+	out	(rtcb),a
+	ld	a,(hl)		; seconds
+	out	(rtc),a
+	inc	hl
+	xor	a		; seconds alarm
+	out	(rtc+1),a
+	ld	a,(hl)		; minutes
+	out	(rtc+2),a
+	inc	hl
+	xor	a		; minutes alarm
+	out	(rtc+3),a
+	ld	a,(hl)		; hours
+	out	(rtc+4),a
+	inc	hl
+	xor	a		; hours alarm
+	out	(rtc+5),a
+	ld	a,(hl)		; day
+	out	(rtc+7),a
+	inc	hl
+	ld	a,(hl)		; month
+	out	(rtc+8),a
+	inc	hl
+	ld	a,(hl)		; dow
+	out	(rtc+6),a
+	inc	hl
+	ld	a,(hl)		; years
+	out	(rtc+9),a
+	ld	a,00000010b	; RUN mode, no alarms, BCD, 24-hour mode
+	out	(rtcb),a
+	ei
+	ret
+
+;-------------------------------------------------------------------------
+
+; Read the Clock to a buffer area in memory.
+;
+; The entire Date/Time string is eight bytes read as:
+;
+;	Sec   Min   Hour   Day   Mon   DOW   Year   WProt
+;                  (12/24)                          (MSB)
+;
+; In this implementation, BCD mode is used, and the 12/24 hour bit is
+; always set to 24-hour mode by clearing the MSB to 0.
+
+rdtime:	push	hl		; preserve ptr
+	iopage	BOARDP
+	pop	hl		; restore ptr
+rd1:	in	a,(rtca)
+	rla			; UIP bit set?
+	jr	c,rd1		; yes, wait [TODO; timeout?]
+	di
+	in	a,(rtc)		; seconds
+	ld	(hl),a
+	inc	hl
+	in	a,(rtc+2)	; minutes
+	ld	(hl),a
+	inc	hl
+	in	a,(rtcb)
+	cpl			;  invert 12/24 flag
+	rrca			;   and move it from bit 2 to bit 6
+	rrca
+	rrca
+	and	01000000b
+	ld	c,a
+	in	a,(rtc+4)	; hours with AM/PM flag in bit 7
+	or	c
+	ld	(hl),a
+	inc	hl
+	in	a,(rtc+6)	; dow
+	ld	c,a
+	in	a,(rtc+7)	; day
+	ld	(hl),a
+	inc	hl
+	in	a,(rtc+8)	; month
+	ld	(hl),a
+	inc	hl
+	ld	(hl),c
+	inc	hl
+	in	a,(rtc+9)	; year
+	ld	(hl),a
+	ei
+	ret
+
+;--------------------------------------------------------------------
+
+	dseg
+
+timbuf:	ds	8		; buffer for reading/setting date/time
+
+ds.sec	equ	timbuf+0
+ds.min	equ	timbuf+1
+ds.hour	equ	timbuf+2
+ds.day	equ	timbuf+3
+ds.mon	equ	timbuf+4
+ds.dow	equ	timbuf+5
+ds.year	equ	timbuf+6
+ds.wp	equ	timbuf+7
+
+NVRAM:	ds	21		; buffer for CMOS memory contents
+NVOK:	ds	1		; NV OK flag
+
+	end
