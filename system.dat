@@ -60,6 +60,7 @@ $SWSTK	; stub to call kernel routines
 $SWPRI	; priority range for swapping
 $SWPC	; swapping interval in ticks
 $SWPCT	; swapping interval counter
+$SBASE	; physical system base bank
 $SBANK	; system bank number
 SYSCOM	; start of common area
 SYSDAT	; start of system data area
