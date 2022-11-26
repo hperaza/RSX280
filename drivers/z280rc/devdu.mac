@@ -667,15 +667,13 @@ tmarm:	push	ix
 	pop	ix
 	ret
 
-tm1:	di
-	push	ix
+tm1:	push	ix
 	ld	(result),a	; save result
 	ld	hl,(savucb)
 	ld	(fblk+5),hl	; save context
 	ld	ix,fblk
 	call	LNKFQB		; queue fork block
 	pop	ix
-	ei
 	ret
 
 ; Wait for Ready (Non-Busy) signal active with timeout (clock-tick
