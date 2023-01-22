@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of ZAP - an hexadecimal file editor for RSX180.  ;
-;   Copyright (C) 2019-2020, Hector Peraza.                            ;
+;   Copyright (C) 2019-2022, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -30,8 +30,8 @@ ESC	equ	1Bh
 
 VT100	equ	TRUE
 
-	public	HOME,CLS,CLREOS,CLREOL,SETCUR,FWDIDX,REVIDX
-	public	HASSRG,SCRLRG,REVVID,BOLD,NORMAL,GRAPH,ALPHA,TRMNAM
+	public	HOME,CLS,CLREOS,CLREOL,SETCUR,FWDIDX,REVIDX,TRMNAM
+	public	HASSRG,SCRLRG,REVVID,BOLD,NORMAL,GRAPH,ALPHA
 
 	extrn	PUTCH,TTFLSH
 

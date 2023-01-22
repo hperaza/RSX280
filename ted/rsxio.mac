@@ -2,7 +2,7 @@
 ;                                                                      ;
 ;   This file is part of TED, a clone of the screen-oriented text      ;
 ;   editor that was once available for the RT-11 OS.                   ;
-;   Copyright (C) 2011-2022, Hector Peraza.                            ;
+;   Copyright (C) 2011-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -51,7 +51,7 @@ ASTEFN	equ	4		; event flag for AST
 	public	FDELET,WDELET,MKFCB,PRFNAM,FGETC,FPUTC,PADEOF
 	public	GETTOP,GETCML,EXIT
 
-	extrn	TTCLR,TTFLSH,PUTCH,PFN,ADEC,HLDEC
+	extrn	TRMNAM,TTCLR,TTFLSH,PUTCH,PFN,ADEC,HLDEC
 
 	extrn	UFLAG,UPDST,UCASE,CPDEHL,QIOSB
 
@@ -81,12 +81,47 @@ TTINIT:	call	TTCLR		; init output buffer
 	ld	hl,QIOATT
 	SC	.QIO		; .QIOW
 	ret	c		; return error if queuing failed
-	ld	hl,QIOSMC	; fetch return code
+	ld	hl,QIOGMC	; get terminal type
 	SC	.QIO
 	ret	c
-	ld	a,LF		; as required by RSX180
-	call	PUTC
-	ret
+	ld	a,(TCANS+1)
+	or	a		; ANSI terminal?
+	jr	nz,ini1		; yes, use VT100 definitions
+	call	TRMNAM
+	ex	de,hl
+	ld	hl,vt52		; else use VT52 definitions
+	ld	bc,deflen
+	ldir
+ini1:	ld	hl,QIOSMC	; set terminal mode to binary
+	SC	.QIO
+	ret	c
+	ld	a,LF		; don't overwrite RSX180 prompt
+	jp	PUTC
+
+vt52	equ	$
+	db	'VT52',0,0,0,0,0,0,0,0,0,0
+	db	80,24
+	db	4,ESC,'H',ESC,'J',0,0,0
+	db	2,ESC,'J',0,0,0,0,0
+	db	2,ESC,'K',0,0,0,0,0
+	db	2,ESC,'A',0,0,0,0,0
+	db	2,ESC,'B',0,0,0,0,0
+	db	2,ESC,'C',0,0,0,0,0
+	db	2,ESC,'D',0,0,0,0,0
+	db	2,ESC,'H',0,0,0,0,0
+	db	2,ESC,'Y',0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	FALSE
+	db	32
+	db	32
+	db	FALSE
+	db	1,LF,0,0,0,0,0,0
+	db	2,ESC,'I',0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+deflen	equ	$-vt52
 
 ; Output char in A to terminal, buffered.
 
@@ -212,7 +247,7 @@ TTAST:	ex	(sp),hl		; fetch argument
 
 ; AST mark-time
 
-TMAST:	push	hl
+TMAST:	ex	(sp),hl		; drop argument, push regs
 	push	de
 	ld	hl,ASTFLG
 	set	0,(hl)		; signal time event arrived
@@ -758,9 +793,11 @@ EXIT:	call	TTFLSH
 GTKBUF:	ds	GTKSZ
 
 QIOATT:	QIOW$	IO.ATT,TTLUN,EFN,QIOSB,,<TTAST>
+QIOGMC:	QIOW$	SF.GMC,TTLUN,EFN,QIOSB,,<TCANS,2>
 QIOSMC:	QIOW$	SF.SMC,TTLUN,EFN,QIOSB,,<TCBIN,2>
 QIOEF:	QIOW$	IO.ACC,EFLUN,EFN,QIOSB,,<,,,,,>
 QIOWF:	QIOW$	IO.CRE,WFLUN,EFN,QIOSB,,<,,,,,>
+TCANS:	db	TC.ANS,0
 TCBIN:	db	TC.BIN,1
 
 TTQLEN:	db	0		; TTY queue length (number of chars in queue)

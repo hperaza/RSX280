@@ -43,7 +43,7 @@ TMEFN	equ	11
 	public	GETCMD,RESCMD,ERRMSG,INKEY,GETCH,DELAY,INIT,EXIT
 	public	TTMODE,MKFCB,PRFCB,OPENF,CLOSEF,READF,WRITEF
 
-	extrn	ATTACH,DETACH,ADEC,HLDEC,PUTCH,TTFLSH,PFN
+	extrn	ATTACH,DETACH,ADEC,HLDEC,PUTCH,TTFLSH,PFN,TRMNAM
 	extrn	PUTSTR,PERROR,GCML,RCML
 
 	cseg
@@ -60,7 +60,42 @@ INIT:	ld	ix,ttq
 	ld	de,TTAST	; attach with ASTs
 	ld	c,LUNTI
 	call	ATTACH
+	ld	hl,qio3
+	SC	.QIO		; get terminal type
+	ret	c
+	ld	a,(ans+1)
+	or	a		; ANSI terminal?
+	ret	nz		; yes, use VT100 definitions
+	call	TRMNAM
+	ex	de,hl
+	ld	hl,vt52		; ese switch to VT52 escape sequences
+	ld	bc,vtlen
+	ldir
 	ret
+
+vt52	equ	$
+	db	'VT52',0,0,0,0,0,0,0,0,0,0
+	db	80,24
+	db	4,ESC,'H',ESC,'J',0,0,0
+	db	2,ESC,'J',0,0,0,0,0
+	db	2,ESC,'K',0,0,0,0,0
+	db	2,ESC,'F',0,0,0,0,0
+	db	2,ESC,'G',0,0,0,0,0
+	db	2,ESC,'H',0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	2,ESC,'Y',0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+	db	0
+	db	32
+	db	32
+	db	0
+	db	1,LF,0,0,0,0,0,0
+	db	2,ESC,'I',0,0,0,0,0
+	db	0,0,0,0,0,0,0,0
+vtlen	equ	$-vt52
 
 EXIT:	call	TTFLSH
 	ld	c,LUNTI
@@ -69,7 +104,7 @@ EXIT:	call	TTFLSH
 	SC	.EXIT		; exit
 
 TTMODE:	ld	(ttc+1),a
-	ld	hl,qio3
+	ld	hl,qio4
 	SC	.QIO		; set terminal mode (binary/normal)
 	ret
 
@@ -454,7 +489,9 @@ FDB:	ds	FINFSZ
 
 qio1:	QIOW$	IO.ACC,LUNFIL,EFIL,iosb,,<FDB>
 qio2:	QIOW$	IO.RVB,LUNFIL,EFIL,iosb,,<,,,,,>
-qio3:	QIOW$	SF.SMC,LUNTI,TTEFN,iosb,,<ttc,2>
+qio3:	QIOW$	SF.GMC,LUNTI,TTEFN,iosb,,<ans,2>
+qio4:	QIOW$	SF.SMC,LUNTI,TTEFN,iosb,,<ttc,2>
+ans:	db	TC.ANS,0
 ttc:	db	TC.BIN,1
 iosb:	ds	4
 
