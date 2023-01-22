@@ -385,8 +385,8 @@ Changelog
 - CPU280 port:
   * first working version of the floppy disk driver, the system boots and
     runs as expected! but the driver still needs polishing.
-  * the floppy driver now displays a small light show using the on-board
-    LEDs to show it is alive.
+  * the floppy driver now displays a small light pattern using the on-board
+    LEDs to show it's alive.
 
 
 15/11/22
@@ -395,7 +395,7 @@ Changelog
   * in case of errors, the I/O operation is retried up to 5 times.
   * new wait-for-interrupt routines yields control back to system (and
     other tasks) until an interrupt or timeout happens, then continues
-    I/O processing via fork block.)
+    I/O processing via fork block.
 
 
 17/11/22
@@ -425,4 +425,10 @@ Changelog
     driver to end prematurely an output operation for no apparent reason,
     with characters still waiting in the output buffer. Disabling the CPU
     cache fixed the problem (?).
+
+
+20/01/23
+
+- Kernel: abort task if AST or SST stack frame is outside task limits.
+
 

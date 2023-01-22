@@ -1906,7 +1906,7 @@ BUGS:
 - SYSFCP: IO.WAT now supports setting of F.USER, F.GROUP and F.PROT
   values.
 
-- User with group ID > 10 is privileged (before was user ID > 10).
+- User with group ID < 10 is privileged (before was user ID < 10).
 
 - vol180: updboot command now accepts an optional filename parameter for
   the bootloader binary.
@@ -7551,4 +7551,82 @@ BUGS:
   is RXS280.
 
 - LDR: refuse to load empty (zero size) task images.
+
+
+04/12/22
+
+- TED, ZAP, games: switch automatically to VT52 escape sequences if the
+  terminal type is not set to ANSI.
+
+
+02/01/23
+
+- TKB: don't store module ident information if the module is not being loaded.
+
+
+08/01/23
+
+- Kernel: system date and time can now be set only by privileged tasks.
+
+
+14/01/23
+
+- Kernel: implemented 'Abort Request' ASTs (AST.AB):
+  * the AST routine is entered if an attempt is made to abort the task
+    via the .ABORT system call (e.g. as issued by the MCR ABO command),
+    allowing the task to do some cleanup, close files, etc.
+  * the AST routine is called only once for non-privileged tasks, a second
+    attempt to abort the task will unconditionally abort the task.
+  * privileged tasks enter the AST routine each time an abort requests is
+    issued, but subsequent ASTs will not be queued until the AST routine
+    exits.
+
+- MCR: display the new TS.ABX bit status in the ATL command.
+
+- RMD: display the new TS.ABX bit status in the Task Header Display page.
+
+- MCE: use the Abort Request AST to do proper cleanup if aborted.
+
+
+16/01/23
+
+- Kernel:
+  * the argument to the .EXTSK (Task Extend) system call is now in 16-byte
+    units (and therefore ranges from -4095 to +4095). This allows to
+    distinguish properly between extend (positive) and shrink (negative
+    value) operations (before, an increment of 40000 could also mean shrink
+    by -25536, since 40000 has the sign bit set).
+  * if .EXTSK fails to immediately extend the task's sub-partition, try
+    checkpointing the task until memory becomes available (unless the task
+    became larger than the main partition.)
+  * the Mark Time AST now pushes on the stack the associated event flag
+    number, or zero if none was specified.
+
+- Updated the programs that issue the .EXTSK call: ICP, ACNT, LBR, ZSM,
+  VFY and the test program.
+
+- Updated the programs that use Mark Time ASTs (the argument from the stack
+  must be removed even if unused): SYSFCP, MCE, COT, CPU, RMD, TED, CLOCK,
+  and VDO.
+
+
+21/01/03
+
+- Kernel:
+  * AST now aborts the task if the stack frame is outside task limits.
+  * the .CONN and .RQST system calls can now return additional exit status
+    information.
+
+
+22/01/23
+
+- Kernel:
+  * the exit status AST (AST.ST stype) now pushes a single word (ESB address)
+    instead of the whole extended status information; the last is now stored
+    directly in the ESB if a long status format is requested; this is more
+    in-line with the RSX-11M specifications.
+  * .RUN system call: dtime and rsi units are now a byte value and not a
+    word.
+  * removed the unused O.ST field of the OCB.
+
 
