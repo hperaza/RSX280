@@ -781,7 +781,7 @@ ikl1:	ldw	hl,(ix)		; get packet address into HL
 	ldw	hl,(hl+I.TCB)	; get TCB address from I/O packet
 	cpw	hl,bc		; match?
 	jr	z,ikl2		; dequeue and free the packet if yes
-	pop	ix		; else go to next paket in list
+	pop	ix		; else go to next packet in list
 	jr	ikl1		; and loop until all processed
 
 ikl2:	pop	hl		; restore packet address

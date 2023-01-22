@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   CCL-like command catch-all task for RSX180/RSX280.                 ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -22,7 +22,7 @@
 	.Z80
 
 	name	'CCL'
-	ident	'1.67'
+	ident	'1.68'
 
 	include	SYSFN.INC
 	include	TCB.INC
@@ -101,7 +101,7 @@ SNDMCR:	ld	hl,buf
 	SC	.RPOI
 	jp	c,SYSERR
   ELSE
-	ld	e,11
+	ld	de,11		; note short status format
 	ld	bc,exstat
 	SC	.RQST
 	jp	c,SYSERR
@@ -1117,7 +1117,7 @@ dohey:	call	gettn		; get task name
 	ld	hl,0
 	ld	(exstat),hl
 	ld	hl,cmdnam
-	ld	e,11
+	ld	de,11		; note: short status format
 	ld	bc,exstat
 	SC	.CONN
 	jp	c,SYSERR

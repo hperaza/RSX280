@@ -57,7 +57,7 @@ SF.SMC	equ	12		; set multiple characteristics
 
 IO.LOV	equ	16		; load overlay
 
-; Terminal sub-functions (some can be ORed)
+; Terminal sub-functions (some can be ORed together)
 
 TF.AST	equ	01h		; attach with AST
 TF.RNE	equ	01h		; read with no echo
@@ -87,7 +87,7 @@ IO.MNT	equ	33		; mount device
 IO.DSM	equ	34		; dismount device
 IO.FFS	equ	35		; flush all disk buffers
 
-; File I/O subfunctions (can be ORed)
+; File I/O subfunctions (can be ORed together)
 
 SF.ACR	equ	01h		; access (open) for read
 SF.ACW	equ	02h		; access (open) for write
@@ -168,7 +168,7 @@ n	defl	n+2
 	ld	sp,hl
 	pop	ix
 	rlca			;; restore carry bit from error code sign
-	rra			;; (works since all errors are negative)
+	rra			;; (works since all error codes are negative)
 	endm
 
 QIOW$	macro	func,lun,efn,iosb,ast,args

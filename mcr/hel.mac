@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command HELLO/HELP for RSX180/RSX280.                 ;
-;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'03.09'
+	ident	'03.10'
 
 	cseg
 
@@ -1041,7 +1041,8 @@ lgn12:	pop	hl
 	ld	hl,0
 	ld	(exstat),hl
 	ld	hl,mcrtdb
-	ld	e,11		; flag number
+	ld	de,11		; flag number, short status format
+	ld	bc,exstat
 	SC	.RQST
 	jr	c,lgn13		; TODO: display error message?
 	ld	e,11

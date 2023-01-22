@@ -39,6 +39,7 @@ extend:	call	delay
 	inc	hl
 	call	PUTSTR
 	pop	hl
+	call	div16
 	SC	.EXTSK
 	ld	hl,msg2		; 'success'
 	jr	nc,e1
@@ -65,6 +66,7 @@ shrink:	call	delay
 	inc	hl
 	call	PUTSTR
 	pop	hl
+	call	div16
 	SC	.EXTSK
 	ld	hl,msg2		; 'success'
 	jr	nc,s1
@@ -82,15 +84,9 @@ s1:	push	af
 	jr	nc,shrink
 
 	call	delay
-	ld	hl,msg1		; 'extending task by '
+	ld	hl,msg5		; 'restoring installed size'
 	call	PUTSTR
-	push	hl
-	ld	hl,0
-	call	signed
-	ex	(sp),hl
-	inc	hl
-	call	PUTSTR
-	pop	hl
+	ld	hl,0		; restore installed size
 	SC	.EXTSK
 	ld	hl,msg2		; 'success'
 	jr	nc,r1
@@ -118,6 +114,7 @@ msg1:	db	'Extending task by ',0,': ',0
 msg2:	db	'Success',0
 msg3:	db	'Failed',0
 msg4:	db	'Current task end = ',0
+msg5:	db	'Restoring task''s installed size: ',0
 
 delay:	ld	hl,(tcksec)
 	srl	h
@@ -151,6 +148,18 @@ signed:	push	hl
 pos:	xor	a		; no filler
 	call	HLDEC
 	pop	hl
+	ret
+
+div16:	ld	de,15
+	add	hl,de		; round to upper boundary
+	sra	h		; note: signed division!
+	rr	l
+	sra	h
+	rr	l
+	sra	h
+	rr	l
+	sra	h
+	rr	l
 	ret
 
 ;-----------------------------------------------------------------------

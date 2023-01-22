@@ -910,11 +910,9 @@ START:	ld	sp,stack	; setup stack
 
 	; specify exit AST to cleanup things when MCE gets aborted
 
-  if 0
 	ld	de,EXAST
-	ld	c,AST.EX
+	ld	c,AST.AB
 	SC	.ASTDF		; specify exit AST
-  endif
 
 	ld	ix,FREE		; IX => free memory listhead
 	ld	hl,(GTKBUF+GT.END)
@@ -3938,7 +3936,8 @@ dex1:	; ***  EXECUTE COMMAND ***
 	or	a
 	jr	nz,dex2
 	inc	e
-dex2:	ld	bc,EXSTAT
+dex2:	ld	d,0
+	ld	bc,EXSTAT
   ENDIF
 	SC	.RQST		; request CLI and pass data
 	pop	de
@@ -4980,8 +4979,7 @@ t1:	ld	a,(STAFLG)
 ; TI: Time-out AST
 ; On timeout - log off (TT0: just exit)
 
-TIMAST:	push	af
-	push	hl
+TIMAST:	ex	(sp),hl		;; push HL, discard AST argument
 	push	de
 	push	bc
 
@@ -5022,7 +5020,6 @@ ta3:
 	pop	bc
 	pop	de
 	pop	hl
-	pop	af
 	SC	.ASTX		;; exit AST
 
 	IFNDEF	IO.WBT

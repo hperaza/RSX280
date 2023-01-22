@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX180, a multi-tasking OS for the Z180.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -148,6 +148,8 @@ ka3:	; if zero (exact fit) simply update prev pointer
 	ret
 
 ; Compare DE and BC. Returns CY set if BC > DE.
+
+	public	cpdebc
 
 cpdebc:	ld	a,d
 	cp	b

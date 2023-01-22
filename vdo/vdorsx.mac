@@ -120,7 +120,7 @@ ttast:	ex	(sp),hl		; fetch argument
 
 ; Mark-time AST routine
 
-tmast:	push	hl
+tmast:	ex	(sp),hl		; drop argument
 	push	de
 	ld	hl,astflg
 	set	0,(hl)		; signal timeout

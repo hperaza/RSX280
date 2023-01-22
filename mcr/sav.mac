@@ -2,7 +2,7 @@
 ;                                                                      ;
 ;   MCR external command SAV - Save System Image, also contains the    ;
 ;   system initialization routine.                                     ;
-;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -22,7 +22,7 @@
 
 	.Z80
 
-	ident	/1.00/
+	ident	/1.01/
 
 	include	SYSFN.INC
 	include	DCB.INC
@@ -1066,6 +1066,7 @@ ini2:	push	hl
 	ld	(MCRTDB+TD.CMD),hl
 	ld	(MCRTDB+TD.CML),hl
 	ld	hl,MCRTDB
+	ld	bc,0
 	SC	.RQST		; start MCR
 	jp	c,mcrerr
   ENDIF
@@ -1212,7 +1213,7 @@ SNDMCR:	ld	hl,CMDBUF
 	jr	z,snd1
 	SC	.RPOI
 	ret
-snd1:	ld	e,2
+snd1:	ld	de,2		; note short status format
 	ld	bc,EXSTAT
 	SC	.RQST
 	ret	c

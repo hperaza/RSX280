@@ -17,6 +17,6 @@ AST.UC	equ	2		; unsolicited char from attached terminal
 AST.RD	equ	3		; data received
 AST.CK	equ	4		; clock (mark time)
 AST.ST	equ	5		; status (from offspring)
-AST.AB	equ	6		; abort/exit
+AST.AB	equ	6		; abort request
 AST.CL	equ	7		; command line (CLIs only)
 

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   RSX280 SHUTUP program.                                             ;
-;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	/01.07/
+	ident	/01.08/
 
 	cseg
 
@@ -695,7 +695,7 @@ SNDBYE:	ld	(tidev),de	; override terminal name in TDB
 	ld	hl,0
 	ld	(exstat),hl
 	ld	hl,mcrtdb
-	ld	e,11
+	ld	de,11		; note short status format
 	ld	bc,exstat
 	SC	.RQST		; request MCR to execute the command
 	ret
@@ -728,7 +728,7 @@ SPAWN:	ld	(mcrtdb+TD.CMD),hl
 	ld	hl,0
 	ld	(exstat),hl
 	ld	hl,mcrtdb
-	ld	e,11
+	ld	de,11		; note short status format
 	ld	bc,exstat
 	SC	.RQST		; request MCR to execute the command
 	jp	c,SYSERR

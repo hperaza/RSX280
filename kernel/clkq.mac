@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -197,8 +197,8 @@ CMKT:	ld	ix,($CTCB)
 
 ; Input:
 ;   HL = address of time parameters: relative request time followed by
-;        the reschedule interval, both in the form 'magnitude + unit'
-;        (4 words in total).
+;        the reschedule interval, both in the form 'magnitude word,
+;        byte units' (6 bytes in total).
 ;   DE = valid TCB address of requested task.
 ;   BC = address of user-supplied TDB.
 ; Returns:
@@ -226,12 +226,6 @@ SRQST:	push	hl
 	inc	hl
 	ld	c,(hl)		; get units
 	inc	hl
-	ld	a,(hl)
-	inc	hl
-	or	a
-	ld	a,E.INV
-	scf
-	jp	nz,mkt1
 	push	hl
 	ex	de,hl
 	call	TMULT		; convert time interval to ticks
@@ -249,14 +243,13 @@ SRQST:	push	hl
 	inc	hl
 	ld	c,(hl)		; get units
 	inc	hl
-	ld	a,(hl)
-	inc	hl
-	or	a
+	ex	de,hl
+	call	TMULT		; convert reschedule interval to ticks
+	jp	c,mkt1		; on error, free packet and return
+	or	a		; overflow?
 	ld	a,E.INV
 	scf
-	jp	nz,mkt1
-	ex	de,hl
-	call	TMULT		; convert interval to ticks
+	jp	nz,mkt1		; return error as well
 	ldw	(ix+C.RSI),de	; store reschedule interval in packet
 	ldw	(ix+C.RSI+2),hl
 	jp	LNKCLQ		; queue packet and return
@@ -420,18 +413,23 @@ ACTMKT:	ldw	bc,(ix+C.TCB)
 	call	nz,SETFLG	; set event flag, if specified
 	pop	bc
 	pop	ix
-	;ret	c		; ignore invalid event flag number error
+	;ret	c		; event flag number was validated by MRKT
 	ldw	de,(ix+C.AST)	; get AST routine address
 	ld	a,d		; any specified?
 	or	e
 	ret	z		; we're done if not
+	ld	l,(ix+C.EFN)
+	ld	h,0
 	push	bc
 	ex	(sp),ix		; push packet address, pop TCB address
-	ld	hl,0		; no AST arguments
-	ld	c,0		; arg length = 0
+	push	hl
+	ld	hl,0
+	add	hl,sp		; AST argument = event flag number
+	ld	c,2		; arg length = 2
 	ld	a,AST.CK	; AST type
 	call	QAST		; queue AST to task
-	pop	ix
+	pop	hl		; cleanup stack
+	pop	ix		; restore packet address
 	ret
 
 ; Run task at specified time: request task

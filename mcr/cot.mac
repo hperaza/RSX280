@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Console logging task for RSX280.                                   ;
-;   Copyright (C) 2015-2022, Hector Peraza.                            ;
+;   Copyright (C) 2015-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.08'
+	ident	'01.09'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -206,7 +206,8 @@ astdat:	push	de
 	pop	de
 	SC	.ASTX		; return to program
 
-astclk:	push	de
+astclk:	pop	af		; drop argument
+	push	de
 	ld	e,ASTEFN
 	SC	.SETF		; set event flag
 	pop	de
@@ -302,7 +303,8 @@ propkt:	ld	ix,(iopkt)
 	ld	a,E.INV
 fnsto:	ld	c,a
 	ld	b,0
-	ld	de,0
+	ld	ix,(iopkt)
+	ldw	de,(ix+I.QDB+Q.LEN)
 	ld	iy,(ucbco)
 	KCALL	IODONE		; end I/O processing
 	ret
@@ -1198,7 +1200,7 @@ logfdb:	ds	FINFSZ		; log file name (/LOGFILE)
 
 logf:	FSR$	logfdb,<1 SHL FM.WR>,LUNFIL,9
 
-qio1	QIOW$	IO.WVB,LUNTTY,10,iosb,,<msgbuf,,,,,>
+qio1:	QIOW$	IO.WVB,LUNTTY,10,iosb,,<msgbuf,,,,,>
 iosb:	ds	4
 
 	ds	256		; stack space

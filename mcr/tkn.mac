@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Task Termination Notification task for RSX280.                     ;
-;   Copyright (C) 2016-2022, Hector Peraza.                            ;
+;   Copyright (C) 2016-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.04'
+	ident	'02.05'
 
 	cseg
 
@@ -141,7 +141,7 @@ NOTIFY:	ld	a,(msgbuf+TN.RSN)
 	ld	e,a		; save reason code in E
 	and	7Fh
 	dec	a
-	cp	14
+	cp	15
 	jr	nc,nret		; ignore unknown reasons
 	add	a,a
 	ld	c,a
@@ -256,22 +256,23 @@ month:	db	'JanFebMarAprMayJunJulAugSepOctNovDec'
 abomsg:	db	CR,LF,0,'  Task ',0,' terminated'
 sep:	db	CR,LF,'          ',0
 
-reason:	dw	r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14
+reason:	dw	r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14,r15
 
 r1:	db	'Aborted via directive or CLI',CR,LF,0,0
 r2:	db	'Illegal instruction trap',CR,LF,0,1 ; RSX180 only
 r3:	db	'Unvectored RST execution',CR,LF,0,1
 r4:	db	'Device I/O error',CR,LF,0,0	; 'Load failure. Read error'
 r5:	db	'Invalid task header',CR,LF,0,0
-r6:	db	'AST abort, bad stack',CR,LF,0,1
-r7:	db	'Not enough pool',CR,LF,0,0
-r8:	db	'Failed to start execution',CR,LF,0,0
-r9:	db	'Memory protect violation',CR,LF,0,1 ; RSX280 only
-r10:	db	'Checkpoint allocation failure',CR,LF,0,0
-r11:	db	'Privileged instruction trap',CR,LF,0,1
-r12:	db	'Extended instruction trap',CR,LF,0,1
-r13:	db	'Division exception',CR,LF,0,1
-r14:	db	'SS-bit or breakpoint trap',CR,LF,0,1
+r6:	db	'Bad AST stack',CR,LF,0,1
+r7:	db	'Bad SST stack',CR,LF,0,1
+r8:	db	'Not enough pool',CR,LF,0,0
+r9:	db	'Failed to start execution',CR,LF,0,0
+r10:	db	'Memory protect violation',CR,LF,0,1 ; RSX280 only
+r11:	db	'Checkpoint allocation failure',CR,LF,0,0
+r12:	db	'Privileged instruction trap',CR,LF,0,1
+r13:	db	'Extended instruction trap',CR,LF,0,1
+r14:	db	'Division exception',CR,LF,0,1
+r15:	db	'SS-bit or breakpoint trap',CR,LF,0,1
 
 r0io:	db	'Task exit with outstanding I/O',CR,LF,0,0
 eio:	db	'And with outstanding I/O',CR,LF,0

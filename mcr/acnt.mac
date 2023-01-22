@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   Account File Maintenance Program for RSX180.                       ;
-;   Copyright (C) 2018-2022, Hector Peraza.                            ;
+;   Copyright (C) 2018-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.z80
 
-	ident	'01.07'
+	ident	'01.08'
 
 	include	FCB.INC
 	include	TCB.INC
@@ -2296,7 +2296,7 @@ send:	ld	(mcrtdb+TD.CML),de
 	ld	hl,EX.SUC
 	ld	(exstat),hl	; we want status from task execution
 	ld	hl,mcrtdb
-	ld	e,3
+	ld	de,3		; note short status format (D=0)
 	ld	bc,exstat
 	SC	.RQST		; request MCR and connect
 	ret	c		; an error here is fatal
@@ -2330,7 +2330,7 @@ ALLOC:	ld	hl,(endptr)
 	call	CPHLDE		; CY if endptr + BC >= memtop
 	jr	nc,av2
 av1:	push	hl
-	ld	hl,1024
+	ld	hl,1024/16	; increment is in 16-byte units
 	call	EXTEND
 	pop	de
 	ld	hl,errmem

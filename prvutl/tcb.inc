@@ -53,6 +53,7 @@ TS.ACT	equ	0		; task active
 TS.AST	equ	1		; task is executing an AST
 TS.SUP	equ	2		; task is in supervisor mode
 TS.CKR	equ	3		; checkpoint requested
+TS.ABX	equ	4		; abort AST called
 
 T2.STP	equ	0		; stopped               \
 T2.SEF	equ	1		; stopped for event flag |
@@ -98,12 +99,12 @@ TDBSZ	equ	TD.SLEN + 2
 O.LNK	equ	0		; link to next OCB in list (2 bytes)
 O.PTCB	equ	O.LNK + 2	; address of parent's TCB (2 bytes)
 O.EFN	equ	O.PTCB + 2	; event flag number (1 byte)
-O.ESB	equ	O.EFN + 1	; addr of parent's exit status block (2 bytes)
-O.ST	equ	O.ESB + 2	; status (2 bytes)
+O.FMT	equ	O.EFN + 1	; status format (1 byte)
+O.ESB	equ	O.FMT + 1	; addr of parent's exit status block (2 bytes)
 
 ; OCB size
 
-OCBSZ	equ	O.ST + 2
+OCBSZ	equ	O.ESB + 2
 
 ; Structure returned by the .GTSK Get Task Info system call
 

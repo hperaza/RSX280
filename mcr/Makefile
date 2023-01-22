@@ -46,40 +46,40 @@ $(OBJS) $(SYSOBJS) $(LIBOBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
 acnt.tsk: acnt.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=acnt/of=tsk,syslib/lb/task=ACNT/ext=512/priv"
+	$(ZXCC) $(TKB) -"$@=acnt/of:tsk,syslib/lb/task=ACNT/ext=512/priv"
 
 acs.tsk: acs.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=acs/of=tsk,syslib/lb/task=...ACS/pri=70/priv"
+	$(ZXCC) $(TKB) -"$@=acs/of:tsk,syslib/lb/task=...ACS/pri=70/priv"
 
 bye.tsk: bye.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=bye/of=tsk,syslib/lb/task=...BYE/pri=50/priv"
+	$(ZXCC) $(TKB) -"$@=bye/of:tsk,syslib/lb/task=...BYE/pri=50/priv"
 
 cot.tsk: cot.rel syslib.lib fcslib.lib
-	$(ZXCC) $(TKB) -"$@=cot/of=tsk,fcslib/lb,syslib/lb/task=COT.../pri=150/priv"
+	$(ZXCC) $(TKB) -"$@=cot/of:tsk,fcslib/lb,syslib/lb/task=COT.../pri=150/priv"
 
 dmo.tsk: dmo.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=dmo/of=tsk,syslib/lb/task=...DMO/pri=160/priv"
+	$(ZXCC) $(TKB) -"$@=dmo/of:tsk,syslib/lb/task=...DMO/pri=160/priv"
 
 hel.tsk: hel.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=hel/of=tsk,syslib/lb/task=...HEL/pri=50/priv"
+	$(ZXCC) $(TKB) -"$@=hel/of:tsk,syslib/lb/task=...HEL/pri=50/priv"
 
 ini.tsk: ini.rel fdboot.rel hdboot.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=ini/of=tsk,fdboot,hdboot,syslib/lb/task=...INI/pri=60/priv"
+	$(ZXCC) $(TKB) -"$@=ini/of:tsk,fdboot,hdboot,syslib/lb/task=...INI/pri=60/priv"
 
 ins.tsk: ins.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=ins/of=tsk,syslib/lb/task=...INS/pri=100/priv"
+	$(ZXCC) $(TKB) -"$@=ins/of:tsk,syslib/lb/task=...INS/pri=100/priv"
 
 mcr.tsk: mcr.rel ttputch.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=mcr/of=tsk,ttputch,syslib/lb/task=MCR.../pri=160/priv"
+	$(ZXCC) $(TKB) -"$@=mcr/of:tsk,ttputch,syslib/lb/task=MCR.../pri=160/priv"
 
 mou.tsk: mou.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=mou/of=tsk,syslib/lb/task=...MOU/pri=160/priv"
+	$(ZXCC) $(TKB) -"$@=mou/of:tsk,syslib/lb/task=...MOU/pri=160/priv"
 
 sav.tsk: sav.rel syslib.lib
 	$(ZXCC) $(TKB) -"sav/of:tsk,sav,sav=sav,syslib/lb/task=...SAV/pri=100/priv"
 
 shutup.tsk: shutup.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=shutup/of=tsk,syslib/lb/task=SHUTUP/pri=100/priv"
+	$(ZXCC) $(TKB) -"$@=shutup/of:tsk,syslib/lb/task=SHUTUP/pri=100/priv"
 
 sys.tsk: $(SYSOBJS) syslib.lib
 	@$(ECHO) -e "$@,sys,sys/q=sys/of:tsk,syslib/lb&\r" > build.cmd
@@ -88,10 +88,10 @@ sys.tsk: $(SYSOBJS) syslib.lib
 	@rm -f build.cmd
 
 tkn.tsk: tkn.rel ttputch.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=tkn/of=tsk,ttputch,syslib/lb/task=TKTN/pri=250/priv"
+	$(ZXCC) $(TKB) -"$@=tkn/of:tsk,ttputch,syslib/lb/task=TKTN/pri=250/priv"
 
 ufd.tsk: ufd.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=ufd/of=tsk,syslib/lb/task=...UFD/pri=100/priv"
+	$(ZXCC) $(TKB) -"$@=ufd/of:tsk,syslib/lb/task=...UFD/pri=100/priv"
 
 clean:
 	rm -f *.rel *.prn *.map *.sym core *.bin *.tsk *~ *.\$$\$$\$$

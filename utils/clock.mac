@@ -1,7 +1,7 @@
 ; Clock demo application for RSX180. Based on a similar program from DECUS.
 
 	TITLE	CLOCK
-	IDENT	'V1.01'
+	IDENT	'V1.03'
 
 	.Z80
 
@@ -500,7 +500,7 @@ SPAWN:	ld	(MCRTDB+TD.CML),bc
 	ld	c,5
 	call	DETACH		; detach the terminal
 	ld	hl,MCRTDB
-	ld	e,4
+	ld	de,4		; note short status format
 	ld	bc,EXSTAT
 	SC	.RQST		; spawn task, set efn 4 on exit
 	jr	nc,dirok	; if directive ok, wait for exit
@@ -582,6 +582,7 @@ TIMAST:	ld	a,'U'		; place update command in command buffer
 	ld	e,2
 	SC	.SETF		; set event flag 2 to clear the wait state
 	pop	de
+	pop	af		; remove AST argument
 	SC	.ASTX		; return to program
 
 ; Unsolicited character AST routine

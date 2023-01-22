@@ -24,7 +24,7 @@
 	public	$ITBL,SYSENT,SYSXIT,SYSLVL,TRPFLG,DOFORK,IUNSET
 
 	extrn	SYSFN,TKILL,$FORKQ,$FREE,DOCLKQ,DSPTCH,DOAST,$CPCB
-	extrn	USRMAP,PRVMAP
+	extrn	USRMAP,PRVMAP,$VALTB
 ;;	extrn	$SBANK
 
 ;-----------------------------------------------------------------------
@@ -211,15 +211,28 @@ skip:	ldw	hl,(iy+TX.SST)
 
 upush:	ldw	hl,(ix+T.SP)
 	dec	hl
-	ld	a,b
-	ldup	(hl),a
 	dec	hl
+	push	bc
+	ld	bc,2
+	ex	de,hl
+	call	$VALTB
+	ex	de,hl
+	pop	bc
+	jr	c,badsp
+	ldw	(ix+T.SP),hl
 	ld	a,c
 	ldup	(hl),a
-	ldw	(ix+T.SP),hl
+	inc	hl
+	ld	a,b
+	ldup	(hl),a
 	ret
 	
 upop:	ldw	hl,(ix+T.SP)
+	ld	bc,2
+	ex	de,hl
+	call	$VALTB
+	ex	de,hl
+	jr	c,badsp
 	ldup	a,(hl)
 	ld	c,a
 	inc	hl
@@ -228,14 +241,16 @@ upop:	ldw	hl,(ix+T.SP)
 	inc	hl
 	ldw	(ix+T.SP),hl
 	ret
-	
+
+badsp:	ld	e,TK.SST
 abort:	ld	bc,($CTCB)	; else abort the current task
 	call	TKILL
 	jr	SYSXIT		; TKILL never returns, anyway
 
 normal:	call	SYSFN		; handle system call
 
-SYSXIT:	call	DOFORK		; process all pending fork blocks
+SYSXIT:	ld	sp,SYSSTK
+	call	DOFORK		; process all pending fork blocks
 	jr	nc,SYSXIT
 
 	ld	hl,TFLAG
@@ -247,6 +262,8 @@ SYSXIT:	call	DOFORK		; process all pending fork blocks
 go1:	call	DSPTCH		; prepare next task to dispatch
 	call	DOAST		; if there is a pending AST for this task,
 				;  execute it now
+	jr	c,SYSXIT	; on AST error (bad stack), redispatch
+
 	di
 	ld	a,1
 	ld	(SYSLVL),a	; leaving system, entering user state

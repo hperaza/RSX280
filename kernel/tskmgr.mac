@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -203,7 +203,7 @@ dsp5:	ei			; work pending, run loop again
 dsp4:	ld	($CTCB),hl	; set as current TCB
 	ldw	hl,(hl+T.PCB)
 	ld	($CPCB),hl	; set current PCB
-	ld	hl,(hl+P.BASE)
+	ldw	hl,(hl+P.BASE)
 	ld	($UBANK),hl
 	ret
 
@@ -585,7 +585,7 @@ $LDCKR:	ldw	hl,(ix+T.CPCB)	; get address of checkpoint PCB
 ; Queue the task to the partition wait list after a checkpoint write
 
 $LDCKW:	bit	T2.ABO,(ix+T.ST+1)
-	jp	nz,ldcw1
+	jp	nz,ldcw1	; branch if task is being aborted
 
 	set	T2.OUT,(ix+T.ST+1)
 
@@ -594,6 +594,14 @@ $LDCKW:	bit	T2.ABO,(ix+T.ST+1)
 	ex	(sp),ix
 	call	MFREE		; release task memory
 	pop	ix
+	ldw	hl,(ix+T.END)	; get task end address
+	call	EA2PG		; compute required number of pages
+	ld	e,a		;  in case the task was checkpointed
+	ld	d,0		;   due to an extend task request
+	ldw	hl,(ix+T.PCB)
+	ld	bc,P.SIZE
+	add	hl,bc
+	ldw	(hl),de		; set new size in PCB
 	jp	trq6		; queue task to partition wait list and
 				;  assign released partition to next task
 
@@ -817,11 +825,11 @@ GETSIZ:	ldw	hl,(ix+T.DEND)	; get default upper limit (task end addr + INC)
 EA2PG:	push	hl
 	push	de
 	ld	de,4096		; bytes per page
-	add	hl,de		; round to upper page boundary
-	ld	a,h
+	add	hl,de		; round to upper page boundary (note +4096
+	ld	a,h		;  and not +4095 since size = end address + 1)
 	rra			; divide by 4096
 	rra			; note we're pushing the CY bit
-	rra			;  of the addition back in
+	rra			;  from the addition back in
 	rra
 	and	1Fh
 	pop	de
@@ -842,7 +850,6 @@ EA2PG:	push	hl
 ;   CY flag set on error (e.g. task not active)
 
 ; TODO:
-;   - check privileges
 ;   - ensure that all allocated resources are freed
 
 TKILL:	call	CHKSYS
@@ -855,7 +862,7 @@ TKILL:	call	CHKSYS
 	scf
 	ret	z		; error if not
 	inc	hl
-	bit	T2.ABO,(hl)	; task being already aborted?
+	bit	T2.ABO,(hl)	; task already being aborted?
 	ld	a,E.TABO
 	scf
 	ret	nz		; return error if yes
@@ -1195,7 +1202,7 @@ res3:	bit	T2.STP,(ix+T.SVST+1) ; check saved stop bit
 
 ; Input:
 ;   HL = TDB address followed by relative schedule time and reschedule
-;        interval in ticks (two double-words)
+;        interval.
 ; Returns:
 ;   CY flag set on error and error code in A
 
@@ -1610,11 +1617,12 @@ tf2:	pop	ix
 
 ;-----------------------------------------------------------------------
 
-; Extend task size.
+; Extend (or shrink) task size.
 
 ; Input:
 ;   IX = task TCB
-;   HL = increment in bytes, 0 to restore installed size
+;   HL = positive or negative increment in 16-byte units,
+;        or zero to restore installed task size.
 ; Returns:
 ;   CY set on error and error code in A.
 
@@ -1622,88 +1630,147 @@ tf2:	pop	ix
 ; - return error if task has outstanding I/O and new size caused either
 ;   the task to shrink, or to relocate to a new region.
 
-EXTTSK:	ld	a,h
-	or	l		; zero increment?
-	jr	nz,ext1		; branch if not
-	ldw	hl,(ix+T.DEND)	; else restore default installed size
-	jr	ext3
-ext1:	ex	de,hl		; get increment into DE
-	ldw	hl,(ix+T.END)	; and current end address into HL
-	add	hl,de		; HL = new end address
-	jr	nc,ext2
-	bit	7,d
-	ld	a,E.NOMEM
-	ret	z		; error if above 64K and DE > 0 (CY still set)
-ext2:	ldw	de,(ix+T.DEND)
-	cpw	hl,de		; new end below default (installed) end?
+EXTTSK:	call	newtop		; compute new task's top address
+	ret	c		; on error, return
+	cpw	hl,(ix+T.DEND)	; new end below default (installed) end?
 	ld	a,E.BADOP
 	ret	c		; error if yes
-ext3:	call	EA2PG		; compute new size in pages
-	ld	c,a		; save it in C
+	call	EA2PG		; compute new size in pages
+	ld	e,a		; save it in DE
+	ld	d,0
 	push	hl
-	ldw	de,(ix+T.PCB)	; get subpartition PCB
+	ldw	bc,(ix+T.PCB)	; get subpartition PCB address
 	ld	hl,P.SIZE
-	add	hl,de
+	add	hl,bc
 	cp	(hl)		; same number of pages as before?
 	pop	hl
-	ld	a,E.OK
-	jr	z,stend		; if yes, set new end address and return
-	ld	a,c
+	jp	z,stend		; if yes, set new end address and return
+	ld	a,e
 	cp	16+1		; max allowed number of pages is 16
 	ccf
 	ld	a,E.NOMEM
 	ret	c		; task larger than 64K
-	ld	a,c
+	ld	a,e
 	or	a
 	ld	a,E.INV
 	scf
 	ret	z		; zero size is illegal
 
-	push	de
-	ex	(sp),ix		; IX now has subpartition PCB
-	ld	e,c
-	ld	b,(ix+P.BASE)
-	push	hl
+	push	hl		; remember new end address
+	push	de		; remember new size in pages
+	push	bc
+	ex	(sp),ix		; IX now has subpartition PCB address
+	ldw	bc,(ix+P.BASE)	; remember old subpartition base
 	push	bc
 	call	MEXTND		; extend partition
 	pop	bc
-	pop	hl
-	ld	d,(ix+P.BASE)	;;; redundant
-	pop	ix		; pop TCB back into IX
-	ret	c		; failed
-	ld	a,d
-	cp	b		; partition relocated?
-	jr	z,stend		; set new end address and return if not
+	ldw	de,(ix+P.BASE)	; get new base
+	pop	ix		; pop TCB address back into IX
+	jr	c,tryckp	; if extend failed, checkpoint task
 
-	push	hl
-	push	de
+	pop	hl		; discard new size
+	call	cpdebc##	; partition relocated?
+	jr	z,stend1	; no, set new end address and return success
+
+	push	de		; save new base ($UBANK)
 	push	bc
-	di
-	ld	a,d
 	exx
-	ld	e,a		; DE' = dst bank
-	ld	d,0
-	exx
-	ld	a,b
-	exx
-	ld	l,a		; HL' = src bank
-	ld	h,0
+	pop	hl		; HL' = src bank (old partition base)
+	pop	de		; DE' = dst bank (new partition base)
+	push	de
 	exx
 	ld	hl,0
 	ld	de,0
 	ldw	bc,(ix+T.END)
-	inc	bc
+	inc	bc		; move size = old end address + 1
 	call	$MCOPY		; re-locate task to new region
-	ei
-	pop	bc
-	pop	de
+	pop	de		; restore new base
+	ld	hl,($CTCB)
+	cpw	hl,ix
+	jr	nz,stend1
+	ld	($UBANK),de	; update $UBANK if necessary
+	jr	stend1
+
+tryckp:	; try checkpointing task until memory becomes available
+
+	IF	F$CHKP
+
+	extrn	$CHKPT
+
+	pop	de		; restore new size
+	ld	a,(ix+T.IOC)
+	or	a		; task has outstanding I/O?
+	ld	a,E.BADOP
+	scf
+	jr	nz,exte1	; yes, can't checkpoint
+	ldw	iy,(ix+T.PCB)	; IY = subpartition PCB address
+
+	ldw	hl,(iy+P.MAIN)	; get main partition address
+	ldw	hl,(hl+P.SIZE)	; get size of main partition
+	cpw	hl,de
+	ld	a,E.NOMEM	; don't checkpoint task if it became larger
+	jr	c,exte1		;  than the main partition
+
+	push	iy
+	push	ix
+	call	$CHKPT		; try to checkpoint task
+	pop	ix
+	pop	iy
+	jr	c,exte1		   ; no can do
+	bit	T2.CKP,(ix+T.ST+1) ; checkpoint initiatted?
+	jr	nz,stend1	   ; yes, success
+	res	TS.CKR,(ix+T.ST)   ; paranoia
+	ld	a,E.NOMEM	   ; no
+	scf
+exte1:	pop	hl
+	ret			; return error
+
+	ELSE
+
+	pop	de		; checkpointing not supported
 	pop	hl
+	ld	a,E.NOMEM	; return error
+	scf
+	ret
 
-	;TODO: update $UBANK if IX == ($CTCB)?
+	ENDIF
 
+stend1:	pop	hl
 stend:	ldw	(ix+T.END),hl	; set new task end
 	xor	a
 	ret			; return success
+
+newtop:	ldw	de,(ix+T.END)	; get current task end address into DE
+	ld	a,h
+	or	a		; check sign
+	jp	m,shrink	; if negative, shrink task
+	or	l
+	jr	nz,expand	; if positive, expand task
+	ldw	hl,(ix+T.DEND)	; if zero, restore installed size
+	ret			; return with CY clear
+
+expand:	call	bytesz		; convert increment to bytes
+	ld	a,E.NOMEM
+	ret	c		; error increment > 64K
+	add	hl,de
+	ret
+
+shrink:	neg	hl		; get absolute value
+	call	bytesz		; convert decrement to bytes
+	ld	a,E.INV
+	ret	c		; error if decrement > 64K
+	ex	de,hl
+	sbc	hl,de
+	ret
+
+bytesz:	add	hl,hl		; *2
+	ret	c
+	add	hl,hl		; *4
+	ret	c
+	add	hl,hl		; *8
+	ret	c
+	add	hl,hl		; *16
+	ret
 
 ;-----------------------------------------------------------------------
 

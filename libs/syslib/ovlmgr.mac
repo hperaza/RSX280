@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSLIB, a system library for the RSX180 OS.   ;
-;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This library is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU Library General Public        ;
@@ -25,10 +25,11 @@
 
 	name	'OVLMGR'
 
-	ident	'1.02'
+	ident	'1.03'
 
-	include	QIO.INC
 	include	SYSFN.INC
+	include	QIO.INC
+	include	AST.INC
 
 EFNOVL	equ	1	; event flag number for overlay I/O operations
 LUNOVL	equ	7	; TODO: use ?OVLUN variable instead of constant
@@ -307,6 +308,15 @@ rd1:	pop	hl		; get offset
 
 ABORT:	ld	hl,0
 	SC	.ABORT		; abort task
+
+	; If we're still here, an Abort Request AST may have prevented
+	; the task from exiting. Thus, de-specify Abort Request AST and
+	; try again.
+
+	ld	c,AST.AB
+	ld	de,0
+	SC	.ASTDF		; de-specify Abort Request AST
+	jr	ABORT
 
 ;-----------------------------------------------------------------------
 

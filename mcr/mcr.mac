@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like Command Line Interpreter for RSX280.                      ;
-;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.18'
+	ident	'02.19'
 
 	cseg
 
@@ -165,12 +165,10 @@ DPRL	equ	$-DPR
 ; AST service routine, called when an external command task terminates,
 ; so we can redisplay the prompt on the correct terminal.
 
-ASTST:	push	ix
+ASTST:	ex	(sp),ix		; push IX, pop argument (ESB address)
 	push	bc
 	push	de
 	push	hl
-	ld	ix,8
-	add	ix,sp
 	ldw	hl,(ix)		; get exit status of task
 	SC	.EMTST		; emit status to connected tasks
 	ld	a,(ix+12)	; get T.ATTR of exiting task
@@ -190,12 +188,7 @@ ast0:	ldw	de,(ix+3)
 ast1:	pop	hl
 	pop	de
 	pop	bc
-	ldw	(ix+13),hl
 	pop	ix
-	ld	hl,15-2
-	add	hl,sp
-	ld	sp,hl		; cleanup stack
-	pop	hl
 	SC	.ASTX		; return from AST
 
 ; AST service routine, called on command arrival.
@@ -947,6 +940,7 @@ SPAWN:	ld	hl,0
 	ld	hl,newtsk
 	jr	nz,spwn1	; jump if yes, use RPOI
 	ld	e,11
+	ld	d,1		; long status format
 	ld	bc,exstat
 	SC	.RQST		; request and connect to task
 	ret
@@ -1181,7 +1175,7 @@ lnbuf:	ds	132		;! order  !
 lnptr:	ds	2
 cmdnam:	ds	9
 
-exstat:	ds	2
+exstat:	ds	16		; long task exit status format
 
 buf:	ds	256
 lcbbuf:	ds	LCBSZ

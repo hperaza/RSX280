@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command BYE for RSX180.                               ;
-;   Copyright (C) 2015-2022, Hector Peraza.                            ;
+;   Copyright (C) 2015-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z80
 
-	ident	'01.16'
+	ident	'01.17'
 
 	cseg
 
@@ -469,7 +469,7 @@ ABOTSK:	xor	a
 	ld	e,12
 	SC	.CLEF		; clear event flag
 	ld	c,1
-	SC	.SUPER		; enter in supervisor mode
+	SC	.SUPER		; enter supervisor mode
 	jp	c,SYSERR
 	xor	a		; disable task dispatching while
 	ld	(SYSLVL),a	;  we mess around
@@ -524,13 +524,13 @@ act4:	ld	a,(ix+T.NAME)	; get task name into dtbuf
 	ld	(exstat),hl
   IF 0
 	ld	hl,dtbuf	; connect to task
-	ld	e,11		;  so we know when the task
-	ld	bc,exstat	;   finally exits
+	ld	de,11		;  so we know when the task
+	ld	bc,exstat	;   finally exits (note short status wanted)
 	SC	.CONN
   ELSE
 	pop	hl
 	push	hl
-	ld	e,11
+	ld	de,11
 	ld	bc,exstat
 	KCALL	$CONN		; direct kernel call, since SYSLVL=0
   ENDIF
@@ -556,7 +556,7 @@ act5:
 
 ; AST service routine, called when the aborted task finally exits.
 
-ASTBYE:	ld	(temp),hl
+ASTBYE:	ex	(sp),hl		; push HL, drop argument
 	ld	hl,ntsks
 	ld	a,(hl)
 	or	a
@@ -567,10 +567,7 @@ ast1:	push	de
 	ld	e,12
 	SC	.SETF		; set event flag
 	pop	de
-ast2:	ld	hl,15
-	add	hl,sp
-	ld	sp,hl		; cleanup stack
-	ld	hl,(temp)
+ast2:	pop	hl		; restore HL
 	SC	.ASTX		; return from AST
 
 ; Get terminal device name and unit into DE-A
@@ -597,7 +594,6 @@ ttlen	equ	$-ttchr
 iosb:	ds	4
 
 lnptr:	ds	2
-temp:	ds	2
 cmdnam:	ds	9
 uname:	ds	10
 hname:	ds	10

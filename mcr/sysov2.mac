@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like command line interpreter for RSX280 - external commands.  ;
-;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -25,7 +25,7 @@
 
 	cseg
 
-	ident	'02.25'
+	ident	'02.26'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -378,7 +378,7 @@ r1:	ld	e,(ix)		; get offset to register pair value in regbuf
 	ret
 
 stna:	db	'-ACT ',0
-stat:	db	0,'AST','SUP','CKR',0,0,0,0
+stat:	db	0,'AST','SUP','CKR','ABX',0,0,0
 stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
 attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
 
@@ -646,7 +646,7 @@ cmpldv:	ldw	de,(ix+T.LDEV)	; TODO: translate TMPDEV to physical name
 	cp	c
 	ret
 
-; Display partition name of task
+; Display name of the partition assigned to the task
 
 shwpar:	ldw	hl,(ix+T.PCB)
 	ldw	hl,(hl+P.MAIN)

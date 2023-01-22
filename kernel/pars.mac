@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -243,9 +243,7 @@ fg1:	; loop over subpartitions
 
 	ldw	hl,(iy+P.BASE)
 	addw	hl,(iy+P.SIZE)
-	ld	bc,(PBASE)
-	or	a
-	sbc	hl,bc		; get size of last gap
+	subw	hl,(PBASE)	; get size of last gap
 	jr	fg4
 
 fg3:	; no subpartitions yet
@@ -268,12 +266,12 @@ fg4:	cpw	hl,de		; big enough?
 MFREE:	ldw	hl,(ix+P.MAIN)	; get pointer to main partition
 	ld	a,h
 	or	l		; safety check (should not happen)
-	scf			; TODO: call the system crash routine
+	scf			; TODO: call the system crash/debug routine
 	ret	z
 	push	hl
 	pop	iy
 	res	PS.BSY,(ix+P.STAT)
-	; continue below	; TODO: call the system crash routine
+	; continue below	; TODO: call the system crash/debug routine
 				;  if UNLPCB fails (CY set)?
 
 ; Unlink subpartition PCB.
@@ -323,7 +321,7 @@ mf1:	add	hl,bc
 ;   IX = modified PCB
 
 MEXTND:	ld	d,0		; DE = size
-	ldw	iy,(ix+P.MAIN)
+	ldw	iy,(ix+P.MAIN)	; IY = address of main PCB
 	bit	PA.SYS,(iy+P.ATTR)
 	scf
 	ld	a,E.NOMEM
@@ -333,19 +331,19 @@ MEXTND:	ld	d,0		; DE = size
 	or	l
 	jr	nz,mx1		; branch if not the last in list
 
-	; at end of subpartition list
+	; last subpartition in list
 
-	ldw	hl,(iy+P.SIZE)
-	subw	hl,(ix+P.BASE)	; get size of last gap
+	ldw	hl,(iy+P.BASE)
+	addw	(iy+P.SIZE)	; top of this gap is end of main partition
 	jr	mx2
 
 mx1:	; in middle of subpartition list
 
-	ldw	hl,(hl+P.BASE)
-	subw	hl,(ix+P.BASE)	; compute max space avail to this subpartition
-mx2:	cpw	hl,de		; large enough?
+	ldw	hl,(hl+P.BASE)	; top of this gap is start of next subpartition
+mx2:	subw	hl,(ix+P.BASE)	; compute max space avail to this subpartition
+	cpw	hl,de		; large enough?
 	jr	c,mx3		; branch if not
-	ld	(ix+P.SIZE),de	; else simply adjust size
+	ldw	(ix+P.SIZE),de	; else simply adjust size
 	xor	a		;  and return
 	ret
 
@@ -362,9 +360,9 @@ mx3:	; no more space in this subpartition, try allocating a new one
 	pop	ix
 	jr	c,mx4		; branch if none found
 
-	ld	(ix+P.SIZE),de	; set new size
+	ldw	(ix+P.SIZE),de	; set new size
 	ld	de,(PBASE)
-	ld	(ix+P.BASE),de	; and new base
+	ldw	(ix+P.BASE),de	; and new base
 	pop	bc		; discard old PRVLNK
 	call	LNKPCB		; link into new place
 	ret
@@ -545,7 +543,7 @@ ps4:	ld	a,(ix+T.ST+1)
 	ret	z		; return if yes
 
 	push	ix
-	pop	iy		; get addr 'prev' field into IY
+	pop	iy		; get addr of 'prev' field into IY
 ;;	lea	iy,(ix+T.LNK)	; we *know* T.LNK is 0
 	jr	ps31
 
@@ -588,7 +586,7 @@ ps5:	IF	F$CHKP
 	ret	z		; return if yes
 
 	push	ix
-	pop	iy		; get addr 'prev' field into IY
+	pop	iy		; get addr of 'prev' field into IY
 ;;	lea	iy,(ix+T.LNK)	; we *know* T.LNK is 0
 
 	push	bc
@@ -611,7 +609,7 @@ RQSHF:	ld	hl,SHFTDB
 
 ;-----------------------------------------------------------------------
 
-; *** Checkpoint partition section ***
+; *** Checkpoint support section ***
 
 	IF	F$CHKP
 

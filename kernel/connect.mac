@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -44,8 +44,10 @@
 	public	EMITST,EMTST	; emit status
 	public	EXIT		; exit task with status
 	public	DISCON		; disconnect from all tasks
+	public	ESBSIZ		; get status block size according to format
+	public	STORST		; store status in user space
 
-	extrn	$CTCB,$ALLOC,$FREE,$UPUTW,QAST,$UCBDN
+	extrn	$CTCB,$ALLOC,$FREE,$SBANK,$MCOPY,QAST,$UCBDN
 	extrn	SETFLG,CLRFLG,TKILL,$RLIST,$WLIST
 
 ;-----------------------------------------------------------------------
@@ -54,6 +56,7 @@
 
 ; Input:
 ;   HL = valid TCB address of offspring task
+;   D  = exit status format (0=short, 1=long)
 ;   E  = flag number to set when offspring task emits status.
 ;   BC = address of Exit Status Block (ESB) in parent's address space.
 
@@ -74,7 +77,7 @@ $CONN:	push	hl
 
 ; here with:
 ;   HL = offspring task TCB address
-;   IX = OCB
+;   IX = OCB address
 
 LNKOCB:	ld	de,T.OCBL
 	add	hl,de
@@ -93,10 +96,11 @@ con0:	ldw	de,(hl)		; search for end of OCB list
 
 ; Input:
 ;   HL = offspring task TCB address
+;   D  = exit status format (0=short, 1=long)
 ;   E  = flag number to set when offspring task emits status.
 ;   BC = address of Exit Status Block (ESB) in parent's address space.
 ; Returns:
-;   IX = OCB
+;   IX = OCB address
 ; Preserves HL
 
 NEWOCB:	push	hl		; push offspring TCB
@@ -115,6 +119,7 @@ NEWOCB:	push	hl		; push offspring TCB
 	ldw	(ix+O.ESB),bc	; set ESB address
 	pop	de
 	ld	(ix+O.EFN),e	; set event flag number in OCB
+	ld	(ix+O.FMT),d	; set format
 	ld	c,l
 	ld	b,h
 	call	CLRFLG		; clear event flag, preserves IX
@@ -167,23 +172,21 @@ EXIT:	call	EMITST		; emit status
 EMITST:	ld	c,l		; get status into BC
 	ld	b,h
 	ld	hl,($CTCB)	; get TCB of (maybe exiting) task into HL
-EMTST:	ld	de,T.OCBL
+EMTST:	call	BLDMSG		; build message
+	ld	de,T.OCBL
 	add	hl,de		; offset into OCB list
 	push	hl
-	ld	e,(hl)		; get address of OCB into DE
-	inc	hl
-	ld	d,(hl)
+	ldw	de,(hl)		; get address of OCB into DE
 em1:	ld	a,d		; any (more) tasks connected?
 	or	e
 	jr	z,em2		; return if not
+	push	de
 	call	SENDST		; else send status
-	ex	de,hl		; traverse the list
+	pop	hl		; traverse the list
 	ldw	de,(hl)
 	push	de
 	ld	de,OCBSZ
-	push	bc
 	call	$FREE		; free the OCB
-	pop	bc
 	pop	de
 	jr	em1		; and loop for next OCB
 em2:	pop	hl
@@ -195,121 +198,134 @@ em2:	pop	hl
 ; Send status to parent task.
 
 ; Input:
-;   BC = status
 ;   DE = OCB address
-; Preserves BC and DE.
+;   TMPST = status
 
 ; If the parent task is in memory, the status is immediately stored at
 ; the specified ESB address. Otherwise (e.g. if checkpointed), an special
 ; AST block is unconditionally queued to the parent task, and the status
 ; stored when that AST is dispatched.
 
-SENDST:	push	bc		; save status
-	ld	hl,O.PTCB
-	add	hl,de
-	ldw	bc,(hl)		; get TCB address of parent task into BC
-	ld	hl,O.EFN
-	add	hl,de
-	push	de
-	ld	e,(hl)		; get flag number into reg E
+SENDST:	push	de
+	pop	iy		; get OCB address into IY
+	ldw	bc,(iy+O.PTCB)	; get TCB address of parent task into BC
+	ld	e,(iy+O.EFN)	; get flag number into reg E
+	push	iy
 	push	bc
 	call	SETFLG		; set event flag and wakeup parent
-	pop	iy		; parent TCB address now in IY
-	pop	de
-	ld	hl,O.ESB
-	add	hl,de
-	ldw	hl,(hl)		; get ESB address into HL
-	bit	T2.OUT,(iy+T.ST+1) ; parent task out of memory?
+	pop	ix		; parent TCB address now in IX
+	pop	iy
+	ldw	hl,(iy+O.ESB)	; get ESB address
+	ld	(ESBADR),hl	; remember it
+	ld	a,(iy+O.FMT)
+	call	ESBSIZ		; get ESB size into BC
+	bit	T2.OUT,(ix+T.ST+1) ; parent task out of memory?
 	jr	nz,st1		; branch if yes
 
-	pop	bc
-	push	de
-	push	hl
-	ldw	de,(iy+T.PCB)	; else retrieve PCB address
-	ld	hl,P.BASE
-	add	hl,de
-	ldw	de,(hl)		; get task base page into DE
-	pop	hl
-	call	$UPUTW		; and store status
-	pop	de
+	ex	de,hl		; DE = ESB address
+	ld	hl,TMPST
+	call	STORST		; store status
 	jr	st2
 
-st1:	push	de
-	push	hl
-	ld	bc,ACBSZ+4
+st1:	push	bc
+	push	ix
+	ld	hl,ACBSZ+2	; include ESB address in data area
+	add	hl,bc
+	ld	c,l
+	ld	b,h
 	call	$ALLOC		; allocate special AST block
 	push	hl
-	pop	ix		; get address of block into IX
-	pop	hl
-	pop	de
+	pop	iy		; get address of block into IY
+	pop	ix
 	pop	bc
 	ret	c		; on error, return
-	ld	(ix+A.SIZ),4
-	ld	(ix+A.TYP),AST.ST OR 80h
-	ldw	(ix+A.DAT),hl	; set ESB address
-	ldw	(ix+A.DAT+2),bc	; set status
-	ldw	hl,(iy+T.ASTL)	; link AST block in front of list to ensure
-	ldw	(ix+A.LNK),hl	;  that it gets dispatched even if the task
-	ldw	(iy+T.ASTL),ix	;   has disabled AST recognition.
+	ld	a,c
+	add	a,2
+	ld	(iy+A.SIZ),a
+	ld	(iy+A.TYP),AST.ST OR 80h
+	ld	hl,(ESBADR)
+	ldw	(iy+A.DAT),hl	; set ESB address
+	lda	hl,(iy+A.DAT+2)
+	ex	de,hl
+	ld	hl,TMPST
+	ldir			; set status
+	ldw	hl,(ix+T.ASTL)	; link AST block in front of list to ensure
+	ldw	(iy+A.LNK),hl	;  that it gets dispatched even if the task
+	ldw	(ix+T.ASTL),iy	;   has disabled AST recognition.
 
-st2:	push	bc
-	push	de
-	ld	hl,-15
-	add	hl,sp		; allocate space for AST arguments on stack
-	ld	sp,hl
-	push	hl
+st2:	ld	hl,ESBADR	; pointer to arg
+	ld	de,0		; use specified AST routine address
+	ld	c,2		; arg length
+	ld	a,AST.ST	; AST type
+	jp	QAST		; queue AST block to parent task and return
+
+; Store status in task space.
+
+; Input:
+;   IX = TCB address
+;   HL = pointer to status value
+;   DE = ESB address
+;   BC = size
+
+STORST:	exx
+	ldw	hl,(ix+T.PCB)
+	ldw	hl,(hl+P.BASE)
+	ex	de,hl		; DE' = dst bank = parent task's bank
+	ld	hl,($SBANK)	; HL' = src bank = system bank
+	exx
+	jp	$MCOPY		; store status and return
+
+;-----------------------------------------------------------------------
+
+; Build status message.
+
+; Input:
+;   BC = status
+; Preserves HL.
+
+BLDMSG:	push	hl
+	ld	hl,TMPST
 	ldw	(hl),bc		; store status
 	inc	hl
 	inc	hl
 	ld	(hl),0		; set cause = 0 (for now)
 	inc	hl
-	ex	de,hl
-	ld	bc,($CTCB)
-	push	bc
-	ld	hl,T.TI
-	add	hl,bc
-	ldw	hl,(hl)
-	ex	de,hl
+	ld	ix,($CTCB)
+	ldw	de,(ix+T.TI)
 	call	$UCBDN
-	ld	(hl),e		; set terminal device
+	ldw	(hl),de		; set terminal device name
 	inc	hl
-	ld	(hl),d
 	inc	hl
 	ld	(hl),c
 	inc	hl
 	ex	de,hl
-	pop	bc
-	ld	hl,T.NAME
-	add	hl,bc
-	push	bc
+	lda	hl,(ix+T.NAME)
 	ld	bc,6
-	ldir			; set task name (note: IX = A.DAT+6...)
-	pop	bc
-	ld	hl,T.ATTR
-	add	hl,bc
-	ld	a,(hl)
-	ld	(de),a		; store T.ATTR
-	inc	de
-	ld	hl,T.ST
-	add	hl,bc
-	ld	a,(hl)
-	ld	(de),a		; store T.ST
+	ldir			; set task name
+	ex	de,hl
+	ld	a,(ix+T.ATTR)
+	ld	(hl),a		; store T.ATTR
 	inc	hl
-	inc	de
-	ld	a,(hl)
-	ld	(de),a
-	push	iy
-	pop	ix		; IX = TCB addr of task to send AST to
-	pop	hl		; pointer to args
-	ld	de,0		; use specified AST routine address
-	ld	c,15		; arg length
-	ld	a,AST.ST	; AST type
-	call	QAST		; queue AST block to parent task
-	ld	hl,15
-	add	hl,sp
-	ld	sp,hl		; cleanup stack
-	pop	de
-	pop	bc
+	ldw	de,(ix+T.ST)
+	ldw	(hl),de		; store T.ST
+	inc	hl
+	inc	hl
+	ld	(hl),0		; reserved
+	pop	hl
+	ret
+
+; Get status block size.
+
+; Input:
+;   A  = format
+; Returns:
+;   BC = ESB size
+; Preserves A,DE,HL,IX,IY
+
+ESBSIZ:	or	a		; check format
+	ld	bc,2		; short
+	ret	z
+	ld	bc,16		; long
 	ret
 
 ;-----------------------------------------------------------------------
@@ -336,8 +352,6 @@ disc1:	ldw	hl,(iy)		; get link value into HL
 	jr	disc1		; and loop to process next task
 
 ; Remove any caller's (parent) OCBs from this task
-
-; TODO: check also MCR queue?
 
 CLNOCB:	ld	de,T.OCBL
 	add	hl,de
@@ -377,5 +391,12 @@ cln3:	ld	a,(de)		; get link field
 	dec	(hl)		; decrement task's outstanding OCB count
   ENDIF
 	jr	cln1		; loop to process next OCB
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ESBADR:	ds	2
+TMPST:	ds	16
 
 	end

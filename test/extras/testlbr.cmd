@@ -1,4 +1,4 @@
 ; LBR command file test
-,ti:/m=sy:[system]syslib.lib
-,ti:=sy:[system]syslib.lib
-,ti:=sy:[system]syslib.lib<gcml>
+,ti:/br=sy:[system]syslib.lib
+,ti:/li/cr/un=sy:[system]syslib.lib
+,ti:/li=sy:[system]syslib.lib<gcml>

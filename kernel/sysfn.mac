@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2022, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -53,7 +53,7 @@
 	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
 	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
-	extrn	$CLIST,SYSTYP,$VALTB,$VALBF
+	extrn	$CLIST,SYSTYP,$VALTB,$VALBF,FNDAST,FNASTE,QAST,ESBSIZ
 
 	cseg
 
@@ -148,13 +148,14 @@ EXIF:	push	hl
 
 ; Input:
 ;   HL = address of task descriptor in user space, followed by
-;        schedule interval and reschedule interval (both in ticks
-;        and of doubleword size)
+;        schedule interval and reschedule interval. The intervals
+;        are specified as a magnitude word followed by a byte
+;        representing the units.
 ; Returns:  
 ;   CY flag set on error
 
 SRUN:	ld	de,TMPTDB	; DE = destination
-	ld	bc,TDBSZ+4+4	; read task descriptor + dtime + rsi
+	ld	bc,TDBSZ+3+3	; read task descriptor + dtime + rsi
 	call	UGET		;  from user space
 	ret	c
 	ld	hl,TMPTDB
@@ -190,6 +191,7 @@ GETTDB:	ld	de,TMPTDB	; DE = destination
 
 ; Input:
 ;   HL = address of task descriptor in user space
+;   D  = exit status format (0=short, 1=long)
 ;   E  = flag number to set when offspring emits status (ignored if BC=0)
 ;   BC = address of ESB in user space to receive status info (request and
 ;        connect), or zero (request only)
@@ -202,7 +204,7 @@ GETTDB:	ld	de,TMPTDB	; DE = destination
 
 URQST:	push	bc
 	push	de
-	call	VALESB		; validate ESB, if specified
+	call	VALXSB		; validate ESB, if specified
 	jr	c,rq3
 	call	GETTDB		; get TDB from user space
 	jr	c,rq3
@@ -280,13 +282,14 @@ VALSD:	ld	de,(TMPTDB+TD.SDAT)
 	ret	z
 	jp	$VALBF		; validate buffer and return
 
-VALESB:	ld	a,b
+VALXSB:	ld	a,b
 	or	c		; request and connect?
 	ret	z		; no, return with CY clear
+VALESB:	ld	a,d
 	ld	e,c
 	ld	d,b
-	ld	bc,2
-	jp	$VALBF		; else validate ESB
+	call	ESBSIZ		; get ESB size
+	jp	$VALBF		; validate ESB
 
 ; Request task and pass offspring information.
 
@@ -413,6 +416,7 @@ GETCMD:	ld	hl,0
 
 ; Input:
 ;   HL = pointer to task name in user space
+;   D  = exit status format (0=short, 1=long)
 ;   E  = flag number to set when offspring emits status
 ;   BC = address of ESB in user space to receive status info
 ; Returns:
@@ -422,10 +426,7 @@ UCONN:	call	UFNTSK		; get name from user space and find task
 	ret	c
 	push	bc
 	push	de
-	ld	e,c
-	ld	d,b
-	ld	bc,2
-	call	$VALBF		; validate ESB address
+	call	VALESB		; validate ESB address
 	pop	de
 	pop	bc
 	ret	c
@@ -440,15 +441,66 @@ UCONN:	call	UFNTSK		; get name from user space and find task
 ; Returns:
 ;   CY flag set on error
 
-UABORT:	ld	e,TK.CLI	; reason: abort via directive
-	ld	a,h
-	or	l
-	ld	bc,($CTCB)
-	jp	z,TKILL		; abort the current task
-	call	UFNTSK		; get name from user space and find task
-	ret	c
-	ld	c,l
-	ld	b,h
+UABORT:	ld	a,h
+	or	l		; task name specified?
+	ld	ix,($CTCB)
+	jr	z,abo1		; no, abort the current task
+	call	UFNTSK		; else get name from user space and find task
+	ret	c		; on error, return
+	push	hl
+	pop	ix		; IX = TCB address of the task to abort
+	ld	hl,($CTCB)
+	ld	a,(hl+T.ATTR)
+	bit	TA.PRV,a	; is the issuing task privileged?
+	jr	nz,abo1		; yes
+	ldw	hl,(hl+T.TI)	; else the task to abort must be
+	cpw	hl,(ix+T.TI)	;  running from the same terminal
+	ld	a,E.PRIV
+	scf
+	ret	nz
+
+abo1:	ld	c,AST.AB
+	call	FNDAST		; did the task specify an Abort AST?
+	jr	c,abo3		; no, abort the task
+
+	bit	TS.ABX,(ix+T.ST); Abort AST executing/done?
+	jr	nz,abo2		; yes, abort the task if non-privileged
+
+	ld	c,AST.AB
+	ld	hl,T.ASTL
+	call	FNASTE		; Abort AST already queued?
+	jr	nc,abo2		; yes, abort the task if non-privileged
+
+	ld	hl,($CTCB)	; prepare AST argument
+	ld	a,(hl+T.ATTR)	; get task attributes
+	ld	bc,0
+	rra			; get TA.PRV bit into carry
+	ccf			; invert it
+	rl	c		; save it into bit 0 of reg C
+	rrca
+	rrca
+	rrca			; get TA.CLI into bit 1
+	and	00000010b	; clear all other bits
+	or	c		; get ~TA.PRV into bit 0
+	ld	c,a
+	push	bc		; push AST argument
+	ld	hl,0		;  and get ist address
+	add	hl,sp		;   into HL
+	ld	de,0		; use specified AST routine address
+	ld	c,2		; argument length
+	ld	a,AST.AB
+	call	QAST		; queue AST
+	pop	bc		; restore stack
+	jr	c,abo3		; on error, abort the task
+	xor	a		; else return success
+	ret
+
+abo2:	bit	TA.PRV,(ix+T.ATTR) ; is the task being aborted privileged?
+	ld	a,E.OK
+	ret	nz		; yes, ignore this request (abort AST queued/executing)
+abo3:	push	ix		; else unconditionally abort the task
+	pop	bc		; get TCB address into BC
+	ld	e,TK.CLI	; reason: abort via directive or CLI
 	jp	TKILL		; abort the task
 
 ;-----------------------------------------------------------------------
@@ -669,9 +721,12 @@ GDT:	push	hl
 ; Input:
 ;   HL = address of 8-byte buffer with date/time information
 
-; TODO: check privileges
-
-SDT:	ld	de,DTBUF
+SDT:	ld	ix,($CTCB)
+	bit	TA.PRV,(ix+T.ATTR)
+	ld	a,E.PRIV
+	scf
+	ret	z		; task must be privileged
+	ld	de,DTBUF
 	push	de
 	ld	bc,8
 	call	UGET		; read date/time from user space
@@ -882,13 +937,9 @@ gci6:	ld	a,E.CLNF	; CLI not found
 chkti:	ld	ix,($CTCB)
 	call	$FNDEV		; get UCB address of device in DE-C
 	ret	c		; error if not found
-	ld	a,(ix+T.TI)
-	cp	l		; same as TI:?
-	jr	nz,chk1		; no
-	ld	a,(ix+T.TI+1)
-	cp	h
+	cpw	hl,(ix+T.TI)	; same as TI:?
 	ret	z		; yes (and we know is a terminal)
-chk1:	bit	TA.PRV,(ix+T.ATTR) ; privileged task?
+	bit	TA.PRV,(ix+T.ATTR) ; privileged task?
 	ld	a,E.PRIV
 	scf
 	ret	z		; no
@@ -1454,8 +1505,8 @@ DTBUF:	ds	8
 GTBUF	equ	$
 GCIBUF	equ	$
 TMPTDB:	ds	TDBSZ
-DTIME:	ds	4
-RSI:	ds	4
+DTIME:	ds	3
+RSI:	ds	3
 	if	$-GTBUF LT GTKSZ
 	ds	GTBUF+GTKSZ-$
 	endif

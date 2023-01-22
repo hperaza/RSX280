@@ -86,7 +86,7 @@ LP1:	dec	bc
 
 ; Mark time AST service routine
 
-MKAST:	push	hl
+MKAST:	ex	(sp),hl		; drop argument, save regs
 	push	de
 	push	bc
 
