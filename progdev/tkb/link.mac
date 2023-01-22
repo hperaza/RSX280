@@ -8,7 +8,7 @@
 
 	include	LINK.INC
 
-	ident	'2.33'
+	ident	'2.34'
 
 	extrn	GetTop,IOBuf,IrlBuf,MapBuf
 	extrn	ProcessCommand,CmdError,CmdPtr,PrChar
@@ -3410,7 +3410,8 @@ lnk41:	ld	b,0
 	ldir			; copy ident
 	ld	a,(Loading)
 	or	a		; loading this module?
-	call	nz,SetIdent	; yes, set ident in module symbol entry
+	ret	z		; no, return
+	call	SetIdent	; else set ident in module symbol entry
 	ld	hl,idflag
 	set	0,(hl)		; modidn is now valid
 	bit	1,(hl)		; task ident already set?

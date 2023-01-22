@@ -4,7 +4,7 @@
 ; %%%% Fix up LINK revision NOTE: Base 1.31
 
 LINKver	macro
-	db	'2.32'
+	db	'2.34'
 	endm
 
 FALSE	equ	0
