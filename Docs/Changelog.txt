@@ -7628,5 +7628,21 @@ BUGS:
   * .RUN system call: dtime and rsi units are now a byte value and not a
     word.
   * removed the unused O.ST field of the OCB.
+  * keep the TS.SUP bit when switching to AST state.
+
+
+23/01/23
+
+- MCR: map kernel data only once at the start of the program.
+
+
+25/01/23
+
+- Kernel:
+  * .GIN system call: added I.UPTM subfunction to read the system up time.
+  * .STOP and .RESUM: task must be privileged in order to stop/resume a
+    task running on another terminal.
+
+- UPTime is no longed a privileged utility, moved to the 'utils' directory.
 
 
