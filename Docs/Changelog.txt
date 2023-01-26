@@ -7642,6 +7642,8 @@ BUGS:
   * .GIN system call: added I.UPTM subfunction to read the system up time.
   * .STOP and .RESUM: task must be privileged in order to stop/resume a
     task running on another terminal.
+  * the .SETF system call now returns the previous flag state, which may be
+    useful to avoid certain race conditions.
 
 - UPTime is no longed a privileged utility, moved to the 'utils' directory.
 

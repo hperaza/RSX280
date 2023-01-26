@@ -80,7 +80,7 @@ CLRFLG:	ld	hl,T.FLGS
 ;   BC = TCB address of flag owner
 ;   E  = flag number (1..32)
 ; Returns:
-;   CY flag clear and A=0 on success
+;   CY flag clear on success and old flag polarity in A
 ;   CY flag set on error and error code in A
 
 ; Notes:
@@ -100,13 +100,17 @@ SETFLG:	push	de
 	ld	de,T.FLGS
 	add	hl,de		; point to flag array in TCB
 	add	hl,bc		; index into flag array
+	pop	bc		; pop TCB address
+	ld	d,a		; save mask
+	and	(hl)		; get old flag state
+	push	af		; save it
+	ld	a,d
 	or	(hl)		; set flag
 	ld	(hl),a
-	pop	bc		; task TCB back into BC
 	call	CKWMSK		; check wait mask
 	call	nz,TCONT	; if flag set, resume task
-	xor	a
-	ret
+	pop	af
+	ret			; return prev state (note CY is clear)
 
 ;-----------------------------------------------------------------------
 
