@@ -54,11 +54,11 @@
 	public	TCLRSV		; switch privileged task back to user mode
 	public	TRQST,TRQST2	; start (request) an installed task
 	public	TKILL,TKILL2	; kill (abort) a task
-	public	TREM		; remove a task from the STD
+	public	$REMTK		; remove a task from the STD
 	public	TSTOP		; stop a task
 	public	TRESUM		; resume a task
-	public	TFIX		; fix task in memory
-	public	TUNFIX		; unfix task from memory
+	public	$FIXTK		; fix task in memory
+	public	$UNFTK		; unfix task from memory
 	public	TSRUN		; start task at specified time
 	public	TCSRQ		; cancel scheduled task request
 	public	TCONT		; continue task execution after event
@@ -717,7 +717,7 @@ sc4:	ld	hl,L.CDIR
 ; Fix task in memory.
 
 ; Input:
-;   BC = valid task TCB address
+;   BC = pointer to task name (6 chars)
 ; Returns:
 ;   CY flag set on error (e.g. task active)
 
@@ -728,10 +728,10 @@ sc4:	ld	hl,L.CDIR
 ;    1       0     task not fixed and being loaded
 ;    1       1     task fixed and being loaded
 
-TFIX:	call	CHKPRV		; privileged operation
-	ret	c
+$FIXTK:	call	$FNTSK		; find task
+	ret	c		; return error if not found
 
-	push	bc
+	push	hl
 	pop	ix		; get TCB into IX
 	bit	TS.ACT,(ix+T.ST)
 	ld	a,E.TACT	; return error if task is active
@@ -771,14 +771,14 @@ FIX:	call	GETSIZ		; compute required space
 ; Unfix task (remove from memory).
 
 ; Input:
-;   BC = valid task TCB address
+;   BC = pointer to task name (6 chars)
 ; Returns:
 ;   CY flag set on error (e.g. task active)
 
-TUNFIX:	call	CHKPRV		; privileged operation
-	ret	c
+$UNFTK:	call	$FNTSK		; find task
+	ret	c		; error if not found
 
-	push	bc
+	push	hl
 	pop	ix		; get TCB into IX
 	bit	TS.ACT,(ix+T.ST)
 	ld	a,E.TACT	; task active
@@ -1064,19 +1064,18 @@ CHKSYS:	ld	hl,(MCRTCB)
 ; Remove a task from the STD. Task cannot be active, or an error occurs.
 
 ; Input:
-;   BC = task TCB address
+;   BC = pointer to task name (6 chars)
 ; Returns:
 ;   CY flag set if task not found
 
-; TODO:
-;   - check privileges
-
-TREM:	call	CHKPRV		; check current task privileges
-	ret	c		; return if not privileged
+$REMTK:	call	$FNTSK		; find task
+	ret	c		; return error if not found
+	ld	c,l
+	ld	b,h
 	ld	iy,$TLIST
 	ld	de,T.TCBL
 	call	FTCB		; IX=TCB, IY=prev
-	ret	c
+	ret	c		; should not happen
 	bit	TS.ACT,(ix+T.ST); task active?
 	ld	a,E.TACT
 	scf
@@ -1235,8 +1234,7 @@ TCSRQ:	call	CHKPRV		; check task privileges
 TCSRQ1:	ld	d,CT.RUN	; cancel all scheduled run requests
 	ld	e,0
 	ld	bc,0
-	call	CLNCLQ		; remove requests from clock queue
-	ret
+	jp	CLNCLQ		; remove requests from clock queue
 
 ;-----------------------------------------------------------------------
 

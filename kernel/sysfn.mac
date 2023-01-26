@@ -50,10 +50,10 @@
 	extrn	$CTCB,$CPCB,GETDT,SETDT,QIO,SEND,RECV,$FNDEV,$PLIST
 	extrn	GTARGS,SVRSLT,$ALUN,WTDAT,MRKT,CMKT,$HOSTN,$FNPAR
 	extrn	ASTDCL,ASTCTL,ASTEXT,TRQST,TKILL,TSTOP,TRESUM,ALTPRI
-	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,TREM
-	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,TFIX,TUNFIX
+	extrn	$FNTSK,$CONN,$UPUTW,TSETSV,TCLRSV,EXTTSK,FLWAIT,QAST
+	extrn	CLRFLG,SETFLG,CHKFLG,SYSVER,EXIT,EMITST,FNDAST,FNASTE
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
-	extrn	$CLIST,SYSTYP,$VALTB,$VALBF,FNDAST,FNASTE,QAST,ESBSIZ
+	extrn	$CLIST,SYSTYP,$VALTB,$VALBF,ESBSIZ,UPTIME
 
 	cseg
 
@@ -447,17 +447,8 @@ UABORT:	ld	a,h
 	jr	z,abo1		; no, abort the current task
 	call	UFNTSK		; else get name from user space and find task
 	ret	c		; on error, return
-	push	hl
-	pop	ix		; IX = TCB address of the task to abort
-	ld	hl,($CTCB)
-	ld	a,(hl+T.ATTR)
-	bit	TA.PRV,a	; is the issuing task privileged?
-	jr	nz,abo1		; yes
-	ldw	hl,(hl+T.TI)	; else the task to abort must be
-	cpw	hl,(ix+T.TI)	;  running from the same terminal
-	ld	a,E.PRIV
-	scf
-	ret	nz
+	call	PRVTI		; check privileges
+	ret	c
 
 abo1:	ld	c,AST.AB
 	call	FNDAST		; did the task specify an Abort AST?
@@ -503,6 +494,22 @@ abo3:	push	ix		; else unconditionally abort the task
 	ld	e,TK.CLI	; reason: abort via directive or CLI
 	jp	TKILL		; abort the task
 
+; Ensure the current task has enough privileges to perform the operation:
+
+PRVTI:	push	hl
+	pop	ix		; IX = TCB address of the task to abort
+	ld	hl,($CTCB)
+	ld	a,(hl+T.ATTR)
+	or	a		; clear CY
+	bit	TA.PRV,a	; is the issuing task privileged?
+	ret	nz		; yes
+	ldw	hl,(hl+T.TI)	; else the task to abort must be
+	cpw	hl,(ix+T.TI)	;  running from the same terminal
+	ret	z
+	ld	a,E.PRIV
+	scf
+	ret
+
 ;-----------------------------------------------------------------------
 
 ; Stop a task.
@@ -518,8 +525,10 @@ USTOP:	ld	a,h
 	jp	z,TSTOP		; stop the current task
 	call	UFNTSK		; get name from user space and find task
 	ret	c
-	ld	c,l
-	ld	b,h
+	push	hl
+	call	PRVTI		; check privileges
+	pop	bc
+	ret	c
 	jp	TSTOP		; stop the task
 
 ;-----------------------------------------------------------------------
@@ -537,8 +546,10 @@ URESUM:	ld	a,h
 	jp	z,TRESUM	; resume the current task
 	call	UFNTSK		; get name from user space and find task
 	ret	c
-	ld	c,l
-	ld	b,h
+	push	hl
+	call	PRVTI		; check privileges
+	pop	bc
+	ret	c
 	jp	TRESUM		; resume the task
 
 ;-----------------------------------------------------------------------
@@ -975,6 +986,8 @@ GIN:	ld	a,c
 	jp	z,tcks
 	cp	I.FEAT
 	jp	z,feat
+	cp	I.UPTM
+	jp	z,uptm
 	ld	a,E.INV
 	scf
 	ret
@@ -1119,6 +1132,17 @@ feat:	ex	de,hl
 	ld	c,a
 	ld	b,0
 	jp	storew
+
+; I.UPTM
+;   returns system up time (6 packed-BCD bytes)
+
+uptm:	ex	de,hl
+	ld	hl,UPTIME
+	ld	bc,6
+	di			; prevent uptime changing during copy operation
+	call	UCPY		; validate dst buffer and store result
+	ei
+	ret
 
 ;-----------------------------------------------------------------------
 
@@ -1444,57 +1468,6 @@ scd1:	ex	de,hl
 scd2:	ex	de,hl		; src in HL, dst in DE
 	ld	bc,9
 	jp	UGET		; get name from user space and return
-
-;=======================================================================
-;
-; Handy routines called by privileged tasks (mostly MCR)
-;
-	public	$REMTK,$FIXTK,$UNFTK
-
-;-----------------------------------------------------------------------
-
-; Remove a task from the System Task Directory.
-
-; Input:
-;   HL = pointer to task name in user space
-; Returns:
-;   CY flag set on error (task not found)
-
-$REMTK:	call	UFNTSK		; get name from user space and find task
-	ret	c
-	ld	c,l
-	ld	b,h
-	jp	TREM		; remove the task
-
-;-----------------------------------------------------------------------
-
-; Fix task.
-
-; Input:
-;   HL = pointer to task name in user space
-; Returns:
-;   CY flag set on error
-
-$FIXTK:	call	UFNTSK		; get name from user space and find task
-	ret	c
-	ld	c,l
-	ld	b,h
-	jp	TFIX		; fix task
-
-;-----------------------------------------------------------------------
-
-; Unfix task.
-
-; Input:
-;   HL = pointer to task name in user space
-; Returns:
-;   CY flag set on error
-
-$UNFTK:	call	UFNTSK		; get name from user space and find task
-	ret	c
-	ld	c,l
-	ld	b,h
-	jp	TUNFIX		; unfix task
 
 ;-----------------------------------------------------------------------
 
