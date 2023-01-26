@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.19'
+	ident	'02.20'
 
 	cseg
 
@@ -58,6 +58,11 @@ KCALL	MACRO	addr
 ;-----------------------------------------------------------------------
 
 START:	ld	sp,stack
+
+	ld	c,1
+	SC	.SUPER		; map kernel data area
+	jp	c,fatal
+
 	call	GETDPR		; get default ptompt from CLICB
 	ld	de,'TT'
 	ld	(TTDEV),de
@@ -129,18 +134,18 @@ ncmd:	ld	hl,EX.SUC
 emit:	SC	.EMTST		; emit status to any connected tasks
 	jr	loop
 
+fatal:	ld	hl,EX.SEV
+	SC	.EXIT
+
 ;-----------------------------------------------------------------------
 
 ; Get default MCR prompt.
 
-GETDPR:	ld	c,1
-	SC	.SUPER
-	jr	c,gdpr0		; should not happen
-	ld	de,($CLIST)	; NOTE: we assume here that first entry
+GETDPR:	ld	de,($CLIST)	; NOTE: we assume here that first entry
 	ld	a,d		;       corresponds to MCR...
 	or	e		; valid CLICB?
 	jr	nz,gdpr1	; jump if yes
-gdpr0:	ld	hl,DPR
+	ld	hl,DPR
 	ld	bc,DPRL
 	jr	gdpr2		; else use the 'emergency' prompt
 gdpr1:	ld	hl,CL.DPL
@@ -153,8 +158,6 @@ gdpr1:	ld	hl,CL.DPL
 	add	hl,de
 gdpr2:	ld	de,PROMPT
 	ldir
-	ld	c,0
-	SC	.SUPER
 	ret
 
 DPR:	db	CR,LF,'>',0	; 'emergency' prompt in case CLICB is not set
@@ -211,17 +214,11 @@ strl1:	ld	a,(hl)
 
 ; Reset sync bit in UCB of terminal
 
-RESTTS:	push	bc
-	ld	c,1
-	SC	.SUPER		; privileged operation
-	pop	bc
-	ret	c
-
-	ld	hl,($PHYDV)	; in kernel space
+RESTTS:	ld	hl,($PHYDV)	; in kernel space
 fdev:	ld	a,h
 	or	l
 	scf
-	jr	z,sb1
+	ret	z
 	push	hl
 	ld	a,D.NAME
 	add	hl,a
@@ -244,17 +241,13 @@ fdev2:	pop	hl
 fucb:	ldw	hl,(hl)		; get UCB address into HL
 	ld	a,h		; end of list?
 	or	l
-	jr	z,sb1		; return if yes (should not happen)
+	ret	z		; return if yes (should not happen)
 	djnz	fucb
 	ld	a,U.CW
 	add	hl,a
 	inc	hl		; point to hi-byte of U.CW
 	res	TC.TTS,(hl)	; set the sync bit
 	xor	a
-sb1:	push	af
-	ld	c,0		; exit supervisor mode
-	SC	.SUPER
-	pop	af
 	ret
 
 ;-----------------------------------------------------------------------
@@ -570,12 +563,7 @@ fcmd4:	inc	hl		; else skip to end of keyword
 
 dobrk:	call	CHKLOG
 	call	CHKPRV		; privileged command
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
 	KCALL	$DBTRP
-	ld	c,0
-	SC	.SUPER
 	ret
 
 ;-----------------------------------------------------------------------
@@ -705,7 +693,7 @@ fnd9:	ld	a,(de)		; compare terminal device
 ; REM <taskname>
 
 ; If task XXX not found and the last 3 chars of task name are spaces,
-; the command tries to remove task ...XXX.
+; the command tries to remove task ...XXX
 
 dorem:	call	CHKLOG
 	call	CHKPRV		; privileged command
@@ -713,14 +701,12 @@ dorem:	call	CHKLOG
 	call	fndtsk
 	jp	c,SYSERR
 	ld	hl,cmdnam
-	ld	c,1
-	SC	.SUPER
-	jp	c,SYSERR
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; copy task name to system space
+	pop	bc
 	KCALL	$REMTK		; remove task from STD
-	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
 	jp	c,SYSERR
 	ret
 
@@ -729,7 +715,7 @@ dorem:	call	CHKLOG
 ; CAN <taskname>
 
 ; If task XXX not found and the last 3 chars of task name are spaces,
-; the command tries to cancel scheduled task ...XXX.
+; the command tries to cancel scheduled task ...XXX
 
 docan:	call	CHKLOG
 	call	CHKPRV		; privileged command
@@ -801,23 +787,17 @@ rpgm7:	ld	a,(hl)
 	cp	E.TRUN		; or task already running?
 	scf
 	ret	nz		; error if neither
-rpgm2:	ld	c,1
-	SC	.SUPER
-	ld	hl,newtsk+TD.NAME
+rpgm2:	ld	hl,newtsk+TD.NAME
 	ld	de,$SCRBF
+	push	de
 	ld	bc,6
-	ldir
-	ld	bc,$SCRBF
+	ldir			; copy task name to system space
+	pop	bc
 	KCALL	$FNTSK		; get task TCB
-	jr	c,rpgm3
+	ret	c		; error if not found
 	ld	de,tcbbuf
 	ld	bc,TCBSZ
 	ldir
-rpgm3:	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	ret	c		; error if not found
 
 	; TODO: check console, start a new copy only if ...XXX is active
 	; on another terminal. Also check for a possible race condition
@@ -861,9 +841,6 @@ rpgm5:	ld	a,c
 	scf
 	ret	nz		; return if anything else
 
-	ld	c,1
-	SC	.SUPER
-	ret	c
 	xor	a
 	ld	(SYSLVL),a	; disable task dispatching
 
@@ -899,8 +876,6 @@ rpgm5:	ld	a,c
 rpgm6:	push	af
 	ld	a,1
 	ld	(SYSLVL),a	; enable task dispatching
-	ld	c,0
-	SC	.SUPER
 	pop	af
 	ret	c
 
@@ -1006,34 +981,10 @@ doresm:	call	CHKLOG
 
 ;-----------------------------------------------------------------------
 
-; UNFIX <taskname>
-
-; If task XXX not found and the last 3 chars of task name are spaces,
-; the command tries to remove task ...XXX.
-
-dounfx:	call	CHKLOG
-	call	CHKPRV		; privileged command
-	call	gettn
-	call	fndtsk
-	jp	c,SYSERR
-	ld	hl,cmdnam
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-	KCALL	$UNFTK		; unfix task
-	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
-	jp	c,SYSERR
-	ret
-
-;-----------------------------------------------------------------------
-
 ; FIX <taskname>
 
 ; If task XXX not found and the last 3 chars of task name are spaces,
-; the command tries to remove task ...XXX.
+; the command tries to fix task ...XXX
 
 dofix:	call	CHKLOG
 	call	CHKPRV		; privileged command
@@ -1041,14 +992,34 @@ dofix:	call	CHKLOG
 	call	fndtsk
 	jp	c,SYSERR
 	ld	hl,cmdnam
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; copy task name to system space
+	pop	bc
 	KCALL	$FIXTK		; fix task in memory
-	push	af
-	ld	c,0
-	SC	.SUPER
-	pop	af
+	jp	c,SYSERR
+	ret
+
+;-----------------------------------------------------------------------
+
+; UNFIX <taskname>
+
+; If task XXX not found and the last 3 chars of task name are spaces,
+; the command tries to unfix task ...XXX
+
+dounfx:	call	CHKLOG
+	call	CHKPRV		; privileged command
+	call	gettn
+	call	fndtsk
+	jp	c,SYSERR
+	ld	hl,cmdnam
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; copy task name to system space
+	pop	bc
+	KCALL	$UNFTK		; unfix task
 	jp	c,SYSERR
 	ret
 
@@ -1186,7 +1157,7 @@ cmdptr:	ds	2		; ptr to command args (RUN command)
 
 ; QIO block for string output. Does not wait for completion and therefore
 ; assumes that the buffer contents does not change, which is correct since
-; we use this routine only to (re)display the prompt.
+; we use it only to (re)display the prompt.
 
 ASTQBK:	QIO$	IO.WLB,4,3,0,AIOSB,,<0,0,0,,,>
 AIOSB:	ds	4
