@@ -21,10 +21,9 @@
 
 	.Z80
 
-	ident	'VER1.0'
+	ident	'VER1.1'
 
 	include	SYSFN.INC
-	include	SYSTEM.INC
 	include	ERRORS.INC
 
 	extrn	PUTSTR,PUTCH,CRLF,ADEC,ADEC2,HLDEC,EXIT
@@ -38,12 +37,13 @@ LF	equ	0Ah
 
 UPT::	ld	sp,stack
 
-	ld	c,1
-	SC	.SUPER
+	ld	hl,uptime
+	ld	c,I.UPTM
+	SC	.GIN
 	ld	hl,EX.SEV
 	jp	c,EXIT
 
-	ld	ix,UPTIME
+	ld	ix,uptime
 	ld	hl,uptmsg
 	call	PUTSTR
 	push	hl
@@ -113,6 +113,8 @@ uptmsg:	db	CR,LF
 	db	CR,0
 
 	dseg
+
+uptime:	ds	6
 
 	ds	256		; stack space
 stack	equ	$

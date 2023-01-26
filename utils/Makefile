@@ -19,7 +19,8 @@ SRCS = cal.mac \
 	fdisk.mac \
 	fmt.mac \
 	bad.mac \
-	vfy.mac
+	vfy.mac \
+	uptime.mac
 
 LIBSRCS = msboot.mac \
 	mbboot.mac
@@ -65,6 +66,9 @@ vfy.tsk: vfy.rel syslib.lib
 
 quote.tsk cookie.tsk murphy.tsk: %.tsk: %.rel syslib.lib fcslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt:tsk,fcslib/lb,syslib/lb"
+
+uptime.tsk: uptime.rel syslib.lib
+	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=...UPT"
 
 clean:
 	rm -f *.rel *.prn *.sym core *.map *.tsk *~ *.\$$\$$\$$

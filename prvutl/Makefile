@@ -13,7 +13,6 @@ SRCS = bro.mac \
 	cpu.mac \
 	dcu.mac \
 	shf.mac \
-	uptime.mac \
 	who.mac
 
 OBJS = $(SRCS:.mac=.rel)
@@ -43,9 +42,6 @@ dcu.tsk: dcu.rel syslib.lib
 
 shf.tsk: shf.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/task=SHF.../pri=105/priv"
-
-uptime.tsk: uptime.rel syslib.lib
-	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/priv/task=...UPT"
 
 who.tsk: who.rel syslib.lib
 	$(ZXCC) $(TKB) -"$@=$</ofmt=tsk,syslib/lb/pri=100/priv/task=...WHO"
