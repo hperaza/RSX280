@@ -184,10 +184,15 @@ Displays static LUN assignments of a task.
 
 Syntax:
 
-  MOU ddn:[/ACP=taskname]
+  MOU ddn:[/ACP=taskname][/FPRO=...][/UNL][/VI]
 
 Connects a device to the filesystem processor so files can be accessed.
-The /ACP switch can be used to specify an alternate processor.
+
+The options are:
+  /ACP         specify an alternate processor
+  /FPRO=[...]  specify default file protection bits
+  /UNL         unlock privileged write access to special files
+  /VI          display volume information
 
 \PAR*TITIONS
 
