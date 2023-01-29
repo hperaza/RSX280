@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR-like command line interpreter for RSX280 - external commands.  ;
-;   Copyright (C) 2014-2022, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -25,7 +25,7 @@
 
 	cseg
 
-	ident	'02.25'
+	ident	'02.26'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -892,7 +892,14 @@ shdst7:	ld	a,h		; end of list?
 	pop	hl
 	ldw	hl,(hl)		; else move to next element
 	jr	shdst7		; and loop
-shdst8:	ld	hl,devlbl
+shdst8:	pop	hl
+	push	hl
+	ld	bc,M.ST
+	add	hl,bc
+	bit	MS.UNL,(hl)
+	ld	hl,devunl
+	call	nz,PUTSTR
+	ld	hl,devlbl
 	call	PUTSTR
 	pop	hl
 	ld	bc,M.LABEL
@@ -909,6 +916,7 @@ devswt:	db	'LOG',0
 devoff:	db	'Offline ',0
 devp:	db	'Public ',0
 devm:	db	'Mounted ',0
+devunl:	db	'Unlocked ',0
 devdm:	db	'Dismount in progress ',0
 devl:	db	'Loaded ',0
 devss:	db	' - Logged in  ',0
