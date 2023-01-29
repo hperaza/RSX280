@@ -1,0 +1,105 @@
+	.Z80
+
+	ident	'1.0'
+
+	include	SYSFN.INC
+	include	AST.INC
+	include	ERRORS.INC
+
+CR	equ	0Dh
+LF	equ	0Ah
+TAB	equ	09h
+
+	extrn	PUTCH,PUTSTR,EXIT,PERROR,UCASE
+
+;-----------------------------------------------------------------------
+
+; Catches the abort request.
+; Build and test two versions: privileged and non-privileged.
+
+	cseg
+
+START::	ld	sp,stack
+	ld	de,aborq
+	ld	c,AST.AB
+	SC	.ASTDF		; register AST routine
+	jp	c,err2
+
+	ld	a,5
+	ld	(count),a
+
+	ld	hl,0
+	SC	.STOP
+
+	ld	hl,EX.SUC	; success
+	jp	EXIT
+
+err2:	call	SYSERR
+	ld	hl,EX.SEV
+	jp	EXIT
+
+; Error display routine
+
+SYSERR:	push	af
+	ld	hl,prefx
+	call	PUTSTR
+	pop	af
+	call	PERROR		; display standard error message
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+prefx:	db	CR,LF,'ABOAST -- ',0
+
+; AST routine
+
+aborq:	ex	(sp),hl		; get argument
+	push	bc
+	ld	c,l
+	ld	hl,prefx
+	call	PUTSTR
+	ld	hl,msg1		; 'abort request from'
+	call	PUTSTR
+	bit	0,c
+	ld	hl,msg2		; 'non-'
+	call	nz,PUTSTR
+	ld	hl,msg3		; 'privileged'
+	call	PUTSTR
+	bit	1,c
+	ld	hl,msg4		; 'CLI'
+	jr	nz,a1
+	ld	hl,msg5		; 'task'
+a1:	call	PUTSTR
+	ld	c,CR
+	call	PUTCH		; causes flush of output
+	ld	hl,count
+	dec	(hl)
+	jr	z,a2
+	pop	hl
+	SC	.ASTX
+
+a2:	ld	hl,prefx
+	call	PUTSTR
+	ld	hl,msg6		; 'exiting'
+	call	PUTSTR
+	ld	c,CR
+	call	PUTCH
+	ld	hl,EX.SUC
+	jp	EXIT
+
+msg1:	db	'Abort request from ',0
+msg2:	db	'non-',0
+msg3:	db	'privileged ',0
+msg4:	db	'CLI',0
+msg5:	db	'task',0
+msg6:	db	'Exiting.',0
+
+	dseg
+
+count:	ds	1
+
+	ds	256		; stack space
+stack	equ	$
+
+	end	START
