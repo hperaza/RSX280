@@ -32,7 +32,8 @@ SRCS = hello.mac \
 	sst.mac \
 	odttest.mac \
 	qioast.mac \
-	vfctest.mac
+	vfctest.mac \
+	aboast.mac
 
 OVSRC =	ovltest.mac \
 	ov1.mac \
@@ -71,6 +72,10 @@ ckp.tsk: ckp.rel syslib.lib
 
 ovltest.tsk: ovltest.rel ov1.rel ov2.rel ov3.rel ov4.rel syslib.lib
 	$(ZXCC) $(TKB) -"ovltest/of:tsk/task=ovltst,,ovltest/q=ovltest,syslib.lib/lb(ov1)(ov2(ov3)(ov4))"
+
+aboast.tsk: aboast.rel syslib.lib
+	$(ZXCC) $(TKB) -"$@=$</ofmt:tsk,syslib/lb/task=ABOAST"
+	$(ZXCC) $(TKB) -"aboastp.tsk=$</ofmt:tsk,syslib/lb/priv/task=ABOAST"
 
 clean:
 	rm -f *.rel *.prn *.sym core *.map *.tsk *~ *.\$$\$$\$$
