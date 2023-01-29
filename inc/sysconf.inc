@@ -1,1 +1,1 @@
-sysconf.inc.cpu280
+sysconf.inc.z280rc

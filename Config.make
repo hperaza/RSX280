@@ -4,8 +4,8 @@
 # Make sure to select the correct device driver set in the inc/sysconf.inc
 # file before building the system image.
 #
-platform = cpu280
-#platform = z280rc
+#platform = cpu280
+platform = z280rc
 
 # Disk image characteristics (used by 'make disk-image')
 #
@@ -18,11 +18,11 @@ platform = cpu280
 #
 # 3.5" 1.44M floppy image (e.g. for CPU280):
 #
-image = floppy.img
-size = 2880
-files = 512
-offset = 0
-bootloader = fdboot.bin
+#image = floppy.img
+#size = 2880
+#files = 512
+#offset = 0
+#bootloader = fdboot.bin
 #
 # 4M CF partition (e.g. for Z280RC):
 #
@@ -34,11 +34,11 @@ bootloader = fdboot.bin
 #
 # 32M CF or GIDE partition (for Z280RC or CPU280):
 #
-#image = cf-partition.img
-#size = 65536
-#files = 8192
-#offset = 65536
-#bootloader = cfboot.bin
+image = cf-partition.img
+size = 65536
+files = 8192
+offset = 65536
+bootloader = cfboot.bin
 
 # Physical disk device to update with the 'make dev-copy' command.
 # !!!Always make sure you're writing to the right one!!! (check with e.g.
@@ -51,4 +51,4 @@ bootloader = fdboot.bin
 #outdev = /dev/fd0
 outdev = /dev/sdc
 #backup = no
-#conv = swab
+conv = swab

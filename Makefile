@@ -40,7 +40,7 @@ linux-tools:
 # Update the system include files in all directories
 update-incs:
 	@if ! cmp -s inc/sysconf.inc.${platform} inc/sysconf.inc; then \
-		ln -sf inc/sysconf.inc.${platform} inc/sysconf.inc; \
+		(cd inc ; ln -sf sysconf.inc.${platform} sysconf.inc) ; \
 		touch inc/sysconf.inc; \
 	fi
 	@for i in system.inc inc/*inc; do \
