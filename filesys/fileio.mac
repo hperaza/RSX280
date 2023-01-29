@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSFCP, the standard filesystem task of       ;
-;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;   RSX280. Copyright (C) 1985-2023, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -192,7 +192,13 @@ fopn6:	ld	bc,(diren2+DE.INDX) ; get inode number into BC
 
 	ld	a,(fmode)
 	call	accmod		; get read and/or write mode bits
+	push	de
 	call	CKPRMI		; check file access permissions
+	pop	de
+	jr	c,fopn3
+
+	ld	bc,(diren2+DE.INDX) ; get inode number back into BC
+	call	CKUNLW		; check special file write permissions
 	jr	c,fopn3
 
 	ld	hl,(LUNVCB)
@@ -2885,6 +2891,43 @@ cpm2:	cpl
 	ret	z
 	ld	a,E.PERM
 	scf
+	ret
+
+; Check special-file write/delete access permissions.
+; Called with IX = inode address, BC = inode number and E = access mode.
+; Return with CY set and error code in A if access is not allowed.
+; Only FP.W and FP.B bits are tested.
+; Preserves IX.
+
+CKUNLW:	ld	a,e
+	and	FP.W OR FP.D	; write or delete operation?
+	ret	z		; no, grant access
+	ld	a,(ix+IE.ATTR)
+	and	FA.DIR		; is this a directory?
+	jr	nz,cpm3		; yes
+	ld	hl,5
+	cpw	hl,bc		; inode number > 5?
+	ccf
+	ret	nc		; yes, grant access
+cpm3:	ld	hl,(LUNVCB)
+	ld	de,M.ST		; check mounted volume status bits
+	add	hl,de
+	bit	MS.UNL,(hl)	; unlock write bit set?
+	ld	a,E.PERM
+	scf
+	ret	z		; no, access denied
+	push	ix
+	call	GETUIC		; get user ID into L, group ID into H
+	ld	b,(ix+T.ATTR)	; get task attrib into reg B
+	pop	ix
+	ret	c
+	bit	TA.PRV,b	; privileged task?
+	jr	nz,cpm4		; yes, grant access
+	bit	LS.PRV,c	; privileged session?
+	ld	a,E.PERM
+	scf
+	ret	z		; no, access denied
+cpm4:	xor	a		; else grant access
 	ret
 
 ;-----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of SYSFCP, the standard filesystem task of       ;
-;   RSX280. Copyright (C) 1985-2020, Hector Peraza.                    ;
+;   RSX280. Copyright (C) 1985-2023, Hector Peraza.                    ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -64,7 +64,7 @@ MOUNT:	ld	hl,(LUNUCB)	; get UCB address
 	scf
 	ret	z
 
-	ex	de,hl
+	ex	de,hl		; DE = UCB address
 	call	FNDVCB		; device already mounted?
 	jr	c,newm		; branch if not
 
@@ -80,7 +80,7 @@ MOUNT:	ld	hl,(LUNUCB)	; get UCB address
 newm:	push	de
 	call	NEWVCB		; allocate new VCB (zeroed!)
 	pop	de
-	ret	c		; return on error (code already in A)
+	jp	c,err0		; return on error (code already in A)
 
 	ld	(LUNVCB),hl	; save VCB address
 	inc	hl
@@ -100,7 +100,7 @@ newm:	push	de
 	ld	(buf),hl	; save pointer to buffer
 	ld	de,B.DATA
 	add	hl,de		; point to data area
-	push	hl
+	push	hl		; save pointer
 
 	ld	de,vid
 	ld	b,6
@@ -111,7 +111,7 @@ mnt1:	ld	a,(de)		; check the volume identifier
 	inc	de
 	djnz	mnt1
 
-	pop	de
+	pop	de		; restore pointer to volume ID data
 	ld	hl,8
 	add	hl,de
 	ldw	hl,(hl)
@@ -137,6 +137,7 @@ mnt1:	ld	a,(de)		; check the volume identifier
 	pop	de
 
 	ld	iy,(LUNVCB)
+	ld	(iy+M.ST),0	; clear status bits
 
 	ld	hl,36
 	add	hl,de
@@ -346,6 +347,9 @@ mnt1:	ld	a,(de)		; check the volume identifier
 	xor	a		; return success
 	ret
 
+err0:	push	af
+	jr	err3
+
 badv:	pop	hl
 badv1:	ld	a,E.BADVT
 err1:	push	af
@@ -359,6 +363,7 @@ err2:	push	af
 	push	iy
 	pop	hl
 	call	FREVCB		; free the VCB
+err3:	ldw	ix,(LUNUCB)
 	ld	hl,0
 	ldw	(ix+U.ACP),hl	; unregister from unit
 	pop	af
