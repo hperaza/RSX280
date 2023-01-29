@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command DISMOUNT for RSX280.                          ;
-;   Copyright (C) 2015-2020, Hector Peraza.                            ;
+;   Copyright (C) 2015-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.04'
+	ident	'02.05'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -30,6 +30,7 @@
 	include	PCB.INC
 	include	DCB.INC
 	include	QIO.INC
+	include	LCB.INC
 	include	GCML.INC
 	include	ERRORS.INC
 
@@ -298,7 +299,10 @@ fcmd2:	ld	a,(hl)
 
 ;-----------------------------------------------------------------------
 
-DISMNT:	ld	hl,(lnptr)
+DISMNT:	call	CHKPRV		; privileged command
+	jp	c,SYSERR
+
+	ld	hl,(lnptr)
 	call	PDN		; parse device name
 	ld	(lnptr),hl
 	ld	hl,baddev
@@ -480,6 +484,21 @@ cfact:	db	'Checkpoint file still active on ',0
 twarn:	db	'Warning - Tasks installed from ',0
 dmoini:	db	'Warning - Files still open on ',0,' - Dismount initiated',0
 
+; Check if user is privileged. Return with CY set and error code in A
+; if not.
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	ld	a,E.PRIV
+	bit	LS.PRV,(hl)
+	scf
+	ret	z
+	xor	a
+	ret
+
 ;-----------------------------------------------------------------------
 
 	dseg
@@ -492,6 +511,7 @@ cmdnam:	ds	9
 dev:	ds	3
 ucbadr:	ds	2
 optdev:	ds	1
+lcbbuf:	ds	LCBSZ
 
 qio1:	QIOW$	IO.DSM,LUNDSM,9,iosb
 iosb:	ds	4
