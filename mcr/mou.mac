@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   MCR external command MOUNT for RSX280.                             ;
-;   Copyright (C) 2014-2020, Hector Peraza.                            ;
+;   Copyright (C) 2014-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'01.04'
+	ident	'01.05'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC
@@ -29,6 +29,8 @@
 	include	DCB.INC
 	include	TCB.INC
 	include	FCB.INC
+	include	LCB.INC
+	include	VCB.INC
 	include	GCML.INC
 	include	ERRORS.INC
 
@@ -40,8 +42,13 @@ ESC	equ	1Bh
 LUNCML	equ	1
 LUNMOU	equ	2
 
-	extrn	PDN,PERROR,PUTCH,PUTSTR,UCASE,HLDEC,TTFLSH
-	extrn	GCML,RCML
+SW.ACP	equ	0
+SW.FPRO	equ	1
+SW.UNL	equ	2
+SW.VI	equ	3
+
+	extrn	PDN,PERROR,PUTCH,PUTSTR,UCASE,ADEC,HLDEC,TTFLSH
+	extrn	GCML,RCML,CRLF,ATTACH,DETACH,TTLUN
 
 KCALL	MACRO	addr
 	call	$SWSTK
@@ -53,6 +60,14 @@ KCALL	MACRO	addr
 	cseg
 
 START:	ld	sp,stack	; setup stack
+
+	ld	c,1
+	SC	.SUPER		; map kernel database
+	jr	c,m3
+
+	ld	hl,EX.SUC	; default to 'success' exit code
+m0:	ld	(excod),hl
+
 m1:	call	TTFLSH
 	ld	iy,GDAT
 	call	GCML		; get command line tail
@@ -60,18 +75,28 @@ m1:	call	TTFLSH
 
 	ld	(lnptr),hl	; save pointer to command tail
 	call	domnt		; process the command
-	jr	m1		; loop for more
+	jr	nc,m1		; loop for more
+	ld	hl,EX.ERR	; on error, set exit code to 'error'
+	jr	m0
 
 m2:	cp	E.EOF		; end of file?
-	jr	z,m3		; exit normally if yes
+	jr	z,m4		; exit normally if yes
 
 	call	CMLERR		; else display error
 	ld	iy,GDAT
 	call	RCML		; reset command state
-	jr	m1		; and loop
-	
-m3:	call	TTFLSH
-	ld	hl,EX.SUC
+	ld	hl,(excod)
+	ld	a,l
+	cp	EX.SUC
+	jr	nz,m1
+	ld	hl,EX.WRN	; change 'success' exit code to 'warning'
+	jr	m0		; and loop
+
+m3:	ld	hl,EX.SEV	; severe error, fatal exit
+	ld	(excod),hl
+	call	SYSERR
+m4:	call	TTFLSH
+	ld	hl,(excod)
 	SC	.EXIT		; exit
 
 ;-----------------------------------------------------------------------
@@ -219,6 +244,58 @@ sfill:	ld	(de),a
 	djnz	sfill
 	ret
 
+; Read a hexadecimal number from input line into DE. Return number of
+; processed chars in C. Returns CY if the number contains invalid chars,
+; or on overflow.
+
+gethex:	ld	hl,(lnptr)
+	call	skipbl
+	ld	de,0
+	ld	c,0
+gh1:	ld	a,(hl)		; get next char
+	call	delim
+	jr	z,gh2		; note no CY
+	call	hexbin		; convert to binary
+	jr	c,gh2
+	inc	c		; count digit
+	ex	de,hl
+	call	addhex		; add digit, note CY on overflow
+	ex	de,hl
+	inc	hl
+	jr	nc,gh1
+gh2:	ld	(lnptr),hl
+	ret
+
+hexbin:	call	UCASE
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	nc
+	cp	11h
+	ret	c
+	cp	17h
+	ccf
+	ret	c
+	sub	7
+	ret
+
+addhex:	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	a,l
+	ld	l,a
+	ret	nc
+	ld	a,h
+	adc	a,0
+	ld	h,a
+	ret
+
 ; Search for the command (nambuf) in the command table (address in HL).
 ; Returns A=0FFh if not found, or 0 if nambuf contains an empty string.
 ; Otherwise returns the 1-based command ordinal.
@@ -259,7 +336,10 @@ fcmd4:	inc	hl		; else skip to end of keyword
 
 ;-----------------------------------------------------------------------
 
-domnt:	ld	hl,dfacp
+domnt:	call	chkprv		; privileged command
+	jp	c,SYSERR
+
+	ld	hl,dfacp
 	ld	de,ACPTDB+TD.NAME
 	ld	bc,6
 	ldir			; default ACP is SYSFCP
@@ -273,7 +353,9 @@ domnt:	ld	hl,dfacp
 	ld	a,c
 	ld	(dev+2),a
 
-	call	getopt
+	xor	a
+	ld	(optsw),a	; clear option switches
+	call	getopt		; parse options
 	ret	c		; on error, return
 
 	ld	de,(dev)
@@ -283,82 +365,78 @@ domnt:	ld	hl,dfacp
 	SC	.ALUN		; assign LUN
 	jp	c,SYSERR
 
-	ld	c,1
-	SC	.SUPER		; enter supervisor mode
-	jp	c,SYSERR
-
 	ld	de,(dev)
 	ld	a,(dev+2)
 	ld	c,a
 	ld	ix,($CTCB)
 	KCALL	$FNDEV		; get UCB address
-	jr	c,m4
+	jp	c,SYSERR
 	KCALL	$REDIR		; follow any redirection links
 	push	hl
 	pop	ix
 	bit	DV.MNT,(ix+U.CW)
-	ld	bc,nmmsg
-	jr	z,m4		; error if the unit is not mountable
+	ld	hl,nmmsg
+	jp	z,ERROR		; error if the unit is not mountable
 
 	xor	a
-	ld	(SYSLVL),a
+	ld	(SYSLVL),a	; disable task dispatching
 	ld	bc,ACPTDB+TD.NAME
 	call	fndtsk		; find ACP in STD
-	ld	a,1
-	ld	(SYSLVL),a
-	ld	a,h
-	or	l
-	ld	bc,npmsg
-	jr	z,m4		; error if not found
 	ex	de,hl
+	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
+	ld	a,d
+	or	e
+	ld	hl,npmsg
+	jp	z,ERROR		; error if not found
 	ld	hl,T.ATTR
 	add	hl,de
 	bit	TA.ACP,(hl)
-	ld	bc,namsg
-	jr	z,m4		; error if not an ACP
+	ld	hl,namsg
+	jp	z,ERROR		; error if not an ACP
 
+	xor	a
+	ld	(SYSLVL),a	; disable task dispatching
 	ldw	hl,(ix+U.ACP)
+	ld	(oldacp),hl
 	ld	a,h
 	or	l		; already registered with an ACP?
-	jr	z,m6		; go ahead if not
+	jr	z,mnt1		; no, go ahead
 	cpw	hl,de		; same as the requested one?
-	ld	bc,ammsg
-	jr	nz,m4		; error if not
+	ld	hl,ammsg
+	jr	nz,mnt3		; error if not
 
-m6:				; TODO: check for possible race condition
-	ldw	(ix+U.ACP),de	;  with another instance of MOU. Also, restore
-				;   orig U.ACP contents on error [the last is
-				;    done by the ACP] 
+mnt1:	ldw	(ix+U.ACP),de	; set ACP in UCB
+	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
 
 	ld	hl,ACPTDB
 	ld	bc,0		; don't connect to the ACP task
 	SC	.RQST		; start the ACP if not already running
-	jr	nc,m4		; continue on success (note BC still 0)
+	jr	nc,mnt2		; continue below on success
 	cp	E.TRUN		; task already running (unstopped)?
-	jr	z,m4		; continue if yes
+	jr	z,mnt2		; continue if yes
 	cp	E.TACT		; task active?
-	jr	z,m4		; continue if yes
-	scf			; else is fatal
+	jr	nz,mnt4		; no, error is fatal
 
-m4:	push	bc
-	push	af
-	ld	c,0
-	SC	.SUPER		; leave supervisor mode
-	pop	af
-	pop	hl
-	jp	c,SYSERR	; display system error message
-	ld	a,h
-	or	l
-	jp	nz,ERROR	; or custom error message
-
-	ld	hl,qio1		; register unit with file processor
+mnt2:	ld	hl,qio1		; register unit with file processor
 	SC	.QIO		; .QIOW
-	jp	c,SYSERR
-
+	jr	c,mnt4
 	ld	a,(iosb)
 	or	a		; check result
-	ret	z
-	jp	SYSERR
+	jp	nz,SYSERR
+	ld	a,(optsw)
+	or	a
+	call	nz,setopt
+	ret
+
+mnt3:	ld	a,1
+	ld	(SYSLVL),a	; re-enable task dispatching
+	jp	ERROR		; output error and return
+
+mnt4:	ld	hl,(oldacp)
+	ldw	(ix+U.ACP),hl	; restore orig ACP
+	jp	SYSERR		; output error and return
 
 baddev:	ld	hl,bdmsg
 	jp	ERROR
@@ -381,19 +459,22 @@ getopt:	ld	hl,(lnptr)
 	ld	(lnptr),hl
 	ld	hl,optlst
 	call	fndcmd		; search option in table
-;;	or	a
-;;	jp	z,CMDERR
-;;	cp	0FFh
-;;	jp	z,CMDERR
 	dec	a
+	jr	z,optacp
+	dec	a
+	jr	z,optfpro
+	dec	a
+	jr	z,optunl
+	dec	a
+	jr	z,optvi
+	jp	CMDERR
+
+optacp:	call	chkeq
 	jp	nz,CMDERR
 	ld	hl,(lnptr)
 	call	skipbl
-	cp	'='
-	jp	nz,CMDERR
-	inc	hl
-	call	skipbl
 	call	getnam
+	ld	(lnptr),hl
 	ld	hl,nambuf
 	ld	a,(hl)
 	cp	' '
@@ -401,12 +482,241 @@ getopt:	ld	hl,(lnptr)
 	ld	de,ACPTDB+TD.NAME
 	ld	bc,6
 	ldir			; set ACP name in TDB
+	ld	hl,optsw
+	set	SW.ACP,(hl)
+	jr	getopt
+
+optunl:	ld	hl,optsw
+	set	SW.UNL,(hl)
+	jr	getopt
+
+optvi:	ld	hl,optsw
+	set	SW.VI,(hl)
+	jr	getopt
+
+optfpro:call	chkeq
+	jp	nz,CMDERR
+	call	skipbl
+	cp	'['		; check for [RWED,...] format
+	jr	z,prot1
+	ld	(lnptr),hl
+	call	gethex		; else get hexadecimal value
+	jp	c,CMDERR
+	ld	a,c
+	or	a		; can't be empty string
+	jp	z,CMDERR
+	jr	prot6
+
+prot1:	ld	de,0
+	ld	b,4		; number of groups
+prot2:	inc	hl
+	call	skipbl
+	cp	']'
+	jr	z,prot4
+	cp	','		; group separator?
+	jr	z,prot3		; yes
+	call	gtrwed		; else get prot bit
+	jp	c,CMDERR
+	ld	a,e
+	and	c		; already set?
+	jp	nz,CMDERR	; error if yes
+	ld	a,e
+	or	c
+	ld	e,a		; else set bit
+	jr	prot2		; and loop to process next
+
+prot3:	ex	de,hl
+	add	hl,hl		; shift mask
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	djnz	prot2
+prot5:	jp	CMDERR
+
+prot4:	djnz	prot5		; all groups must have been specified
+	inc	hl
+	ld	(lnptr),hl
+	ex	de,hl
+prot6:	ld	(dfpro),hl	; store result
+	ld	hl,optsw
+	set	SW.FPRO,(hl)
+	jp	getopt
+
+gtrwed:	call	UCASE
+	ld	c,08h
+	cp	'R'
+	ret	z
+	srl	c
+	cp	'W'
+	ret	z
+	srl	c
+	cp	'E'
+	ret	z
+	srl	c
+	cp	'D'
+	ret	z
+	scf
 	ret
 
-optlst:	db	'ACP',0		; right now only one option supported
+chkeq:	ld	hl,(lnptr)
+	call	skipbl
+	cp	'='
+	ret	nz
+	inc	hl
+	ld	(lnptr),hl
+	ret
+
+optlst:	db	'ACP',0		; specify alternate ACP
+	db	'FPRO',0	; specify default file protection
+	db	'UNL',0		; unlock write access to special files
+	db	'VI',0		; display volume info
 	db	0
 
-; Find task in STD. Assumes supervisor mode is on.
+; Post-process mount options
+
+setopt:	push	ix
+	pop	de
+	call	fndvcb		; find VCB of mounted device
+	jp	c,SYSERR	; should not happen
+	ld	hl,optsw
+	bit	SW.UNL,(hl)
+	jr	z,s1
+	set	MS.UNL,(iy+M.ST)
+s1:	bit	SW.FPRO,(hl)
+	jr	z,s2
+	ld	de,(dfpro)
+	ldw	(iy+M.DFPR),de
+s2:	bit	SW.VI,(hl)
+	call	nz,prinfo
+	xor	a
+	ret
+
+prinfo:	ld	a,(TTLUN)
+	ld	c,a
+	call	ATTACH
+	call	CRLF
+	ld	hl,info
+	call	PUTSTR		; 'volume information'
+	call	CRLF
+	inc	hl
+	call	PUTSTR		; 'class'
+	ex	de,hl
+	ld	hl,class
+	call	PUTSTR
+	call	CRLF
+	ex	de,hl
+	inc	hl
+	call	PUTSTR		; 'device'
+	call	prdevn
+	call	CRLF
+	inc	hl
+	call	PUTSTR		; 'volume label'
+	call	prlbl
+	call	CRLF
+	inc	hl
+	call	PUTSTR		; 'default'
+	call	prbits
+	call	CRLF
+	inc	hl
+	call	PUTSTR		; 'processor'
+	call	pracp
+	ld	c,CR
+	call	PUTCH
+	ld	a,(TTLUN)
+	ld	c,a
+	call	DETACH
+	xor	a
+	ret
+
+info:	db	'Volume information',0
+	db	'Class:        ',0
+	db	'Device:       ',0
+	db	'Volume label: ',0
+	db	'Default:      ',0
+	db	'Processor:    ',0
+
+prdevn:	push	ix
+	pop	de
+	KCALL	$UCBDN
+	push	bc
+	ld	c,e
+	call	PUTCH
+	ld	c,d
+	call	PUTCH
+	pop	bc
+	ld	a,c
+	call	ADEC
+	ld	c,':'
+	jp	PUTCH
+
+prlbl:	push	iy
+	ex	(sp),hl
+	ld	de,M.LABEL
+	add	hl,de
+	ld	b,16
+prl1:	ld	a,(hl)
+	or	a
+	jr	z,prl2
+	ld	c,a
+	call	PUTCH
+	inc	hl
+	djnz	prl1
+prl2:	pop	hl
+	ret
+
+prbits:	push	hl
+	ld	c,'['
+	call	PUTCH
+	ldw	de,(iy+M.DFPR)
+	call	pp1
+	ld	c,']'
+	call	PUTCH
+	pop	hl
+	ret
+
+pp1:	ld	a,d
+	call	pp2
+	ld	c,','
+	call	PUTCH
+	ld	a,e
+pp2:	call	pp3
+	ld	b,a
+	ld	c,','
+	call	PUTCH
+	ld	a,b
+pp3:	ld	hl,rwed
+	ld	b,4
+pp4:	rlca
+	push	af
+	ld	c,(hl)
+	call	c,PUTCH
+	pop	af
+	inc	hl
+	djnz	pp4
+	ret
+
+rwed:	db	'RWED'
+
+pracp:	ldw	de,(ix+U.ACP)
+	ld	a,d
+	or	e
+	ret	z
+	push	hl
+	ld	hl,T.NAME
+	add	hl,de
+	ld	b,6
+prn1:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	prn1
+	pop	hl
+	ret
+
+class:	db	'VOL180',0
+	db	'Foreign',0
+
+; Find task by name in STD. Assumes kernel database is already mapped.
 
 fndtsk:	ld	hl,$TLIST
 ftsk1:	ldw	hl,(hl)		; find task in STD
@@ -434,6 +744,40 @@ ftsk3:	pop	hl
 	pop	bc
 	jr	ftsk1
 
+; Find volume control block by UCB. Assumes kernel database is mapped.
+
+fndvcb:	ld	hl,($MVTBL)
+fmnt1:	ld	a,h
+	or	l		; end of list?
+	ld	a,E.DEVNM
+	scf
+	ret	z		; yes, return error
+	push	hl
+	ldw	hl,(hl+M.UCB)
+	cpw	hl,de
+	jr	nz,fmnt2
+	pop	iy		; found
+	xor	a
+	ret
+fmnt2:	pop	hl
+	ldw	hl,(hl)
+	jr	fmnt1
+
+; Check if user is privileged. Return with CY set and error code in A
+; if not.
+
+chkprv:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	ld	a,E.PRIV
+	bit	LS.PRV,(hl)
+	scf
+	ret	z
+	xor	a
+	ret
+
 ;-----------------------------------------------------------------------
 
 	dseg
@@ -443,7 +787,12 @@ GDAT:	GCML$	cmdbuf,80,'MOU',LUNCML,2
 cmdbuf:	ds	82
 lnptr:	ds	2
 dev:	ds	3
+optsw:	ds	1
 nambuf:	ds	7
+excod:	ds	2
+oldacp:	ds	2
+dfpro:	ds	2
+lcbbuf:	ds	LCBSZ
 
 ACPTDB:	db	'SYSFCP'
 	dw	0,0
