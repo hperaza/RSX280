@@ -7648,3 +7648,29 @@ BUGS:
 - UPTime is no longed a privileged utility, moved to the 'utils' directory.
 
 
+28/01/23
+
+- SYSFCP
+  * bug fix: the ACP was not properly unregistered from unit on mount
+    operation failure.
+  * lock write access to directories and special system files from user
+    tasks unless the device is mounted with the /UNL option.
+  * write access to directories and special files is allowed in unlocked
+    mode for privileged users and/or privileged tasks only.
+
+- MOU: added /UNL option to mount volume in unlocked mode.
+
+- MCR: the DEV command now displays the 'Unlocked' mounted device status
+  if set (and if the user is privileged.)
+
+
+29/01/23
+
+- VCB: removed unused M.ACP field (use M.UCB -> U.ACP)
+
+- MOU: added /FPRO=[...] (default file protection) and /VI (display volume
+  information) options.
+
+- MOU and DMO now check user privileges.
+
+
