@@ -29,9 +29,10 @@ ins ini				! install volume initialization task
 ins rmd				! install resource monitoring display task
 ins pip				! install pip
 ins bro				! install broadcast task
-ins mac				! install mac
+ins mac				! install macro assembler
 ins tkb/inc=30000		! install task builder
 ins lbr				! install object module librarian
+ins debug			! install debugging tool
 ins zap				! install hex file edtor
 ins who
 ins dmp				! install file dump utility
