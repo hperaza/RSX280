@@ -151,7 +151,7 @@ done:	; assign console output CO: to TT0: (TODO: only if CO: is not loaded)
 
 	ld	a,0C3h
 	ld	(0),a
-	ld	hl,$DBTRP##
+	ld	hl,$KDTRP##
 	ld	(1),hl
 
 	ld	hl,0
@@ -202,12 +202,12 @@ skip:	; start initialization task
 	scf
 	ret
 
-uncfg:	call	$DMTRP##
+uncfg:	call	$KMTRP##
 	db	'RSX280 -- System not configured',0
 	di
 	halt
 
-noldr:	call	$DMTRP##
+noldr:	call	$KMTRP##
 	db	'RSX280 -- Loader not installed',0
 	di
 	halt

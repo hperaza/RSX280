@@ -381,16 +381,19 @@ SETAST:	bit	TS.AST,(ix+T.ST)   ; is the task already in AST mode?
 	and	0+(1 SHL TS.ACT) OR (1 SHL TS.SUP)
 	set	TS.AST,a
 	ld	(ix+T.ST),a	; set new task status
-	ld	a,h		; check old T.ST+1
-	or	a		; was the task runnable?
+	ld	a,l
+	and	1 SHL TS.BPT	; check old running bits
+	ld	l,a
+	or	h		; was the task runnable?
 	ret	z		; return success if yes
+	ld	a,h
 	res	T2.STP,a
 	res	T2.SEF,a
 	res	T2.EFW,a
 	res	T2.WTD,a
 	ld	(ix+T.ST+1),a
-	or	a		; task runnable in new AST state?
-	jp	nz,TNEXT	; must be out of memory, try bringing it back
+	or	l		; task runnable in new AST state?
+	jp	nz,TNEXT	; no, try bringing it back if out of memory
 	push	ix
 	pop	bc
 	call	$FNTCB		; locate task, returns IX=TCB and IY=prev
@@ -421,9 +424,11 @@ DOAST:	ld	ix,($CTCB)
 
 	ld	a,(iy+A.TYP)	; check type
 	cp	AST.ST OR 80h	; special AST status block?
-	jr	nz,ast1		; branch if not
+	jr	z,ast1		; yes
+	cp	AST.DB OR 80h
+	jr	nz,ast2		; no
 
-	ldw	bc,(iy+A.LNK)
+ast1:	ldw	bc,(iy+A.LNK)
 	ldw	(ix+T.ASTL),bc	; else unlink it from queue
 	lda	hl,(iy+A.DAT+2)	; get pointer to status
 	ldw	de,(iy+A.DAT)	; get ECB address
@@ -431,7 +436,7 @@ DOAST:	ld	ix,($CTCB)
 	ld	b,0
 	dec	bc		; get length in bytes
 	dec	bc
-	call	STORST		; store status
+	call	STORST		; store status or debug event info
 	ld	e,(iy+A.SIZ)
 	ld	d,0
 	ld	hl,ACBSZ	; add header size
@@ -442,7 +447,7 @@ DOAST:	ld	ix,($CTCB)
 	call	$FREE		; free the AST block
 	jr	DOAST		; loop to dispatch next
 
-ast1:	call	SETAST		; switch task to AST mode if necessary
+ast2:	call	SETAST		; switch task to AST mode if necessary
 	ret	c		; on error (e.g. ASTs disabled), return
 
 	bit	TS.AST,(ix+T.SVST) ; already executing an AST?
@@ -451,10 +456,10 @@ ast1:	call	SETAST		; switch task to AST mode if necessary
 
 	ld	a,(iy+A.TYP)	   ; check type again
 	cp	AST.AB		   ; Abort AST?
-	jr	nz,ast2		   ; no
+	jr	nz,ast3		   ; no
 	set	TS.ABX,(ix+T.SVST) ; else set TS.ABX status bit
 
-ast2:	ldw	iy,(ix+T.CTX)	; get task context address into IY
+ast3:	ldw	iy,(ix+T.CTX)	; get task context address into IY
 
 	push	ix
 	ldw	hl,(ix+T.ASTL)	; get address of first AST block in list
@@ -512,24 +517,26 @@ ASTEXT:	ld	ix,($CTCB)
 
 astx0:	ld	de,($UBANK)
 	call	RMARG		   ; remove AST PC and AF
-	jr	c,ast4		   ; abort task on bad stack
+	jr	c,astx5		   ; abort task on bad stack
 	bit	TA.AST,(ix+T.ATTR) ; AST processing still enabled?
-	jr	z,astx2		   ; exit AST mode if not
+	jr	z,astx3		   ; exit AST mode if not
 
 	ldw	de,(ix+T.ASTL)
 astx1:	ld	a,d		; check AST queue
 	or	e
-	jr	z,astx2		; exit AST mode if empty
+	jr	z,astx3		; exit AST mode if empty
 	ld	hl,A.TYP
 	add	hl,de
 	ld	a,(hl)
 	cp	AST.ST OR 80h	; special AST status blocks don't count
+	jr	z,astx2
+	cp	AST.AB OR 80h
 	ret	nz
-	ex	de,hl
+astx2:	ex	de,hl
 	ldw	de,(hl)
 	jr	astx1
 
-astx2:	lda	hl,(ix+T.WAIT)
+astx3:	lda	hl,(ix+T.WAIT)
 	ex	de,hl		; dst = wait mask
 	ldw	hl,(ix+T.CTX)	; get address of task context block into HL
 	ld	bc,TX.SWM
@@ -541,8 +548,9 @@ astx2:	lda	hl,(ix+T.WAIT)
 	res	T2.OUT,h	; clear T2.OUT and T2.CKP bit in case the task
 	res	T2.CKP,h	;  was checkpointed when the AST was queued
 	ldw	(ix+T.ST),hl	; restore old task status
-	ld	a,h		; check T.ST+1
-	or	a		; task in running state?
+	ld	a,l
+	and	1 SHL TS.BPT	; check running bits
+	or	h		; task in running state?
 	ret	z		; return if yes (already in $RLIST)
 	push	ix
 	pop	bc
@@ -554,17 +562,17 @@ astx2:	lda	hl,(ix+T.WAIT)
 	ld	bc,T.ACTL
 	call	$LKTCB		; move task back to wait list
 	bit	T2.EFW,(ix+T.ST+1) ; task waiting on flag?
-	jr	nz,astx3	   ; branch if yes
+	jr	nz,astx4	   ; branch if yes
 	bit	T2.SEF,(ix+T.ST+1) ; task stopped for flag?
 	ret	z		   ; return if not
-astx3:	push	ix
+astx4:	push	ix
 	pop	bc
 	call	CKWMSK		; check wait mask
 	ret	c		; return on error
 	ret	z		; return if no flag is set
 	jp	TCONT		; else wakeup task (BC = TCB)
 
-ast4:	push	ix
+astx5:	push	ix
 	pop	bc
 	ld	e,TK.AST	; bad AST stack
 	jp	TKILL		; abort task

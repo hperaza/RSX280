@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -63,8 +63,9 @@ QLDR:	ld	de,(LDRTCB)
 	bit	T2.WTD,(ix+T.ST+1) ; loader task is waiting for data?
 	ret	z		; return success if not
 	res	T2.WTD,(ix+T.ST+1) ; else clear waiting bit
-	ld	a,(ix+T.ST+1)
-	or	a		; loader became runnable?
+	ld	a,(ix+T.ST)
+	and	1 SHL TS.BPT
+	or	(ix+T.ST+1)	; loader became runnable?
 	jr	nz,q1		; return if not
 	ldw	bc,(ix+T.ACTL)
 	ldw	(iy),bc		; unlink TCB

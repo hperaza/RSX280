@@ -39,18 +39,18 @@ CMD_B	equ	FALSE		; breakpoint command?
 
 ;;	cseg
 
-	public	$DBMON,$DBTRP,$DMTRP,$DBMSG
+	public	$KDMON,$KDTRP,$KMTRP,$KDMSG
 
 ;-----------------------------------------------------------------------
 
 ; Main entry point
 
-$DBMON:	di
+$KDMON:	di
 	ld	sp,mon_stack	; setup local stack
 	ld	hl,prompt
 	call	print		; output prompt
 	call	getln		; get command
-	push	$DBMON		; push return address
+	push	$KDMON		; push return address
 	xor	a
 	ld	(argset),a
 	ld	hl,lnbuf
@@ -111,7 +111,7 @@ $DBMON:	di
 error:	call	cr_lf
 	ld	a,'?'		; unknown command
 	call	mon_putch
-	jr	$DBMON
+	jr	$KDMON
 
 chkmod:	ld	c,a
 	ld	a,(hl)
@@ -164,7 +164,7 @@ eol:	ld	(hl),0		; end of input, append null char
 	ret
 ctrlc:	ld	hl,ctlcm
 	call	print
-	jp	$DBMON
+	jp	$KDMON
 
 ctlcm:	db	"^C",CR,LF,0
 
@@ -571,7 +571,7 @@ setbrk:	ld	(brkadr),hl
 	ld	(hl),a
 	ld	a,0C3h
 	ld	(DBGRST),a
-	ld	hl,$DBTRP
+	ld	hl,$KDTRP
 	ld	(DBGRST+1),hl
 	ret
 
@@ -635,7 +635,7 @@ cr_lf:	push	af
 
 ; Trap (breakpoint) entry point. Saves all registers and current MMU status.
 
-$DBTRP:	di
+$KDTRP:	di
 	ld	(pgm_sp),sp
 	ld	sp,reg_stack
 	push	af
@@ -671,7 +671,7 @@ $DBTRP:	di
 	ld	hl,(pgm_pc)
 	call	hlhex
 	call	cr_lf
-	jp	$DBMON
+	jp	$KDMON
 
 chkbrk:	ld	hl,(brkadr)
 	ld	de,(pgm_pc)
@@ -692,7 +692,7 @@ brk_msg:
 atpc_msg:
 	db	" at PC=",0
 
-$DMTRP:	di
+$KMTRP:	di
 	push	hl
 	push	bc
 	ld	c,IOP
@@ -714,7 +714,7 @@ $DMTRP:	di
 	ldctl	(c),hl
 	pop	bc
 	pop	hl
-	jp	$DBTRP
+	jp	$KDTRP
 
 ; N[1]
 ; coNtinue execution from last breakpoint
@@ -970,7 +970,7 @@ rstmmu:	iopage	MMUP
 	otirw
 	ret
 
-$DBMSG:	ex	(sp),hl
+$KDMSG:	ex	(sp),hl
 	push	af
 	push	bc
 	push	hl

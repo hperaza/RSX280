@@ -75,7 +75,7 @@ exti2:	ldw	(SSTVEC),SST.E2	; SST vector offset
 
 exti1:	ldw	(SSTVEC),SST.EI	; SST vector offset
 	ld	(TRPFLG),TK.EXT	; set abort code
-	ld	(TRPARG),1	; one arguments
+	ld	(TRPARG),1	; one argument
 	jp	trp1		; continue below
 
 bptrp:	ldw	(SSTVEC),SST.BP	; SST vector offset
@@ -103,7 +103,7 @@ trp1:	push	af
 	or	a
 	jp	p,sys1		; no, continue via SYSENT
 	pop	af
-	jp	$DBTRP		; else enter debugger (system crash?)
+	jp	$KDTRP		; else enter debugger (system crash?)
 
 ; System trap entry:
 ; - all registers are saved into the task's context block.
@@ -141,9 +141,6 @@ sys1:	push	bc		;  context register bank
 	ld	e,a		; E = reason code
 	xor	a
 	ld	(TRPFLG),a
-
-	; TODO: ensure T.SP is within task limits, else abort with a
-	;       'SST: bad stack' error
 
 	ldw	iy,(ix+T.CTX)	; get task context
 	ld	a,e
@@ -197,17 +194,20 @@ skip:	ldw	hl,(iy+TX.SST)
 
 	ld	a,(TRPARG)
 	or	a		; any arguments to push?
-	jp	z,SYSXIT	; no, we're ready
+	jr	z,s1		; no, we're ready
 
 	ld	e,a
 	ldw	bc,(iy+TX.REGS+20)
 	call	upush		; else push the one already saved
 	dec	e		; more arguments to push?
-	jp	z,SYSXIT	; no
+	jr	z,s1		; no
 	
 	ld	bc,(EIARG2)
 	call	upush		; yes, push second argument
-	jp	SYSXIT		; and we're done
+;;	jr	s1		; and we're done
+
+s1:	call	?debug
+	jp	SYSXIT
 
 upush:	ldw	hl,(ix+T.SP)
 	dec	hl
@@ -243,9 +243,25 @@ upop:	ldw	hl,(ix+T.SP)
 	ret
 
 badsp:	ld	e,TK.SST
-abort:	ld	bc,($CTCB)	; else abort the current task
+abort:	call	?debug		; debugger attached?
+	jr	nc,SYSXIT	; yes
+	ld	bc,($CTCB)	; else abort the current task
 	call	TKILL
 	jr	SYSXIT		; TKILL never returns, anyway
+
+	extrn	$DBBRK,$DBNOT
+
+?debug:	ldw	hl,(iy+TX.XDT)
+	ld	a,h		; debugger attached?
+	or	l
+	scf
+	ret	z		; no
+	push	ix
+	pop	bc
+	call	$DBBRK		; else stop task and notify debugger
+	ldw	bc,(SSTVEC)
+	ld	de,0
+	jp	$DBNOT		; notify debugger and return
 
 normal:	call	SYSFN		; handle system call
 

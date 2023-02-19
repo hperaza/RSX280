@@ -176,8 +176,9 @@ fw0:	call	CKWMSK		; check if flag is set
 	ret	nz		; return if yes
 	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
 	ret	c
-	ld	a,(ix+T.ST+1)
-	or	a		; task in running state?
+	ld	a,(ix+T.ST)
+	and	1 SHL TS.BPT	; check 'running' bits
+	or	(ix+T.ST+1)	; task in running state?
 	jr	z,fw1		; skip next test if yes
 	bit	T2.EFW,(ix+T.ST+1) ; already waiting?
 	ld	a,E.TSTP
@@ -227,8 +228,9 @@ fs0:	call	CKWMSK		; check if flag is set
 	ret	nz		; return if yes
 	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
 	ret	c
-	ld	a,(ix+T.ST+1)
-	or	a		; task in running state?
+	ld	a,(ix+T.ST)
+	and	1 SHL TS.BPT	; check 'running' bits
+	or	(ix+T.ST+1)	; task in running state?
 	jr	z,fs1		; skip next test if yes
 	bit	T2.SEF,(ix+T.ST+1) ; already stopped?
 	ld	a,E.TSTP

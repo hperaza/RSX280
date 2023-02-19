@@ -35,6 +35,7 @@
 	include	PCB.INC
 	include	DCB.INC
 	include	LCB.INC
+	include	AST.INC
 	include	CLKQ.INC
 	include	SYSFN.INC
 	include	ERRORS.INC
@@ -74,7 +75,12 @@
 	public	$LDCKW		;  queue task to partition after checkpnt write
 	ENDIF
 
-	public	NEWCTX,SETCTX	; needed by the startup code
+	public	$DBCON		; connect task to external debugger
+	public	$DBDIS		; disconnect task from external debugger
+	public	$DBBRK		; break task execution
+	public	$DBRES		; resume task stopped for debugger
+	public	$DBNOT		; notify debugger about debug event
+
 	public	GETSIZ		; to be moved to pars.mac
 
 	extrn	$TLIST,$RLIST,$WLIST,$PLIST,$FORKQ,$CLKQ,$CTCB,$CPCB
@@ -85,6 +91,7 @@
 	extrn	$ASNTP,DOCLKQ,DISCON,MALLOC,MFREE,$ALLOC,$FREE,CHKPAR
 	extrn	CLRMEM,CLRCVL,CLNAST,IOKILL,QTKTN,QPAR,MCRTCB,LDRTCB
 	extrn	$FNDEV,TFLAG,DOFORK,TRPFLG,MEXTND,CLNCLQ,SRQST,NEWSUB
+	extrn	SETFLG
 
 	IF	F$HALT
 	extrn	CKCLKQ
@@ -474,7 +481,7 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 	jp	nz,TKILL2
 
 	xor	a
-	ld	(ix+T.ST+1),a	; clear all blocking bits
+	ld	(ix+T.ST+1),a	; clear all blocking bits, except TS.BPT
 	bit	TS.ACT,(ix+T.ST); task active?
 	ret	z		; return success if not (was a fix request)
 
@@ -499,7 +506,7 @@ $LDGO:	bit	T2.ABO,(ix+T.ST+1)
 	cpw	hl,0040h	; task start below RST vector area?
 	jr	c,tgo2		; yes, skip initialization
     if 0
-	ld	b,1		; map fisrt page of task in user space
+	ld	b,1		; map first page of task in user space
 	call	USRMAP##
     else
 	include	Z280.INC
@@ -530,7 +537,9 @@ tgo1:	ld	a,76h		; halt instruction code
 	add	hl,a
 	djnz	tgo1
 
-tgo2:	push	ix
+tgo2:	bit	TS.BPT,(ix+T.ST); task stopped at breakpoint?
+	jr	nz,tgo4		; yes, return
+	push	ix
 	pop	bc
 	ld	iy,$WLIST
 	ld	de,T.ACTL
@@ -539,7 +548,7 @@ tgo2:	push	ix
 	ld	iy,$RLIST
 	ld	bc,T.ACTL
 	call	$LKTCB		; move task to ready list
-	xor	a
+tgo4:	xor	a
 	ret
 
     if 0
@@ -655,6 +664,9 @@ SETCTX:	ldw	hl,(ix+T.TI)	; get UCB of terminal
 
 sc1:	push	hl
 	pop	ix		; IX = task context block
+
+	ld	hl,0
+	ldw	(ix+TX.XDT),hl	; no external debugger attached
 
 	ld	a,(iy+TD.USR)
 	or	a
@@ -845,7 +857,7 @@ EA2PG:	push	hl
 
 ; Input:
 ;   BC = valid task TCB address
-;   E = abort code, 0 for normal exit
+;   E  = abort code, 0 for normal exit
 ; Returns:
 ;   CY flag set on error (e.g. task not active)
 
@@ -866,6 +878,7 @@ TKILL:	call	CHKSYS
 	ld	a,E.TABO
 	scf
 	ret	nz		; return error if yes
+	call	CLNDBG		; break any debug links
 	push	de
 	call	DISCON		; disconnect from offspring tasks
 	push	bc
@@ -1115,8 +1128,9 @@ TSTOP:	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
 	ret	c
 	bit	TS.AST,(ix+T.ST); task in AST state?
 	jr	nz,stp1		; jump if yes
-	ld	a,(ix+T.ST+1)	; get 'running' bits
-	or	a		; is task executing?
+	ld	a,(ix+T.ST)
+	and	1 SHL TS.BPT	; check 'running' bits
+	or	(ix+T.ST+1)	; is the task executing?
 	jr	z,stp0		; skip next check if yes
 	bit	T2.STP,(ix+T.ST+1) ; already stopped?
 	ld	a,E.TSTP
@@ -1167,6 +1181,8 @@ TRESUM:	call	$FNTCB		; find task in active list: IX=TCB, IY=prev
 	ld	(ix+T.ST+1),a
 	or	a		; task now runnable?
 	jr	nz,res2		; branch if not
+	bit	TS.BPT,(ix+T.ST)
+	jr	nz,res2
 	ld	a,(ix+T.ACTL)	; get link field
 	ld	(iy),a		; update link of previous TCB (unlink)
 	ld	a,(ix+T.ACTL+1)
@@ -1261,6 +1277,8 @@ tcn1:	bit	T2.SEF,a	; task stopped for flag?
 tcn2:	ld	(ix+T.ST+1),a
 	or	a		; task became runnable?
 	jr	nz,tcn4		; branch if not
+	bit	TS.BPT,(ix+T.ST)
+	jr	nz,tcn5
 	ld	a,(ix+T.ACTL)	; get link field
 	ld	(iy),a		; update link of previous TCB (unlink)
 	ld	a,(ix+T.ACTL+1)
@@ -1268,7 +1286,7 @@ tcn2:	ld	(ix+T.ST+1),a
 	ld	iy,$RLIST
 	ld	bc,T.ACTL
 	call	$LKTCB		; move task to ready list
-	xor	a		; return success
+tcn5:	xor	a		; return success
 	ret
 
 tcn3:	ld	a,E.TRUN
@@ -1797,5 +1815,277 @@ cktp1:	ld	hl,($CTCB)
 	ld	a,E.PRIV
 	scf
 	ret			; return error if not
+
+;-----------------------------------------------------------------------
+
+; Connect debugger to an external task.
+
+; Input:
+;   $CTCB = debugger TCB address
+;   BC    = TCB address of task to debug
+;   E     = optional event flag number to set on debug events
+;   HL    = address of debug status block in user space
+; Output:
+;   CY flag set and error code in A.
+
+$DBCON:	call	CHKPRV		; the issuing task must be privileged
+	ret	c
+	push	bc		; push TCB address of task to debug
+	push	de		; push event flag number
+	push	hl		; push DSB address
+	ld	iy,$TLIST
+	ld	de,T.TCBL
+	call	FTCB		; locate task
+	jr	c,dc1
+	bit	TS.ACT,(ix+T.ST); task active?
+	ld	a,E.TNAC
+	jr	z,dc1		; no, error
+
+	ld	hl,($CTCB)
+	cpw	hl,ix
+	ld	a,E.BADOP
+	jr	z,dc1		; can't debug itself
+
+	ldw	hl,(ix+T.CTX)
+	ld	a,h
+	or	l		; paranoia check
+	ld	a,E.TNAC
+	jr	z,dc1
+
+	lda	hl,(hl+TX.XDT)
+	ldw	bc,(hl)		; get task's TX.XDT
+	ld	a,b
+	or	c		; task already attached to a debugger?
+	ld	a,E.INV
+	jr	nz,dc1		; yes, error
+
+	push	hl		; push TX.XDT address
+	ld	bc,XDTSZ
+	call	$ALLOC		; allocate debugger data block
+	pop	de		; pop TX.XDT address into DE
+	jr	c,dc1
+
+	ex	de,hl
+	ldw	(hl),de		; set task's TX.XDT
+	push	de
+	pop	ix		; IX = addr of debug context block
+
+	ld	hl,($CTCB)
+	ldw	(ix+XD.TCB),hl	; set XD.TCB to the issuing task
+	pop	de		; pop DSB address
+	ldw	(ix+XD.DSB),de	; set XD.DSB
+	pop	de		; pop event flag number
+	ld	(ix+XD.EFN),e	; set XD.EFN
+	ld	de,0
+	ldw	(ix+XD.AST),de	; XD.AST not yet supported
+
+	push	hl
+	pop	ix		; IX = TCB address of debugger
+	set	TS.XDT,(ix+T.ST); set TS.XDT status bit on issuing task
+	pop	de		; pop TCB address of task to debug
+	ldw	ix,(ix+T.CTX)
+	ldw	(ix+TX.XDT),de	; store it in debugger's TX.XDT
+	xor	a		; return success
+	ret
+
+dc1:	pop	hl
+	pop	de
+	pop	bc
+	scf
+	ret
+
+; Disconnect from task and free debug context block.
+;
+; Input:
+;   BC = TCB address of debugged task
+; Output:
+;   CY flag set and error code in A.
+
+$DBDIS:	call	$DBRES		; resume task execution
+	ret	c		; should not happen
+	ldw	hl,(ix+T.CTX)
+	lda	hl,(hl+TX.XDT)
+	ldw	de,(hl)		; get pointer to debugger context block
+	ld	a,d
+	or	e		; debugger attached?
+	ld	a,E.INV
+	scf
+	ret	z		; no, return error
+	push	hl		; push address of TX.XDT field
+	ldw	hl,(hl)
+	ldw	hl,(hl+XD.TCB)
+	push	hl		; push TCB address of debugger
+	ex	de,hl		; HL = pointer to debugger context block
+	ld	de,XDTSZ
+	call	$FREE		; free debugger data block
+	pop	ix		; pop TCB address of debugger
+	pop	hl		; pop address of TX.XDT field
+	ld	de,0
+	ldw	(hl),de		; clear TX.XDT
+	res	TS.XDT,(ix+T.ST); clear debugger's TS.XDT bit
+	ldw	ix,(ix+T.CTX)
+	ldw	(ix+TX.XDT),de	; clear debugger's TX.XDT too
+	xor	a		; return success
+	ret
+
+; Break task execution: set TS.BPT bit and move the task to the waiting
+; list.
+;
+; Input:
+;   BC = TCB address of debugged task
+; Output:
+;   IX = TCB address of debugged task
+;   CY flag set and error code in A.
+
+; TODO: notify debugger?
+
+$DBBRK:	ld	hl,T.ST
+	add	hl,bc
+	bit	TS.BPT,(hl)	; task already stopped at breakpoint?
+	ld	a,E.TSTP
+	scf
+	ret	nz		; yes, return
+	set	TS.BPT,(hl)	; set TS.BPT bit
+	ld	hl,T.SVST
+	add	hl,bc
+	set	TS.BPT,(hl)	; also in T.SVST in case task is in AST mode
+	call	$FNTCB
+	ret	c		; should not happen
+	ldw	hl,(ix+T.ACTL)
+	ldw	(iy),hl		; unlink
+	ld	iy,$WLIST
+	ld	bc,T.ACTL
+	call	$LKTCB		; move task to waiting list
+	xor	a		; return success
+	ret
+
+; Resume task execution: clear TS.BPT bit and (eventually) move the task
+; to the ready list.
+;
+; Input:
+;   BC = TCB address of debugged task
+; Output:
+;   IX = TCB address of debugged task
+;   CY flag set and error code in A.
+
+$DBRES:	ld	hl,T.ST
+	add	hl,bc
+	res	TS.BPT,(hl)	; clear TS.BPT bit
+	ld	hl,T.SVST
+	add	hl,bc
+	res	TS.BPT,(hl)	; also in T.SVST in case task is in AST mode
+	call	$FNTCB
+	ret	c		; should not happen
+	ld	a,(ix+T.ST+1)
+	or	a		; task became runnable?
+	ret	nz		; no
+	ldw	hl,(ix+T.ACTL)
+	ldw	(iy),hl		; unlink
+	ld	iy,$RLIST
+	ld	bc,T.ACTL
+	call	$LKTCB		; move task to ready list
+	xor	a
+	ret
+
+; Notify debugger of a debugging event.
+;
+; Input:
+;   IX = valid TCB address of the debugged task
+;   BC = event code
+;   DE = additional info (e.g. status code on task exit)
+; Output:
+;   IX = TCB address of debugged task
+;   CY flag set and error code in A.
+
+	extrn	SDINFO,TMPST
+
+$DBNOT:	ldw	iy,(ix+T.CTX)	; get task context address
+	ldw	iy,(iy+TX.XDT)	; get TX.XDT address into IY
+	ld	a,iyh
+	or	iyl		; safety check
+	ld	a,E.INV		; error if no debugger attached
+	scf
+	ret	z
+	
+	ldw	hl,(iy+XD.TCB)
+	ld	a,h
+	or	l		; safety check
+	ld	a,E.INV		; error if no debugger attached
+	scf
+	ret	z
+
+	ld	(TMPST),bc
+	ld	(TMPST+2),de
+	push	hl
+	pop	ix		; IX = XD.TCB
+	ldw	hl,(iy+XD.DSB)
+	ld	bc,4		; length of data
+	ld	a,AST.DB	; AST type code
+	push	iy
+	call	SDINFO		; store info and optionally queue AST
+	pop	iy
+	push	ix
+	pop	bc		; BC = XD.TCB
+	ld	e,(iy+XD.EFN)
+	ld	a,e
+	or	a
+	call	nz,SETFLG	; set event flag for debugger
+	xor	a		; return success
+	ret
+
+; Break debugger connections in case a debugger or a debugged task aborts:
+;
+; - if a connected debugger (TS.XDT status bit set) aborts, disconnect from
+;   the debugged task, free the corresponding TX.XDT block and resume the
+;   execution of the debugged task (note: any breakpoints left set by the
+;   debugger may cause the debugged task to abort)
+;
+; - if the debugged task (TX.XDT is non-zero) aborts, free the TX.XDT block
+;   and notify the debugger.
+;
+; Input:
+;   BC = valid task TCB address
+;   E = abort code, 0 for normal exit
+
+CLNDBG:	push	bc
+	pop	ix
+	bit	TS.XDT,(ix+T.ST); connected debugger?
+	jr	nz,dbc1		; yes
+	ldw	hl,(ix+T.CTX)
+	ldw	hl,(hl+TX.XDT)
+	ld	a,h		; task being debugged?
+	or	l
+	ret	z		; no, return
+
+	push	de
+	push	bc
+	ld	c,80h
+	ld	b,e
+	call	dbc2
+	call	$DBNOT		; notify debuger about task abort
+	pop	bc
+	push	bc
+	call	$DBDIS		; disconnect from debugger
+	pop	bc
+	pop	de
+	ret
+
+dbc1:	push	de
+	push	bc
+	ldw	ix,(ix+T.CTX)
+	ldw	bc,(ix+TX.XDT)
+	ld	a,b
+	or	c
+	call	nz,$DBDIS	; disconnect and resume execution of the
+	pop	bc		;  debugged task
+	pop	de
+	ret
+
+dbc2:	inc	b
+	dec	b
+	ld	de,0
+	ret	nz
+	ld	de,(TMPST)	; hack!
+	ret
 
 	END

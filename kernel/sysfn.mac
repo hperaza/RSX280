@@ -55,6 +55,8 @@
 	extrn	TSRUN,TCSRQ,FLSTOP,FLWTLO,FLSTLO,FRECMD,$REDIR,$FEAT
 	extrn	$CLIST,SYSTYP,$VALTB,$VALBF,ESBSIZ,UPTIME
 
+	public	URQST
+
 	cseg
 
 ;-----------------------------------------------------------------------

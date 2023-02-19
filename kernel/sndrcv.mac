@@ -1,7 +1,7 @@
 ;**********************************************************************;
 ;                                                                      ;
 ;   This file is part of RSX280, a multi-tasking OS for the Z280.      ;
-;   Copyright (C) 1985-2020, Hector Peraza.                            ;
+;   Copyright (C) 1985-2023, Hector Peraza.                            ;
 ;                                                                      ;
 ;   This program is free software; you can redistribute it and/or      ;
 ;   modify it under the terms of the GNU General Public License as     ;
@@ -99,6 +99,8 @@ snd2:	push	ix		; get address of item to insert
 	ld	(ix+T.ST+1),a
 	or	a		; task now runnable?
 	jr	nz,snd3		; return if not
+	bit	TS.BPT,(ix+T.ST)
+	jr	nz,snd3
 	ldw	bc,(ix+T.ACTL)	; get link field
 	ldw	(iy),bc		; update link of previous TCB (unlink)
 	ld	iy,$RLIST
