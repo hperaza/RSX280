@@ -2054,7 +2054,7 @@ rx1:	in	a,(RDR)		; fetch char
 	ld	c,a
   IF DBGTRP
 	cp	14h		; ^T = debug trap
-	call	z,$DBTRP##	; enter debugger with ints disabled
+	call	z,$KDTRP##	; enter debugger with ints disabled
   ENDIF
 	call	qput		; save it in input queue
 	in	a,(RCS)		; check if more available
