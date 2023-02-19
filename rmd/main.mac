@@ -23,7 +23,7 @@
 
 	.Z280
 
-	ident	'V6.31'
+	ident	'V6.40'
 
 	include	SYSFN.INC
 	include	SYSTEM.INC

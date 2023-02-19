@@ -216,7 +216,7 @@ t3:	rl	e		; shift mask
 	xor	a
 	ret
 
-stat:	db	0,'AST','SUP','CKR','ABX',0,0,0
+stat:	db	0,'AST','SUP','CKR','ABX','XDT',0,'BPT'
 stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
 attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
 
