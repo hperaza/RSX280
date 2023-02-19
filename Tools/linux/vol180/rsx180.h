@@ -93,11 +93,12 @@
 #define	TX_SWM	(TX_DIR + 9)	// saved flag wait mask during AST (4 bytes)
 #define	TX_LUT	(TX_SWM + 4)	// LUN translation table (64 bytes)
 #define	TX_SST	(TX_LUT + 64)	// user SST vector table (2 bytes)
-#define TX_REGS (TX_SST + 2)	// saved register bank (RSX280) (28 bytes)
+#define	TX_XDT	(TX_SST + 2)	// external debugger context data (2 bytes)
+#define TX_REGS (TX_XDT + 2)	// saved register bank (RSX280) (28 bytes)
 
 /* Context Block size */
 
-#define	CTX180SZ	(TX_SST + 2)
+#define	CTX180SZ	(TX_XDT + 2)
 #define	CTX280SZ	(TX_REGS + 28)
 
 /* Task File Header offsets */

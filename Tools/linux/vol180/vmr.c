@@ -69,7 +69,7 @@ struct symbol symtab[] = {
   { "$MVTBL", 0, 0, 0 },
   { "CHKTRP", 0, 1, 0 },
   { "SYSENT", 0, 1, 0 },
-  { "$DBTRP", 0, 1, 0 }
+  { "$KDTRP", 0, 1, 0 }
 };
 
 #define NSYM (sizeof(symtab)/sizeof(symtab[0]))
@@ -1042,7 +1042,7 @@ void fix_task(char *name) {
     sys_putb(bank, SYSRST, 0xC3);
     sys_putw(bank, SYSRST+1, get_sym("SYSENT"));
     sys_putb(bank, DBGRST, 0xC3);
-    sys_putw(bank, DBGRST+1, get_sym("$DBTRP"));
+    sys_putw(bank, DBGRST+1, get_sym("$KDTRP"));
   }
   /* allocate context block */
   ctxsz = (system_type == 2) ? CTX280SZ : CTX180SZ;
