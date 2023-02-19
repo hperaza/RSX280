@@ -19,4 +19,5 @@ AST.CK	equ	4		; clock (mark time)
 AST.ST	equ	5		; status (from offspring)
 AST.AB	equ	6		; abort request
 AST.CL	equ	7		; command line (CLIs only)
+AST.DB	equ	8		; debug event for external debugger task
 

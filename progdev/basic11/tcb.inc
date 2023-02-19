@@ -54,8 +54,10 @@ TS.AST	equ	1		; task is executing an AST
 TS.SUP	equ	2		; task is in supervisor mode
 TS.CKR	equ	3		; checkpoint requested
 TS.ABX	equ	4		; abort AST called
-
-T2.STP	equ	0		; stopped               \
+TS.XDT	equ	5		; task in debug control of another task
+TS.BPT	equ	7		; stopped at breakpoint \
+				;                        |
+T2.STP	equ	0		; stopped                |
 T2.SEF	equ	1		; stopped for event flag |
 T2.EFW	equ	2		; event flag waiting     | "blocking" bits:
 T2.WTD	equ	3		; waiting for data       |  all zero means
@@ -72,11 +74,23 @@ TX.DIR	equ	TX.GID + 1	; task's current directory (9 bytes)
 TX.SWM	equ	TX.DIR + 9	; saved flag wait mask during AST (4 bytes)
 TX.LUT	equ	TX.SWM + 4	; LUN translation table (64 bytes)
 TX.SST	equ	TX.LUT + 64	; user SST vector table (2 bytes)
-TX.REGS	equ	TX.SST + 2	; saved registers (28 bytes)
+TX.XDT	equ	TX.SST + 2	; external debugger context data (2 bytes)
+TX.REGS	equ	TX.XDT + 2	; saved registers (28 bytes)
 
 ; Context Block size
 
 CTXSZ	equ	TX.REGS + 28
+
+; External debugger data
+
+XD.TCB	equ	0		; TCB address of debugger (2 bytes)
+XD.AST	equ	XD.TCB + 2	; optional AST routine address (2 bytes)
+XD.DSB	equ	XD.AST + 2	; debug status block in user space (2 bytes)
+XD.EFN	equ	XD.DSB + 2	; event flag number (1 byte)
+
+; External debugger data block size
+
+XDTSZ	equ	XD.EFN + 1
 
 ; Task Descriptor Block
 
