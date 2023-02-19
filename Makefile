@@ -146,6 +146,8 @@ progdev: libs system
 	@cp -u libs/syslib/syslib.irl progdev/tkb
 	@cp -u libs/syslib/syslib.lib progdev/lbr
 	@cp -u libs/fcslib/fcslib.lib progdev/lbr
+	@cp -u system.inc progdev/debug
+	@cp -u libs/syslib/syslib.lib progdev/debug
 	@cp -u libs/syslib/syslib.lib progdev/t3xz
 	@(cd progdev; ${MAKE} all)
 
