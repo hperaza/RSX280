@@ -318,12 +318,16 @@ copy-utils: cli utils
 	@echo "delete zap.tsk" >> copy.cmd
 	@echo "import zap/zap.tsk zap.tsk /c" >> copy.cmd
 	@echo "delete cpm.tsk" >> copy.cmd
-	@echo "import cpm/cpm.tsk cpm.tsk /c" >> copy.cmd
+	@if [ "${size}" -ge "3000" ]; then \
+		echo "import cpm/cpm.tsk cpm.tsk /c" >> copy.cmd ; \
+	fi
 	@echo "dir" >> copy.cmd
-	@echo "cd cpm" >> copy.cmd
-	@echo "delete map.com" >> copy.cmd
-	@echo "import cpm/map.com map.com" >> copy.cmd
-	@echo "dir" >> copy.cmd
+	@if [ "${size}" -ge "3000" ]; then \
+		echo "cd cpm" >> copy.cmd ; \
+		echo "delete map.com" >> copy.cmd ; \
+		echo "import cpm/map.com map.com" >> copy.cmd ; \
+		echo "dir" >> copy.cmd ; \
+	fi
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
@@ -354,36 +358,30 @@ copy-progdev: progdev
 	$(VOL180) $(image) < copy.cmd
 	@rm copy.cmd
 
-# Copy a reduced set of example BASIC-11 programs to the [BASIC] directory
-# of the disk image. Use for floppies, to leave enough space for system
-# utilities
+# Copy the BASIC-11 example programs to the [BASIC] directory of the disk
+# image. For small images (e.g. floppies), only a reduced set of programs
+# is copied.
 reduced-set = acey.bas blackjack.bas buzzwd.bas civilwar.bas cycles.bas \
 	hamurs.bas hangman.bas lunar.bas mandel.bas maze.bas ship.bas \
 	trader.bas trek100.bas weekday.bas
 
-copy-basic-reduced: progdev
-	@echo "cd basic" > copy.cmd
-	@for i in ${reduced-set} ; do \
-		echo "delete "`basename $$i` >> copy.cmd ; \
-		echo "import progdev/basic11/programs/"$$i" "`basename $$i` >> copy.cmd ; \
-	done
-	@echo "dir" >> copy.cmd
-	@echo "quit" >> copy.cmd
-	$(VOL180) $(image) < copy.cmd
-	@rm copy.cmd
-
-# Copy all the BASIC-11 example programs to the [BASIC] directory of the
-# disk image.
 copy-basic: progdev
 	@echo "cd basic" > copy.cmd
-	@for i in progdev/basic11/programs/*.bas ; do \
-		echo "delete "`basename $$i` >> copy.cmd ; \
-		echo "import "$$i" "`basename $$i` >> copy.cmd ; \
-	done
-	@for i in progdev/basic11/programs/*.rlc ; do \
-		echo "delete "`basename $$i` >> copy.cmd ; \
-		echo "import "$$i" "`basename $$i` >> copy.cmd ; \
-	done
+	@if [ "${size}" -ge "3000" ]; then \
+		for i in progdev/basic11/programs/*.bas ; do \
+			echo "delete "`basename $$i` >> copy.cmd ; \
+			echo "import "$$i" "`basename $$i` >> copy.cmd ; \
+		done ; \
+		for i in progdev/basic11/programs/*.rlc ; do \
+			echo "delete "`basename $$i` >> copy.cmd ; \
+			echo "import "$$i" "`basename $$i` >> copy.cmd ; \
+		done ; \
+	else \
+		for i in ${reduced-set} ; do \
+			echo "delete "`basename $$i` >> copy.cmd ; \
+			echo "import progdev/basic11/programs/"$$i" "`basename $$i` >> copy.cmd ; \
+		done ; \
+	fi
 	@echo "dir" >> copy.cmd
 	@echo "quit" >> copy.cmd
 	$(VOL180) $(image) < copy.cmd
@@ -392,15 +390,17 @@ copy-basic: progdev
 # Copy some CP/M files for the CP/M emulator, the files are placed
 # in the [CPM] directory.
 copy-cpm:
-	@echo "cd cpm" > copy.cmd
-	@for i in cpm/test/* ; do \
-		echo "delete "`basename $$i` >> copy.cmd ; \
-		echo "import "$$i" "`basename $$i` >> copy.cmd ; \
-	done
-	@echo "dir" >> copy.cmd
-	@echo "quit" >> copy.cmd
-	$(VOL180) $(image) < copy.cmd
-	@rm copy.cmd
+	@if [ "${size}" -ge "3000" ]; then \
+		echo "cd cpm" > copy.cmd ; \
+		for i in cpm/test/* ; do \
+			echo "delete "`basename $$i` >> copy.cmd ; \
+			echo "import "$$i" "`basename $$i` >> copy.cmd ; \
+		done ; \
+		echo "dir" >> copy.cmd ; \
+		echo "quit" >> copy.cmd ; \
+		$(VOL180) $(image) < copy.cmd ; \
+		rm copy.cmd ; \
+	fi
 
 # Copy some test files to the disk image.
 # The files are placed in a separate [TEST] directory.
@@ -432,34 +432,38 @@ copy-test: test
 # Copy a few simple games to the disk image.
 # The files are placed in a separate [GAMES] directory.
 copy-games: games
-	@echo "cd games" > copy.cmd
-	@for i in games/*.tsk; do \
-		echo "delete "`basename $$i` >> copy.cmd ; \
-		echo "import "$$i" "`basename $$i`" /c" >> copy.cmd ; \
-	done
-	@echo "dir" >> copy.cmd
-	@echo "quit" >> copy.cmd
-	$(VOL180) $(image) < copy.cmd
-	@rm copy.cmd
+	@if [ "${size}" -ge "3000" ]; then \
+		echo "cd games" > copy.cmd ; \
+		for i in games/*.tsk; do \
+			echo "delete "`basename $$i` >> copy.cmd ; \
+			echo "import "$$i" "`basename $$i`" /c" >> copy.cmd ; \
+		done ; \
+		echo "dir" >> copy.cmd ; \
+		echo "quit" >> copy.cmd ; \
+		$(VOL180) $(image) < copy.cmd ; \
+		rm copy.cmd ; \
+	fi
 
 # Copy Kermit to the disk image.
 copy-kermit: kermit
-	@echo "cd system" > copy.cmd
-	@echo "delete kermit.tsk" >> copy.cmd
-	@echo "import kermit/kermit.tsk kermit.tsk /c" >> copy.cmd
-	@echo "dir" >> copy.cmd
-	@echo "cd test" >> copy.cmd
-	@echo "delete kermit.ini" >> copy.cmd
-	@echo "import kermit/kermit.ini kermit.ini" >> copy.cmd
-	@echo "dir" >> copy.cmd
-	@echo "quit" >> copy.cmd
-	$(VOL180) $(image) < copy.cmd
-	@rm copy.cmd
+	@if [ "${size}" -ge "3000" ]; then \
+		echo "cd system" > copy.cmd ; \
+		echo "delete kermit.tsk" >> copy.cmd ; \
+		echo "import kermit/kermit.tsk kermit.tsk /c" >> copy.cmd ; \
+		echo "dir" >> copy.cmd ; \
+		echo "cd test" >> copy.cmd ; \
+		echo "delete kermit.ini" >> copy.cmd ; \
+		echo "import kermit/kermit.ini kermit.ini" >> copy.cmd ; \
+		echo "dir" >> copy.cmd ; \
+		echo "quit" >> copy.cmd ; \
+		$(VOL180) $(image) < copy.cmd ; \
+		rm copy.cmd ; \
+	fi
 
 # Copy everything to the disk image.
 copy-all: copy-system copy-utils copy-help \
-          copy-progdev copy-basic-reduced copy-test #\
-          #copy-kermit copy-games #copy-cpm
+          copy-progdev copy-basic copy-test \
+          copy-kermit copy-games copy-cpm
 
 # Configure system
 sysvmr-old:
@@ -490,8 +494,8 @@ dev-copy:
 		if [ -f device.backup ]; then \
 			mv -f device.backup device.backup.old ; \
 		fi ; \
-		echo dd if=$(outdev) of=device.backup bs=512 skip=$(offset) ; \
-		dd if=$(outdev) of=device.backup bs=512 skip=$(offset) ; \
+		echo dd if=$(outdev) of=device.backup bs=512 skip=$(offset) count=$(size) ; \
+		dd if=$(outdev) of=device.backup bs=512 skip=$(offset) count=$(size) ; \
 	fi
 	@if [ "${conv}" = "swab" ]; then \
 		echo dd if=$(image) of=$(outdev) conv=swab bs=512 seek=$(offset) ; \
