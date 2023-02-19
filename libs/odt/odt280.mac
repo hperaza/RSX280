@@ -945,7 +945,7 @@ trap1:	pop	af
 
 	dseg
 
-arg1:	ds	2		; fisrt command argument
+arg1:	ds	2		; first command argument
 arg2:	ds	2		; second command argument
 arg3:	ds	2		; third command argument
 argset:	ds	1		; specified argument bit mask
