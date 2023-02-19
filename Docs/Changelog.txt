@@ -7674,3 +7674,10 @@ BUGS:
 - MOU and DMO now check user privileges.
 
 
+12/02/23
+
+- Kernel: added debugger support API from RSX280 V6.40 (untested). Since
+  the Z180 does not support hardware breakpoints and single-stepping, the
+  kernel will trap the RST instruction reserved for debugging.
+
+

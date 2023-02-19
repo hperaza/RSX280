@@ -432,3 +432,104 @@ Changelog
 - Kernel: abort task if AST or SST stack frame is outside task limits.
 
 
+05/02/23
+
+- Working on a debugger that could be attached to an external task, and
+  easier to use than ODT, which requires linking to the task to debug:
+  * the debugger is a privileged task, since it needs to gain access to
+    the task's register frame and task's address space (thus, potentially
+    less safe than ODT.)
+  * non-privileged users are allowed to debug only non-privileged tasks
+    started from their own terminal.
+
+
+06/02/23
+
+- Added TX.XDT field to the Task Context Block. The TX.XDT is a pointer
+  to an allocated memory block containing further debugger-related
+  parameters, such as the TCB address of the debugger, event flag number
+  to set on debugger events, etc.
+
+
+07/02/23
+
+- Kernel: added TS.BPT (breakpoint stop) task status bit. When set, the
+  task will be blocked from execution (not even ASTs will be dispatched)
+  so the debugger could safely examine task registers, memory, etc.
+
+
+08/02/23
+
+- Kernel: task exceptions now block the task if it is attached to a
+  debugger, and informs the debugger about the exception cause.
+
+- The debbugger can now succesfully connect to a task, examine memory
+  and registers, and single-step through code.
+
+
+10/02/23
+
+- Debugger: ^C now breaks the execution of a running task.
+
+
+11/02/23
+
+- Debugger:
+  * changed main the command line syntax:
+      DDT>connect tsknam  <- connect to a running task and enter debug session
+      DDT>run tsknam      <- run task in debug mode
+      DDT>terminal ttn:   <- set the debug console to another terminal
+    the commands can be abreviated to the first non-ambiguous char seq ('c',
+    'r' and 't' in this case); only the 'connect' command is implemented at
+    this point.
+  * added 'I' (info) debug command that displays debugged task status similar
+    to the MCR ATL command.
+  * moved debug connect, disconnect, break and resume routines to the kernel
+    API (disconnect and break were already duplicated there; being part of
+    the kernel core also guarantees atomic execution.)
+
+- Kernel:
+  * if the debuger is aborted or unexpectedly exits, break links and resume
+    execution of the debugged task.
+  * likewise, if the debugged tasks aborts, break links and notify the
+    debugger.
+
+
+12/02/23
+
+- Kernel, $DBNOT: if the debugger is checkpointed, queue special AST to
+  delay storing debug event status until the deugger returns to memory
+  (part of the SENDST routine is reused because of operation similarity.)
+
+- Debugger:
+  * if the task to debug is out of memory (checkpointed or just requested),
+    wait for the task to be (re)loaded before starting the debugging session.
+  * the 'Q' (quit) command now takes an optional 'A' argument to abort the
+    debugged task when exiting the debugging session; without the option,
+    the debugged task will resume normal execution.
+
+
+18/02/23
+
+- Debugger:
+  * the 'run' command now loads a task image (into an external, separate
+    partition as before) file for debugging if the name specified in the
+    command line does not corresponds to an installed task.
+  * implemented the 'terminal' command, so a task started via the 'run'
+    command could be debugged from another terminal to avoid any I/O
+    conflicts.
+
+
+19/02/23
+
+- The debugger is already usable, but the following restrictions must be
+  observed:
+  * debugging of privileged tasks can lead to system deadlocks, e.g. when
+    single-stepping into code that disables task dispatching (this applies
+    to ODT too.)
+  * debugging tasks that specify an SST vector table (e.g. tasks linked to
+    ODT) may cause the task to enter an infinite loop when certain Z280
+    exceptions (such as single-step) are triggered.
+  * the 'run' command doesn't accept yet a command line tail for the task
+    being debugged.
+
