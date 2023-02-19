@@ -22,7 +22,7 @@
 
 	.Z80
 
-	ident	/1.01/
+	ident	/1.03/
 
 	include	SYSFN.INC
 	include	DCB.INC
@@ -388,7 +388,6 @@ sm3:	ld	a,'?'
 sm4:	ld	c,a
 	call	PUTCH
 sm5:	inc	hl
-	inc	de
 	jr	sm1
 sm6:	ld	c,CR
 	call	PUTCH
@@ -1158,7 +1157,7 @@ fatal:	push	af
 	pop	af
 	KCALL	INTOFF
   ELSE
-	KCALL	$DBTRP
+	KCALL	$KDTRP
   ENDIF
 	jp	erxit		; TODO: halt the system, enter debugger?
 

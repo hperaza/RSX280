@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	'02.20'
+	ident	'02.21'
 
 	cseg
 
@@ -563,7 +563,7 @@ fcmd4:	inc	hl		; else skip to end of keyword
 
 dobrk:	call	CHKLOG
 	call	CHKPRV		; privileged command
-	KCALL	$DBTRP
+	KCALL	$KDTRP
 	ret
 
 ;-----------------------------------------------------------------------
