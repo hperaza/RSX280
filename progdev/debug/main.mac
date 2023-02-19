@@ -1,0 +1,965 @@
+;**********************************************************************;
+;                                                                      ;
+;   RSX280 Debugger for external tasks.                                ;
+;   Copyright (C) 2020-2023, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	/V1.0/
+
+	include	DEBUG.INC
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	QIO.INC
+	include	GCML.INC
+	include	LCB.INC
+	include	THDR.INC
+	include	ERRORS.INC
+
+	public	ERROR,SYSERR,TSKNAM,DBGTCB,DBGCOD,DBGTI
+
+	extrn	DEBUG,DIS280
+
+	extrn	GCML,RCML,RCTRLO,PUTCH,PUTSTR,PERROR,TTFLSH,CRLF
+	extrn	ADEC,HLDEC,CVTBD,UCASE,ATTACH,DETACH,EXIT,PFN,PDN
+
+	cseg
+
+;-----------------------------------------------------------------------
+
+; Main entry point
+
+START::	ld	sp,stack	; setup local stack
+
+	ld	c,1
+	SC	.SUPER		; map kernel database
+	jp	c,SYSERR
+
+m1:	call	TTFLSH
+	ld	iy,GDAT
+	call	GCML		; get command line
+	jr	c,m2		; jump on error
+
+	call	PROCESS		; process the command
+	jr	m1		; loop for more
+
+m2:	cp	E.EOF		; end of file?
+	jr	z,m3		; yes, exit normally
+
+	call	CMLERR		; else display error message
+	ld	iy,GDAT
+	call	RCML		; reset command state
+	jr	m1		; and loop
+
+m3:	ld	hl,EX.SUC
+	jp	EXIT
+
+;-----------------------------------------------------------------------
+
+; Print a 'Syntax error' message
+
+CMDERR:	ld	hl,snerr
+	; continue below
+
+; Print error message in the form 'DDT -- message'.
+; Called with HL = address of message string.
+
+ERROR:	push	hl
+	call	RCTRLO
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+	call	PUTSTR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+; Same as above, but displays a standard system error message.
+; Called with A = error code.
+
+SYSERR:	push	af
+	call	RCTRLO
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	af
+	call	PERROR
+	call	ATLINE
+	ld	c,CR
+	call	PUTCH
+	scf
+	ret
+
+eprfx:	db	CR,LF,'DDT -- ',0
+snerr:	db	'Syntax error',0
+nferr:	db	'No such file(s)',0
+
+; Display CML or system error message
+
+CMLERR:	or	a
+	jp	m,SYSERR
+	ld	hl,ERROR
+	push	hl
+	cp	GE.OK
+	ld	hl,msgok
+	ret	z
+	cp	GE.SN
+	ld	hl,snerr
+	ret	z
+	cp	GE.LEN
+	ld	hl,msglen
+	ret	z
+	cp	GE.NLV
+	ld	hl,msgnlv
+	ret	z
+	pop	hl
+	jp	SYSERR
+
+msgok:	db	'No error',0
+msglen:	db	'Line too long in command file',0
+msgnlv:	db	'Command nesting level too deep',0
+
+; Display line number of indirect file where error happened
+
+ATLINE:	ld	hl,GDAT+G.ST
+	bit	GS.FIL,(hl)
+	ret	z
+	ld	hl,(GDAT+G.LN)
+	ld	a,h
+	or	l
+	ret	z
+	push	hl
+	ld	hl,atln
+	call	PUTSTR
+	pop	hl
+	xor	a
+	jp	HLDEC
+
+atln:	db	' at line ',0
+
+; Output message, expanding %T to task name, %S to status code and
+; %C to debug console name.
+
+PUTMSG:	push	hl
+	call	RCTRLO
+	ld	hl,eprfx
+	call	PUTSTR
+	pop	hl
+pm1:	ld	a,(hl)
+	or	a
+	jr	z,pm8
+	cp	'%'		; argument to expand?
+	jr	nz,pm6		; no
+	inc	hl
+	ld	a,(hl)
+	call	UCASE
+	cp	'T'		; task name?
+	jr	nz,pm3		; no
+	ex	de,hl
+	ld	hl,TSKNAM
+	ld	b,6
+pm2:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	pm2
+	ex	de,hl
+	jr	pm7
+pm3:	cp	'S'		; task status?
+	jr	nz,pm4		; no
+	ex	de,hl
+	ld	hl,(DBGCOD+2)
+	xor	a
+	call	HLDEC
+	ex	de,hl
+	jr	pm7
+pm4:	cp	'C'		; console device name?
+	jr	nz,pm5
+	ex	de,hl
+	ld	hl,DBGTI
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	ld	a,(hl)
+	call	ADEC
+	ld	a,':'
+	ex	de,hl
+	jr	pm6
+pm5:	ld	a,'?'
+pm6:	ld	c,a
+	call	PUTCH
+pm7:	inc	hl
+	jr	pm1
+pm8:	ld	c,CR
+	jp	PUTCH
+
+;-----------------------------------------------------------------------
+
+; Get command name from command line
+
+GETCMD:	ld	de,(lnptr)
+	ld	hl,CMDNAM	; dest buffer
+	ld	b,9		; max length
+	call	skipbl		; skip blanks
+	call	GETNAM		; get name
+	ld	(lnptr),de
+	ret
+
+; Get task name from command line
+
+GETTN:	ld	de,(lnptr)
+	ld	hl,TSKNAM	; dest buffer
+	ld	b,6		; length
+	call	skipbl		; skip blanks
+	call	GETNAM		; get name
+	call	fillsp		; pad with spaces
+	ld	(lnptr),de
+	ret
+
+; Get name from command line (uppercased, null-terminated, up to B bytes
+; in length)
+
+GETNAM:	call	getfs		; get next char
+	jr	z,gn3		; done if delimiter
+	call	UCASE		; convert to uppercase
+	ld	(hl),a		; and store in buffer
+	inc	hl
+	inc	de
+	djnz	GETNAM		; loop to process next
+gn2:	call	getfs		; skip input until next delimiter
+	ret	z		; don't store trailing null if buffer full
+	inc	de
+	jr	gn2
+gn3:	ld	(hl),0		; store trailing null and return
+	ret
+
+; Pad string with blanks.
+
+fillsp:	inc	b
+	dec	b
+	ret	z
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get next non-blank char. Returns Z on end of line.
+
+skip:	inc	de
+skipbl:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip
+	cp	TAB
+	jr	z,skip
+	ret
+
+; Get next char. Returns Z on end of line or delimiter.
+
+getfs:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gf1
+	ret	z
+	cp	'='
+	ret	z
+	cp	','
+	ret	z
+	cp	'/'
+	ret
+gf1:	xor	a
+	ret
+
+; Search for the command (CMDNAM) in the command table (HL = cmdtab).
+; Returns A=0FFh if not found, or 0 if CMDNAM contains an empty string.
+; Otherwise returns the command position in the table (1-based).
+; The routine allows for partial keyword matches.
+
+FNDCMD:	ld	de,CMDNAM
+	ld	a,(de)
+	or	a
+	ret	z
+	ld	b,0		; match count
+	ld	c,1		; keyword index
+	ld	a,c
+	push	af		; save index
+fcmd0:	ld	de,CMDNAM
+fcmd1:	ld	a,(de)		; get command char
+	or	a		; end of command?
+	jr	z,fcmd3		; yes
+	cp	(hl)		; matches table?
+	jr	nz,fcmd2	; no
+	inc	hl		; yes, advance pointers
+	inc	de
+	jr	fcmd1		; and loop
+fcmd3:	inc	b		; this one matches
+	pop	af
+	ld	a,(hl)
+	or	a		; end of keyword in table?
+	ld	a,c		; remember this index
+	ret	z		; yes, return (exact match)
+	push	af
+fcmd2:	ld	a,(hl)		; no match (full or partial),
+	inc	hl		;  skip to next table entry
+	or	a
+	jr	nz,fcmd2
+	inc	c		; increase index count
+	ld	a,(hl)
+	or	a		; end of table?
+	jr	nz,fcmd0	; no, try again
+	pop	af		; pop index of last match
+	dec	b		; exactly one match?
+	ret	z		; yes, return
+	ld	a,0FFh		; else return error
+	ret			;  (command ambiguous or not found)
+
+;-----------------------------------------------------------------------
+
+; Process the command and invoke the debugger
+
+PROCESS:
+	ld	(lnptr),hl
+	call	GETCMD		; get command name
+	ld	hl,cmdtab
+	call	FNDCMD
+	or	a
+	ret	z
+	dec	a
+	jp	z,connect
+	dec	a
+	jp	z,run
+	dec	a
+	jp	z,setterm
+	jp	CMDERR
+
+cmdtab:	db	'CONNECT',0
+	db	'RUN',0
+	db	'TERMINAL',0
+	db	0
+
+; Set terminal for debugging session
+
+setterm:
+	ld	de,(lnptr)
+	call	getfs
+	or	a		; argument specified?
+	ld	hl,tmsg1
+	jp	z,PUTMSG	; no, display current assignment and return
+
+	ex	de,hl
+	call	PDN		; get device name
+	jp	c,CMDERR
+
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; locate device
+	jp	c,SYSERR
+	push	hl
+	pop	ix		; IX = UCB address
+	bit	DV.TTY,(ix+U.CW)
+	ex	de,hl
+	ld	hl,tmsg2
+	jp	z,ERROR		; not a terminal device
+
+	KCALL	$UCBDN
+	ld	(DBGTI),de
+	ld	a,c
+	ld	(DBGTI+2),a
+	xor	a
+	ret
+
+tmsg1:	db	'Debugger console set to %C',0
+tmsg2:	db	'Not a terminal device',0
+
+; Request a task in debug mode and start debugging session
+; TODO: INS-style switches, including /TERM to redirect task I/O to
+; another terminal (we should get MCR or INS to do this instead!).
+
+run:	ld	hl,(lnptr)
+	push	hl
+	call	GETTN		; get task name
+
+	ld	hl,TSKNAM
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; get task name into system space
+	pop	bc
+
+	ld	(SYSLVL),0	; enter critical section
+	KCALL	$FNTSK		; locate task
+	pop	de
+	jp	c,run1		; not in system
+	ld	(DBGTCB),hl	; else remember TCB address
+
+	push	hl
+	pop	ix
+	bit	TS.ACT,(ix+T.ST); task active?
+	ld	a,E.TACT
+	jp	nz,err1		; yes, error
+
+	ldw	de,(ix+T.TI)
+	call	CHKTI		; check access rights
+	ld	hl,emsg2
+	jp	c,err2
+
+run0:	ld	hl,TSKNAM
+	ld	de,tdb+TD.NAME
+	ld	bc,6
+	ldir
+
+	ld	hl,tdb
+	ld	de,0
+	ld	bc,0
+	KCALL	URQST		; request task
+	jp	c,err1
+
+	ld	bc,(DBGTCB)
+	KCALL	$DBBRK		; break before it starts
+	jp	p0		; continue via common code
+
+run1:	ld	(SYSLVL),1
+	call	getfs
+	ld	(lnptr),de
+	ld	ix,fdb
+	ex	de,hl
+	call	PFN		; get file name
+	jp	c,CMDERR
+	ld	(lnptr),hl
+	ld	de,tskext
+	call	addext		; add TSK extension if necessary
+	ld	a,(ix+F.ATTR)
+	and	FN.NAME		; file name specified?
+	jp	z,CMDERR	; no
+
+	ld	hl,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	(ldev),hl	; save the original load device, as the one
+	ld	(ldev+2),a	;  in fdb will be overwritten by an IO.RAT call
+
+	call	INSREM		; install task with remove-on-exit attrib
+	jp	c,SYSERR
+
+	ld	(DBGTCB),ix
+
+	ld	(SYSLVL),0	; enter critical section
+	ld	hl,tcbbuf+T.NAME
+	ld	de,TSKNAM
+	ld	bc,6
+	ldir			; set TSKNAM for PUTMSG
+	jp	run0
+
+addext:	ld	a,(ix+F.ATTR)
+	and	FN.EXT		; extension present?
+	ret	nz		; yes, return
+	lda	hl,(ix+F.EXT)
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+	ret
+
+tskext:	db	'TSK'
+
+; Connect to task and start debugging session
+
+connect:
+	call	GETTN		; get task name
+
+	ld	hl,TSKNAM
+	ld	de,$SCRBF
+	push	de
+	ld	bc,6
+	ldir			; get task name into system space
+	pop	bc
+
+	ld	(SYSLVL),0	; enter critical section
+	KCALL	$FNTSK		; locate task
+	jp	c,err1		; not in system
+	ld	(DBGTCB),hl	; else remember TCB address
+
+	push	hl
+	pop	ix
+	ldw	de,(ix+T.TI)
+	call	CHKTI		; check access rights
+	ld	hl,emsg2
+	jp	c,err2
+
+p0:	ld	hl,0
+	ld	(DBGCOD),hl
+	ld	(DBGCOD+2),hl
+
+	ld	bc,(DBGTCB)
+	ld	e,DBGEFN
+	ld	hl,DBGCOD
+	KCALL	$DBCON		; connect to task
+	jr	nc,p1
+	cp	E.BADOP
+	ld	hl,emsg1
+	jr	z,err2		; can't debug itself
+	cp	E.INV
+	ld	hl,emsg3
+	jr	z,err2		; task attached to another debugger
+	jr	err1
+
+p1:	ld	(SYSLVL),1	; re-enable task dispatching
+
+	ld	hl,msg1
+	call	PUTMSG		; output connect message
+
+	ld	ix,(DBGTCB)
+	bit	T2.CKP,(ix+T.ST+1)
+	ld	hl,msg6
+	jr	nz,p5		; task checkpointed or in loader queue for checkpoint
+
+	bit	T2.OUT,(ix+T.ST+1)
+	jr	z,p4		; task in core
+	ld	hl,msg7
+
+p5:	call	PUTMSG
+	call	WAITLD		; wait for task (re)load
+	jr	c,p6		; error, or user aborted operation
+
+p4:	call	DEBUG		; enter debugger
+
+p6:	ld	a,(DBGCOD)
+	or	a		; task aborted?
+	jp	m,p2		; yes, skip disconnect and cleanup
+
+	ld	bc,(DBGTCB)
+	KCALL	$DBDIS		; disconnect from task and free debug data
+
+	ld	hl,msg2
+	call	PUTMSG		; output disconnect message
+	xor	a
+	ret
+
+p2:	ld	a,(DBGCOD+1)
+	or	a
+	ld	hl,msg4
+	jr	z,p3
+	ld	hl,msg5
+p3:	call	PUTMSG		; output abort message
+	xor	a
+	ret
+
+err1:	ld	(SYSLVL),1	; re-enable task dispatching
+	jp	SYSERR
+
+err2:	ld	(SYSLVL),1	; re-enable task dispatching
+	jp	ERROR
+
+msg1:	db	'Connected to task "%T"',0
+msg2:	db	'Disconnected from task "%T"',0
+msg3:	db	'Warning - task uses the same TI: as debugger',0
+msg4:	db	'Task "%T" exited with status = %S',0
+msg5:	db	'Task "%T" aborted',0
+msg6:	db	'Task "%T" is checkpointed, waiting for reload',0
+msg7:	db	'Task "%T" is requested, waiting for load',0
+
+emsg1:	db	'Can''t debug itself',0
+emsg2:	db	'Privilege violation',0
+emsg3:	db	'Task attached to another debugger',0
+
+;-----------------------------------------------------------------------
+
+; Check access rights: non-privileged users can debug only non-privileged
+; tasks started from their own terminal.
+
+CHKTI:	bit	TA.PRV,(ix+T.ATTR) ; is the task privileged?
+	jr	nz,CHKPRV	   ; so must be the user
+	ld	hl,($CTCB)
+	ld	hl,(hl+T.TI)	; get our TI: UCB address
+	KCALL	$REDIR		; just in case
+	ex	de,hl
+	KCALL	$REDIR
+	cpw	hl,de		; same terminal?
+	ret	z		; yes
+	; else the user must be privileged, continue below
+
+; Check if user is privileged. Return with CY set and error code in A
+; if not.
+
+CHKPRV:	ld	hl,lcbbuf
+	ld	c,I.USCB
+	SC	.GIN
+	ret	c
+	ld	hl,lcbbuf+L.ST
+	ld	a,E.PRIV
+	bit	LS.PRV,(hl)
+	scf
+	ret	z
+	xor	a
+	ret
+
+; Wait for a requested or checkpointed task to be (re)loaded into memory.
+
+WAITLD:	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN
+	ret	c
+	ld	de,TTAST
+	ld	c,LUNTI
+	call	ATTACH		; attach terminal with ASTs
+	ret	c
+	xor	a
+	ld	(CCFLG),a
+	call	wtld		; wait for task load or user abort
+	push	af
+	ld	c,LUNTI
+	call	DETACH		; detach from terminal
+	pop	af
+	ret
+
+wtld:	ld	ix,(DBGTCB)
+wt1:	ld	a,(DBGCOD)
+	or	a
+	ld	a,E.TABO
+	scf
+	ret	m		; return if meanwhile the task was aborted
+	xor	a
+	bit	T2.CKP,(ix+T.ST+1)
+	jr	nz,wt2
+	bit	T2.OUT,(ix+T.ST+1)
+	ret	z		; task reloaded, return success
+wt2:	ld	hl,1		; wait 1 second
+	ld	d,2
+	ld	e,TMOEFN
+	ld	bc,0		; no AST
+	SC	.MRKT
+	ret	c
+	SC	.WTSE		; wait...
+	ret	c
+	ld	a,(CCFLG)
+	or	a		; user aborted the operation?
+	jr	z,wt1		; no, try again
+	SC	.CMKT		; cancel time request, if pending (BC and E still set)
+	ld	a,E.ABOP
+	scf
+	ret
+
+TTAST:	ex	(sp),hl		; fetch argument
+	ld	a,l
+	cp	3		; ^C?
+	jr	nz,ta1		; no
+	ld	(CCFLG),a	; else set ^C flag
+	push	de
+	ld	e,TMOEFN
+	SC	.SETF
+	pop	de
+ta1:	pop	hl
+	SC	.ASTX
+
+;-----------------------------------------------------------------------
+
+; Open task image file, read and validate header.
+;
+; Input:
+;   Parsed filename in fdb buffer.
+; Returns:
+;   CY set on error and error code in A.
+
+RDHDR:	ld	b,1		; LUN in B
+	ld	de,(fdb+F.DEV)
+	ld	a,(fdb+F.UNIT)
+	ld	c,a		; device name in DE-C
+	SC	.ALUN		; assign LUN
+	ret	c
+
+	ld	l,IO.ACC
+	ld	h,SF.ACR OR SF.SHR
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; open task image file
+	ret	c		; on error return
+	ld	a,(iosb)
+	or	a
+	scf
+	ret	nz
+
+	ld	hl,IO.RAT
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; get file info
+	jr	c,rderr		; on error close file and return
+	ld	a,(iosb)
+	or	a
+	scf
+	jr	nz,rderr
+
+	ld	a,(fdb+F.ATTR)	; check file atrributes
+	and	FA.CTG		; contiguous?
+	ld	a,E.FNC		; error if not
+	scf
+	jr	z,rderr
+
+	ld	hl,qio2		; read first block (task header)
+	SC	.QIO		;  note: partial block read!
+	jr	c,rderr
+	ld	a,(iosb)
+	or	a
+	jr	c,rderr		; on error close file and return
+	ld	hl,(iosb+2)
+	ld	a,h		; read size must be 256 (0100h)
+	dec	a
+	or	l
+	ld	a,E.BADTH
+	scf
+	jr	nz,rderr	; otherwise return error
+
+	call	CHKHDR		; verify task header
+
+rderr:	push	af
+	ld	hl,IO.DEA
+	ld	(qio1+Q.FUNC),hl
+	ld	hl,qio1
+	SC	.QIO		; close task image file
+	pop	af
+	ret
+
+; Validate task header. Right now it simply checks signature and
+; version number.
+
+CHKHDR:	ld	hl,hdr
+	ld	de,thid
+	ld	b,6
+ckhdr:	ld	a,(de)		; check task header ID
+	cp	(hl)
+	ld	a,E.BADTH
+	scf
+	ret	nz		; return CY if header is invalid
+	inc	hl
+	inc	de
+	djnz	ckhdr
+	ld	hl,(hdr+TH.VER)
+	ld	de,0102h	; 1.2
+	or	a
+	sbc	hl,de
+	ret	z
+	scf
+	ret
+
+thid:	db	'TSK180'
+
+; Install task (add it to the STD) with remove-on-exit attrib set.
+; Input:
+;   Parsed filename in 'fdb' buffer.
+;   Template TCB in local memory with task name already set.
+; Returns:
+;   IX = TCB address
+;   CY set on error and error code in A.
+
+INSREM:	call	RDHDR		; read and validate task header
+	ret	c		; on error return
+
+	ld	hl,($CTCB)
+	ldw	hl,(hl+T.TI)
+	ex	de,hl
+	KCALL	$UCBDN		; get physical device name of terminal
+	ld	(tidev),de
+	ld	a,c
+	ld	(tidev+2),a
+
+	ld	de,(hdr+TH.END)	; get top address
+	ld	hl,(hdr+TH.INC)	; get increment
+	add	hl,de
+	ld	a,E.PBIG
+	ret	c		; increment too large (above 64K)
+
+	ld	ix,tcbbuf
+	push	hl		; remember task top
+
+	call	setnam		; set task name to TTnn
+
+	ld	hl,hdr+TH.VID
+	ld	de,tcbbuf+T.VID
+	ld	bc,6
+	ldir			; setup version identification
+
+	ld	a,(hdr+TH.PRI)	; else set default priority from task header
+	ld	(ix+T.PRI),a
+	ld	(ix+T.DPRI),a
+
+	xor	a
+	ld	(ix+T.ST),a
+	ld	(ix+T.ST+1),a
+
+	ld	a,(hdr+TH.ATTR)	; get task attributes from header
+	res	TA.AST,a	; reset the irrelevant bits
+	res	TA.FIX,a
+	res	TA.MCR,a
+	set	TA.REM,a	; set remove-on-exit bit
+	ld	(ix+T.ATTR),a	; set task attributes in TCB
+
+	ld	hl,0
+	ldw	(ix+T.CPCB),hl	; clear checkpoint PCB address
+
+	ld	hl,(fdb+F.BMAP)
+	ldw	(ix+T.SBLK),hl	; set starting block number
+	ld	a,(fdb+F.BMAP+2)
+	ld	(ix+T.SBLK+2),a
+	xor	a
+	ld	(ix+T.SBLK+3),a
+
+	ld	hl,(fdb+F.NUSED)
+	ldw	(ix+T.NBLK),hl	; set number of blocks
+	ld	a,(fdb+F.NUSED+2)
+	or	a
+	ld	e,E.PBIG	; error if file is huge
+	scf
+	pop	hl
+	ret	nz
+	push	hl
+
+	ld	hl,(hdr+TH.STRT)
+	ldw	(ix+T.STRT),hl	; set start of task area
+	ld	hl,(hdr+TH.EPT)
+	ldw	(ix+T.EPT),hl	; set task entry point
+	pop	hl		; pop saved task top
+	ldw	(ix+T.END),hl	; set end address of task area
+	ldw	(ix+T.DEND),hl
+	inc	hl
+	ldw	(ix+T.SP),hl	; set stack to top of task memory
+
+	call	CHKPRV		; user privileged?
+	jr	nc,upriv	; branch if yes
+
+	bit	TA.PRV,(ix+T.ATTR) ; installing privileged task?
+	scf
+	ret	nz		   ; return E.PRIV if yes
+	ld	(ix+T.PRI),50	   ; else limit priority to 50
+
+upriv:	ld	(SYSLVL),0	; disable task switching
+	ld	de,(tidev)
+	ld	a,(tidev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find terminal device
+	jr	nc,ins0		; found
+	ld	de,'CO'
+	ld	c,0
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; else try CO0:
+	jr	c,ins1		; error if not found
+ins0:	ld	(tcbbuf+T.TI),hl
+	ld	de,(ldev)
+	ld	a,(ldev+2)
+	ld	c,a
+	ld	ix,($CTCB)
+	KCALL	$FNDEV		; find load device
+	jr	c,ins1		; error if not found
+	ld	(tcbbuf+T.LDEV),hl
+	ld	hl,tcbbuf+T.NAME
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNTSK		; find task by name
+	ld	a,E.TNU
+	ccf
+	jr	c,ins1		; error if found - task name in use
+	ld	hl,hdr+TH.PAR
+	ld	de,$SCRBF
+	ld	bc,6
+	ldir
+	ld	bc,$SCRBF
+	KCALL	$FNPAR		; find partition
+	jr	c,ins1		; error if not found
+
+	; TODO: check partition size, return error if size is too small.
+
+	ld	(tcbbuf+T.PCB),hl ; set PCB address
+	ld	bc,TCBSZ
+	KCALL	$ALLOC		; allocate new TCB
+	jr	c,ins1
+	push	hl
+	pop	ix		; get TCB address into IX for $LKTCB call
+	ex	de,hl
+	ld	hl,tcbbuf
+	ld	bc,TCBSZ
+	ldir			; copy TCB
+	ld	iy,$TLIST
+	ld	bc,T.TCBL
+	KCALL	$LKTCB		; enter the task into the STD
+	xor	a
+ins1:	ld	(SYSLVL),1	; enable task dispatching
+	ret
+
+setnam:	ld	hl,tcbbuf+T.NAME
+	push	hl
+	ld	b,6
+	call	sfill
+	pop	de
+	ld	hl,tidev
+	ldi
+	ldi
+	ld	a,(hl)
+	ex	de,hl
+	jp	CVTBD
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GDAT:	GCML$	lnbuf,80,'DDT',LUNCML,3
+
+tdb:	ds	6
+	dw	0,0
+	db	0,0,0
+	db	'TI',0
+	dw	0,0
+
+fdb:	ds	FINFSZ
+
+qio1:	QIOW$	IO.ACC,LUNFIL,IOEFN,iosb,,<fdb,FINFSZ>
+qio2:	QIOW$	IO.RVB,LUNFIL,IOEFN,iosb,,<hdr,256,,0,0,0>
+iosb:	ds	4
+
+hdr:	ds	256
+tidev:	ds	3
+ldev:	ds	3
+
+lcbbuf:	ds	LCBSZ
+tcbbuf:	ds	TCBSZ
+
+lnbuf:	ds	82		; command line buffer
+lnptr:	ds	2		; command line pointer
+
+CMDNAM:	ds	10		; command name buffer
+TSKNAM:	ds	6		; task name buffer
+CCFLG:	ds	1
+DBGTI:	db	'TI',0		; debugging console, defaults to TI:
+DBGTCB:	ds	2		; TCB address of task being debugged
+DBGCOD:	ds	4		; debugger exception code & task exit status
+
+	ds	128		; debugger stack
+stack	equ	$
+
+	end	START

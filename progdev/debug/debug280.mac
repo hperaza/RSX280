@@ -1,0 +1,1388 @@
+;**********************************************************************;
+;                                                                      ;
+;   RSX280 Debugger for external tasks.                                ;
+;   Copyright (C) 2020-2023, Hector Peraza.                            ;
+;                                                                      ;
+;   This program is free software; you can redistribute it and/or      ;
+;   modify it under the terms of the GNU General Public License as     ;
+;   published by the Free Software Foundation; either version 2 of     ;
+;   the License, or (at your option) any later version.                ;
+;                                                                      ;
+;   This program is distributed in the hope that it will be useful,    ;
+;   but WITHOUT ANY WARRANTY; without even the implied warranty of     ;
+;   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the      ;
+;   GNU General Public License for more details.                       ;
+;                                                                      ;
+;   You should have received a copy of the GNU General Public License  ;
+;   along with this program; if not, write to the Free Software        ;
+;   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.          ;
+;                                                                      ;
+;**********************************************************************;
+
+	.Z280
+
+	ident	/V1.0/
+
+	include	DEBUG.INC
+
+	include	SYSFN.INC
+	include	SYSTEM.INC
+	include	TCB.INC
+	include	PCB.INC
+	include	SST.INC
+	include	TKN.INC
+	include	ERRORS.INC
+
+TQ.IP	equ	0
+TQ.OP	equ	TQ.IP+1
+TQ.BUF	equ	TQ.OP+1
+
+	cseg
+
+	public	DEBUG,UGETB
+
+	extrn	ATTACH,DETACH,PUTCH,PUTSTR,TTLUN,TTFLSH,CRLF,UCASE
+	extrn	RCTRLO,ADEC,AHEX,HLHEX
+
+	extrn	DBGTCB,DBGCOD,DBGTI,DIS280
+
+;-----------------------------------------------------------------------
+
+; Main debugger entry point. Assumes task is attached and in core.
+
+DEBUG::	ld	(dbgsp),sp	; save entry SP
+	call	init
+	jp	c,q1
+
+	call	?break
+ if 0
+	jp	nc,cont1
+ else
+	ld	hl,SST.BP
+	ld	(DBGCOD),hl
+	jp	cont1
+ endif
+
+cmd_loop:
+	ld	sp,(dbgsp)	; restore local stack
+	call	RCTRLO
+	ld	hl,prompt
+	call	PUTSTR		; output debugger prompt
+	call	getln		; get command
+	push	cmd_loop	; push return address
+	ld	hl,lnbuf
+	call	skipbl		; skip blanks and get command char
+	or	a
+	ret	z		; ignore empty lines
+	inc	hl
+	ld	(lnptr),hl
+	call	UCASE		; convert command char to uppercase
+	cp	'X'		; show regs?
+	jp	z,showregs
+	cp	'Q'		; quit?
+	jp	z,quit
+	push	af
+	call	get_args	; parse command and get arguments
+	ld	bc,(arg3)	; load arguments into registers
+	ld	de,(arg2)
+	ld	hl,(arg1)
+	pop	af
+	cp	'D'		; dump?
+	jp	z,dump
+	cp	'F'		; fill?
+	jp	z,fill
+	cp	'S'		; search?
+	jp	z,search
+	cp	'E'		; examine?
+	jp	z,exam
+	cp	'B'		; set breakpoint?
+	jp	z,addbrk
+	cp	'C'		; clear breakpoint?
+	jp	z,clrbrk
+	cp	'G'		; go?
+	jp	z,run
+	cp	'T'		; trace (single-step)?
+	jp	z,trace
+	cp	'W'		; word?
+	jp	z,word
+	cp	'I'		; info?
+	jp	z,info
+	cp	'L'		; list?
+	jp	z,disasm
+error:	call	CRLF
+	ld	c,'?'		; unknown command
+	call	PUTCH
+	jr	cmd_loop
+
+prompt:	db	CR,LF,'_',0
+
+; Initialize stuff.
+
+init:	xor	a
+	ld	(numbp),a	; no breakpoints set
+	ld	(tmpbp+3),a
+
+	ld	hl,0
+	ld	(pgm_msr),hl
+
+	call	get_pc		; use task's current PC
+	ld	(lastz),hl	;  as start for the disassembly command
+	call	get_hl		; use task's current HL
+	ld	(lastd),hl	;  as start for the dump command
+
+	ld	ix,ttq
+	call	qinit
+	ld	de,(DBGTI)
+	ld	a,(DBGTI+2)
+	ld	c,a
+	ld	b,LUNDBG
+	SC	.ALUN
+	ret	c
+	ld	de,TTAST
+	ld	c,LUNDBG
+	call	ATTACH		; attach terminal with ASTs and return
+	ret	c
+	ld	a,LUNDBG
+	ld	(TTLUN),a	; redirect SYSLIB terminal I/O LUN
+	xor	a
+	ret
+
+; AST-driven terminal input
+
+TTAST:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	ix,ttq
+	ld	c,l
+	ld	a,c
+	cp	3		; ^C?
+	jr	nz,ta1
+	call	qinit		; yes, clear input queue
+	push	ix
+	push	iy
+	call	?break		; and break task execution
+	pop	iy
+	pop	ix
+	ld	c,3
+	jr	c,ta1
+	call	CRLF
+	ld	hl,ctlcm
+	call	PUTSTR
+	jr	ta2
+ta1:	call	qput
+ta2:	ld	e,TTEFN
+	SC	.SETF
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+qinit:	xor	a
+	ld	(ix+TQ.IP),a
+	ld	(ix+TQ.OP),a
+	ret
+
+qget:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z
+	ld	e,a
+	inc	a
+	and	3Fh
+	ld	(ix+TQ.OP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+TQ.BUF)
+	pop	ix
+	or	a
+	ret
+
+qput:	ld	a,(ix+TQ.IP)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+TQ.OP)
+	scf
+	ret	z
+	ld	(ix+TQ.IP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+TQ.BUF),c
+	pop	ix
+	or	a
+	ret
+
+qempty:	ld	a,(ix+TQ.IP)
+	sub	(ix+TQ.OP)
+	or	a
+	ret
+
+; Fatal error output and exit
+
+SYSERR:	push	af
+	ld	hl,errmsg
+	call	PUTSTR
+	pop	af
+	call	AHEX
+	ld	c,CR
+	call	PUTCH
+	jp	q1
+
+errmsg:	db	CR,LF,'Error ',0
+
+; Get char from terminal
+
+ttgetc:	push	de
+	call	TTFLSH
+gc1:	ld	e,TTEFN
+	SC	.CLEF
+	ld	ix,ttq
+	call	qget
+	jr	nc,gc2
+	ld	e,TTEFN
+	SC	.WTSE
+	jr	gc1
+gc2:	pop	de
+	and	7Fh
+	ret
+
+; Check terminal input status
+
+ttstat:	ld	ix,ttq
+	call	qempty
+	ret	z
+	or	0FFh		; return FF if ready, 0 otherwise
+	ret
+
+; Get command line
+
+getln:	ld	hl,lnbuf	; HL = start of command buffer
+	ld	b,1
+get:	call	ttgetc		; get char
+	cp	CR
+	jr	z,eol		; CR ends command
+	cp	8
+	jr	z,bkspc		; del and backspace erase prev char
+	cp	7Fh
+	jr	z,bkspc
+	cp	3
+	jr	z,ctrlc		; ^C restarts
+	cp	' '
+	jr	c,get		; ignore any other control chars
+	ld	c,a
+	ld	a,b
+	cp	40-1		; max length reached?
+	jr	nc,get		; ignore extra input if yes
+	call	PUTCH		; echo char
+	ld	(hl),c		; store in buffer
+	inc	hl		; advance pointer
+	inc	b		;  and counter
+	jr	get		; loop
+bkspc:	dec	b
+	jr	z,getln
+	ld	c,8
+	call	PUTCH		; erase prev char from the screen
+	call	space
+	ld	c,8
+	call	PUTCH
+	dec	hl
+	jr	get
+eol:	ld	(hl),0		; end of input, append null char
+	ld	c,a
+	call	PUTCH
+	ret
+ctrlc:	ld	hl,ctlcm
+	call	PUTSTR
+	jp	cmd_loop
+
+ctlcm:	db	"^C",CR,0
+
+; Skip blanks and get char
+
+skip:	inc	hl
+skipbl:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	jr	z,skip
+	cp	TAB
+	jr	z,skip
+	ret
+
+; Get command line arguments
+
+get_args:
+	ld	hl,0
+	ld	(arg1),hl	; unspecified args default to zero
+	ld	(arg2),hl
+	ld	(arg3),hl
+	xor	a
+	ld	(argset),a
+	ld	de,(lnptr)
+	ld	c,01h
+	call	gethex		; get first arg
+	ld	(arg1),hl
+	ld	(arg2),hl
+	ret	c
+	ld	c,02h
+	call	gethex		; get second arg
+	ld	(arg2),hl
+	ret	c
+	ld	c,04h
+	call	gethex		; get third arg
+	ld	(arg3),hl
+	ret	c
+	jp	error		; error if more args
+
+; Get hexadecimal value from command line
+
+gethex:	ld	hl,0
+gh1:	ld	a,(de)
+	or	a		; end of command line?
+	scf			; return with CY set if yes
+	ret	z
+	inc	de
+	cp	' '		; ignore blanks
+	jr	z,gh1
+	cp	','		; comma separates arguments
+	ret	z
+	call	tohex
+	jp	c,error
+	call	adddig
+	jp	c,error
+	ld	a,(argset)
+	or	c		; set bit if argument present
+	ld	(argset),a
+	jr	gh1
+	
+adddig:	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,hl
+	ret	c
+	add	hl,a
+	ret
+
+tohex:	call	UCASE
+	sub	'0'
+	ret	c
+	cp	10
+	ccf
+	ret	nc
+	cp	11h
+	ret	c
+	cp	17h
+	ccf
+	ret	c
+	sub	7
+	ret
+
+;-----------------------------------------------------------------------
+
+; Compare addresses and return one level higher if they match
+
+next:	call	?stop		; check for ^C abort
+	cpw	hl,de		; end address reached?
+	jr	z,cmp_eq	; return one level higher if yes
+	inc	hl		; else increment HL and return
+	ret
+cmp_eq:	inc	sp
+	inc	sp
+	ret
+
+; Check for ^C abort or XON/XOFF
+
+?stop:	call	ttstat
+	or	a
+	ret	z
+	call	ttgetc
+	cp	3		; ^C aborts
+	jp	z,ctrlc
+	cp	13h		; ^S suspends output
+	ret	nz
+	call	ttgetc
+	cp	3
+	jp	z,ctrlc
+	ret
+
+; Q
+; Quit debugging session
+; QA
+; Quit debugging session and Abort task
+
+quit:	ld	hl,(lnptr)
+	call	skipbl
+	call	UCASE
+	cp	'A'		; abort the debugged task on exit?
+	jr	nz,q1		; no, just end the debug session
+	ld	bc,(DBGTCB)
+	ld	e,TK.CLI
+	KCALL	TKILL		; unconditionally abort the task
+q1:	ld	sp,(dbgsp)
+	ld	c,LUNDBG
+	call	DETACH		; detach terminal
+	ld	a,LUNTI
+	ld	(TTLUN),a	; restore default SYSLIB terminal I/O LUN
+	xor	a
+	ret			; return to main program
+
+; D addr1,addr2
+; Dump region addr1...addr2
+
+dump:	ld	a,(argset)
+	bit	0,a		; start address specified?
+	jr	nz,dmp1		; use it if yes
+	ld	hl,(lastd)	; else continue from where we stopped before
+dmp1:	bit	1,a		; end address specified?
+	jr	nz,dmp2		; use it if yes
+	ld	e,l
+	ld	d,h
+	inc	d
+	dec	de		; else display one 256-byte page
+
+dmp2:	call	out_addr	; output address
+	push	hl
+	call	dmps3		; align start
+dmph:	call	UGETB		; get byte
+	call	outbyte		; output it as hexadecimal
+	call	?stop		; check for ^C abort
+	cpw	hl,de
+	jr	z,enddmp	; exit loop when done
+	inc	hl		; advance pointer
+	ld	a,l
+	and	0Fh		; max 16 bytes per line
+	jr	nz,dmph
+	pop	hl
+	call	dmpa		; dump ASCII as well
+	jr	dmp2
+
+enddmp:	inc	hl
+	ld	a,l
+	neg	a
+	ld	(lastd),hl	; remember where we stopped
+	ld	l,a
+	call	dmps3		; align end
+	pop	hl
+dmpa:	ld	c,1
+	call	dmps		; align start
+dmp3:	call	UGETB		; get byte
+	cp	' '		; printable?
+	jr	c,outdot
+	cp	7Fh
+	jr	c,char
+outdot:	ld	a,'.'		; output a dot if not
+char:	ld	c,a
+	call	PUTCH
+	call	?stop		; check for ^C abort
+	cpw	hl,de
+	ret	z		; return when done
+	inc	hl
+	ld	a,l
+	and	0Fh		; max 16 chars per line
+	jr	nz,dmp3
+	ret
+
+dmps3:	ld	c,3
+dmps:	ld	a,l
+	and	0Fh
+	ret	z
+	push	de
+	ld	b,a
+	ld	e,c
+dmp4:	ld	d,e
+dmp5:	call	space
+	dec	d
+	jr	nz,dmp5
+	djnz	dmp4
+	pop	de
+	ret
+
+; F addr1,addr2,byte
+; Fill region addr1...addr2 with byte
+
+fill:	ld	a,c
+	call	UPUTB
+	call	next
+	jr	fill
+
+; S addr1,addr2,byte
+; Search region addr1...addr2 for byte
+
+search:	call	UGETB
+	cp	c		; byte matches?
+	jr	nz,scont	; branch if not
+	call	out_addr	; else output address
+	dec	hl
+	call	UGETB
+	call	outbyte		; output prev byte
+	ld	c,'('
+	call	PUTCH
+	inc	hl
+	call	UGETB
+	call	AHEX		; output matching byte
+	ld	c,')'
+	call	PUTCH
+	call	space
+	inc	hl
+	call	UGETB
+	call	outbyte		; output following byte
+	dec	hl
+scont:	call	next
+	jr	search
+
+; E addr
+; Examine and modify memory starting at addr
+
+exam:	call	out_addr	; output address
+	call	UGETB
+	call	outbyte		; output old contents
+	push	hl
+	call	getln		; read line
+	pop	de
+	ld	hl,lnbuf
+	call	skipbl		; skip blanks
+	ex	de,hl
+	or	a
+	jr	z,cont		; empty line keeps old value
+	cp	'.'
+	ret	z		; dot (or ^C in getln) ends operation
+	push	hl
+	call	gethex		; get new value
+	ex	de,hl		;  into DE
+	pop	hl
+	ld	a,e
+	call	UPUTB		; store it
+cont:	inc	hl
+	jr	exam		; loop
+
+; W addr
+; display Word at addr
+
+word:	call	out_addr	; output address
+	call	UGETB
+	ld	e,a
+	inc	hl
+	call	UGETB
+	ld	d,a
+	ex	de,hl
+	jp	HLHEX		; output contents
+
+; B
+; display current Breakpoints
+; B addr
+; set Breakpoint at addr.
+
+addbrk:	ld	ix,bptbl	; get breapoint table address into IX
+	ld	a,(argset)
+	and	01h		; argument given?
+	jr	nz,setb		; set breakpoint if yes
+	ld	a,(numbp)
+	or	a		; any breakpoints set?
+	ret	z		; return if not
+	ld	b,a
+	ld	de,3
+dispbp:	ld	hl,(ix)
+	call	CRLF
+	call	HLHEX		; display breapoint address
+	add	ix,de
+	djnz	dispbp		; loop to process next
+	ret
+
+setb:	ld	a,(numbp)
+	cp	MAXBP		; maximum already reached?
+	jp	nc,error	; error if yes
+	or	a		; table empty?
+	jr	z,sb2		; branch if yes
+	ld	b,a
+	ld	de,3
+sb1:	cpw	hl,(ix)		; breakpoint already exists?
+	jp	z,error		; error if yes
+	add	ix,de
+	djnz	sb1		; else loop to check next entry
+sb2:	ldw	(ix),hl		; store breakpoint address
+	ld	hl,numbp
+	inc	(hl)		; new breakpoint address
+	ret
+
+; C addr
+; Clear breakpoint at addr.
+
+clrbrk:	ld	a,(argset)
+	and	01h
+	jp	z,error		; argument is mandatory
+	ld	ix,bptbl	; get breapoint table address into IX
+	ld	a,(numbp)
+	or	a		; any breakpoints set?
+	jp	z,error		; error if not
+	ld	b,a
+	ld	de,3
+cb1:	cpw	hl,(ix)		; breakpoint found?
+	jr	z,cb2		; exit loop if yes
+	add	ix,de
+	djnz	cb1		; loop to process next entry
+	jp	error		; breakpoint not found
+cb2:	ld	hl,numbp
+	dec	(hl)		; decrement breakpoint count
+	dec	b		; last used entry?
+	ret	z		; return if yes
+cb3:	ldw	hl,(ix+3)
+	ldw	(ix),hl		; else shuffle entries down
+	add	ix,de
+	djnz	cb3
+	ret
+
+; L addr,num
+; List (disassemble) num instructions starting from addr
+
+disasm:	ld	a,(argset)
+	bit	0,a		; address given?
+	jr	nz,dis1		; use it if yes
+	ld	hl,(lastz)	; else continue from where we ended last time
+	ld	(arg1),hl
+dis1:	bit	1,a		; count given?
+	jr	nz,dis2		; use it if yes
+	ld	de,16		; else default to 16
+	ld	(arg2),de
+dis2:	ld	a,d
+	or	e
+	jr	z,dis3
+	ld	hl,(arg1)
+	call	out_addr	; output address
+	ld	c,TAB
+	call	PUTCH		; output TAB separator
+	call	DIS280		; output mnemonic
+	ld	(arg1),hl
+	ld	c,CR
+	call	PUTCH
+	call	?stop		; check for ^C abort
+	ld	hl,(arg2)
+	dec	hl		; decrement count
+	ld	(arg2),hl
+	ex	de,hl
+	jr	dis2		; and loop
+dis3:	ld	hl,(arg1)
+	ld	(lastz),hl	; remember where we stopped
+	ret
+
+; I
+; Display task info
+
+info:	call	CRLF
+	ld	ix,(DBGTCB)
+	push	ix
+	pop	hl
+	ld	de,T.NAME	; task name offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN		; display task name
+	ld	c,' '
+	call	PUTCH
+
+	push	ix
+	pop	hl
+	ld	de,T.VID	; task version identification offset
+	add	hl,de
+	ld	b,6
+	call	PRINTN
+	ld	c,' '
+	call	PUTCH
+
+	push	ix
+	pop	hl
+	call	HLHEX		; display TCB address
+	call	sep2
+
+	ldw	hl,(ix+T.PCB)
+	ldw	hl,(hl+P.MAIN)
+	ld	de,P.NAME
+	add	hl,de
+	ld	b,6
+	call	PRINTN		; display partition name
+	ld	c,' '
+	call	PUTCH
+
+	ldw	hl,(ix+T.PCB)
+	call	HLHEX		; display PCB address
+	ld	c,' '
+	call	PUTCH
+
+	ldw	hl,(hl+P.BASE)	; get task base page
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	push	de
+	ldw	hl,(ix+T.STRT)
+	ld	a,h
+	add	a,e
+	ld	h,a
+	ld	a,0
+	adc	a,d
+	call	AHEX		; display
+	call	HLHEX		;  start address
+	ld	c,'-'
+	call	PUTCH
+	pop	de
+	ldw	hl,(ix+T.END)
+	ld	a,h
+	add	a,e
+	ld	h,a
+	ld	a,0
+	adc	a,d
+	call	AHEX		; display
+	call	HLHEX		;  end address
+	call	sep2
+
+	ld	hl,msgpri
+	call	PUTSTR
+	ld	a,(ix+T.PRI)
+	call	ADEC		; display priority
+	ld	c,5
+	call	pad
+
+	ld	hl,msgdpr
+	call	PUTSTR
+	ld	a,(ix+T.DPRI)
+	call	ADEC		; display default priority
+	call	CRLF
+
+	call	sep3
+	ld	hl,msgst
+	call	PUTSTR
+	bit	TS.ACT,(ix+T.ST)
+	ld	hl,stna
+	call	z,PUTSTR
+	ld	d,(ix+T.ST)
+	ld	hl,stat
+	bit	TS.ACT,d
+	push	af
+	call	nz,tbits	; display task status
+	ld	d,(ix+T.ST+1)
+	ld	hl,stat2
+	pop	af
+	call	nz,tbits
+	ld	d,(ix+T.ATTR)
+	ld	hl,attr
+	call	tbits		; display task attrib
+	call	CRLF
+
+	call	sep3
+	ld	hl,msgti
+	call	PUTSTR
+	ldw	de,(ix+T.TI)
+	KCALL	$UCBDN
+	ld	b,c
+	ld	c,e
+	call	PUTCH		; display terminal name
+	ld	c,d
+	call	PUTCH
+	ld	a,b
+	call	ADEC
+	push	af
+	ld	c,':'
+	call	PUTCH
+	pop	af
+	ld	c,3
+	call	pad
+
+	call	sep2
+	ld	hl,msgioc
+	call	PUTSTR
+	ld	a,(ix+T.IOC)
+	call	ADEC		; display IOC
+	ld	c,3
+	call	pad
+
+	;...			; display BIO (not yet supported)
+
+	call	sep2
+	ld	hl,msgfl
+	call	PUTSTR
+	ld	a,(ix+T.FLGS)
+	call	AHEX		; display event flags
+	ld	a,(ix+T.FLGS+1)
+	call	AHEX
+	ld	a,(ix+T.FLGS+2)
+	call	AHEX
+	ld	a,(ix+T.FLGS+3)
+	call	AHEX
+
+	ld	c,CR
+	jp	PUTCH		; CR also flushes output
+
+msgdpr:	db	'D'
+msgpri:	db	'Pri = ',0
+msgst:	db	'Status: ',0
+msgti:	db	'TI = ',0
+msgioc:	db	'IOC = ',0
+msgfl:	db	'Eflg: ',0
+
+sep3:	ld	c,' '
+	call	PUTCH
+sep2:	ld	c,' '
+	call	PUTCH
+	jp	PUTCH
+
+pad:	ld	b,a
+	ld	a,c
+	sub	b
+	ret	z
+	ret	c
+	ld	b,a
+	ld	c,' '
+pad1:	call	PUTCH
+	djnz	pad1
+	ret
+
+tbits:	ld	b,8
+	ld	e,01h
+t1:	ld	a,d
+	and	e
+	jr	z,t2
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	dec	hl
+	push	bc
+	ld	b,3
+	call	PRINTN
+	pop	bc
+	ld	c,' '
+	call	PUTCH
+	jr	t3
+t2:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,t3
+	inc	hl
+	inc	hl
+t3:	rl	e
+	djnz	t1
+	ret
+
+stna:	db	'-ACT ',0
+stat:	db	0,'AST','SUP','CKR','ABX','XDT',0,'BPT'
+stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
+attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
+
+PRINTN:	ld	c,(hl)
+	call	PUTCH
+	inc	hl
+	djnz	PRINTN
+	ret
+
+; G [addr][,break]
+; Go (execute) program at addr. If no address is specified, continue from
+; current PC. If a break address is given, place a temporary breakpoint at
+; that address.
+
+run:	ld	a,(argset)
+	bit	0,a		; an address was given?
+	call	nz,set_pc	; yes, use it (note: preserves A)
+	bit	1,a		; break address given?
+	jr	z,r2
+	ld	hl,(arg2)
+	ld	(tmpbp),hl	; yes, set temporary breakpoint
+	ld	a,1
+	ld	(tmpbp+3),a
+r2:	ld	hl,1000h	; SS and SSP bits clear, BH bit set
+	ld	(pgm_msr),hl
+	call	setbp		; set breakpoints in place
+	jp	continue
+
+; Place breakpoints prior to executing user code
+
+setbp:	ld	ix,tmpbp
+	ld	a,(ix+3)
+	or	a		; temporary breakpoint active?
+	ld	b,1
+	call	nz,set1		; yes, set it
+	ld	ix,bptbl	; check hard breakpoints
+	ld	a,(numbp)
+	or	a		; any breakpoints defined?
+	ret	z		; return if not
+	ld	b,a
+	ld	de,3
+set1:	ld	hl,(ix)		; get breakpoint address
+	call	UGETB
+	ld	(ix+2),a	; remember original memory contents
+	ld	a,76h
+	call	UPUTB		; store halt instruction (breakpoint-on-halt mode)
+	add	ix,de
+	djnz	set1
+	ret
+
+; Remove breakpoints from user code so they will not appear in the
+; disassembler listing and will not interfere with single-stepping
+
+rembp:	ld	ix,tmpbp
+	ld	a,(ix+3)
+	or	a		; temporary breakpoint active?
+	jr	z,rem1
+	ld	b,1
+	call	rem2		; yes, remove it
+	ex	de,hl
+	call	get_pc
+	cpw	hl,de		; was just hit?
+	jr	nz,rem1
+	xor	a
+	ld	(tmpbp+3),a	; yes, disable it
+rem1:	ld	ix,bptbl	; check hard breakpoints
+	ld	a,(numbp)
+	or	a		; any breakpoints defined?
+	ret	z		; return if not
+	ld	b,a
+	ld	de,3
+rem2:	ld	hl,(ix)		; get breakpoint address
+	ld	a,(ix+2)
+	call	UPUTB		; restore original memory contents
+	add	ix,de
+	djnz	rem2
+	ret
+
+; T
+; Trace single instruction
+; T num
+; Trace num instructions
+
+trace:	ld	a,h
+	or	l
+	jr	nz,tr1
+	ld	hl,1		; no argument or zero count defaults to 1
+tr1:	ld	(tcount),hl
+trnext:	ld	hl,1100h	; SS bit set, SSP clear, BH bit set
+	ld	(pgm_msr),hl
+	jp	continue
+
+; Display 16-bit address followed by a colon and a space
+
+out_addr:
+	call	CRLF
+	call	HLHEX
+	ld	c,':'
+	call	PUTCH
+	jr	space
+
+; Display 8-bit value followed by a space
+
+outbyte:
+	call	AHEX
+space:	ld	c,' '
+	jp	PUTCH
+
+; Continue execution from last breakpoint or single-step operation
+
+continue:
+	ld	e,DBGEFN
+	SC	.CLEF
+
+	ld	a,(DBGCOD)	; check for possible race condition
+	or	a		;  (task may have exited or been aborted
+	jp	m,abort		;   between last .WTSE and the .CLEF above)
+
+	ld	hl,(pgm_msr)
+	call	set_msr		; push MSR with desired SS bits
+
+	ld	bc,(DBGTCB)
+	KCALL	$DBRES		; resume task execution
+;;	jp	c,SYSERR	; should not happen
+
+	ld	e,DBGEFN
+	SC	.WTSE		; wait for debug exception
+
+cont1:	ld	a,(DBGCOD)	; get exception code
+	or	a
+	jp	m,abort
+	rra
+	jr	z,eitrp1	; EPU trap
+	dec	a
+	jr	z,eitrp2	; EPU trap
+	dec	a
+	jr	z,prvins	; privileged instruction trap
+	dec	a		; unrecognized system trap
+	dec	a
+	jr	z,acvtrp	; access violation trap
+	dec	a
+	jr	z,divtrp	; division trap
+	dec	a
+	jr	z,sstrp		; single-step trap
+	dec	a
+	jr	z,bptrp		; breakpoint-on-halt trap
+
+	; unknown debug exception, finish debugging session?
+	; TODO: display error message
+
+	jp	quit
+
+abort:	ld	sp,(dbgsp)	; on abort, just return
+	jp	q1
+
+bptrp:	ld	(reason),0
+	jp	debug_trap
+
+sstrp:	ld	(reason),1
+	jp	debug_trap
+
+divtrp:	ld	(reason),2
+	jp	debug_trap
+
+acvtrp:	ld	(reason),3
+	jp	debug_trap
+
+prvins:	ld	(reason),4
+	jp	debug_trap
+
+eitrp2:
+eitrp1:	ld	(reason),5
+	jp	debug_trap
+
+; Break task execution, usually called as a response to ^C while the
+; task is running.
+
+?break:	ld	bc,(DBGTCB)
+	ld	hl,T.ST
+	add	hl,bc
+	bit	TS.BPT,(hl)	; task already stopped at breakpoint?
+	scf
+	ret	nz		; yes, return
+	KCALL	$DBBRK		; break task execution
+	ld	hl,SST.BP
+	ld	(DBGCOD),hl
+	ld	e,DBGEFN
+	SC	.SETF		; wake up debugger
+	ret
+
+; Trap entry point: examines the trap cause and jumps to the command loop.
+
+debug_trap:
+	ld	sp,(dbgsp)
+	call	get_pc
+	ld	(lastz),hl	; use current PC as default for L command
+	ld	a,(reason)
+	dec	a		; single-stepping?
+	call	nz,rembp	; remove breakpoints if not
+	call	pr_reason	; display trap reason
+	call	shregs		; display register contents
+	call	get_pc
+	ld	(arg1),hl
+	ld	a,(reason)
+	dec	a		; single-stepping?
+	jr	nz,dbg2		; branch if not
+	ld	hl,(tcount)
+	dec	hl
+	ld	(tcount),hl
+	ld	a,h
+	or	l		; trace count reached zero?
+	jp	nz,trnext	; trace next instruction if not
+dbg2:	call	get_hl
+	ld	(lastd),hl	; use HL value as default for D command
+	ld	hl,0
+	call	set_msr		; clear SS-bits in case the debug session ends
+	jp	cmd_loop
+
+; display trap reason
+
+pr_reason:
+	ld	a,(reason)
+	or	a
+	ld	hl,brk_msg
+	jr	z,pr1
+	dec	a
+	ret	z		; don't print anything if single-stepping
+	dec	a
+	ld	hl,div_msg
+	jr	z,pr1
+	dec	a
+	ld	hl,acv_msg
+	jr	z,pr1
+	dec	a
+	ld	hl,prv_msg
+	jr	z,pr1
+	dec	a
+	ld	hl,ext_msg
+	ret	nz
+pr1:	call	PUTSTR		; display reason
+	ld	hl,atpc_msg
+	call	PUTSTR		; display trap address
+	call	get_pc
+	jp	HLHEX
+
+brk_msg:
+	db	CR,LF,"Break",0
+div_msg:
+	db	CR,LF,"Divide exception",0
+acv_msg:
+	db	CR,LF,"Access violation",0
+prv_msg:
+	db	CR,LF,"Privileged instruction",0
+ext_msg:
+	db	CR,LF,"Extended instruction",0
+atpc_msg:
+	db	" at PC=",0
+
+; X
+; show CPU register contents
+; Xrr
+; display/modify CPU register
+
+showregs:
+	ld	hl,(lnptr)
+	call	skipbl
+	or	a		; anything follows command?
+	jp	z,shregs	; no, display all regs
+	ld	(lnptr),hl
+	ld	hl,regdat
+	ld	b,12
+chrg1:	ld	e,(hl)		; get offset to reg value into reg E
+	inc	hl		; point to string
+	push	de
+	call	rmatch		; register name matches?
+	pop	de
+	jr	z,chrg3		; yes
+chrg2:	ld	a,(hl)		; no, skip this entry
+	inc	hl
+	or	a
+	jr	nz,chrg2
+	djnz	chrg1
+	jp	error		; reg name not found
+
+chrg3:	call	CRLF
+	call	PUTSTR		; output register name
+	dec	hl
+	ld	a,'='
+	cp	(hl)
+	ld	c,a
+	call	nz,PUTCH	; follow alt regs with '='
+	call	regadr
+	push	hl
+	ldw	hl,(hl)
+	call	HLHEX		; output reg value
+	call	space
+	call	getln		; read line
+	pop	de
+	ld	hl,lnbuf
+	call	skipbl		; skip blanks
+	ld	(lnptr),hl
+	or	a
+	ret	z		; empty line keeps old value
+	cp	'.'
+	ret	z		; as does dot
+	push	de
+	ld	de,(lnptr)
+	call	gethex		; get new value
+	ex	de,hl		;  into DE
+	pop	hl
+	ldw	(hl),de		; store it
+	ret
+
+rmatch:	ld	a,(hl)
+	inc	hl
+	cp	' '		; skip blanks
+	jr	z,rmatch
+	cp	CR		;  CR
+	jr	z,rmatch
+	cp	LF		;   and LF
+	jr	z,rmatch
+	dec	hl
+	push	hl		; remember start of reg name
+	ld	de,(lnptr)
+rm1:	ld	a,(hl)
+	or	a		; end of name?
+	jr	z,rm4		; return Z if yes
+	cp	'='
+	jr	z,rm2
+	ld	c,a
+	ld	a,(de)
+	call	UCASE
+	cp	c		; name matches?
+	jr	nz,rm4		; return NZ if not
+	inc	hl
+	inc	de
+	jr	rm1		; loop
+rm2:	ld	a,(de)
+	cp	"'"
+	jr	z,rm3
+	xor	a
+rm3:	or	a
+rm4:	pop	hl
+	ret
+
+shregs:	ld	hl,regdat
+	ld	b,12
+srg1:	ld	e,(hl)		; get offset to register value into reg E
+	inc	hl		; point to start of string
+	call	PUTSTR		; output register name
+	push	hl
+	call	regadr
+	ldw	hl,(hl)
+	call	HLHEX		; output value
+	pop	hl
+	inc	hl
+	djnz	srg1
+	call	get_pc
+	ld	(arg1),hl
+	ld	c,TAB
+	call	PUTCH
+	call	PUTCH
+	call	DIS280		; display next instruction (address in HL)
+	ld	c,CR
+	jp	PUTCH
+
+regadr:	ld	hl,(DBGTCB)
+	ld	a,e
+	or	a		; SP is special (negative value in table)
+	jp	p,ra1
+	ld	de,T.SP
+	add	hl,de
+	ret
+ra1:	ldw	hl,(hl+T.CTX)
+	lda	hl,(hl+TX.REGS)
+	ld	d,0
+	add	hl,de
+	ret
+
+; Register display data: 12 entries in the form "TX.REGS offset, string".
+
+regdat:	db	18,CR,LF,"AF=",0
+	db	16," BC=",0
+	db	14," DE=",0
+	db	12," HL=",0
+	db	 2," IX=",0
+	db	 0," IY=",0
+	db	10,CR,LF,"AF'",0
+	db	 8," BC'",0
+	db	 6," DE'",0
+	db	 4," HL'",0
+	db	-1," SP=",0
+	db	24," PC=",0
+
+;-----------------------------------------------------------------------
+
+; Read byte from debugged task's address space
+
+UGETB:	push	ix
+	push	de
+	ld	(SYSLVL),0	; critical section
+	ld	ix,(DBGTCB)
+	call	VALADR
+	jr	c,acv
+	ldw	ix,(ix+T.PCB)
+	ldw	de,(ix+P.BASE)
+	KCALL	$UGETB		; return byte at address HL
+	ld	(SYSLVL),1
+	pop	de
+	pop	ix
+	ret
+
+; Write byte to debugged task's address space
+
+UPUTB:	push	ix
+	push	de
+	ld	(SYSLVL),0	; critical section
+	ld	ix,(DBGTCB)
+	call	VALADR
+	jr	c,acv
+	ldw	ix,(ix+T.PCB)
+	ldw	de,(ix+P.BASE)
+	KCALL	$UPUTB		; store byte in A at address HL
+	ld	(SYSLVL),1
+	pop	de
+	pop	ix
+	ret
+
+acv:	ld	(SYSLVL),1
+	ld	hl,acv_msg
+	call	PUTSTR
+	jp	cmd_loop
+
+; Validate address, assumes IX = TCB address
+
+VALADR:	ldw	de,(ix+T.STRT)
+	cpw	hl,de
+	ret	c
+	ldw	de,(ix+T.END)
+	inc	de
+	cpw	hl,de
+	ccf
+	ret
+
+; Get task's current PC
+
+get_pc:	ld	hl,(DBGTCB)
+	ldw	hl,(hl+T.CTX)
+	ldw	hl,(hl+TX.REGS+24)
+	ret
+
+; Set task's PC
+
+set_pc:	ex	de,hl
+	ld	hl,(DBGTCB)
+	ldw	hl,(hl+T.CTX)
+	lda	hl,(hl+TX.REGS+24)
+	ldw	(hl),de
+	ret
+
+; Set task's MSR
+
+set_msr:ex	de,hl
+	ld	hl,(DBGTCB)
+	ldw	hl,(hl+T.CTX)
+	ld	a,d
+	and	00000011b
+	ld	d,a
+	ld	a,(hl+TX.REGS+22+1)
+	and	11111100b
+	or	d
+	ld	(hl+TX.REGS+22+1),a
+	ret
+
+; Get task's current HL
+
+get_hl:	ld	hl,(DBGTCB)
+	ldw	hl,(hl+T.CTX)
+	ldw	hl,(hl+TX.REGS+12)
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+ttq:	ds	1		; TQ.IP
+	ds	1		; TQ.OP
+	ds	64		; TQ.BUF
+
+arg1:	ds	2		; first command argument
+arg2:	ds	2		; second command argument
+arg3:	ds	2		; third command argument
+argset:	ds	1		; specified argument bit mask
+
+lnbuf:	ds	40		; command line buffer
+lnptr:	ds	2		; command line pointer
+
+pgm_msr:ds	2		; fake MSR for setting SS bits
+
+numbp:	ds	1		; number of breakpoints set
+bptbl:	ds	MAXBP*3		; breakpoint table: address + mem contents
+tmpbp:	ds	4		; temporary breakpoint for run command:
+				;  address + mem contents + active flag
+
+brkadr:	ds	2		; breakpoint address
+brkval:	ds	1		; breakpoint memory contents
+
+reason:	ds	1		; trap reason code
+lastd:	ds	2		; last dump address
+lastz:	ds	2		; last disassembled address
+tcount:	ds	2		; instruction trace count
+
+dbgsp:	ds	2		; saved debugger SP
+
+	end
