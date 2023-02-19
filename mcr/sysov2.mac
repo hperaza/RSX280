@@ -25,7 +25,7 @@
 
 	cseg
 
-	ident	'02.26'
+	ident	'02.28'
 
 	include	SYSTEM.INC
 	include	SYSFN.INC
@@ -378,7 +378,7 @@ r1:	ld	e,(ix)		; get offset to register pair value in regbuf
 	ret
 
 stna:	db	'-ACT ',0
-stat:	db	0,'AST','SUP','CKR','ABX',0,0,0
+stat:	db	0,'AST','SUP','CKR','ABX','XDT',0,'BPT'
 stat2:	db	'STP','SEF','EFW','WTD','OUT','CKP','LDR','ABO'
 attr:	db	'PRV','REM',0,'FIX','MCR','CLI','ACP','CKD'
 
