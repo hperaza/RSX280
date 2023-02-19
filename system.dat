@@ -9,6 +9,10 @@ $CONN	; connect to task
 $CPCB	; address of PCB of current task
 $CPLST	; ptr to head of checkpoint PCB list
 $CTCB	; address of TCB of current task
+$DBCON	; connect task to external debugger
+$DBDIS	; disconnect task from external debugger
+$DBBRK	; break task execution
+$DBRES	; resume task stopped for debugger
 $DEASN	; delete logical device assignment
 $ERSEQ	; error sequence number
 $FEAT	; feature bits
@@ -26,6 +30,9 @@ $IOEND	; end I/O processing for ASTs
 $ALLOC	; allocate pool memory
 $FREE	; free pool memory
 $AVAIL	; compute available pool memory
+$KDMON	; kernel debugger-monitor main entry point
+$KDTRP	; kernel debugger-monitor trap entry point
+$KMTRP	; kernel debugger-monitor trap entry with message
 LDRTCB	; LDR... TCB
 $LKTCB	; link TCB to the specified list
 $LOGDV	; ptr to head of logical device assignment list
@@ -34,7 +41,6 @@ $LGOUT	; logout user
 MCRTCB	; MCR... TCB
 $MCOPY	; inter-bank memory copy routine
 $MEMSZ	; total memory size
-$DBMON	; debugger-monitor main entry point
 $MFLGS	; MCR flags
 $MVTBL	; ptr to head of mounted device list
 NVOK	; P112 NV RAM OK flag
@@ -75,7 +81,6 @@ SYSTYP	; system type
 TALLOC	
 TCONT	
 TCONT2	
-$DBTRP	; debugger-monitor bpt entry
 TFREE	
 $LDGO	; start task after load
 $LDCKR	; resume task after checkpoint read
@@ -84,13 +89,12 @@ TICCNT	; absolute time count in ticks
 TICSEC	; ticks per second
 TKILL	; abort task
 $TLIST	; ptr to head of installed tasks list
-$DMTRP	; debugger-monitor bpt entry with message
 TSLEEP	
-TSTART	
 TSTOP	
 TUNFIX	
 TWAIT	
 UCBAR	; user mode CBAR value
+URQST	; request task, TDB in user space
 $UCBDN	; get device name and unit from UCB
 $UGETB	; inter-bank get byte routine
 $UGETW	; inter-bank get word routine
