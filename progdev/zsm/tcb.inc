@@ -84,8 +84,7 @@ CTXSZ	equ	TX.REGS + 28
 ; External debugger data
 
 XD.TCB	equ	0		; TCB address of debugger (2 bytes)
-XD.AST	equ	XD.TCB + 2	; optional AST routine address (2 bytes)
-XD.DSB	equ	XD.AST + 2	; debug status block in user space (2 bytes)
+XD.DSB	equ	XD.TCB + 2	; debug status block in user space (2 bytes)
 XD.EFN	equ	XD.DSB + 2	; event flag number (1 byte)
 
 ; External debugger data block size

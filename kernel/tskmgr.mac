@@ -1876,8 +1876,6 @@ $DBCON:	call	CHKPRV		; the issuing task must be privileged
 	ldw	(ix+XD.DSB),de	; set XD.DSB
 	pop	de		; pop event flag number
 	ld	(ix+XD.EFN),e	; set XD.EFN
-	ld	de,0
-	ldw	(ix+XD.AST),de	; XD.AST not yet supported
 
 	push	hl
 	pop	ix		; IX = TCB address of debugger
@@ -1936,8 +1934,6 @@ $DBDIS:	call	$DBRES		; resume task execution
 ; Output:
 ;   IX = TCB address of debugged task
 ;   CY flag set and error code in A.
-
-; TODO: notify debugger?
 
 $DBBRK:	ld	hl,T.ST
 	add	hl,bc

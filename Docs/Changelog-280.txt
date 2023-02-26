@@ -512,12 +512,11 @@ Changelog
 18/02/23
 
 - Debugger:
-  * the 'run' command now loads a task image (into an external, separate
-    partition as before) file for debugging if the name specified in the
-    command line does not corresponds to an installed task.
-  * implemented the 'terminal' command, so a task started via the 'run'
-    command could be debugged from another terminal to avoid any I/O
-    conflicts.
+  * the 'run' command now loads a task image file (into an external,
+    separate partition as before) file for debugging if the name specified
+    in the command line does not corresponds to an installed task.
+  * implemented the 'terminal' command; now a task started via the 'run'
+    command can be debugged from another terminal, avoiding I/O conflicts.
 
 
 19/02/23
@@ -532,4 +531,13 @@ Changelog
     exceptions (such as single-step) are triggered.
   * the 'run' command doesn't accept yet a command line tail for the task
     being debugged.
+
+
+26/02/23
+
+- Kernel: removed the unused XD.AST parameter from the debugger data block
+  (debug event ASTs are global and specified via .ASTDF)
+
+- DDT: ^C now interrupts a long Tnnnn trace command.
+
 
