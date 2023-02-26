@@ -21,7 +21,7 @@
 
 	.Z280
 
-	ident	/V1.0/
+	ident	/V1.01/
 
 	include	DEBUG.INC
 
@@ -1049,12 +1049,8 @@ eitrp1:	ld	(reason),5
 ; task is running.
 
 ?break:	ld	bc,(DBGTCB)
-	ld	hl,T.ST
-	add	hl,bc
-	bit	TS.BPT,(hl)	; task already stopped at breakpoint?
-	scf
-	ret	nz		; yes, return
 	KCALL	$DBBRK		; break task execution
+	ret	c		; return if task was already stopped
 	ld	hl,SST.BP
 	ld	(DBGCOD),hl
 	ld	e,DBGEFN
@@ -1077,6 +1073,7 @@ debug_trap:
 	ld	a,(reason)
 	dec	a		; single-stepping?
 	jr	nz,dbg2		; branch if not
+	call	?stop		; check for ^C abort
 	ld	hl,(tcount)
 	dec	hl
 	ld	(tcount),hl
