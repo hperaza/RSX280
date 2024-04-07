@@ -23,6 +23,8 @@
 
 	.Z80
 
+	ident	/SL1.2/
+
 	public	LDEC
 
 	extrn	PUTCH
@@ -74,10 +76,10 @@ la1:	push	af
 	ld	(bc),a
 	dec	bc
 	pop	af
-	rrc	a
-	rrc	a
-	rrc	a
-	rrc	a
+	rrca
+	rrca
+	rrca
+	rrca
 	and	0Fh
 	add	a,'0'
 	ld	(bc),a
