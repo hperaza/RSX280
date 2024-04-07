@@ -1,6 +1,6 @@
 ! T3X -> Z80 compiler (CP/M, RSX180/280)
-! Nils M Holm, 2017,2019,2020
-! Public Domain / CC0 license
+! Nils M Holm, 2017,2019,2020,2022
+! Public Domain / 0BSD license
 ! REL version by H Peraza, 2022
 
 module  t3xz(t3x);
@@ -8,8 +8,6 @@ module  t3xz(t3x);
 object	t[t3x];
 
 const	BPW = 2;
-
-const	STACK_SIZE = 128;	! not used?
 
 const	BUFLEN = 128;		! disk I/O buffer size
 
@@ -380,8 +378,8 @@ end
 
 var	Gp;
 
-var	Tp, Dp, Lp, Ls, Lp0;	! Tp = next address in text segment
-				! Dp = next address in data segment
+var	Tp, Dp, Lp, Ls, 	! Tp = next address in text segment
+	Lp0, Lbp0;		! Dp = next address in data segment
 				! Lp = next address in local stack frame
 
 var	Tsize, Dsize;		! text and data segment sizes
@@ -409,7 +407,7 @@ struct	CG =	CG_NULL,
 		CG_DELFRAME, CG_RET, CG_START, CG_HALT,
 		CG_NEG, CG_INV, CG_LOGNOT, CG_ADD, CG_SUB,
 		CG_MUL, CG_DIV, CG_MOD, CG_AND, CG_OR, CG_XOR,
-		CG_SHL, CG_SHR, CG_EQ, CG_NEQ, CG_LT, CG_GT,
+		CG_SHL, CG_SHR, CG_EQ, CG_NE, CG_LT, CG_GT,
 		CG_LE, CG_GE, CG_JMPEQ, CG_JMPNE, CG_JMPLT,
 		CG_JMPGT, CG_JMPLE, CG_JMPGE;
 
@@ -1626,7 +1624,7 @@ for_stmt() do
 		else do
 			gen(CG_LDGLOB, y[SVALUE], y[SSEG], y);
 			gen(CG_INCR, step, 0, 0);
-			gen(CG_STGLOB, y[svalue], y[SSEG], y);
+			gen(CG_STGLOB, y[SVALUE], y[SSEG], y);
 		end
 	end
 	else do
@@ -1636,7 +1634,7 @@ for_stmt() do
 		else do
 			gen(CG_LDLOCL, y[SVALUE], 0, 0);
 			gen(CG_INCR, step, 0, 0);
-			gen(CG_STLOCL, y[svalue], 0, 0);
+			gen(CG_STLOCL, y[SVALUE], 0, 0);
 		end
 	end
 	gen(CG_JUMP, a0, CSEG, 0);
@@ -1657,6 +1655,7 @@ leave_stmt() do var l;
 		aw("too many LEAVEs", 0);
 	l := newlab();
 	Leaves[Lvp] := l;
+	if (Lbp0 \= Lp) gen(CG_UNSTACK, Lbp0-Lp, 0, 0);
 	gen(CG_JUMP, findlab(l), CSEG, 0);
 	Lvp := Lvp+1;
 end
@@ -1674,6 +1673,7 @@ loop_stmt() do var l;
 			aw("too many LOOPs", 0);
 		l := newlab();
 		Loops[Llp] := l;
+		if (Lbp0 \= Lp) gen(CG_UNSTACK, Lbp0-Lp, 0, 0);
 		gen(CG_JUMP, findlab(l), CSEG, 0);
 		Llp := Llp+1;
 	end
@@ -1701,7 +1701,7 @@ asg_or_call() do var y, b;
 	xsemi();
 end
 
-decl	compound(1);
+decl	compound(2);
 
 stmt(body) ie (Tk = KFOR)
 		for_stmt();
@@ -1722,7 +1722,7 @@ stmt(body) ie (Tk = KFOR)
 	else ie (Tk = KWHILE)
 		while_stmt();
 	else ie (Tk = KDO)
-		compound(body);
+		compound(body, 0);
 	else ie (Tk = SYMBOL)
 		asg_or_call();
 	else ie (Tk = KCALL) do
@@ -1734,14 +1734,16 @@ stmt(body) ie (Tk = KFOR)
 	else
 		expect(%1, "statement");
 
-compound(body) do var oyp, olp, onp, ols, msg;
+compound(body, main) do var oyp, olp, olbp, onp, ols, msg;
 	msg := "unexpected end of compound statement";
 	Tk := scan();
 	oyp := Yp;
 	onp := Np;
 	olp := Lp;
 	ols := Ls;
+	olbp := Lbp0;
 	Ls := 0;
+	Lbp0 := Lp;
 	while (Tk = KVAR \/ Tk = KCONST \/ Tk = KSTRUCT) do
 		if (Tk = KVAR /\ \Frame) do
 			gen0(CG_MKFRAME);
@@ -1751,6 +1753,7 @@ compound(body) do var oyp, olp, onp, ols, msg;
 	end
 	if (Ls) gen(CG_STACK, -(Ls*BPW), 0, 0);
 	if (body) Lp0 := Lp;
+	if (main) Lbp0 := Lp;
 	while (Tk \= KEND) do
 		if (Tk = ENDFILE) aw(msg, 0);
 		stmt(0);
@@ -1770,6 +1773,7 @@ compound(body) do var oyp, olp, onp, ols, msg;
 	Np := onp;
 	Lp := olp;
 	Ls := ols;
+	Lbp0 := olbp;
 end
 
 checkclass() do var y;
@@ -1826,7 +1830,7 @@ program() do var i;
 	Lskip := 0;
 !	Tstart := Tp;
 !	gen(CG_START, 0, CSEG, 0);!Tstart+6, CSEG, 0);
-	compound(0);
+	compound(0, 1);
 	if (Tk \= ENDFILE)
 		aw("trailing characters", Str);
 	gen0(CG_HALT);
@@ -1919,7 +1923,7 @@ init(p) do var i, b::10;
 		[ CG_SHL,	"d1eb432910fd"		],
 		[ CG_SHR,	"d1eb43cb3ccb1d10fa"	],
 		[ CG_EQ,	"d1afed5221ffff280123"	],
-		[ CG_NEQ,	"d1afed5221ffff200123"	],
+		[ CG_NE,	"d1afed5221ffff200123"	],
 		[ CG_LT,	"d1ebcd,x0021ffff380123"],
 		[ CG_GT,	"d1cd,x0021ffff380123"	],
 		[ CG_LE,	"d1cd,x0021000038012b"	],
@@ -1933,7 +1937,7 @@ init(p) do var i, b::10;
 		[ %1,		""			] ];
 	Opttbl := [
 		[ CG_EQ,	0,	CG_JMPFALSE,	CG_JMPNE	],
-		[ CG_NEQ,	0,	CG_JMPFALSE,	CG_JMPEQ	],
+		[ CG_NE,	0,	CG_JMPFALSE,	CG_JMPEQ	],
 		[ CG_LT,	0,	CG_JMPFALSE,	CG_JMPGE	],
 		[ CG_GT,	0,	CG_JMPFALSE,	CG_JMPLE	],
 		[ CG_LE,	0,	CG_JMPFALSE,	CG_JMPGT	],
@@ -1962,7 +1966,7 @@ init(p) do var i, b::10;
 		[ 0, 2, ":=",	ASSIGN, 0		],
 		[ 0, 1, "\\",	UNOP,   CG_LOGNOT	],
 		[ 1, 2, "\\/",	DISJ,   0		],
-		[ 3, 2, "\\=",	BINOP,  CG_NEQ		],
+		[ 3, 2, "\\=",	BINOP,  CG_NE		],
 		[ 4, 1, "<",	BINOP,  CG_LT		],
 		[ 4, 2, "<=",	BINOP,  CG_LE		],
 		[ 5, 2, "<<",	BINOP,  CG_SHL		],
@@ -1992,7 +1996,7 @@ init(p) do var i, b::10;
 	rt_lib("?cmp16s");                      ! run-time library
 	rt_lib("?mul15s");
 	rt_lib("?div15s");
-	rt_lib("?mod15s");
+	rt_lib("?mod16");
 	rt_lib("?jphl");
 	rt_lib("?init");
 	rt_lib("?halt");
@@ -2090,7 +2094,7 @@ do var in::40, k;
 	Outname::0 := 0;
 	Modname::0 := 0;
 	Verbose := 0;
-	if (t.getarg(2, in, 4) /\ (str_equal(in, "/V") \/ str_equal(in, "/v")))
+	if (t.getarg(2, in, 4) \= %1 /\ (str_equal(in, "/V") \/ str_equal(in, "/v")))
 		Verbose := 1;
 	k := t.getarg(1, in, 30);
 	if (k < 0) aw("missing file name", 0);

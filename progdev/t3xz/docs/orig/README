@@ -175,9 +175,6 @@
 	* Local variables may not allocate more than 126 bytes per
 	  function.
 
-	* Bodies of loops cannot allocate local storage, if you use
-	  LOOP or LEAVE inside of them.
-
 	* When reading T3X.SYSIN, the length parameter must not exceed
 	  128, i.e. N<=128 must apply in T.READ(T3X.SYSIN, B, N).
 
@@ -193,7 +190,7 @@
 	* Files do not close automatically on exit. Do use T.CLOSE!
 
 	* Symbol table sizes are smaller and the number of forward
-	  references (DECLs) it limited.
+	  references (DECLs) is limited.
 
 	With these differences in mind, the T3X documentation also
 	applies to T3X/Z. See, for instance, the T3X 7.x package at the

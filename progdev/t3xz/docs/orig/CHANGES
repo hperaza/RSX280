@@ -1,4 +1,21 @@
 
+	2022-09-09
+
+	- Fix: frame allocation sometimes failed in the main program.
+	  Huh. How did this one survive so long?
+
+
+	2022-09-08
+
+	- Fix: below fix did not cover the main program body.
+
+
+	2022-09-07
+
+	- Fix: compound statements now deallocate local storage when
+	  exiting via LEAVE or LOOP.
+
+
 	2021-12-08
 
 	- Added optimizations suggested by Hector Peraza, improving code
@@ -166,8 +183,6 @@
 	This version is based on T3X9, Release 2.
 
 	- retargeted to CP/M-Z80
-
-	- D and S may overlap in T.MEMCOPY(D, S, N)
 
 	- allocating local storage in blocks
 

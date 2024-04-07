@@ -3,7 +3,7 @@ Changelog
 
 27/06/22
 
-- First quick port of T3X/Z V1.6 to RSX180/280. Runtime library ported, except
+- First quick port of T3X/Z V16 to RSX180/280. Runtime library ported, except
   for the t_bdos and t_bdoshl functions.
 
 - Summary output only if /V is specified on the command line (thus, no longer
@@ -40,5 +40,70 @@ Changelog
 01/07/22
 
 - Report code and data size, number of symbols, etc. as unsigned decimal.
+
+
+02/07/22
+
+- Working on a new version that generates REL files:
+  * added REL-output routines.
+  * use two unused SFLAGS bits for segment information.
+  * globaddr() now allocates space in data segment, and no longer in code
+    segment with a relative jump to get around the data; CG_RJUMP became
+    obsolete and was removed.
+  * gen() function expanded to handle segment information.
+  * removed emitlib() since the Run-Time library is now added at the link
+    phase.
+  * the Run-Time library is now a separate REL library, mklib no longer
+    needed.
+
+
+10/07/22
+
+- Generate external references for Run-Time library calls. Pointers to the
+  corresponding symbol table entries are now kept in a separate table to
+  make chain address handling easier (saves a symbol table lookup.)
+
+
+21/07/22
+
+- New symbol 'class' and 'object' types, taken from the PC compiler version.
+  Class members can be constants or functions at this point, not variables.
+  Due to REL name length limitations, external function names are aliased to
+  a shorter name, invisible to the compiled program (before, T.* methods were
+  entered into the symbol table as simple identifiers resolving to a fixed
+  library address)
+
+- Chain externals when calling external object methods.
+
+
+22/07/22
+
+- Emit an external call to the initialization library code, do not assume
+  that the main program begins at zero (code-relative) address.
+
+- Place constant strings, byte vectors and tables on data segment. This
+  eliminates the jump-around instruction required when those are placed in
+  the code segment, resulting in smaller code.
+
+- Module statement now sets REL module name.
+
+- First working version!
+
+- Don't add 't' object by default; create it in object_decl();
+
+
+23/07/22
+
+- Remove redundant jump-around instructions.
+
+- Added 'external' keyword to allow calling external assembly-language
+  functions.
+
+
+03/12/23
+
+- Added V19 changes (compound statements now deallocate local storage when
+  exiting via LEAVE or LOOP).
+
 
 
