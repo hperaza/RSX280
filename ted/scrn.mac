@@ -164,7 +164,7 @@ EXSCR:	call	STLREC		; store edited line back into records
 
 SCRERR:	call	CLS		; clear screen and home cursor
 	jp	WFOV		; print "WORK FILE OVERFLOW" and go back
-	;  to command mode
+				;  to command mode
 
 ; ^[ - handle escape sequence
 
@@ -1840,7 +1840,7 @@ DISPLE:	push	hl
 	jr	c,dple1		; jump if not
 	ld	a,HSIZE		; else truncate to number of display cols
 dple1:	inc	c		; (so we can use 'jc' instead of 'jc'+'jz')
-	dec	b		;;note inc b above
+	dec	b		; note inc b above
 	add	a,b
 	sub	c		; subtract cursor position
 	jr	c,dple8		; return if result <= 0

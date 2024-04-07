@@ -2284,9 +2284,9 @@ NUMD:	db	0		; displacement flag from last argument:
 				;  0=absolute, 1=relative, -1=from end
 
 N1:	dw	0		; N1
-N1D:	db	0		;  it's displacement
+N1D:	db	0		;  its displacement
 N2:	dw	0		; N2
-N2D:	db	0		;  it's displacement
+N2D:	db	0		;  its displacement
 N3:	dw	0		; N3
 
 ARGLEN:	db	0		; string arg length
@@ -2296,7 +2296,7 @@ ARGSTR:	dw	0		; string arg address
 ; for some data buffers
 
 CMDBUF	equ	$		; 82 bytes used for command line buffer
-EDITBF	equ	CMDBUF+82	; MAXLEN+2 bytes used as edit line fuffer
+EDITBF	equ	CMDBUF+82	; MAXLEN+2 bytes used as edit line buffer
 TMPBUF	equ	EDITBF+MAXLEN+2	; MAXLEN bytes used for temporary operations
 ENDDAT	equ	TMPBUF+MAXLEN	; end of buffer area
 
