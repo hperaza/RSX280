@@ -1,0 +1,64 @@
+	.Z80
+
+	public	FCMP
+
+	extrn	FR0,FR1
+
+; Compares FR0 and FR1 (non-destructive)
+;
+; Returns:
+;   A =  0 and Z flag set if FR0 == FR1 (EQ)
+;   A =  1 and P flag set if FR0 > FR1  (GT)
+;   A = -1 and M flag set if FR0 < FR1  (LT)
+
+FCMP:	ld	a,(FR0+0)
+	ld	c,a
+	ld	a,(FR1+0)
+	ld	b,a
+	xor	c
+	rla			; get sign bit difference into CY
+	jr	nc,fcmp1	; branch if signs are equal
+	bit	7,c		; FR0 positive?
+	jr	z,fgt		; yes, return GT
+flt:	ld	a,-1		; else return LT
+	or	a
+	ret
+fgt:	ld	a,1
+	or	a
+	ret
+
+fcmp1:	; equal signs, compare exponents
+
+	res	7,b		; kill FR1 sign bit
+	ld	a,c
+	res	7,a		; kill FR0 sign bit, but keep sign in reg C
+	cp	b		; compare exponents
+	jr	z,fcmp3		; branch if exponents are equal
+	jp	p,fcmp2		; jump if exp(FR0) > exp(FR1)
+
+	; here if exp(FR0) < exp(FR1)
+
+fcmp5:	bit	7,c		; are both numbers positive?
+	jr	z,flt		; yes, return LT
+	jr	fgt		; else return GT
+
+fcmp2:	bit	7,c		; are both numbers positive?
+	jr	z,fgt		; yes, return GT
+	jr	flt		; else return LT
+
+fcmp3:	; exponents are equal, compare mantissas
+
+	ld	hl,FR0+1
+	ld	de,FR1+1
+	ld	b,5
+fcmp4:	ld	a,(de)
+	cp	(hl)		; CY if mantissa(FR0) > mantissa(FR1)
+	jr	c,fcmp2
+	jr	nz,fcmp5
+	inc	hl
+	inc	de
+	djnz	fcmp4
+feq:	xor	a		; both numbers are equal
+	ret
+
+	end

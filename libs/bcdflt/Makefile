@@ -27,6 +27,7 @@ SRCS = afp.mac \
 	fpow.mac \
 	fsgn.mac \
 	ftrunc.mac \
+	fcmp.mac \
 	ifp.mac \
 	isint.mac \
 	log.mac \
@@ -52,7 +53,7 @@ $(OBJS): %.rel: %.mac
 bcdflt.lib: $(OBJS)
 	$(ZXCC) $(LBR) -"$@=atn,fabs,sincos,fneg,fsgn,fint,fpow,exp,log,sqr"
 	@cp $@ src.lib
-	$(ZXCC) $(LBR) -"$@=src.lib,xform,plyevl,fadd,fmul,fdiv,fpmisc"
+	$(ZXCC) $(LBR) -"$@=src.lib,xform,plyevl,fadd,fmul,fdiv,fcmp,fpmisc"
 	@cp $@ src.lib
 	$(ZXCC) $(LBR) -"$@=src.lib,afp,fpa,ifp,fpi,denorm,fnorm,pshpop"
 	@cp $@ src.lib
