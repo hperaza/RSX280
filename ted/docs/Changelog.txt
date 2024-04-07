@@ -174,3 +174,9 @@ Changelog
 
 - RSX180: display file version as 16-bit decimal.
 
+
+04/12/22
+
+- RSX180: switch to VT52 escape sequences if the terminal is not set to
+  ANSI.
+
