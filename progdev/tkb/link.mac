@@ -3465,7 +3465,7 @@ lnk51:	; new COMMON
 	ld	de,(AF.val)		; get new COMMON length
 	ld	hl,(ModLen+ICOMN)
 	add	hl,de
-	ld	(ModLen+ICOMN),hl	; update length
+	ld	(ModLen+ICOMN),hl	; update total COMMON length
 	jp	SetCOMlen		; set field in symbol entry and return
 
 $CMNL:	db	'/',0,'/ First COMMON not largest',0
@@ -4511,7 +4511,7 @@ osloop:	ld	a,d
 	push	hl
 	push	de
 	call	LD.Seg		; get byte from segment
-	call	WrByte		; .. and write it to output filr
+	call	WrByte		; .. and write it to output file
 	pop	de
 	pop	hl
 	inc	hl
