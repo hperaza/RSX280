@@ -5,7 +5,7 @@
 ; Z80 BCD floating point package.
 ;
 ; This an adaptation of the similar routines found in the ATARI 800XL
-; Floating Point and BASIC ROMs, originally written for the 6502.
+; Floating Point and BASIC ROMs, originally written for the 6502 CPU.
 ; Some minor inconsistencies were fixed in the conversion process.
 ;
 ; Floating point number representation:
@@ -17,10 +17,11 @@
 ;           xx  /
 ;  byte 5   xx /
 ;
-; The decimal point is shifted to left of the MSD and the exponent is
-; adjusted accordingly. Therefore, the decimal point does not need to
-; be represented. The exponent is halved, so the number is actually
-; mantissa*10^(2*exp).
+; The decimal point is assumed to be between the first and second byte
+; of the mantissa, with the exponent is adjusted accordingly.
+;
+; The exponent is halved, so the number is actually mantissa*10^(2*exp),
+; or mantissa*100^exp.
 ;
 ; The range of absolute values that can be represented is
 ;   1.0E-98 <= x <= 9.99999999E+97
@@ -52,7 +53,7 @@ FR2:	ds	6	; floating point register 2
 ?DIGRT:	ds	1	; digits to the right of decimal point
 
 	ds	2	; reserved for a leading zero and/or minus sign
-?LBUFF:	ds	20	; result buffer for FASC routine;
+?LBUFF:	ds	20	; result buffer for FPA routine;
 			; up to 18 bytes are used for intermediate
 			; results by some of the computation routines
 
