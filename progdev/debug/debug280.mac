@@ -825,48 +825,48 @@ msgti:	db	'TI = ',0
 msgioc:	db	'IOC = ',0
 msgfl:	db	'Eflg: ',0
 
-sep3:	ld	c,' '
+sep3:	ld	c,' '		; output 3 spaces
 	call	PUTCH
-sep2:	ld	c,' '
+sep2:	ld	c,' '		; or just 2
 	call	PUTCH
 	jp	PUTCH
 
-pad:	ld	b,a
-	ld	a,c
-	sub	b
-	ret	z
-	ret	c
+pad:	ld	b,a		; get string length into B
+	ld	a,c		; get field width
+	sub	b		; subtract to obtain pad lenght
+	ret	z		; return if zero
+	ret	c		; or negative
 	ld	b,a
 	ld	c,' '
-pad1:	call	PUTCH
+pad1:	call	PUTCH		; pad field with spaces
 	djnz	pad1
 	ret
 
-tbits:	ld	b,8
-	ld	e,01h
-t1:	ld	a,d
-	and	e
-	jr	z,t2
-	ld	a,(hl)
+tbits:	ld	b,8		; 8 bits in a byte
+	ld	e,01h		; start from LSB
+t1:	ld	a,d		; get task status byte
+	and	e		; set?
+	jr	z,t2		; no
+	ld	a,(hl)		; get 1st string byte
 	inc	hl
-	or	a
-	jr	z,t3
+	or	a		; null?
+	jr	z,t3		; yes: no name for this bit, so skip it
 	dec	hl
 	push	bc
 	ld	b,3
-	call	PRINTN
+	call	PRINTN		; output 3-char bit name
 	pop	bc
 	ld	c,' '
-	call	PUTCH
-	jr	t3
-t2:	ld	a,(hl)
+	call	PUTCH		; followed by a space
+	jr	t3		; next
+t2:	ld	a,(hl)		; skip bit name (or null byte)
 	inc	hl
 	or	a
 	jr	z,t3
 	inc	hl
 	inc	hl
-t3:	rl	e
-	djnz	t1
+t3:	rl	e		; shift mask
+	djnz	t1		; decrement counter and loop
 	ret
 
 stna:	db	'-ACT ',0
@@ -966,24 +966,24 @@ trnext:	ld	hl,1100h	; SS bit set, SSP clear, BH bit set
 ; Display 16-bit address followed by a colon and a space
 
 out_addr:
-	call	CRLF
-	call	HLHEX
+	call	CRLF		; output newline
+	call	HLHEX		;  the 16-bit address
 	ld	c,':'
-	call	PUTCH
-	jr	space
+	call	PUTCH		;   the semicolon
+	jr	space		;    and a space
 
 ; Display 8-bit value followed by a space
 
 outbyte:
-	call	AHEX
+	call	AHEX		; output the byte value
 space:	ld	c,' '
-	jp	PUTCH
+	jp	PUTCH		;  and a space
 
 ; Continue execution from last breakpoint or single-step operation
 
 continue:
 	ld	e,DBGEFN
-	SC	.CLEF
+	SC	.CLEF		; clear event flag
 
 	ld	a,(DBGCOD)	; check for possible race condition
 	or	a		;  (task may have exited or been aborted
@@ -1045,8 +1045,8 @@ eitrp2:
 eitrp1:	ld	(reason),5
 	jp	debug_trap
 
-; Break task execution, usually called as a response to ^C while the
-; task is running.
+; Break task execution, usually called in response to ^C while the task
+; is running.
 
 ?break:	ld	bc,(DBGTCB)
 	KCALL	$DBBRK		; break task execution

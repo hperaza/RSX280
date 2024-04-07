@@ -525,7 +525,7 @@ p0:	ld	hl,0
 	jr	z,err2		; can't debug itself
 	cp	E.INV
 	ld	hl,emsg3
-	jr	z,err2		; task attached to another debugger
+	jr	z,err2		; task connected to another debugger
 	jr	err1
 
 p1:	ld	(SYSLVL),1	; re-enable task dispatching
@@ -577,7 +577,7 @@ err2:	ld	(SYSLVL),1	; re-enable task dispatching
 
 msg1:	db	'Connected to task "%T"',0
 msg2:	db	'Disconnected from task "%T"',0
-msg3:	db	'Warning - task uses the same TI: as debugger',0
+msg3:	db	'Warning - task uses the same TI: as the debugger',0
 msg4:	db	'Task "%T" exited with status = %S',0
 msg5:	db	'Task "%T" aborted',0
 msg6:	db	'Task "%T" is checkpointed, waiting for reload',0
@@ -585,7 +585,7 @@ msg7:	db	'Task "%T" is requested, waiting for load',0
 
 emsg1:	db	'Can''t debug itself',0
 emsg2:	db	'Privilege violation',0
-emsg3:	db	'Task attached to another debugger',0
+emsg3:	db	'Task connected to another debugger',0
 
 ;-----------------------------------------------------------------------
 
