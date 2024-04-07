@@ -1,6 +1,6 @@
 	.Z80
 
-	name	'ZFR0'
+	name	('ZFR0')
 
 	public	ZFR0,ZFP
 

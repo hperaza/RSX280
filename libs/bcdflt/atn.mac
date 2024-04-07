@@ -2,7 +2,7 @@
 
 	public	ATN
 
-	extrn	XFORM,FSTOR,FMOVE,FADD,FMUL,FDIV,PLYEVL,FLD1R
+	extrn	?XFORM,FST0R,FMOVE,FADD,FMUL,FDIV,PLYEVL,FLD1R
 	extrn	?FLAG,?DIGRT,FR0,?FSCR,DEGRAD
 
 	; Compute arctan of value in floating point register FR0
@@ -10,51 +10,51 @@
 	cseg
 
 ATN:	xor	a
-	ld	(?FLAG),a
-	ld	(?DIGRT),a
+	ld	(?FLAG),a	; sign flag off
+	ld	(?DIGRT),a	; transform flag off
 	ld	a,(FR0)
 	and	7Fh		; clear sign bit
 	cp	40h
-	jp	m,atn1
-	ld	a,(FR0)
+	jp	m,atn1		; if |arg| < 1, use series directly
+	ld	a,(FR0)		; here if |arg| >= 1
 	and	80h
-	ld	(?FLAG),a
+	ld	(?FLAG),a	; remember sign
 	ld	hl,?DIGRT
-	inc	(hl)
+	inc	(hl)		; set transform flag
 	ld	a,(FR0)
-	and	7Fh
+	and	7Fh		; force plus
 	ld	(FR0),a
 	ld	hl,F09999	; 0.9999999999
-	call	XFORM		; FR0 = (FR0 - .999999) / (FR0 + .999999)
+	call	?XFORM		; change arg to = (X - 1) / (X + 1)
 atn1:	ld	hl,?FSCR
-	call	FSTOR
-	call	FMOVE
-	call	FMUL
-	ret	c
-	ld	a,11
+	call	FST0R		; save X
+	call	FMOVE		; FR1 <- X
+	call	FMUL		; X * X (square X)
+	ret	c		; on overflow, return
+	ld	c,11		; number of coefficients
 	ld	hl,ATANC	; point to coefficients
-	call	PLYEVL		; evaluate polynom
+	call	PLYEVL		; evaluate polynomial
 	ret	c
 	ld	hl,?FSCR
-	call	FLD1R
-	call	FMUL
+	call	FLD1R		; recall X
+	call	FMUL		; X * P(X^2)
 	ret	c
 	ld	a,(?DIGRT)
-	or	a
-	jr	z,atn2
+	or	a		; was arg transformed?
+	jr	z,atn2		; no
 	ld	hl,ATAN1
 	call	FLD1R
-	call	FADD
+	call	FADD		; yes, add arctan(1) = pi/4
 	ld	hl,?FLAG
-	ld	a,(FR0)
-	or	(hl)
+	ld	a,(FR0)		; get org sign
+	or	(hl)		; arctan(-X) = arctan(X)
 	ld	(FR0),a
 atn2:	ld	a,(DEGRAD)
-	or	a
-	ret	z
+	or	a		; radians or degrees?
+	ret	z		; radians, return
 	ld	hl,PI180
 	call	FLD1R
-	jp	FDIV		; convert to radians
+	jp	FDIV		; degrees, convert to radians
 
 	; arctan coefficients
 

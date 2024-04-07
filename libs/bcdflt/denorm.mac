@@ -1,6 +1,8 @@
 	.Z80
 
-	public	DENOR0,DENOR1
+	name	('DENORM')
+
+	public	?DNOR0,?DNOR1
 
 	extrn	FR0,FR1
 
@@ -8,16 +10,17 @@
 
 	cseg
 
-DENOR0:	ld	hl,FR0		; denormalize FR0
+?DNOR0:	ld	hl,FR0		; denormalize FR0
 	jr	dn0
-DENOR1:	ld	hl,FR1		; denormalize FR1
+
+?DNOR1:	ld	hl,FR1		; denormalize FR1
 dn0:	push	af
 dn1:	ld	bc,5
 	add	hl,bc		; point to last byte
 	ld	e,l
 	ld	d,h
 	dec	hl
-	ld	bc,4
+	dec	bc		; 4
 	lddr			; shift mantissa right two decimal places
 	inc	hl
 	ld	(hl),0		; clear first mantissa byte (FRx+1)

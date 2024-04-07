@@ -2,7 +2,7 @@
 
 	public	LOG,LOG10
 
-	extrn	FLD1R,FSTOR,FMOVE,FADD,FMUL,FDIV,PLYEVL,XFORM,IFP
+	extrn	FLD1R,FST0R,FMOVE,FADD,FMUL,FDIV,PLYEVL,?XFORM,IFP
 	extrn	FR0,FR1,?FLAG,?DIGRT,?FSCR,ILN10,FPhalf
 
 	cseg
@@ -20,56 +20,56 @@ log_e:	ld	(?FLAG),a	; ?FLAG: 0 = log10(x), 1 = ln(x)
 ;;	ld	a,(FR0)
 	ld	(FR1),a
 	sub	40h		; subtract exponent bias
-	add	a,a
+	add	a,a		; double value to get the real exponent
 	ld	(?DIGRT),a
-	ld	a,(FR0+1)
-	and	0F0h
-	jr	nz,log1
-	inc	a		; A=1
+	ld	a,(FR0+1)	; get first byte of mantissa
+	and	0F0h		; mask first BCD digit
+	jr	nz,log1		; branch if not zeo
+	inc	a		; A=01h
 	jr	log2
 log1:	ld	hl,?DIGRT
-	inc	(hl)
-	ld	a,10h
+	inc	(hl)		; fix the real exponent
+	ld	a,10h		; A=10h
 log2:	ld	(FR1+1),a
 	ld	hl,FR1+2+4	; FR1+6 = FR2
 	ld	b,5
 	xor	a
-log3:	ld	(hl),a		; clear down to FR1+2
+log3:	ld	(hl),a		; zero the rest (down to FR1+2?)
 	dec	hl
 	djnz	log3
 
-	call	FDIV
+	call	FDIV		; normalize argument
 	ld	hl,SQR10	; sqr(10)
-	call	XFORM		; FR0 = (FR0 - sqr(10)) / (FR0 + sqr(10))
+	call	?XFORM		; FR0 = (FR0 - sqr(10)) / (FR0 + sqr(10))
 	ld	hl,?FSCR
-	call	FSTOR
+	call	FST0R		; save reduced argument
 	call	FMOVE
-	call	FMUL
-	ld	a,10
+	call	FMUL		; square it
+	ld	c,10		; number of coefficients
 	ld	hl,LOGC		; point to coefficients
-	call	PLYEVL		; evaluate polynom
+	call	PLYEVL		; evaluate polynomial
 	ld	hl,?FSCR
-	call	FLD1R
-	call	FMUL
+	call	FLD1R		; get reduced argument into FR1
+	call	FMUL		; then multiply by the polynomial result
 	ld	hl,FPhalf	; 0.5
 	call	FLD1R
-	call	FADD
-	call	FMOVE
+	call	FADD		; add 0.5 to result
+	call	FMOVE		; and move it to FR1
 	xor	a
 	ld	(FR0+1),a
-	ld	a,(?DIGRT)
+	ld	a,(?DIGRT)	; get orig exponent
 	ld	(FR0),a
 	or	a
 	jp	p,log4
-	neg
+	neg			; if negative, make it positive
 	ld	(FR0),a
-log4:	call	IFP
+log4:	call	IFP		; convert orig exponent to float
 	ld	a,(?DIGRT)
 	or	a
 	jp	p,log5
 	ld	hl,FR0
-	set	7,(hl)
-log5:	call	FADD
+	set	7,(hl)		; set sign of converted exponent accordingly
+log5:	call	FADD		; add exponent to obtain final result
 	ld	a,(?FLAG)	; log10 or ln?
 	or	a
 	ret	z		; return with CY clear if log10

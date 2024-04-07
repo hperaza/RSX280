@@ -2,7 +2,7 @@
 
 	public	SIN,COS
 
-	extrn	FLD0R,FLD1R,FMUL,FDIV,FSUB,FMOVE,FSTOR,PLYEVL,FNEG
+	extrn	FLD0R,FLD1R,FMUL,FDIV,FSUB,FMOVE,FST0R,PLYEVL,FNEG
 	extrn	FR0,FR1,?FSCR,FPone,?FLAG,?DIGRT,DEGRAD
 
 	cseg
@@ -11,18 +11,16 @@ SIN:	ld	a,(FR0)		; check sign of x
 	or	a
 	ld	a,4
 	jp	p,cos1
-	ld	a,2
+	ld	a,2		; sin(-x) = -sin(x)
 	jp	cos1
-
-	public	COS
 
 COS:	ld	a,1
 cos1:	ld	(?FLAG),a	; 1 for cos(x), 2 for -sin(x), 4 for sin(x)
 	ld	a,(FR0)
-	and	7Fh		; clear sign bit
+	and	7Fh		; force positive
 	ld	(FR0),a
 	ld	hl,PIDIV2
-	ld	a,(DEGRAD)
+	ld	a,(DEGRAD)	; radians or degrees?
 	ld	e,a
 	ld	d,0
 	add	hl,de		; point to either PI/2 or 90
@@ -30,67 +28,67 @@ cos1:	ld	(?FLAG),a	; 1 for cos(x), 2 for -sin(x), 4 for sin(x)
 	call	FDIV		; compute x/(PI/2) or x/90
 	ret	c
 	ld	a,(FR0)
-	and	7Fh		; clear sign bit
-	sub	40h		; subtract exponent bias
-	jp	m,cos4		; jump if number < 1.0
-	cp	4
-	scf
-	ret	p		; error if number >= 1.0E8
+	and	7Fh		; check exponent
+	sub	40h		; subtract bias
+	jp	m,cos4		; jump if quadrant 0 (result < 1.0)
+	cp	4		; find quadrant number and remainder
+	scf			;  (4 = FPprec - 2)
+	ret	p		; error if result >= 1.0E8 (out of range)
 	ld	e,a
 	ld	d,0
 	ld	hl,FR0+1
 	add	hl,de
 	ld	a,(hl)
 	ld	(?DIGRT),a
-	and	10h
+	and	10h		; check 10's digit
 	jr	z,cos2
-	ld	a,2
+	ld	a,2		; odd, add 2 to quadrant number
 cos2:	ld	hl,?DIGRT
 	add	a,(hl)
-	and	3
+	and	3		; quadrant = 0,1,2,3
 	ld	hl,?FLAG
-	add	a,(hl)
+	add	a,(hl)		; adjust for sine vs cosine
 	ld	(hl),a
 	ld	a,e
-	ld	(?DIGRT),a
-	call	FMOVE
+	ld	(?DIGRT),a	; save decimal point loc
+	call	FMOVE		; copy to FR1
 	ld	a,(?DIGRT)
 	ld	e,a
 	ld	d,0
 	ld	hl,FR1+2
 	add	hl,de
-cos3:	ld	(hl),0
+cos3:	ld	(hl),0		; clear fraction
 	inc	hl
 	inc	e
 	ld	a,e
 	cp	3
 	jr	c,cos3
-	call	FSUB
+	call	FSUB		; leave remainder
 cos4:	ld	hl,?FLAG
-	srl	(hl)
-	jr	nc,cos5
+	srl	(hl)		; odd quadrant?
+	jr	nc,cos5		; no
 	call	FMOVE
 	ld	hl,FPone	; 1.0
 	call	FLD0R
-	call	FSUB
-cos5:	ld	hl,?FSCR
-	call	FSTOR
+	call	FSUB		; yes, use 1.0 - remainder
+cos5:	ld	hl,?FSCR	; now do the series
+	call	FST0R		; save arg
 	call	FMOVE
-	call	FMUL
+	call	FMUL		; square X
 	ret	c
-	ld	a,6		; number of coefficients
+	ld	c,6		; number of coefficients
 	ld	hl,COSC		; point to coefficients
-	call	PLYEVL		; evaluate polynom
+	call	PLYEVL		; evaluate polynomial
 	ld	hl,?FSCR
-	call	FLD1R
-	call	FMUL
+	call	FLD1R		; recall X into FR1
+	call	FMUL		; sin(x) = x * p(x^2)
 	ld	hl,?FLAG
-	srl	(hl)
-	ret	nc
-	jp	FNEG		; negate and return
+	srl	(hl)		; was quadrant 2 or 3?
+	ret	nc		; no, done
+	jp	FNEG		; else flip sign and return
 
 COSC:	db	0BDh,003h,055h,014h,099h,039h	; -0.00000355149939
-	db	03Eh,001h,060h,044h,027h,052h	;  0.0160442752
+	db	03Eh,001h,060h,044h,027h,052h	;  0.000160442752
 	db	0BEh,046h,081h,075h,043h,055h	; -0.004681754355
 	db	03Fh,007h,096h,092h,062h,039h	;  0.0796926239
 	db	0BFh,064h,059h,064h,008h,067h	; -0.6459640867

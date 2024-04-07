@@ -2,7 +2,7 @@
 
 	public	AFP
 
-	extrn	ZFR0,ROLFR0,FNORM
+	extrn	ZFR0,?ROLF0,?NORM
 	extrn	FR0,?EXP,?FLAG,?DIGRT,?SIGN
 
 ; ASCII -> Floating Point conversion
@@ -35,7 +35,7 @@ skip:	cp	(hl)
 	inc	hl
 	ld	(hl),a		;    ?FLAG,
 	ld	(ESIGN),a	;     and ESIGN
-	ld	a,0FFh
+	dec	a		; 0FFh
 	ld	(?DIGRT),a	; ?DIGRT = # of digits after decimal point
 	call	ZFR0		; clear FR0
 	jr	afp2		; get first character
@@ -51,7 +51,7 @@ afp2:	call	LDCHAR		; get next character
 	ld	a,(FR0+1)	; check first byte of mantissa
 	or	a		; already filled?
 	jr	nz,afp3		; yes, skip remaining digits
-	call	ROLFR0		; rotate mantissa one decimal place left
+	call	?ROLF0		; rotate mantissa one decimal place left
 	pop	af		; restore digit
 	ld	hl,FR0+5
 	or	(hl)		; add it to the mantissa
@@ -174,7 +174,7 @@ afp15:	ld	hl,(TEMP)	; restore saved position
 
 	; process end of input
 
-afp16	ld	hl,(IOPTR)
+afp16:	ld	hl,(IOPTR)
 	dec	hl		; backup one position
 	ld	(IOPTR),hl
 	ld	a,(?EXP)	; get exponent
@@ -191,19 +191,19 @@ afp17:	ld	c,a		; save adjusted exponent
 	ld	a,c		; get adjusted exponent
 	rra			; shift sign bit into MSB
 	ld	(?EXP),a	; save power of 100
-	call	c,ROLFR0	; if CY, rotate mantissa one decimal
+	call	c,?ROLF0	; if CY, rotate mantissa one decimal
 				;  place left, else process even number
 	ld	a,(?EXP)	; get exponent
 	add	a,44h		; add bias + 4 for normalization
 	ld	(FR0+0),a
-	call	FNORM		; normalize number
+	call	?NORM		; normalize number
 	ld	hl,(IOPTR)
 	ret	c		; if error, with HL pointing to end of string
 
 	; check sign of number
 
 	ld	a,(?SIGN)	; if (?SIGN != 0)
-	or	a		;   return with CY clear (positive number)
+	or	a		;  return with CY clear (positive number)
 	ret	z
 
 	; process negative number

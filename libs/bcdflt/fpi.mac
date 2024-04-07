@@ -2,12 +2,12 @@
 
 	public	FPI
 
-	extrn	ROLFR0
+	extrn	?ROLF0
 	extrn	FR0
 
 ; Floating Point -> Integer conversion
 ;
-; Convert positve floating point number in FR0 to 2-byte
+; Convert positive floating point number in FR0 to 2-byte
 ; unsigned integer binary in FR0.
 ;
 ; Returns CY on error (overflow / underflow / negative)
@@ -42,7 +42,7 @@ fpi1:	add	hl,hl		; *2
 	ret	c
 	push	hl
 	push	bc
-	call	ROLFR0		; shift mantissa one decimal place left
+	call	?ROLF0		; shift mantissa one decimal place left
 	pop	bc		;  and get overflow digit
 	pop	hl
 	ld	e,a		;   into E
@@ -55,11 +55,11 @@ fpi1:	add	hl,hl		; *2
 	; check for rounding required
 
 fpi2:	push	hl
-	call	ROLFR0		; get the number right of the decimal point
+	call	?ROLF0		; get the number right of the decimal point
 	pop	hl
 	cp	5		; rounding needed?
 	jr	c,fpi3		; not if digit is less than 5
-	inc	hl		; else perform correction (add 1 to tound)
+	inc	hl		; else perform correction (add 1 to round)
 fpi3:	ld	(FR0),hl	; store the integer into FR0
 	or	a		; and return with no error
 	ret

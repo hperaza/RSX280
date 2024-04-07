@@ -45,7 +45,7 @@ FPA:	ld	(?FLAG),a
 	cp	'.'		; number begins with a '.'?
 	jr	nz,fa10		; branch if not
 
-	ld	a,(?FLAG)	; suppress of leading zero in 0.xxx
+	ld	a,(?FLAG)	; suppressing of leading zero in 0.xxx
 	or	a		;  desired? (results in .xxx)
 	jp	z,fa11		; branch if yes
 
@@ -127,13 +127,13 @@ fa8:	sub	10		; convert the exponent to decimal
 	jr	c,fa9		; if < 0, done
 	inc	c		; increment number of 10's
 	jr	nz,fa8		; loop
-fa9:	add	a,10		; add back 10
-	ld	b,a		; save remainder
+fa9:	add	a,10		; restore remainder
+	ld	b,a		; save it
 	ld	a,c
 	or	'0'
 	ld	(hl),a		; store first digit (number of 10's)
 	inc	hl
-	ld	a,b		; restore remainder
+	ld	a,b		; get remainder
 	or	'0'
 	ld	(hl),a		; store second digit
 	inc	hl

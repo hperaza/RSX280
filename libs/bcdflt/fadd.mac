@@ -2,7 +2,7 @@
 
 	public	FADD,FSUB
 
-	extrn	FNORM,DENOR0,DENOR1
+	extrn	?NORM,?DNOR0,?DNOR1
 	extrn	FR0,FR1
 
 ; Floating point subtraction
@@ -44,8 +44,8 @@ fadd1:	ld	c,(hl)		; swap FR0 and FR1
 
 fadd2:	jr	z,fadd3		; jump if exponents equal
 	cp	5		; difference >= 100000000?
-	jp	nc,FNORM	; normalize FR0 and return if yes
-	call	DENOR1		; denormalize FR1, amount in A
+	jp	nc,?NORM	; normalize FR0 and return if yes
+	call	?DNOR1		; denormalize FR1, amount in A
 fadd3:	ld	hl,FR1+0
 	ld	a,(FR0+0)	; different signs?
 	xor	(hl)
@@ -61,12 +61,12 @@ fadd4:	ld	a,(de)		; add mantissas
 	dec	hl
 	dec	de
 	djnz	fadd4
-	jp	nc,FNORM	; normalize FR0 and return
+	jp	nc,?NORM	; normalize FR0 and return
 	ld	a,1		; we have a carry
-	call	DENOR0		;  denormalize FR0 by one byte
+	call	?DNOR0		;  denormalize FR0 by one byte
 	ld	a,1
 	ld	(FR0+1),a	; store the carry byte
-	jp	FNORM		;  and normalize
+	jp	?NORM		;  and normalize
 
 	; here if signs are different
 
@@ -82,7 +82,7 @@ fadd8:	ld	a,(de)		; subtract mantissas
 	dec	de
 	djnz	fadd8
 	jr	c,fadd9
-	jp	FNORM		; if no borrow, normalize and return
+	jp	?NORM		; if no borrow, normalize and return
 fadd9:	ld	a,(FR0)		; otherwise, negate FR0
 	xor	80h
 	ld	(FR0),a
@@ -95,6 +95,6 @@ fadd10:	ld	a,0		;  and its mantissa
 	ld	(hl),a
 	dec	hl
 	djnz	fadd10
-	jp	FNORM		; normalize and return
+	jp	?NORM		; normalize and return
 
 	end

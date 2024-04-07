@@ -1,6 +1,8 @@
 	.Z80
 
-	public	FNORM,FNORMX
+	name	('FNORM')
+
+	public	?NORM,?NORMX
 
 	extrn	FR0,?FRX,ZFR0
 
@@ -8,9 +10,9 @@
 
 	cseg
 
-FNORM:	xor	a
+?NORM:	xor	a
 	ld	(?FRX),a	; clear extra mantissa byte @ ?FRX+0
-FNORMX:	ld	b,4		; up to four shifts
+?NORMX:	ld	b,4		; up to four shifts
 	ld	hl,FR0		; check exponent
 	ld	a,(hl)
 	or	a		; zero?
@@ -20,7 +22,7 @@ dc1:	inc	hl
 	dec	hl
 	or	a		; zero?
 	jr	nz,dc2		; jump if not (normalized)
-	push	hl		; remeber FR0 address
+	push	hl		; remember FR0 address
 	push	bc
 	inc	hl
 	ld	e,l		; DE = FR0+1

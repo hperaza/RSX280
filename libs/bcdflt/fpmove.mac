@@ -1,6 +1,6 @@
 	.Z80
 
-	name	'FPMOVE'
+	name	('FPMOVE')
 
 	public	FMOVE,FCOPY
 

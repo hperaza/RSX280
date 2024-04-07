@@ -2,7 +2,7 @@
 
 	public	IFP
 
-	extrn	ZFR0,FNORM
+	extrn	ZFR0,?NORM
 	extrn	FR0
 
 ; Integer -> Floating Point conversion
@@ -31,6 +31,6 @@ ifp2:	ld	a,(hl)
 	jr	nz,ifp1		; loop until done
 	ld	a,42h		; bias+2, means 1E4
 	ld	(FR0),a		; store initial exponent
-	jp	FNORM		; normalize number and return
+	jp	?NORM		; normalize number and return
 
 	end

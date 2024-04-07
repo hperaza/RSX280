@@ -1,20 +1,20 @@
 	.Z80
 
-	name	'ROLFR'
+	name	('ROLFR')
 
-	public	ROLFR0,ROLFR2
+	public	?ROLF0,?ROLF2
 
 	extrn	FR0,FR2
 
-; Shift the floating point mantissa one decimal digit (4-bits)
+; Shift left the floating point mantissa one decimal digit (4-bits).
 ; Return the overflow digit in A.
 
 	cseg
 
-ROLFR2:	ld	hl,FR2+1+4	; shift FR2
+?ROLF2:	ld	hl,FR2+1+4	; shift FR2
 	jr	rolfr
 
-ROLFR0:	ld	hl,FR0+1+4	; shift FR0
+?ROLF0:	ld	hl,FR0+1+4	; shift FR0
 rolfr:	ld	b,5		; 5 bytes of mantissa
 	xor	a		; clear CY
 rol1:	rld			; rotate BCD digit 4 bits left

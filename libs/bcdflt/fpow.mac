@@ -2,7 +2,7 @@
 
 	public	FPOW
 
-	extrn	FLD0R,ISINT,FPUSH,FPOP,LOG10,EXP10,FMUL,FTRUNC
+	extrn	FLD0R,ISINT,FPUSH,FPOP,LOG10,EXP10,FMUL,?TRUNC
 	extrn	FR0,FR1,?DIGRT,FPone
 
 ; Floating point raise to a power
@@ -46,7 +46,7 @@ pow1:	ld	e,a		; save FR0
 	ld	a,(FR1)		; check Y
 	or	a		;  is positive?
 	jp	p,pow2		;   jump if yes
-	set	0,d		; set LSB of D (Y fractionary flag)
+	set	0,d		; set LSB of D (Y fractional flag)
 pow2:	ld	a,(?DIGRT)
 	cp	5
 	jr	nc,pow5
@@ -63,7 +63,7 @@ pow2:	ld	a,(?DIGRT)
 pow3:	ld	a,(FR1)		; check Y
 	or	a		;  is positive?
 	jp	p,pow4		;   jump if yes
-	set	0,d		; set LSB of D (Y fractionary flag)
+	set	0,d		; set LSB of D (Y fractional flag)
 pow4:	ld	e,0
 pow5:	push	de		; save sign bit and integer flags
 	ld	hl,FR1
@@ -113,7 +113,7 @@ pow6:	ld	a,(hl)
 	inc	(hl)		; inc FR0+1
 	dec	hl
 pow7:	pop	af
-	jp	FTRUNC		; clear the fractionary part and return
+	jp	?TRUNC		; clear the fractional part and return
 
 err1:	pop	de
 	ret			; CY is set

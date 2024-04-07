@@ -2,7 +2,7 @@
 
 	public	FINT
 
-	extrn	ISINT,ZFR0,FTRUNC
+	extrn	ISINT,ZFR0,?TRUNC
 	extrn	FR0
 
 ; Obtain the integer part of a floating point number.
@@ -11,16 +11,16 @@
 	cseg
 
 FINT:	ld	hl,FR0
-	call	ISINT		; is result integer?
-	ret	nc		; return with no error if yes
+	call	ISINT		; is FR0 integer?
+	ret	nc		; yes, return success
 	ld	a,(FR0)		; get exponent of result
 	and	7Fh		; kill sign bit
 	sub	40h		; subtract bias
-	jp	c,ZFR0		; just clear number if < 1.0 (avoids -0.0)
+	jp	c,ZFR0		; return zero if < 1.0 (avoids -0.0)
 	inc	a
 	cp	6
 	ret	nc		; return if number >= 1E+10
 	ld	hl,FR0
-	jp	FTRUNC		; remove fractionary part
+	jp	?TRUNC		; remove fractional part
 
 	end

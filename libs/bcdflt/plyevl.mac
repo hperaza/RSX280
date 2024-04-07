@@ -2,7 +2,7 @@
 
 	public	PLYEVL
 
-	extrn	FSTOR,FMOVE,FLD0R,FLD1R,FADD,FMUL
+	extrn	FST0R,FMOVE,FLD0R,FLD1R,FADD,FMUL
 	extrn	?PLARG
 
 ; Polynomial evaluation
@@ -12,17 +12,16 @@
 ;
 ; Entry: HL = points to list of floating point coefficients,
 ;             ordered high to low
-;        A  = number of coefficients in list
+;        C  = number of coefficients in list
 ;
 ; Returns CY on overflow.
 
 	cseg
 
 PLYEVL:	ld	(TEMP),hl
-	ld	c,a		; number of coefficients into C
 	push	bc
 	ld	hl,?PLARG
-	call	FSTOR		; ?PLARG <- FR0
+	call	FST0R		; ?PLARG <- FR0
 	call	FMOVE		; FR1 <- FR0
 	ld	hl,(TEMP)
 	call	FLD0R		; FR0 <- coefficient(0)

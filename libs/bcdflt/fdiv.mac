@@ -2,7 +2,7 @@
 
 	public	FDIV
 
-	extrn	MDSIGN,MDPREP,RORDBL,FNORMX,?ADDFR
+	extrn	?MDSGN,?MDPRE,?RORDP,?NORMX,?ADDFR
 	extrn	FR0,FR1,FR2,?FRX,?EXP
 
 ; Floating point division
@@ -18,12 +18,12 @@ FDIV:	ld	a,(FR1)		; check divisor
 	ld	a,(FR0)		; check dividend
 	or	a		; zero?
 	ret	z		;  nothing to do - result is already zero
-	call	MDSIGN		; HL points to FR1 on return
+	call	?MDSGN		; HL points to FR1 on return
 	sub	(hl)		; subtract exponents
 	add	a,40h		; add bias
 	scf
 	ret	m		; return CY if overflow
-	call	MDPREP		; prepare operands
+	call	?MDPRE		; prepare operands
 	ld	b,5+1
 	jr	fdv3
 
@@ -85,9 +85,9 @@ fdv8:	ld	de,?FRX+5
 	ld	hl,FR1+5
 	call	?ADDFR		; ?FRX += FR1
 	djnz	fdv1
-	call	RORDBL		; shift intermediate result right
+	call	?RORDP		; shift intermediate result right
 	ld	a,(?EXP)	; get the resulting exponent
 	ld	(FR0+0),a	;  into place
-	jp	FNORMX		; normalize thru ?FRX and return
+	jp	?NORMX		; normalize thru ?FRX and return
 
 	end

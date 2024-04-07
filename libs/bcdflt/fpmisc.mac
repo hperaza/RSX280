@@ -1,18 +1,18 @@
 	.Z80
 
-	name	'FPAUX'
+	name	('FPAUX')
 
-	public	RORDBL,MDSIGN,MDPREP,?ADDFR
+	public	?RORDP,?MDSGN,?MDPRE,?ADDFR
 
-	extrn	FCOPY,ROLFR2,ZFR0
+	extrn	FCOPY,?ROLF2,ZFR0
 	extrn	FR0,FR1,FR2,?FRX,?EXP,?SIGN
 
 	cseg
 
 ; Helper routine for multiplication and division. Shifts the
-; long FR0-?FRX mantissa two BCD places to the right.
+; double-precision FR0-?FRX mantissa two BCD places to the right.
 
-RORDBL:	ld	hl,FR0+10
+?RORDP:	ld	hl,FR0+10
 	ld	b,11
 d1:	ld	a,(hl)		; shift double-prec intermediate
 	inc	hl		;  value two decimal places
@@ -29,7 +29,7 @@ d1:	ld	a,(hl)		; shift double-prec intermediate
 ;
 ; Returns A = exponent of FR0, HL points to FR0
 
-MDSIGN:	ld	hl,FR1+0
+?MDSGN:	ld	hl,FR1+0
 	ld	a,(FR0+0)	; ?SIGN = sign(FR0) ^ sign(FR1)
 	xor	(hl)
 	and	80h
@@ -45,7 +45,7 @@ MDSIGN:	ld	hl,FR1+0
 ;
 ; On entry A contains the exponent of the result.
 
-MDPREP:	ld	hl,?SIGN
+?MDPRE:	ld	hl,?SIGN
 	or	(hl)		; add sign bit to exponent
 	ld	(?EXP),a	; store the new exponent in ?EXP
 	xor	a
@@ -54,7 +54,7 @@ MDPREP:	ld	hl,?SIGN
 	ld	hl,FR1
 	ld	de,FR2
 	call	FCOPY		; FR2 <- FR1
-	call	ROLFR2		; rotate FR2 left
+	call	?ROLF2		; rotate FR2 left
 	ld	(FR2+0),a	; store overflow digit in exponent byte of FR2
 	ld	hl,FR0
 	ld	de,?FRX

@@ -1,10 +1,10 @@
 	.Z80
 
-	name	'FPLOAD'
+	name	('FPLOAD')
 
-	public	FLD0R,FLD1R,FSTOR
+	public	FLD0R,FLD1R,FST0R
+
 	extrn	FCOPY
-
 	extrn	FR0,FR1
 
 	cseg
@@ -21,7 +21,7 @@ FLD1R:	ld	de,FR1
 
 ; Store FR0 in user buffer
 
-FSTOR:	ex	de,hl
+FST0R:	ex	de,hl
 	ld	hl,FR0
 	jp	FCOPY
 

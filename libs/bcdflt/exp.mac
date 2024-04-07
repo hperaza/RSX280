@@ -2,7 +2,7 @@
 
 	public	EXP,EXP10
 
-	extrn	FLD0R,FLD1R,FSUB,FMUL,FDIV,FSTOR,FPI,IFP,FMOVE,PLYEVL,FMOVE
+	extrn	FLD0R,FLD1R,FSUB,FMUL,FDIV,FST0R,FPI,IFP,FMOVE,PLYEVL,FMOVE
 	extrn	FR0,FR1,ILN10,?DIGRT,?FSCR,FPone,?FLAG
 
 	cseg
@@ -26,7 +26,7 @@ EXP10:	xor	a
 	scf
 	ret	p		; return error if yes
 	ld	hl,?FSCR
-	call	FSTOR		; ?FSCR <- FR0 (save x)
+	call	FST0R		; ?FSCR <- FR0 (save x)
 	call	FPI		; convert FR0 to integer
 	ld	a,(FR0)
 	ld	(?DIGRT),a
@@ -40,9 +40,9 @@ EXP10:	xor	a
 	call	FLD0R		; FR0 <- ?FSCR (restore x)
 	call	FSUB		; FR0 = x - int(x) = frac(x)
 
-exp1:	ld	a,10		; number of coefficients
+exp1:	ld	c,10		; number of coefficients
 	ld	hl,EXP10C	; point to coefficients
-	call	PLYEVL		; evaluate polynom
+	call	PLYEVL		; evaluate polynomial
 	call	FMOVE		; FR1 <- FR0
 	call	FMUL
 	ld	a,(?DIGRT)	; get int(x)

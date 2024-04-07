@@ -2,7 +2,7 @@
 
 	public	SQR
 
-	extrn	FLD0R,FLD1R,FMOVE,FSTOR,FADD,FSUB,FMUL,FDIV
+	extrn	FLD0R,FLD1R,FMOVE,FST0R,FADD,FSUB,FMUL,FDIV
 	extrn	FR0,FR1,?DIGRT,?FSCR,?FSCR1,FPhalf
 
 	cseg
@@ -14,61 +14,58 @@ SQR:	xor	a
 	scf
 	ret	m		; negative square root
 	cp	3Fh
-	jr	z,sqr2
+	jr	z,sqr2		; branch if argument in range (0.1 <= X < 1.0)
 	inc	a
-	ld	(?DIGRT),a
+	ld	(?DIGRT),a	; else transform
 	ld	hl,FR1
 	ld	(hl),a
 	inc	hl
-	ld	(hl),1
+	ld	(hl),1		; mantissa = 1
 	inc	hl
-	ld	b,5	;4?
+	ld	b,4
 	xor	a
-sqr1:	ld	(hl),a
+sqr1:	ld	(hl),a		; clear rest of mantissa
 	inc	hl
 	djnz	sqr1
-	call	FDIV
-sqr2:	ld	b,6
-	push	bc
-	ld	hl,?FSCR
-	call	FSTOR
-	call	FMOVE
+	call	FDIV		; X / 100^n
+sqr2:	ld	hl,?FSCR
+	call	FST0R		; save X
+	call	FMOVE		; FR1 <- X
 	ld	hl,FPtwo
-	call	FLD0R
-	call	FSUB
+	call	FLD0R		; FR0 <- 2
+	call	FSUB		; 2 - X
 	ld	hl,?FSCR
-	call	FLD1R
-	call	FMUL
-	pop	bc
+	call	FLD1R		; recall X into FR1
+	call	FMUL		; X * (2 - X): first approx.
+	ld	b,7
 sqr3:	push	bc
 	ld	hl,?FSCR1
-	call	FSTOR
-	call	FMOVE
+	call	FST0R		; save Y
+	call	FMOVE		; FR1 <- Y
 	ld	hl,?FSCR
 	call	FLD0R
-	call	FDIV
+	call	FDIV		; X / Y
 	ld	hl,?FSCR1
-	call	FLD1R
-	call	FSUB
+	call	FLD1R		; recall Y into FR1
+	call	FSUB		; (X / Y) - Y
 	ld	hl,FPhalf	; 0.5
 	call	FLD1R
-	call	FMUL
+	call	FMUL		; delta Y = 0.5 * ((X / Y) - Y)
 	ld	a,(FR0)
-	or	a
+	or	a		; delta is zero?
 	pop	bc
-	jr	z,sqr4
+	jr	z,sqr4		; yes
 	push	bc
 	ld	hl,?FSCR1
 	call	FLD1R
-	call	FADD
+	call	FADD		; Y += delta Y
 	pop	bc
-	dec	b
-	jp	p,sqr3
+	djnz	sqr3		; count and loop
 sqr4:	ld	hl,?FSCR1
-	call	FLD0R
+	call	FLD0R		; delta Y is zero, get Y back
 	ld	a,(?DIGRT)
-	or	a
-	ret	z
+	or	a		; was arg transformed?
+	ret	z		; no, return
 	sub	40h
 	or	a
 	rra
@@ -79,16 +76,16 @@ sqr4:	ld	hl,?FSCR1
 	inc	hl
 	ld	a,(?DIGRT)
 	rra
-	ld	(hl),1
+	ld	(hl),1		; mantissa = 01h if exp was even
 	jr	nc,sqr5
-	ld	(hl),10h
+	ld	(hl),10h	; mantissa = 10h if exp was odd
 sqr5:	inc	hl
-	ld	b,5	;4?
+	ld	b,4
 	xor	a
-sqr6:	ld	(hl),a
+sqr6:	ld	(hl),a		; clear rest of mantissa
 	inc	hl
 	djnz	sqr6
-	jp	FMUL
+	jp	FMUL		; sqr(X) = sqr(X/100^n) * 10^n
 
 FPtwo:	db	040h,002h,000h,000h,000h,000h	; 2.00000000
 
