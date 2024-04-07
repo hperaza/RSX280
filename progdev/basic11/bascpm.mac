@@ -935,10 +935,10 @@ reof:	pop	hl		; pop FCB address
 SETREC:	xor	a
 	sla	c		; *2
 	rl	b
-	rl	a
+	rla
 	sla	c		; *4 (128*4 = 512)
 	rl	b
-	rl	a
+	rla
 	ex	de,hl
 	push	hl
 	ld	hl,33
