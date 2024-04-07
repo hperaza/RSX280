@@ -19,8 +19,8 @@ Disadvantages:
 
 The debugger recognizes the following commands:
 
- * CONNECT *tsknam* -- Connects to task *tsknam* (then name must be fully qualified); if the connection is successful, the task execution is interrupted and the debugging session is started.
- * RUN *tsknam* -- Requests the task *tsknam* and starts a debugging session.
+ * CONNECT *tsknam* -- Connects to the active task *tsknam* (the name must be fully qualified); if the connection is successful, the task execution is interrupted and the debugging session is started.
+ * RUN *tsknam* -- Requests the task *tsknam* and starts a debugging session. The task does not need to be installed, in which case *tsknam* refers to the task image filename.
  * TERMINAL *ttn:* -- Use terminal *ttn:* as the debugging console.
 
 The command names can be shortened to the minimum unambiguous sequence of characters, in this case down to a single letter.
