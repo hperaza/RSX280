@@ -1,13 +1,13 @@
 ; This is part of the T3XZ runtime library
 ; Nils M Holm, 2019,2020
-; Public Domain / CC0 license
+; Public Domain / 0BSD license
 ; REL version by H Peraza, 2022
 
 	.Z80
 
-	ident	/1.0/
+	ident	/1.1/
 
-	public	?div16,?div15s,?mod15s
+	public	?div16,?div15s,?mod16
 
 	extrn	?strip,?neghl
 
@@ -42,7 +42,7 @@ div1:	ccf			; result bit
 
 ; 15/15 signed remainder
 
-?mod15s:
+?mod16:
 	ex	de,hl
 	call	?div16
 	ex	de,hl

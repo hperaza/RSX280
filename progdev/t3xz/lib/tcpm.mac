@@ -1,6 +1,6 @@
 ; T3XZ runtime library
 ; Nils M Holm, 2019,2020
-; Public Domain / CC0 license
+; Public Domain / 0BSD license
 ; RSX180/280 version by H Peraza
 
 	.Z80
