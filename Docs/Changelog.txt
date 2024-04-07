@@ -7681,3 +7681,8 @@ BUGS:
   kernel will trap the RST instruction reserved for debugging.
 
 
+11/12/23
+
+- Added floating point compare routine FCMP to the BCDFLT library.
+
+

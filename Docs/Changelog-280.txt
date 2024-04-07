@@ -475,7 +475,7 @@ Changelog
 11/02/23
 
 - Debugger:
-  * changed main the command line syntax:
+  * changed the main command line syntax:
       DDT>connect tsknam  <- connect to a running task and enter debug session
       DDT>run tsknam      <- run task in debug mode
       DDT>terminal ttn:   <- set the debug console to another terminal
@@ -513,7 +513,7 @@ Changelog
 
 - Debugger:
   * the 'run' command now loads a task image file (into an external,
-    separate partition as before) file for debugging if the name specified
+    separate partition as before) for debugging if the name specified
     in the command line does not corresponds to an installed task.
   * implemented the 'terminal' command; now a task started via the 'run'
     command can be debugged from another terminal, avoiding I/O conflicts.
