@@ -25,7 +25,7 @@ sysmod = startup.rel drivers.lib kernel.lib sysdat.rel
 sysdirs = boot drivers kernel
 
 # Source of utilities
-utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap cpm
+utildirs = ldr filesys mcr pip icp rmd vmr utils prvutl ted vdo mce zap cpm calc
 
 # Import user settings
 include $(PWD)/Config.make
@@ -127,6 +127,9 @@ utils: libs system
 	@cp -u libs/syslib/syslib.lib zap
 	@cp -u libs/syslib/syslib.lib mce
 	@cp -u libs/fcslib/fcslib.lib mce
+	@cp -u libs/syslib/syslib.lib calc
+	@cp -u libs/fcslib/fcslib.lib calc
+	@cp -u libs/bcdflt/bcdflt.lib calc
 	@cp -u system.inc ldr
 	@cp -u system.inc filesys
 	@cp -u system.inc mcr
@@ -317,6 +320,8 @@ copy-utils: cli utils
 	@echo "import ted/ted.tsk ted.tsk /c" >> copy.cmd
 	@echo "delete zap.tsk" >> copy.cmd
 	@echo "import zap/zap.tsk zap.tsk /c" >> copy.cmd
+	@echo "delete calc.tsk" >> copy.cmd
+	@echo "import calc/calc.tsk calc.tsk /c" >> copy.cmd
 	@echo "delete cpm.tsk" >> copy.cmd
 	@if [ "${size}" -ge "3000" ]; then \
 		echo "import cpm/cpm.tsk cpm.tsk /c" >> copy.cmd ; \
@@ -424,6 +429,10 @@ copy-test: test
 	@echo "import progdev/t3xz/test/rsxio.mac rsxio.mac" >> copy.cmd
 	@echo "delete mkmaze.cmd" >> copy.cmd
 	@echo "import progdev/t3xz/test/mkmaze.cmd mkmaze.cmd" >> copy.cmd
+	@echo "delete test.cal" >> copy.cmd
+	@echo "import calc/test/test.cal test.cal" >> copy.cmd
+	@echo "delete iftest.cal" >> copy.cmd
+	@echo "import calc/test/iftest.cal iftest.cal" >> copy.cmd
 	@echo "dir" >> copy.cmd
 	@echo "exit" >> copy.cmd
 	$(VOL180) $(image) < copy.cmd
