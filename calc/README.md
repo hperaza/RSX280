@@ -15,9 +15,9 @@ This version can be built for both CP/M and RSX180/280, and differs from the ori
    * Delete the entire spreadsheet.
    * Toggle color (experimental, for e.g. VT525 or xterm).
 
-The [orig](tree/master/orig) directory contains the original Pascal program, @AVG function bug included (see line 941 and 948: one of the two is superfluous and must be removed).
+The [orig](orig) directory contains the original Pascal program, @AVG function bug included (see line 941 and 948: one of the two is superfluous and must be removed).
 
-The [c](tree/master/c) directory contains a C version of the Pascal program, but with the added features of the Z80 program and without the @AVG bug. The file format is also compatible with the Z80 version. But note that the C program internally uses standard C binary floating point math, and thus it may give different results than the Z80 version; the program simply converts BCD values to binary and vice-versa when reading/saving the spreadsheet file.
+The [c](c) directory contains a C version of the Pascal program, but with the added features of the Z80 program and without the @AVG bug. The file format is also compatible with the Z80 version. But note that the C program internally uses standard C binary floating point math, and thus it may give different results than the Z80 version; the program simply converts BCD values to binary and vice-versa when reading/saving the spreadsheet file.
 
 ![FreeCalc on CP/M](freecalc.png "FreeCalc")
 
