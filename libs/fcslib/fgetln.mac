@@ -37,11 +37,10 @@ EOF	equ	1Ah
 
 ; HL = dest buf, B = length. Returns actual length in C.
 
-; TODO: when reading from terminal
-; - when reading from terminal, CR terminates line (LF ignored),
-;   else end of line is LF (CR stored).
-; - when reading from terminal, output a CR/LF before buffer read
-;   (done in FRDBLK?).
+; TODO:
+; When reading from terminal:
+; - CR terminates line (LF ignored), else end of line is LF (CR stored).
+; - output a CR/LF before buffer read (done in FRDBLK?).
 
 FGETLN:	ld	c,0
 fln1:	call	FGETCH		; get char from file or device

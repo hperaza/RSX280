@@ -41,9 +41,9 @@ LF	equ	0Ah
 ; Input:
 ;   IX = Pointer to I/O structure
 ; Output:
-;   (HL is preserved)
 ;   AF = Result code, CY set on error
-;
+;   (HL is preserved)
+
 FRDBLK:	push	hl
 	ld	l,(ix+FC.BUF)	; buffer address
 	ld	h,(ix+FC.BUF+1)
