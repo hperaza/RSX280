@@ -168,7 +168,6 @@ srch:	ld	a,(hl)
 	djnz	srch
 dot:	dec	hl		; backup one char (skip the decimal point
 	dec	b		;  or point to the reserved leading zero)
-	ld	a,(hl)
 	ret
 
 ; Convert mantissa to ASCII.
@@ -201,9 +200,8 @@ d11:	call	d12
 d12:	ld	a,c
 	or	a
 	ret	nz
-	ld	a,'.'		; ld (hl),'.' - nope, see 'call d12' above
-	ld	(hl),a
-	inc	hl		; same for this
+	ld	(hl),'.'	; store decimal point
+	inc	hl
 	ret
 
 	dseg
