@@ -1,0 +1,352 @@
+	.Z80
+
+	ident	/1.4/
+
+	public	FMTFPA
+
+	extrn	?LBUFF,FR0,?EXP,?FLAG
+
+; Formatted Floating Point -> ASCII conversion
+;
+; Entry: FR0 = floating point number
+;        HL  = address of output buffer
+;        A   = 0 to suppress leading zero in values < 1.0
+;              (e.g. 0.1 results in .1)
+;        C   = format type (1=Float, 2=Exponential, else General)
+;        B   = precision (-1 to use all digits, supressing trailing zeros)
+;        E   = buffer size (format width)
+; Exit:  CY set on error
+
+	cseg
+
+FMTFPA:	ld	(SAVSP),sp	; save stack pointer for error recovery
+	ld	(IOPTR),hl	; save output buffer pointer
+	ld	(?FLAG),a	; save leading zero-suppress flag
+	ld	(FMT),bc	; save format and precision
+	ld	a,e
+	ld	(FW),a		; save width
+	dec	a		; must be greater than 2
+	dec	a
+	scf
+	ret	m		; else return error
+
+	ld	a,(FR0)		; get base 100 exponent and sign byte
+	or	a		; check sign
+	ld	a,'-'
+	call	m,STORE		; if negative, store a minus sign
+
+	ld	a,(FMT)
+	dec	a		; Float format?
+	jr	z,ffmt
+	dec	a		; Exponential format?
+	jr	z,fexp
+
+	; else is General format
+
+	ld	a,(FR0)		; get exponent
+	or	a		; zero?
+	jr	z,ffmt		; yes -> use float format
+
+	and	7Fh		; clear sign bit, leave exponent bits
+	cp	3Fh		; exponent < bias-1? (number < 0.01)
+	jr	c,fexp		; yes -> use exponential form
+
+	cp	45h		; exponent >= bias+5? (number >= 10000000000)
+	jr	nc,fexp		; yes -> use exponential form
+
+ffmt:	; Float format
+
+	call	MASC		; convert mantissa to ASCII
+	call	ROUND		; and round it to the desired precision
+	call	TRIMZ		; remove trailing zeros
+	call	EXP10		; compute base 10 exponent
+	cp	80h		; number < 1?
+	jr	c,ff2		; yes
+
+ff1:	call	GETD		; else get a digit
+	call	STORE		; store it
+	dec	c		; decrement exponent
+	ld	a,c
+	cp	80h
+	jr	nc,ff1		; and loop until units (10^0) reached
+	jr	ff6		; continue below
+
+ff2:	ld	a,(?FLAG)	; number < 1
+	or	a		; supress single zero before decimal point?
+	ld	a,'0'
+	call	nz,STORE	; no
+
+ff6:	ld	a,(PREC)	; get precision
+	ld	b,a		;  into reg B
+	or	a		; zero? (no digits after decimal point)
+	jr	z,ff5		; yes, we're done
+	jp	p,ff61
+	ld	hl,(MPTR)	; negative means use all mantissa digits
+	ld	a,(hl)		;  but supress trailing zeros
+	or	a		; any mantissa digits left?
+	jr	z,ff5		; no, we're done
+ff61:	ld	c,7Fh		; reset exponent to 10^(-1)
+	ld	a,'.'
+	call	STORE		; store decimal point
+
+ff3:	call	GETD		; get next digit
+	jr	nc,ff4		; use it if mantissa not yet exhausted
+	inc	b		; else check precision
+	dec	b		; all mantissa digits wanted?
+	jp	m,ff5		; yes, and they are exhausted, so finish
+
+ff4:	call	STORE		; else store mantissa digit of a zero
+	dec	c		; decrement exponent
+	ld	a,b		; check precision
+	or	a		; all mantissa digits wanted?
+	jp	m,ff3		; yes, loop
+	djnz	ff3		; else decrement precision and loop
+
+ff5:	xor	a
+	jp	STORE		; end with a null and return
+
+fexp:	; Exponential format (scientific notation)
+
+	call	MASC		; convert mantissa to ASCII
+	call	ROUNDE		; and round it to the desired precision
+	call	TRIMZ		; remove trailing zeros
+	call	EXP10		; compute base 10 exponent
+
+	call	GETD		; get first digit
+	call	STORE		;  and store it
+
+	ld	a,(PREC)	; get precision
+	ld	b,a		;  into reg B
+	inc	b
+	dec	b		; zero? (no digits after decimal point)
+	jr	z,fe1		; yes, skip
+	jp	p,fe4
+	ld	hl,(MPTR)	; negative means use all mantissa digits
+	ld	a,(hl)		;  but supress trailing zeros
+	or	a		; any mantissa digits left?
+	jr	z,fe1		; no
+
+fe4:	ld	a,'.'
+	call	STORE		; else store decimal point
+
+fe0:	call	GETD		; get a digit
+	jr	nc,fe2		; use it if mantissa not yet exhausted
+	inc	b		; else check precision
+	dec	b		; all mantissa digits wanted?
+	jp	m,fe1		; yes, and they are exhaused, so finish
+
+fe2:	call	STORE		; else store mantissa digit or a zero
+	ld	a,b		; check precision
+	or	a		; all mantissa digits wanted?
+	jp	m,fe0		; yes, loop
+	djnz	fe0		; else decrement precision and loop
+
+fe1:	ld	a,'E'		; now process exponent
+	call	STORE		; output 'E'
+
+	ld	a,(?EXP)	; get base 10 exponent
+	ld	c,a
+	or	a		; zero?
+	jr	z,fa6		; yes, treat as positive
+	cp	80h		; negative?
+	ld	a,'-'		; yes, output a '-'
+	jr	c,fe3
+fa6:	ld	a,'+'		; else output a '+'
+fe3:	call	STORE
+
+	ld	a,c		; get exponent again
+	or	a		; zero?
+	jr	z,fa7		; yes
+	sub	80h		; else subtract bias
+	jp	p,fa7
+	neg			; if negative, negate it
+fa7:	ld	c,0
+fa8:	sub	10		; convert the exponent to decimal
+	jr	c,fa9		; if < 0, done
+	inc	c		; increment number of 10's
+	jr	nz,fa8		; loop
+fa9:	add	a,10		; restore remainder
+	ld	b,a		; save it
+	ld	a,c
+	or	'0'
+	call	STORE		; store first digit (number of 10's)
+	ld	a,b		; get remainder
+	or	'0'
+	call	STORE		; store second digit (number of 1's)
+	xor	a
+	jp	STORE		; end with a null and return
+
+; Convert mantissa to ASCII.
+
+MASC:	ld	hl,?LBUFF	; store result in ?LBUFF
+	ld	de,FR0
+	ld	a,(de)		; get exponent
+	or	a		; zero?
+	jr	z,ma2		; yes, zero mantissa
+	ld	(hl),'0'	; reserve a digit for rounding overflow
+	inc	hl
+	inc	de
+	ld	b,5		; 5 BCD pairs
+ma1:	ld	a,(de)
+	rrca			; convert upper BCD digit
+	rrca
+	rrca
+	rrca
+	and	0Fh
+	or	'0'
+	ld	(hl),a		; store digit
+	inc	hl
+	ld	a,(de)
+	and	0Fh		; convert lower BCD digit
+	or	'0'
+	ld	(hl),a		; store digit
+	inc	hl
+	inc	de
+	djnz	ma1
+ma2:	ld	(hl),0		; null ends string
+	ret
+
+; Round ASCII mantissa to the desired precision (Float format version)
+
+ROUND:	ld	a,(PREC)	; get precision
+	or	a
+	ret	m		; return if negative (use all digits)
+	ld	c,a
+	ld	a,(FR0)		; get base 100 exponent
+	res	7,a		; make it positive
+	sub	40h		; subtract bias
+	add	a,a		; double for base 10
+	add	a,c		; offset by precision
+	inc	a
+	ret	m		; return if outside mantissa limits
+r0:	cp	10
+	ret	nc
+	ld	hl,?LBUFF+1
+	ld	e,a
+	ld	d,0
+	add	hl,de		; offset into mantissa
+	push	hl
+	inc	hl
+	ld	a,(hl)		; get next digit
+	dec	hl
+	cp	'5'		; > 5?
+	jr	c,r3		; no, return
+r1:	ld	a,(hl)		; else round
+	cp	'9'		; 9?
+	jr	z,r2		; yes
+	inc	a		; no, just increase it
+	ld	(hl),a
+	jr	r3		; done
+r2:	ld	(hl),'0'	; 9 becomes zero
+	dec	hl		; and rounding propagates
+	jr	r1		;  to prev digit
+r3:	pop	hl
+	inc	hl
+	ld	(hl),0		; truncate string after rounded digit
+	ret
+
+; Round ASCII mantissa to the desired precision (Exponential format version)
+
+ROUNDE:	ld	a,(PREC)	; get precision
+	or	a
+	ret	m		; return if negative (use all digits)
+	ld	c,a
+	ld	a,(?LBUFF+1)
+	or	a
+	ret	z
+	cp	'0'
+	ld	a,c
+	jr	nz,r0
+	inc	a
+	jr	r0		; continue via common code
+
+; Remove trailing zeros from converted mantissa.
+
+TRIMZ:	ld	hl,?LBUFF
+	ld	b,0
+t1:	ld	a,(hl)		; find end of string
+	or	a
+	jr	z,t2
+	inc	hl
+	inc	b		; count digit
+	jr	t1		; and loop
+t2:	ld	a,b
+	or	a		; empty string?
+	ret	z		; yes, return
+t3:	dec	hl		; backup one digit
+	ld	a,(hl)
+	cp	'0'		; zero?
+	jr	nz,t4		; no, we're done
+	djnz	t3		; else loop
+t4:	inc	hl
+	ld	(hl),0		; place a null to truncate string
+	ret
+
+; Compute base 10 exponent (biased by 128)
+; Returns result in A, C and ?EXP.
+
+EXP10:	ld	hl,?LBUFF
+	ld	a,(FR0)		; get base 100 exponent
+	and	7Fh		; strip sign bit
+	ld	c,a
+	jr	z,e2		; branch if zero
+	add	a,a		; double for base 10
+	inc	a		; shift decimal point
+	inc	a		;  to start of mantissa
+	ld	c,a
+	ld	b,3		; overflow digit + base 100 msb
+e1:	ld	a,(hl)		; get mantissa digit
+	cp	'0'		; zero?
+	jr	nz,e2		; no, return
+	dec	c		; else adjust exponent
+	inc	hl
+	djnz	e1		; and loop
+e2:	ld	(MPTR),hl	; save pointer to first non-zero mantissa digit
+	ld	a,c
+	ld	(?EXP),a
+	ret
+
+; Get next decimal digit
+
+GETD:	ld	a,(?EXP)	; get base 10 exponent
+	or	a		; zero?
+	jr	z,gd1		; yes, return zero
+	cp	c		; in mantissa range? (CY if c > ?EXP)
+	ld	a,'0'
+	ccf
+	ret	nc		; no, return zero
+	ld	hl,(MPTR)
+	ld	a,(hl)		; else return mantissa digit
+	or	a
+gd1:	ld	a,'0'		; until all exhausted
+	scf
+	ret	z
+	ld	a,(hl)
+	inc	hl
+	ld	(MPTR),hl
+	or	a
+	ret
+
+; Store char in output buffer
+
+STORE:	ld	hl,(IOPTR)	; get string pointer
+	ld	(hl),a		; store char
+	inc	hl
+	ld	(IOPTR),hl
+	ld	hl,FW
+	dec	(hl)		; decrement length
+	ret	nz		; return if not zero
+	ld	sp,(SAVSP)
+	scf			; else abort with CY set
+	ret
+
+	dseg
+
+IOPTR:	ds	2		; output string pointer
+MPTR:	ds	2		; mantissa pointer
+FMT:	ds	1		; format type
+PREC:	ds	1		; precision
+FW:	ds	1		; format width (output string length)
+SAVSP:	ds	2		; saved stack pointer
+
+	end

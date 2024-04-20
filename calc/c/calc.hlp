@@ -1,0 +1,261 @@
+                      Z 8 0   F R E E   C A L C   V1.2
+                      --------------------------------
+
+A Z80 spreadsheet program based on the Pascal program written and donated to
+public domain by Martin Burger.
+
+          Free Calc supports the following commands:
+
+/W  - Defines the width of the column that the cursor is on.
+/P  - Defines the number of digits of precision for the current cell.
+/PG - Defines the number of digits of precision for the current cell, and
+      defines this to be the new default.
+/F  - Defines the format for the current cell (Number, Scientific, General).
+/FG - Defines the format for the current cell, and defines this to be the
+      new default.
+/J  - Defines the justification of text - Right, Left, or Center, for the
+      current cell.
+/JG - Defines the justification of text - Right, Left, or Center, for the
+      current cell, and defines this to be the new default.
+/H  - Defines the heading for the spreadsheet.
+/=  - Jump to cell. (Example /=A1)
+
+
+          Free Calc commands contd.:
+
+/IC - Insert column at current cursor.
+/IR - Insert row at current cursor.
+/DC - Delete column at current cursor.
+/DR - Delete row at current cursor.
+/R  - Replicate cell at current cursor to a range of cells.
+/C  - Copy range of cells to range based on current cursor.
+/E  - Erase cell or range of cells.
+/TW - Toggles between 80 and 132 columns for terminal.
+/TC - Toggles color.
+/L  - Loads a saved spreadsheet.
+/S  - Store current spreadsheet.
+/O  - Output spreadsheet to printer or file.
+/Q  - Exit Free Calc.
+/X  - Clear current spreadsheet.
+/!  - Redisplay spreadsheet.
+/?  - Lists this help file.
+
+
+Notes on using Free Calc
+------------------------
+
+Free Calc determines the mode of the command based on the first character
+of the command line. The choices are as follows:
+
+1) Cursor movement - if the first character is the escape character.
+2) Function - if the first character is '0'..'9', '.', '@', '+', or '-'.
+3) Command - if the first character is '/'.
+4) Alpha - all others. If the first character is '"' then it is ignored,
+           this is the way you can have a text like '- TEST -' by entering
+           '"- TEST -'.
+
+Take the amount of memory available with a grain of salt. It is a crude
+estimate. This number represents the difference between the bottom of
+stack and top of heap. There may be holes in the heap that are usable
+and not represented in the total. Free Calc keeps a linked list of free
+elements on the heap and will use it if it can.
+
+If Free Calc runs out of memory it will bomb to the OS prompt, so save
+the worksheet at convenient points.
+
+
+Free Calc syntax
+----------------
+
+Formula:
+
+----> EXPRESSION ---------------------------------------------------------->
+ |
+ v--> '@IF' --> LOGICAL --> '@THEN' --> FORMULA --> '@ELSE' --> FORMULA --->
+
+
+Logical:
+
+---------> '[' --> LOGICAL --> ']' --------------------------> 
+    ^  |                                                     v
+    |  v------> FORMULA --------> '=' ----------> FORMULA ---+------------->
+    |                        |            ^                  |
+    |                        v--> '<>' -->|                  v--> '&' --v
+    |                        |            ^                  |          |
+    |                        v--> '>=' -->|                  v--> '|' --v
+    |                        |            ^                             |
+    |                        v--> '<=' -->|                             |
+    |                        |            ^                             |
+    |                        v--> '>' --->|                             |
+    |                        |            ^                             |
+    |                        v--> '<' --->|                             |
+    |                                                                   |
+    <-------------------------------------------------------------------v
+
+
+Variable:
+
+-----> CONSTANT ----------------------------------------------------------->
+ |                         ^
+ |                         |
+ v---> SIMPLE ------------>|
+ |                         ^
+ |                         |
+ v---> '(' FORMULA  ')' -->|
+
+
+Expression:
+
+------------> VARIABLE ---------------------------------------------------->
+    ^                          |
+    |                          v---> '+' ---v
+    |                          |            |
+    |                          v---> '-' ---v
+    |                          |            |
+    |                          v---> '*' ---v
+    |                          |            |
+    |                          v---> '/' ---v
+    |                          |            |
+    |                          v---> '^' ---v
+    |                                       |
+    <---------------------------------------v
+
+
+Constant:
+
+-------------------------> DIGIT ------------------------------------------>
+    |            ^    ^             |    |                       ^
+    |            |    |             |    |                       |
+    v---> '+' -->|    <-------------v    v---> '.' ---> DIGIT -->|
+    |            ^                                  ^            |
+    |            |                                  |            |
+    v---> '-' -->|                                  <------------v
+
+
+Elementary:
+
+----------------------> LETTER -----------------------> DIGIT ------------->
+    |            ^  ^           |  |            ^  ^            |
+    |            |  |           |  |            |  |            |
+    v---> '$' --->  <-----------v  v---> '$' --->  <------------v
+
+Note that the $ is used to represent an absolute location i.e. it will not
+be changed if there is a relocation from, a copy or replicate command, an
+insert or delete of a row or column. It can be applied to the row or column
+or both components. See Lotus 1-2-3 for further discussions on relative vs
+absolute components of a cell variable.
+
+Example: A1 $A1 A$1 $A$1
+
+Simple:
+
+-------------------------> ELEMENTARY ------------------------------------->
+    |           ^   |                    ^
+    |           |   |                    |
+    v---> '+' -->   v----> FUNCTION ----->
+    |           ^
+    |           |
+    v---> '-' -->
+
+
+Function:
+
+-> '@SUM(' --------> ELEMENTARY --> ':' --> ELEMENTARY -----------> ')' --->
+|           ^  |                                           ^  |
+|           |  |                                           |  |
+|           |  v----> FORMULA ----------------------------->  v---> ',' --v
+|           |                                                             |
+|           <-------------------------------------------------------------v
+v
+-> '@MAX(' --------> ELEMENTARY --> ':' --> ELEMENTARY -----------> ')' --->
+|           ^  |                                           ^  |
+|           |  |                                           |  |
+|           |  v----> FORMULA ----------------------------->  v---> ',' --v
+|           |                                                             |
+|           <-------------------------------------------------------------v
+v
+-> '@MIN(' --------> ELEMENTARY --> ':' --> ELEMENTARY -----------> ')' --->
+|           ^  |                                           ^  |
+|           |  |                                           |  |
+|           |  v----> FORMULA ----------------------------->  v---> ',' --v
+|           |                                                             |
+|           <-------------------------------------------------------------v
+v
+
+|
+v
+-> '@AVG(' --------> ELEMENTARY --> ':' --> ELEMENTARY -----------> ')' --->
+|           ^  |                                           ^  |
+|           |  |                                           |  |
+|           |  v----> FORMULA ----------------------------->  v---> ',' --v
+|           |                                                             |
+|           <-------------------------------------------------------------v
+v
+-> '@ABS(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@INT(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@SIGN(' ---> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@SQRT(' ---> FORMULA ---> ')' ----------------------------------------->
+|
+v
+
+|
+v
+-> '@EXP(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@EXP10(' --> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@LOG(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@LOG10(' --> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@PI' ------------------------------------------------------------------>
+|
+v
+-> '@SIN(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@COS(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+
+|
+v
+-> '@TAN(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@ATN(' ----> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@FACT(' ---> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@ROUND(' --> FORMULA ---> ')' ----------------------------------------->
+|
+v
+-> '@LOOKUP(' -> FORMULA -> ',' -> ELEMENTARY -> ':' -> ELEMENTARY -> ')' ->
+
+Note: in the LOOKUP function the column of the second ELEMENTARY must be one 
+more than the column in the first ELEMENTARY. Example @LOOKUP(B1,J1:K10).
+What this will do is 'lookup' B1 in the column from J1 to J10, find where it
+belongs and returns the corresponding value from column K1 to K10.
+
+
+Some examples:
+
+@SUM(2*A1,J7:M20,1.5,@AVG(A1:A50))
+@AVG(A1:A50)
+@MAX(0,A1:L1)
+@MIN(G15,1000,D10:E20)
+@LOOKUP(.2*A1,AA1:AB10)
+@SUM($C$1:K10)
+

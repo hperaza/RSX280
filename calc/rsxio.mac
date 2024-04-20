@@ -1,0 +1,288 @@
+	.Z80
+
+	include	SYSFN.INC
+	include	TCB.INC
+	include	FCB.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+
+ESC	equ	1Bh
+
+LUNFIL	equ	1
+LUNTI	equ	5
+TTEFN	equ	10
+TMEFN	equ	11
+
+	public	GETCH,INIT,EXIT
+	public	OPENR,OPENW,GETCF,PUTCF,CLOSE
+
+	extrn	ATTACH,DETACH,TTFLSH,PFN,FOPEN,FCREAT,FCLOSE
+	extrn	FGETCH,FPUTCH
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+INIT:	ld	hl,0
+	ld	de,gtkbuf
+	SC	.GTSK
+	ld	ix,ttq
+	call	qinit		; init input queue
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign TI: to LUN 5
+	ld	de,TTAST	; attach with ASTs
+	ld	c,LUNTI
+	call	ATTACH
+	ld	hl,(gtkbuf+GT.END)
+	ret
+
+EXIT:	call	TTFLSH
+	ld	c,LUNTI
+	call	DETACH		; detach from terminal
+	ld	hl,0
+	SC	.EXIT
+
+TTAST:	ex	(sp),hl		; fetch argument
+	push	de
+	push	bc
+	push	ix
+	ld	c,l
+	ld	ix,ttq
+	call	qput		; store char in queue
+	ld	e,TTEFN
+	SC	.SETF		; and set event flag
+ast5:	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX
+
+GETCH:	push	ix
+	push	hl
+	push	de
+	push	bc
+	call	TTFLSH
+gc0:	ld	e,TTEFN
+	SC	.CLEF		; clear event flag before accessing queue
+	ld	ix,ttq
+;;	di			; prevent AST from modifying the queue
+	call	qget		; get char
+;;	ei
+	jr	nc,gc1		; return if available
+	ld	e,TTEFN
+	SC	.WTSE		; else wait for char
+	jr	gc0
+gc1:	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+qinit:	xor	a
+	ld	(ix+q.ipos),a
+	ld	(ix+q.opos),a
+	ret
+
+qput:	ld	a,(ix+q.ipos)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+q.opos)
+	scf
+	ret	z		; queue full
+	ld	(ix+q.ipos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+q.iob),c	; store char
+	pop	ix
+	or	a
+	ret
+
+qget:	ld	a,(ix+q.opos)
+	ld	e,a
+	sub	(ix+q.ipos)
+	scf
+	ret	z		; queue empty
+	ld	a,e
+	inc	a
+	and	3Fh
+	ld	(ix+q.opos),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+q.iob)	; get char
+	pop	ix
+	or	a
+	ret
+
+qsize:	ld	a,(ix+q.opos)
+	sub	(ix+q.ipos)
+	ret	nc
+	ret	nz
+	add	a,64
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse filename and open file for read.
+; Called with HL = address of filename string, DE = ptr to default
+; extension string, C = 0 to open file in user directory, = 1 to open
+; file in system [HELP] directory.
+; Returns CY on error and error code in A.
+
+OPENR:	push	ix
+	push	de
+	push	bc
+	ld	ix,(FBK+FC.FDB)
+	call	PFN		; parse filename
+	pop	bc
+	pop	de
+	ld	a,E.BADF
+	jr	c,opn1
+	dec	c
+	call	z,LBHELP
+	call	ADDEXT
+	ld	ix,FBK
+	ld	(ix+FC.MODE),1 SHL FM.RD
+	call	FOPEN
+opn1:	pop	ix
+	ret
+
+; Add file ext (DE) to FCB in (IX) if necessary.
+
+ADDEXT:	ld	a,(ix+F.ATTR)
+	and	FN.EXT
+	ret	nz
+	ld	a,(ix+F.ATTR)
+	or	FN.EXT
+	ld	(ix+F.ATTR),a
+	push	ix
+	pop	hl
+	ld	bc,F.EXT
+	add	hl,bc
+	ex	de,hl
+	ld	bc,3
+	ldir
+	ret
+
+; Set LB:[HELP] path in FDB
+
+LBHELP:	ld	a,(ix+F.ATTR)
+	and	FN.DEV
+	jr	nz,lb1
+	ld	(ix+F.DEV),'L'
+	ld	(ix+F.DEV+1),'B'
+	ld	(ix+F.UNIT),0
+	ld	a,(ix+F.ATTR)
+	or	FN.DEV
+	ld	(ix+F.ATTR),a
+lb1:	ld	a,(ix+F.ATTR)
+	and	FN.DIR
+	ret	nz
+	push	ix
+	pop	hl
+	push	de
+	ld	de,F.DIR
+	add	hl,de
+	ex	de,hl		; dst
+	ld	hl,hlpdir	; src
+	ld	bc,9
+	ldir
+	ld	a,(ix+F.ATTR)
+	or	FN.DIR
+	ld	(ix+F.ATTR),a
+	pop	de
+	ret
+
+hlpdir:	db	'HELP     '
+
+; Parse filename and create output file.
+; Called with HL = address of filename string, DE = ptr to default
+; extension string.
+; Returns CY on error and error code in A.
+
+OPENW:	push	ix
+	push	de
+	ld	ix,(FBK+FC.FDB)
+	call	PFN		; parse filename
+	pop	de
+	ld	a,E.BADF
+	jr	c,opn2
+	call	ADDEXT
+	ld	ix,FBK
+	ld	(ix+FC.MODE),1 SHL FM.WR
+	ld	de,0
+	ld	c,0
+	xor	a
+	call	FCREAT
+opn2:	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+; Read a byte from input file
+
+GETCF:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK
+	call	FGETCH
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+; Write byte (in reg C) to output file
+
+PUTCF:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	a,c
+	ld	ix,FBK
+	call	FPUTCH
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+; Close file
+
+CLOSE:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	ix,FBK
+	call	FCLOSE		; close input file
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+GTKBUF:	ds	GTKSZ
+ASTBUF:	ds	2	; buffer for unsolicited char AST data
+
+q.ipos	equ	0	; queue structure offsets
+q.opos	equ	1
+q.iob	equ	2
+
+ttq:	ds	1	; ipos
+	ds	1	; opos
+	ds	64	; buf
+
+FLG.I:	ds	1		; input file
+OPN.I:	ds	1
+FBK:	FSR$	,<1 SHL FM.RD>,LUNFIL,9,
+
+	end

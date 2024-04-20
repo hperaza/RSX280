@@ -1,0 +1,4871 @@
+; Free Calc - Based on the Pascal spreadsheet program written and donated
+; to public domain by Martin Burger. Z80 version by Hector Peraza.
+
+	.Z80
+
+	ident	/V1.2/
+
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+ESC	equ	1Bh
+BS	equ	08h
+DEL	equ	7Fh
+
+	include	CALC.INC
+
+	extrn	UCASE,HOME,CLS,SETCUR,REVVID,NORMAL,SCOLOR,CLREOL
+	extrn	INIT,EXIT,GETCH,PUTCH,PUTSTR,CVTWD,OPENR,OPENW
+	extrn	GETCF,PUTCF,CLOSE,CPHLDE
+
+	extrn	MINIT,MALLOC,MFREE,MSIZE
+
+	extrn	ZFR0,FLD0R,FLD1R,FST0R,FCMP,AFP,FMTFPA,FPUSH,FPOP
+	extrn	FABS,FNEG,FADD,FSUB,FMUL,FDIV,FPOW,FCOPY,FMOVE
+	extrn	FINT,FSGN,IFP,SQR,SIN,COS,ATN,EXP,EXP10,LOG,LOG10
+	extrn	ISINT,FR0,FR1,FPone,FPhalf,FPpi,DEGRAD
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+; Main routine
+
+START::	ld	sp,stack
+	call	INIT		; system-dependent initializations
+	ld	de,($MEMRY)
+	or	a
+	sbc	hl,de
+	ex	de,hl		; HL = start of free memory, DE = size
+	ld	ix,FREE
+	call	MINIT		; init heap
+	call	reset_calc	; initialize worksheet
+	xor	a
+	ld	(color),a	; default is B&W mode
+	ld	a,80
+	ld	(screen),a	; terminal screen width in columns
+	ld	c,0
+	call	resrev		; ensure reverse video is off
+	call	CLS		; clear screen
+	call	display		; display spreadsheet
+s0:	ld	a,s.wait
+	ld	(state),a	; state = waiting for input
+	xor	a
+	ld	(ip),a		; reset buffer index
+	call	clrbuf		; clear buffer
+
+s1:	; main spreadsheet loop
+
+	call	GETCH		; wait for keypress and get the char
+	call	procch		; process char
+	ld	hl,s1
+	push	hl		; push return address
+	ld	a,(state)
+	cp	s.exef
+	jp	z,calculate_formula
+	cp	s.exec
+	jp	z,do_command
+	cp	s.exep
+	jp	z,do_parameter
+	ret
+
+quit:	ld	c,CR
+	call	PUTCH
+	xor	a
+	ld	(color),a	; ensure color mode is off
+	ld	c,0
+	call	resrev		; ensure reverse video is off
+	call	CLREOL		; clear to end of line
+	jp	EXIT		; and exit to OS
+
+; Reset FreeCalc variables.
+
+reset_calc:
+	ld	hl,width
+	ld	bc,256		; 256 columns
+	ld	a,9		; default column width
+	call	mfill		; init width table
+	ld	hl,0
+	ld	(chead),hl	; clear spreadsheet pointers
+	ld	(ctail),hl
+	ld	(home_r),hl	; home_r, home_c
+	ld	(cur_r),hl	; cur_c, cur_c
+	ld	(test_r),hl	; test_r, test_c
+	ld	(del_r),hl	; del_r
+	ld	(del_c),hl	; del_c
+	xor	a
+	ld	(DEGRAD),a	; use radians for trigonometric functions
+	ld	(justify),a	; default justify = align left
+	ld	(local_edit),a	; false
+	ld	a,2
+	ld	(precis),a	; default precision = number, 2 digits after dp
+	ld	a,a.down
+	ld	(direction),a	; default direction = down
+	ld	hl,df_heading
+	ld	a,df_hlen
+	call	set_heading	; set default heading
+	jp	df_colors	; set default colors and return
+
+; Check available stack space, on stack overflow abort the current operation
+; (typically expression evaluation)
+
+chkstk:	push	hl
+	push	de
+	ld	hl,-32
+	add	hl,sp
+	ld	de,stack-stksiz
+	call	CPHLDE		; CY if HL > DE
+	pop	de
+	pop	hl
+	ret	c
+	ld	sp,stack	; reset stack
+	ld	c,0
+	call	resrev
+	ld	de,stkovf
+	call	errmsg		; output error message
+	ld	hl,(cur_r)
+	ld	a,1
+	call	prompt
+	jp	s0		; and abort current operation
+
+stkovf:	db	'Stack overflow',0
+
+; Fill memory area with constant
+
+mfill:	ld	(hl),a
+	dec	bc
+	ld	a,b
+	or	c
+	ret	z
+	ld	e,l
+	ld	d,h
+	inc	de
+	ldir
+	ret
+
+; Ring the terminal bell
+
+bell:	ld	c,7
+	jp	PUTCH
+
+; Set default colors
+
+df_colors:
+	ld	hl,ca.bg*256+ca.fg
+	ld	(color1),hl	; spreadsheet area
+	ld	hl,ca.sbg*256+ca.sfg
+	ld	(color2),hl	; selected cell
+	ld	hl,ca.hbg*256+ca.hfg
+	ld	(color3),hl	; heading
+	ld	hl,ca.tbg*256+ca.tfg
+	ld	(color4),hl	; cell headers
+	ld	hl,ca.cbg*256+ca.cfg
+	ld	(color5),hl	; raw cell contents
+	ret
+
+; Set reverse video
+
+setrev:	ld	a,(color)
+	or	a
+	jp	z,REVVID	; B&W terminal
+	push	hl
+	ld	hl,(color4)	; cell header (H = bg, L = fg)
+	dec	c
+	jr	z,srv1
+	ld	hl,(color2)	; selected cell
+srv1:	call	SCOLOR
+	pop	hl
+	ret
+
+; Reset reverse video (set normal mode)
+
+resrev:	ld	a,(color)
+	or	a
+	jp	z,NORMAL	; B&W terminal, clear all attrib
+	push	hl
+	ld	hl,(color1)	; normal background
+	inc	c
+	dec	c
+	jr	z,rrv1
+	ld	hl,(color3)	; heading
+	dec	c
+	jr	z,rrv1
+	ld	hl,(color5)	; raw cell contents
+rrv1:	call	SCOLOR
+	pop	hl
+	ret
+
+; HL += A
+
+addhla:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret
+
+; Output string
+; HL = string, B = length
+
+prntn:	ld	a,b
+	or	a
+	ret	z
+pr1:	ld	c,(hl)		; get char
+	call	PUTCH		; display it
+	inc	hl
+	djnz	pr1
+	ret
+
+; Output null-terminated string following call
+
+prntx:	ex	(sp),hl
+	call	PUTSTR
+	inc	hl
+	ex	(sp),hl
+	ret
+
+; Output null-terminated string following call with max length B
+
+prntxn:	ex	(sp),hl
+	call	prtn0
+	ex	(sp),hl
+	ret
+
+prtn0:	push	hl
+	call	strlen
+	pop	hl
+	ld	a,b
+	sub	c
+	jr	c,pxn1
+	push	bc
+	ld	b,a
+	call	spaces
+	pop	bc
+pxn1:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	ld	c,a
+	call	PUTCH
+	djnz	pxn1
+pxn2:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	jr	pxn2
+
+strlen:	ld	c,0
+strl1:	ld	a,(hl)
+	or	a
+	ret	z
+	inc	hl
+	inc	c
+	jr	strl1
+
+; Output B spaces
+
+spaces:	ld	a,b
+	or	a
+	ret	z
+bw1:	ld	c,' '		; get a space
+	call	PUTCH		; display it
+	djnz	bw1
+	ret
+
+; Clear input buffer
+
+clrbuf:	ld	hl,buffer
+	ld	b,70
+clear:	xor	a
+cb1:	ld	(hl),a		; reset to all zeros
+	inc	hl
+	djnz	cb1
+	ret
+
+; Uppercase input buffer
+
+upper:	ld	hl,buffer
+	ld	b,70
+	; fall thru
+
+; Uppercase string of B characters
+
+ucstr:	inc	b
+	dec	b
+	ret	z
+u1:	ld	a,(hl)		; get char
+	call	UCASE		; uppercase it
+	ld	(hl),a		; store it back
+	inc	hl
+	djnz	u1
+	ret
+
+; Index into the c.form[i] field of a cell
+; IX = pointer to cell
+; E  = buffer index [i]
+; Returns HL = address of c.form[i]
+; Destroys BC, D
+
+ixform:	push	ix
+	pop	hl
+	ld	bc,c.form
+	add	hl,bc
+	ld	d,0
+	add	hl,de
+	ret
+
+; Skip blanks
+; IX = pointer to cell
+; E  = current buffer index
+; Returns E = new index and HL = buffer pointer (thus, no need to call
+; ixform again).
+
+rem_blanks:
+	call	ixform		; index into c.form
+rmb1:	ld	a,(hl)		; get char
+	cp	' '		; space?
+	jr	nz,rmb2		; no, exit loop
+	inc	hl		; else advance pointer
+	inc	e		; incease index
+	jr	rmb1		; and loop
+rmb2:	ld	a,(ix+c.len)
+	cp	e		; end reached?
+	ret	nc		; no, return
+	ld	a,-1		; error if index > cell->c.len
+	ld	(error),a
+	ret
+
+; Check if the specified coordinates are on screen
+; L = row, H = col
+; Return NC if on screen (CY set = false, CY clear = true)
+; Preserves HL
+
+on_screen:
+	push	hl
+	call	on_scr
+	pop	hl
+	ret
+
+on_scr:	ld	de,(home_r)	; get home_r and home_c
+	ld	a,l		; get row
+	cp	e		; CY if home_r > row
+	ret	c
+	ld	a,h		; get col
+	cp	d		; CY if home_c > col
+	ret	c
+	ld	a,e
+	add	20-1		; 20 is number of rows on the screen
+	cp	l		; CY if row >= home_r + 20
+	ret	c
+	ld	a,h
+	sub	d		; col - home_c
+	ld	h,a
+	ret	c
+	push	hl
+	ld	hl,width
+	ld	c,d
+	ld	b,0
+	add	hl,bc
+	ex	de,hl		; DE now points to width of home_c in table
+	pop	hl
+	inc	h
+	ld	c,4		; row header width
+	ld	a,(screen)
+	ld	b,a		; B = screen width
+os1:	ld	a,(de)		; get column width
+	add	a,c
+	ret	c		; return CY if cumulative width > 255
+	ld	c,a		; add to cumulative width
+	cp	b		; cumulative width < screen width?
+	ccf
+	ret	c		; return CY if not (off-screen)
+	inc	de
+	dec	h
+	jr	nz,os1
+	or	a		; return CY clear (on screen)
+	ret
+
+; Display Alpha cell contents
+; IX = pointer to cell, B = col width
+; Preserves IX, HL, DE.
+
+dis_alfa:
+	push	de
+	push	hl
+	ld	c,b		; C = column width
+	ld	b,(ix+c.len)
+	dec	b		; exclude null terminator [else call strlen]
+	ld	a,b		; B = string width
+	or	a		; negative length?
+	jp	p,da1		; branch if not
+	ld	b,0		; else use 0
+	jr	da2
+da1:	ld	a,c
+	cp	b		; string length > column width?
+	jr	nc,da2		; no
+	ld	b,c		; else truncate string length
+da2:	ld	a,c
+	sub	b		; difference is padding length
+	ld	d,a		; D = padding length
+	ld	a,(ix+c.align)
+	dec	a		; 1 = justify right
+	jr	nz,da3
+	push	bc
+	ld	b,d		; pad left
+	call	spaces
+	ld	e,0
+	call	ixform
+	pop	bc
+	call	prntn		; length already in B
+	jr	da5
+
+da3:	dec	a		; 2 = center
+	jr	nz,da4
+	push	bc
+	ld	b,d		; get padding length
+	srl	b		; take half of it
+	ld	a,d
+	sub	b		; compute length of right padding
+	ld	d,a
+	call	spaces		; output left padding
+	push	de
+	ld	e,0
+	call	ixform
+	pop	de
+	pop	bc
+	call	prntn		; length already in B
+	ld	b,d
+	call	spaces		; output right padding
+	jr	da5
+
+da4:	push	de
+	push	bc
+	ld	e,0		; else: left justify
+	call	ixform
+	pop	bc
+	call	prntn		; string length already in B
+	pop	de
+	ld	b,d		; pad right
+	call	spaces
+da5:	pop	hl
+	pop	de
+	ret
+
+; Display column header.
+; Called with L = starting row (not used), H = starting column
+
+whead:	ld	b,4		; row names are max 4 chars wide
+	call	spaces		; pad to start of header
+	ld	a,(screen)
+	ld	b,a		; B = screen width
+	ld	c,4		; C = starting screen column
+	ld	e,h		; E = column index
+wh1:	ld	hl,width
+	ld	d,0
+	add	hl,de
+	ld	a,(hl)		; get column width
+	add	a,c		; add to cumulative width
+	jr	c,wh3		; just in case
+	ld	c,a		; save result back in reg C
+	cp	b		; cumulative width < screen width?
+	jr	nc,wh3		; exit loop if not (off-screen)
+	ld	a,(hl)		; get column width again
+	or	a
+	jr	z,wh2		; skip if zero
+	push	de
+	push	bc
+	push	hl
+	ld	hl,tmpbuf
+	ld	a,e		; get column number
+	call	colnam		; converto to ASCII name, returns length in D
+	pop	hl
+	ld	a,(hl)		; get column width
+	sub	d		; subtract name length
+	jr	c,wh5
+	jr	z,wh5
+	srl	a		; /2 to center name on column
+	ld	e,a		; save length of left padding
+	jr	z,wh5
+	ld	b,a
+	ld	c,'-'
+	call	PUTCH		; left border
+	dec	b
+	call	SPACES		; left padding
+wh5:	ld	a,(hl)		; get column width again
+	cp	d		; >= name length?
+	push	hl
+	ld	hl,tmpbuf
+	jr	nc,wh6		; yes, output full name
+	inc	hl		; no, display only 2nd char
+wh6:	call	PUTSTR		; output cell name
+	pop	hl
+	ld	a,(hl)		; get column width again
+	sub	d		; subtract name length
+	jr	c,wh7
+	sub	e		; subtract length of left padding
+	jr	c,wh7
+	jr	z,wh7
+	dec	a
+	ld	b,a
+	call	spaces		; right padding
+	ld	c,'-'
+	call	PUTCH		; right border
+wh7:	pop	bc
+	pop	de
+wh2:	inc	e		; next column
+	jr	nz,wh1		; loop unless past last column
+wh3:	jp	CLREOL
+
+; Convert column number to a 2-letter column name @HL.
+; Called with A = column number, returns number of chars in reg D.
+; Preserves BC.
+
+colnam:	push	bc
+	ld	d,0
+	ld	c,'Z'-'A'+1	; 26+1
+	ld	b,-1
+cn1:	sub	c		; B = A/C, remainder in A
+	inc	b
+	jr	nc,cn1
+	add	a,c		; fix remainder
+	add	a,'A'		; convert to ASCII
+	ld	c,a
+	ld	a,b		; get quotient
+	or	a		; zero?
+	jr	z,cn2
+	add	a,'A'-1		; no, convert to ASCII
+	ld	(hl),a		; store first char, if any
+	inc	hl
+	inc	d
+cn2:	ld	(hl),c		; store second char
+	inc	hl
+	inc	d
+	ld	(hl),0		; end with a null
+	pop	bc
+	ret
+
+; Convert cell name to ASCII string @tmpbuf.
+; Called with H = col, L = row, C = absolute flag bits
+; Returns string length in A.
+; Preserves HL, DE.
+
+celnam:	push	hl
+	push	de
+	ex	de,hl
+	ld	hl,tmpbuf
+	bit	1,c		; absolute column?
+	jr	z,cnm1		; no
+	ld	(hl),'$'	; yes
+	inc	hl
+cnm1:	ld	a,d		; get column number
+	call	colnam		; convert to ASCII
+	bit	0,c		; absolute row?
+	jr	z,cnm2		; no
+	ld	(hl),'$'	; yes
+	inc	hl
+cnm2:	ld	c,d		; save column name length
+	ld	d,0		; DE = row
+	xor	a		; no filler
+	inc	de
+	call	CVTWD
+	ld	(hl),0
+	add	a,c		; return string length in A
+	pop	de
+	pop	hl
+	ret
+
+; Display formula
+; IX = pointer to cell
+
+dis_form:
+	push	ix
+	pop	de
+	ld	a,d
+	or	e		; valid pointer?
+	ret	z		; no, return
+	ld	a,(ix+c.len)
+	or	a		; c.len > 0?
+	ret	z		; no, return
+	push	hl
+	ld	hl,c.form
+	add	hl,de
+	ld	b,a
+	call	prntn		; display c.form
+	pop	hl
+	ret
+
+; IX = pointer to cell, H = col
+; Called only from dis_val and recursively calls dis_val
+; Preserves IX, DE.
+
+cal_form:
+	push	de
+	push	hl		; save col
+	ld	hl,0
+	ld	(calc_error),hl	; clear both calc_error and error flags
+	ld	(ix+c.rdy),2	; c.rdy = 2
+	ld	e,0		; clear buffer index
+	call	formula		; compute formula
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	call	FST0R		; store fp acc into c.val
+	ld	hl,(calc_error)	; load both calc_error (L) and error (H)
+	ld	a,l
+	or	a		; calc_error set?
+	jr	nz,cf1		; yes
+	ld	(ix+c.rdy),1	; else set c.rdy = 1
+cf1:	ld	a,h
+	or	a		; error set?
+	jr	z,cf2		; no
+	ld	(ix+c.rdy),3	; else set c.rdy = 3
+cf2:	pop	hl		; restore col
+	call	dis_val		; recursive call
+	pop	de
+	ret
+
+; Display cell value
+; IX = pointer to cell, H = col
+; Note: called recursively!
+; Preserves IX, HL, DE.
+
+dis_val:
+	call	chkstk		; check stack
+	push	de
+	push	ix
+	pop	de
+	ld	a,d
+	or	e		; valid cell pointer?
+	jr	nz,dv1		; yes
+	push	hl
+	ld	e,h
+	ld	d,0
+	ld	hl,width
+	add	hl,de
+	ld	b,(hl)		; else get width of this column
+	call	spaces		; display empty cell
+	pop	hl
+	pop	de
+	ret
+
+dv1:	push	hl
+	ld	e,h
+	ld	d,0
+	ld	hl,width
+	add	hl,de
+	ld	a,(hl)		; get width
+	ld	b,a		; save it for prntxn call below
+	or	a
+	jr	z,dv2		; return if zero
+
+	ld	a,(ix+c.flag)
+	cp	'A'		; Alpha cell?
+	jr	nz,dv3		; no, display numeric value
+	call	dis_alfa	; yes, display text
+	jr	dv2
+
+dv3:	ld	a,(ix+c.rdy)
+	cp	3		; error (e.g. syntax) in formula?
+	jr	nz,dv4		; no
+	call	prntxn		; yes
+estr:	db	'ERROR',0
+	jr	dv2
+
+dv4:	cp	2		; error (e.g. overflow) during computation?
+	jr	nz,dv5		; no
+	call	prntxn		; yes
+vestr:	db	'<VAL/ERR>',0
+	jr	dv2
+
+dv5:	or	a		; force recompute?
+	jr	z,dv6		; yes
+
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	push	bc
+	call	FLD0R		; load value into fp acc
+	ld	a,(ix+c.prec)
+	ld	b,a
+	rlca
+	rlca
+	rlca
+	and	07h
+	ld	c,a		; get format type
+	ld	a,b
+	and	1Fh
+	cp	15+1
+	jr	c,dv7
+	ld	a,-1
+dv7:	ld	b,a		; get precision
+	ld	a,1		; don't suppress leading zero before decimal pt
+	ld	hl,tmpbuf
+	push	hl
+	ld	e,20
+	call	FMTFPA		; convert to ASCII
+	pop	hl
+	pop	bc
+	jr	c,dv8
+	push	hl
+	call	strlen
+	pop	hl
+	ld	a,b
+	cp	c
+	jr	c,dv8
+	call	prtn0		; display result
+	jr	dv2
+
+dv8:	call	prntxn
+nstr:	db	'###',0
+	jr	dv2
+
+dv6:	pop	hl
+	push	hl
+	call	cal_form	; recursive call!
+dv2:	;call	TTFLSH
+	pop	hl
+	pop	de
+	ret
+
+; Clear ready flag of all cells.
+; Preserves HL, IX.
+
+clr_ready:
+	ld	de,(chead)
+clrdy:	ld	a,d
+	or	e
+	ret	z
+	push	de
+	pop	iy
+	ld	(iy+c.rdy),0
+	ld	e,(iy+c.link)
+	ld	d,(iy+c.link+1)
+	jr	clrdy
+
+; Find cell by coordinates.
+; L = row, H = col. Returns IX = pointer to cell.
+; Returns CY set if no cell with such coordinates exists.
+; Preserves HL, BC.
+
+getpnt:	ld	de,(chead)	; get pointer to head of cell list
+gp1:	push	de
+	pop	ix
+	ld	a,d		; end of list?
+	or	e
+	scf
+	ret	z		; yes, return with CY set
+	ld	a,(ix+c.row)
+	cp	l		; row number matches?
+	jr	nz,gp2		; no
+	ld	a,(ix+c.col)
+	cp	h		; column number matches?
+	ret	z		; yes, return with CY clear
+gp2:	ld	e,(ix+c.link)	; else try next cell
+	ld	d,(ix+c.link+1)
+	jr	gp1
+	
+; Display one row
+; L = row, H = col
+
+dis_row:
+	ld	c,1
+	call	setrev		; reverse video
+	push	hl
+	ld	e,l
+	ld	d,0
+	inc	de
+	ld	a,' '		; filler
+	ld	hl,tmpbuf
+	call	CVTWD
+	ld	(hl),0
+	ld	hl,tmpbuf+2
+	call	PUTSTR		; output row number (row header)
+	ld	c,'-'
+	call	PUTCH
+	ld	c,0
+	call	resrev		; normal video
+	pop	hl
+
+	ld	e,4		; starting screen column = row header width
+drw1:	push	de
+	push	hl
+	ld	e,h
+	ld	d,0
+	ld	hl,width
+	add	hl,de
+	ld	a,(hl)		; get column width
+	pop	hl
+	pop	de
+	add	a,e		; add to current
+	jr	c,drw2		; just in case
+	ld	d,a
+	ld	a,(screen)
+	dec	a
+	cp	d		; less than screen width?
+	jr	c,drw2		; no, exit loop
+	push	de
+	call	getpnt		; get pointer to cell
+	call	dis_val		; display value
+	pop	de
+	ld	e,d		; set new width
+	inc	h		; next column
+	jr	nz,drw1		; loop
+
+drw2:	jp	CLREOL
+
+; Position terminal cursor on cell.
+; Usually followed by a call to e.g. dis_val.
+; L = row, H = col
+; Preserves IX, HL.
+
+posit:	push	hl
+	ex	de,hl
+	ld	hl,width
+	ld	a,(home_c)
+	call	addhla		; index into columnt width table
+	ld	c,4		; starting screen column
+pos1:	ld	a,(home_c)
+	cp	d		; CY if col > home_c
+	jr	nc,pos2
+	ld	a,c
+	add	a,(hl)
+	ld	c,a		; column += width
+	inc	hl
+	dec	d
+	jr	pos1
+pos2:	ld	hl,home_r
+	ld	a,e
+	sub	(hl)
+	add	a,3
+	ld	l,a
+	ld	h,c
+	call	SETCUR
+	pop	hl
+	ret
+
+; Display current cell contents and prompt for an action
+; L = row, H = col, A = redraw flag
+
+prompt:	push	af
+	push	hl
+	call	getpnt		; get pointer to cell into IX
+	call	posit		; position cursor
+	ld	c,2
+	call	setrev		; reverse video
+	call	dis_val		; display value of current cell
+	ld	c,2
+	call	resrev		; normal video
+
+	ld	hl,0*256+1
+	call	SETCUR		; place cursor at the start of second line
+	pop	hl
+	push	hl
+	ld	c,0		; clear absolute bits
+	call	celnam		; convert current cell name to string
+	ld	hl,tmpbuf
+	call	PUTSTR		; display cell name
+	pop	hl
+	call	CLREOL
+	ld	c,':'
+	call	PUTCH
+	ld	hl,10*256+1
+	call	SETCUR
+	call	dis_form	; display formula (raw cell contents)
+
+	ld	a,(color)
+	or	a
+	ld	c,0
+	call	nz,resrev
+	pop	af
+	or	a		; redraw all?
+	ld	hl,9*256+23
+	jp	z,SETCUR	; position cursor and return if not
+	ld	a,(screen)
+	sub	17
+	ld	h,a
+	ld	l,0
+	call	SETCUR
+	ld	ix,FREE
+	call	MSIZE
+	ld	e,c
+	ld	d,b
+	ld	a,' '
+	ld	hl,tmpbuf
+	call	CVTWD
+	ld	(hl),0
+	ld	a,(color)
+	or	a
+	ld	c,1
+	call	nz,resrev
+	ld	hl,tmpbuf
+	call	PUTSTR
+	call	prntx
+	db	' bytes free',0
+	ld	a,(color)
+	or	a
+	ld	c,0
+	call	nz,resrev
+	ld	hl,0*256+23
+	call	SETCUR
+	call	prntx
+	db	'Command: ',0
+	jp	CLREOL
+
+; Display spreadsheet, starting from home_r, home_c.
+
+display:
+	ld	hl,(home_r)
+	ld	a,l		; get row
+	add	a,19
+	call	c,CLS		; clear screen if row+19 > 255
+	push	hl
+	call	HOME
+	ld	a,(color)
+	or	a
+	ld	c,1
+	call	nz,resrev
+	call	CLREOL		; clear top row
+	ld	a,(screen)
+	sub	40
+	srl	a		; center heading
+	ld	h,a
+	ld	l,0
+	call	SETCUR
+	ld	hl,heading
+	ld	b,40
+	call	prntn		; display heading
+	ld	hl,0*256+2
+	call	SETCUR		; second row of the screen = cell headers
+	ld	c,1
+	call	setrev		; reverse video
+	pop	hl
+	push	hl
+	call	whead		; display cell headers
+	ld	c,0
+	call	resrev		; normal video
+	pop	hl
+	ld	de,0*256+3	; start at row 3
+dp1:	ld	a,e
+	sub	3
+	add	a,l
+	jr	c,dp2		; exit loop if row+i > 255
+	ex	de,hl
+	call	SETCUR
+	ex	de,hl
+	push	hl
+	push	de
+	ld	a,e
+	sub	3
+	add	a,l
+	ld	l,a
+	call	dis_row		; display row
+	pop	de
+	pop	hl
+	inc	e		; next row
+	ld	a,e
+	cp	23
+	jr	nz,dp1		; loop
+dp2:	ld	hl,(cur_r)	; cur_r, cur_c
+	ld	a,1
+	jp	prompt
+
+; IX = pointer to cell
+; C  = char
+; E  = current buffer index
+; Returns new buffer index in E
+; Modifies HL
+
+eat_char:
+	push	bc
+	call	rem_blanks	; skip blanks, point to c.form
+	pop	bc
+	ld	a,(hl)		; get char
+	cp	c		; ensure is the right one
+	jr	nz,ec1		; no, error
+	inc	e		; else skip it
+	ld	a,(ix+c.len)
+	cp	e		; past end of the string?
+	ret	nc		; no, return
+ec1:	ld	a,-1		; else is error
+	ld	(error),a
+	ret
+
+; IX = pointer to cell
+; E  = current char index
+; Returns new buffer index in E
+; Modifies BC, HL
+
+eat_then:
+	ld	bc,@then	; BC = address of reference string
+et0:	push	bc
+	call	rem_blanks	; skip blanks and index into c.form field
+	pop	bc
+et1:	ld	a,(bc)		; get char from ref string
+	or	a		; end of string?
+	jr	z,et2		; yes, we're done
+	cp	(hl)		; matches buffer?
+	jr	nz,et3		; no, error
+	inc	bc		; else advance pointers
+	inc	hl
+	inc	e		; increase buffer index
+	jr	et1		; and loop
+et2:	ld	a,(ix+c.len)
+	cp	e		; past end of buffer?
+	ret	nc		; no, return
+et3:	ld	a,-1		; else is error
+	ld	(error),a
+	ret
+
+@then:	db	'@THEN',0
+
+eat_else:
+	ld	bc,@else	; BC = address of reference string
+	jp	et0		; continue via common code
+
+@else:	db	'@ELSE',0
+
+; A = len, returns ptr to new cell in HL.
+; CY set on error (not enough memory)
+
+get_new:
+	push	ix
+	ld	hl,csize
+	ld	e,a
+	ld	d,0
+	add	hl,de
+	push	de
+	ld	c,l
+	ld	b,h
+	ld	ix,FREE
+	call	MALLOC
+	pop	de
+	pop	ix
+	ret	c
+	push	hl
+	xor	a
+clc1:	ld	(hl),a
+	inc	hl
+	dec	e
+	jr	nz,clc1
+	pop	hl
+	ret
+
+; IX = ptr to cell
+; Destroys IX (no longer valid, anyway).
+
+dispose:
+	push	ix
+	pop	bc
+	ld	hl,(chead)	; head
+	ld	de,0		; last
+disp1:	ld	a,h
+	or	l
+	jr	z,disp3		; end of list
+	ld	a,l
+	cp	c
+	jr	nz,disp2
+	ld	a,h
+	cp	b
+	jr	z,disp3		; cell found
+disp2:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	dec	hl
+	ex	de,hl		; HL = next, DE = last
+	jr	disp1
+
+disp3:	ld	a,d
+	or	e		; check last ptr
+	jr	z,disp4		; branch if not set (first cell in list)
+	ld	a,(ix)
+	ld	(de),a		; last.link = cell.link
+	inc	de
+	ld	a,(ix+1)
+	ld	(de),a
+	dec	de
+	jr	disp5
+
+disp4:	ld	l,(ix)
+	ld	h,(ix+1)
+	ld	(chead),hl	; chead = cell.link
+
+disp5:	ld	a,(ix)		; check cell.link
+	or	(ix+1)
+	jr	nz,disp6	; branch if set
+	ld	(ctail),de	; else set ctail = last
+
+disp6:	push	ix
+	ld	hl,csize
+	ld	a,(ix+c.len)
+	call	addhla
+	ex	de,hl		; DE = size
+	pop	hl
+	ld	ix,FREE
+	jp	MFREE		; free cell memory and return
+
+; Clear spreadsheet
+
+dispose_all:
+	ld	hl,(chead)
+disp7:	ld	a,h
+	or	l
+	jr	z,disp8
+	push	hl
+	pop	ix
+	ld	l,(ix+c.link)
+	ld	h,(ix+c.link+1)
+	push	hl
+	call	dispose		; delete old spreadsheet
+	pop	hl
+	jr	disp7
+disp8:	ld	(chead),hl
+	ld	(ctail),hl
+	ret
+
+; H = row, L = col
+; Returns atom value in floating point accum
+; Note: may be called recursively!
+; Modifies all registers.
+
+atom:	call	chkstk		; check stack
+	push	hl
+	call	ZFR0		; load 0.0 in fp acc (FR0)
+	pop	hl
+	ld	a,(local_edit)
+	or	a		; local edit?
+	ret	nz		; yes, return 0.0
+	call	getpnt		; get pointer to cell, preserves HL
+	jr	c,atm1		; error, no cell found
+	ld	a,(ix+c.flag)
+	cp	'A'		; alpha cell?
+	jr	z,atm1		; yes, error
+	ld	a,(ix+c.rdy)
+	cp	2		; c.rdy > 1?
+	jr	nc,atm1		; yes, error
+	or	a		; c.rdy == 0?
+	jr	z,atm2		; yes
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de		; point to c.val field
+	jp	FLD0R		; load value in fp acc and return
+
+atm2:	push	hl		; save row, col
+	ld	de,(calc_error)	; calc_error, error
+	push	de		; save old calc_error and error flags
+	ld	de,0
+	ld	(calc_error),de	; clear calc_error and error
+	ld	e,0		; reset cell buffer index
+	call	formula		; compute formula, result in fp acc
+	call	set_rdy		; set c.rdy according to calc_error and error
+	pop	de		; pop old calc_error (E) and error (D)
+	ld	hl,(calc_error)	; load calc_error (L) and error (H)
+	ld	a,l
+	or	e		; calc_error = calc_error || old calc_error ||
+	or	h		;              error;
+	ld	l,a
+	ld	h,d		; error = old error;
+	ld	(calc_error),hl	; store resulting calc_error and error
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de		; point to c.val
+	or	a		; calc_error still in A
+	jr	nz,atm5		; branch if calc_error is set
+	push	hl
+	call	FLD1R		; load FR1
+	call	FCMP		; compare with fp acc
+	pop	hl
+	pop	de
+	ret	z		; return if same
+	push	de
+atm5:	call	FST0R		; else store fp acc into c.val
+	pop	hl		; restore row, col
+	call	on_screen	; cell on screen?
+	ret	c		; no, return
+	call	posit		; else position cursor,
+	jp	dis_val		;  display cell contents
+				;   and return atom value in fp acc
+
+atm1:	ld	a,-1
+	ld	(calc_error),a	; set global flag
+	ret
+
+; Set c.rdy according to calc_error and error
+
+set_rdy:
+	ld	e,1		; default to c.rdy = 1
+	ld	a,(calc_error)
+	or	a		; calc_error set?
+	jr	z,sr1		; no
+	ld	e,2		; else c.rdy = 2
+sr1:	ld	a,(error)
+	or	a		; error set?
+	jr	z,sr2		; no
+	ld	e,3		; else c.rdy = 3
+sr2:	ld	(ix+c.rdy),e	; set c.rdy
+	ret
+
+; Parse cell name in formula and return the corresponding X,Y cell coordinates
+; IX = pointer to cell
+; E  = buffer index
+; Returns L = row, H = col; CY set on error.
+; Preserves IX, updates E.
+
+rrow	equ	0
+ccol	equ	rrow+1
+absflg	equ	ccol+1
+is	equ	absflg+1
+nlen	equ	is+1
+frmsz2	equ	nlen+1
+
+get_xy:	push	iy
+	ld	iy,-frmsz2
+	add	iy,sp
+	ld	sp,iy		; IY points to local stack frame
+	xor	a
+	ld	(iy+rrow),a
+	ld	(iy+ccol),a
+	ld	(iy+absflg),a	; no absolute references
+	ld	(iy+is),e	; remember start index
+
+	call	ixform
+	ld	bc,0
+	ld	a,(hl)
+	cp	'$'		; absolute column reference?
+	jr	nz,gxy1		; no
+	set	1,(iy+absflg)	; else set flag
+gxy0:	inc	hl
+	inc	e
+gxy1:	ld	a,(hl)
+	call	is_upper	; 'A'..'Z'?
+	jr	c,gxy2
+	sub	'A'-1
+	ld	d,a
+	ld	a,c
+	push	bc
+	call	mul26
+	pop	bc
+	jp	c,gxy50		; on overflow, return
+	add	a,d
+	jp	c,gxy50
+	ld	c,a
+	jr	gxy0
+gxy2:	dec	bc
+	ld	a,b
+	or	a
+	scf
+	jp	nz,gxy50
+	ld	(iy+ccol),c
+
+	ld	bc,0
+	ld	a,(hl)
+	cp	'$'		; absolute row reference?
+	jr	nz,gxy4		; no
+	set	0,(iy+absflg)	; else set flag
+gxy3:	inc	hl
+	inc	e
+gxy4:	ld	a,(hl)
+	call	is_digit	; digit?
+	jp	c,gxy5
+	sub	'0'
+	ld	d,a
+	ld	a,c
+	push	bc
+	call	mul10
+	pop	bc
+	jp	c,gxy50		; on overflow, return
+	add	a,d
+	ld	c,a
+	jr	gxy3
+gxy5:	dec	bc
+	ld	a,b
+	or	a
+	scf
+	jp	nz,gxy50
+	ld	(iy+rrow),c
+	ld	b,(iy+ccol)	; BC = rrow, ccol
+
+	ld	a,(local_edit)
+	or	a
+	jp	z,gxy50
+
+	; modify
+
+	ld	hl,(test_r)	; test_r, test_c
+	ld	a,c
+	cp	l		; rrow >= test_r?
+	ccf
+	jp	nc,gxy50	; no, return
+	ld	a,b
+	cp	h		; ccol >= test_c?
+	ccf
+	jp	nc,gxy50	; no, return
+
+	bit	0,(iy+absflg)	; absolute row reference?
+	jr	nz,gxy6		; yes
+	ld	hl,(del_r)
+	ld	a,c
+	add	l
+	ld	c,a		; else rrow += del_r
+	ld	a,h
+	adc	a,0
+	scf
+	jp	nz,gxy50
+
+gxy6:	bit	1,(iy+absflg)	; absolute column reference?
+	jr	nz,gxy7		; yes
+	ld	hl,(del_c)
+	ld	a,b
+	add	l
+	ld	b,a		; else ccol += del_c
+	ld	a,h
+	adc	a,0
+	scf
+	jp	nz,gxy50
+
+gxy7:	ld	l,c
+	ld	h,b
+	ld	c,(iy+absflg)
+	call	celnam		; convert new cell name to string, len in A
+	or	a
+	scf
+	jr	z,gxy50		; error if zero
+	ld	(iy+nlen),a	; remember new name length
+	ld	d,a
+	ld	a,(ix+c.len)
+	sub	e
+	ld	c,a
+	ld	b,0		; len
+	push	bc
+	ld	a,d
+	push	af
+	call	ixform
+	pop	af
+	push	hl		; src
+	add	(iy+is)
+	ld	e,a
+	call	ixform
+	ex	de,hl		; dst
+	pop	hl
+	pop	bc
+
+	ld	a,b
+	or	c		; check length
+	jr	z,gxy9		; nothing to move
+	call	CPHLDE
+	jr	z,gxy9		; skip if from = to
+	jr	nc,gxy8		; branch if from < to
+	ldir
+	jr	gxy9
+gxy8:	ld	a,(iy+is)
+	add	(iy+nlen)
+	ld	b,a
+	add	c
+	cp	70-1		; ensure wcell buffer will not overflow
+	jr	c,gxy81
+	ld	a,70-1		; else truncate length
+	sub	b
+	ld	c,a
+gxy81:	ld	b,0
+	add	hl,bc
+	ex	de,hl
+	add	hl,bc
+	ld	(hl),0		; in case the length was truncated
+	ex	de,hl
+	dec	hl
+	dec	de
+	lddr
+
+gxy9:	ld	e,(iy+is)
+	call	ixform
+	ex	de,hl		; dst
+	ld	hl,tmpbuf	; src
+	ld	c,(iy+nlen)
+	ld	a,c
+	ld	b,0
+	ldir			; replace old cell name with new
+	add	(iy+is)
+	push	af
+	ld	e,0
+	call	ixform
+	call	strlen
+	inc	c
+	ld	(ix+c.len),c
+	pop	af
+	ld	e,a		; return new index
+	or	a		;  and with CY clear
+
+gxy50:	rla			; save CY flag
+	ld	l,(iy+rrow)
+	ld	h,(iy+ccol)
+	ld	iy,frmsz2
+	add	iy,sp
+	ld	sp,iy
+	pop	iy
+	rra			; restore CY flag
+	ret
+
+mul10:	add	a,a		; *2
+	ret	c
+	ld	c,a
+	add	a,a		; *4
+	ret	c
+	add	a,a		; *8
+	ret	c
+	add	a,c		; *10
+	ret
+
+mul26:	ld	b,a
+	add	a,a		; *2
+	ret	c
+	add	a,a		; *4
+	ret	c
+	ld	c,a
+	add	a,a		; *8
+	ret	c
+	add	a,c		; *12
+	ret	c
+	add	a,b		; *13
+	ret	c
+	add	a,a		; *26
+	ret
+
+is_upper:
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ccf
+	ret
+
+is_digit:
+	cp	'0'
+	ret	c
+	cp	'9'+1
+	ccf
+	ret
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+
+elementary:
+	call	rem_blanks	; skip blanks and index into c.form
+	call	get_xy		; get cell name
+	jr	c,elem1		; branch on error
+	push	ix
+	push	de
+	call	atom		; rrow, ccol
+	pop	de
+	pop	ix
+	ret
+
+elem1:	exx
+	call	ZFR0		; on error, set result to zero
+	exx
+	ld	a,-1
+	ld	(error),a	; and set error flag
+	ret
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and range coordinates in HL:BC
+; CY set if range is invalid.
+; Preserves IX.
+
+get_range:
+	call	get_xy		; get first cell of range
+	push	af
+	push	hl
+	ld	c,':'		; separator
+	call	eat_char
+	call	get_xy		; get last cell of range
+	ld	c,l
+	ld	b,h
+	pop	hl		; range in HL:BC
+	jr	c,gtr1
+	pop	af
+	ret
+
+gtr1:	inc	sp
+	inc	sp
+	ret
+
+; IX = pointer to cell
+; E  = current buffer index
+; A  = token type
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+
+items	equ	0		; offsets
+toktyp	equ	items+2		;  to local variables
+fflag	equ	toktyp+1	;   on the stack
+frmsiz	equ	fflag+1		; frame size
+
+array_function:
+	push	iy
+	ld	iy,-frmsiz
+	add	iy,sp
+	ld	sp,iy		; IY points to stack frame
+	ld	(iy+toktyp),a	; remember token type
+	ld	(iy+fflag),-1	; set first-time flag
+	xor	a
+	ld	(iy+items),a	; clear item count
+	ld	(iy+items+1),a	; clear item count
+
+	exx
+	call	ZFR0		; clear fp accum
+	exx
+
+afn1:	call	rem_blanks	; skip leading spaces
+
+skip:	ld	a,(hl)		; look ahead, skip cell name
+	inc	hl
+	call	is_upper
+	jr	nc,skip
+	call	is_digit
+	jr	nc,skip
+	cp	'$'
+	jr	z,skip
+	cp	' '
+	jr	z,skip
+	cp	':'		; range of cells?
+	jr	nz,afn3		; no, single item or formula
+	
+	call	get_range	; get range into HL:BC
+	jr	c,afn2
+
+	; range of cells
+
+	push	de
+
+afn11:	push	hl		; save first
+
+afn12:	push	bc		; save end
+	push	hl		; save current
+
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push prev result
+	exx
+	push	ix
+	call	atom
+	pop	ix
+	exx
+	ld	hl,FR1
+	call	FPOP		; push prev result into FR1
+	exx
+
+	ld	a,(iy+fflag)
+	or	a		; first time?
+	exx
+	call	z,apply_func	; no, apply function
+	exx
+	ld	(iy+fflag),0	; clear flag
+
+	call	inc_items	; count item
+
+	pop	hl		; pop current cell number
+	pop	bc		; pop end of range
+
+	ld	a,h
+	cp	b		; end column reached?
+	jr	z,afn13		; yes
+	inc	h
+	jr	afn12
+
+afn13:	pop	hl		; pop first
+	ld	a,l
+	cp	c		; end row reached?
+	jr	z,afn14		; yes
+	inc	l
+	jr	afn11
+
+afn14:	pop	de
+	jr	afn4		; done with range
+
+afn2:	ld	a,-1
+	ld	(error),a
+	jr	afn4
+
+afn3:	; single item in comma-separated list
+
+	exx
+	ld	hl,FR0
+	call	FPUSH
+	exx
+
+	push	hl
+	call	formula
+	pop	hl
+
+	exx
+	ld	hl,FR1
+	call	FPOP
+	exx
+
+	ld	a,(iy+fflag)
+	or	a		; first time?
+	exx
+	call	z,apply_func	; no, apply function
+	exx
+	ld	(iy+fflag),0	; clear flag
+
+	call	inc_items	; count item
+
+afn4:	call	rem_blanks
+	ld	a,(hl)
+	cp	','		; comma?
+	jr	nz,afn5		; no, exit loop
+	inc	hl		; else skip comma
+	inc	e
+	jp	afn1		; and loop to process next item in list
+
+afn5:	ld	c,')'
+	call	eat_char
+
+	ld	a,(iy+toktyp)
+	cp	5		; AVG?
+	jr	nz,afn6
+	ld	l,(iy+items)
+	ld	h,(iy+items+1)
+	ld	a,h
+	or	l
+	jr	z,afn6
+
+	exx
+	ld	hl,FR0
+	call	FPUSH
+	exx
+
+	ld	(FR0),hl
+	exx
+	call	IFP		; convert integer to fp
+	call	FMOVE		; move result to FR1
+	ld	hl,FR0
+	call	FPOP
+	call	FDIV		; average = fp acc / num items
+	exx
+
+afn6:	ld	hl,frmsiz	; restore stack
+	add	hl,sp
+	ld	sp,hl
+	pop	iy
+	ret
+
+inc_items:
+	inc	(iy+items)
+	ret	nz
+	inc	(iy+items+1)
+	ret
+
+; Apply array function (first operand in FR0, second in FR1).
+
+apply_func:
+	ld	a,(iy+toktyp)
+	sub	2		; SUM?
+	jp	z,FADD
+
+ap2:	dec	a		; MAX?
+	jr	nz,ap3
+	call	FCMP		; FR0 < FR1?
+	ld	hl,FR1
+	call	m,FLD0R		; yes, set result to FR1
+	ret
+
+ap3:	dec	a		; MIN?
+	jr	nz,ap4
+	call	FCMP		; FR0 > FR1?
+	ret	z
+	ld	hl,FR1
+	call	p,FLD0R		; yes, set result to FR1
+	ret
+
+ap4:	dec	a		; AVG?
+	jp	z,FADD
+	ret
+
+; LOOKUP function: searches for a value in the specified column range
+; and returns the adjacent (to the right) cell value for the last value
+; less than or equal to the searched value. Assumes the search range is
+; in ascending order of values.
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+
+do_lookup:
+	call	rem_blanks
+	call	formula		; get value to look for
+	ld	c,','
+	call	eat_char
+	call	rem_blanks
+	call	get_range	; get cell range into HL:BC
+	push	de		; save buffer index
+	jr	c,look5
+	ld	a,b
+	cp	h		; start column > end column?
+	jr	c,look5		; yes, error
+	ld	a,h
+	inc	a
+	jr	z,look5		; range overflow
+	cp	b		; end column must equal start column + 1
+	jr	nz,look5	; else is error
+
+	exx
+	ld	hl,FR0
+	ld	de,FR1
+	call	FCOPY		; move searched value to FR1
+	exx
+
+	ld	de,0		; D = found flag, E = matched row number
+	push	de
+look1:	ld	a,c
+	cp	l		; end of range reached?
+	jr	c,look3		; yes, exit loop
+	exx
+	ld	hl,FR1
+	call	FPUSH		; push searched value
+	exx
+	push	ix
+	push	hl
+	push	bc
+	call	atom		; get cell value from first column
+	pop	bc
+	pop	hl
+	pop	ix
+	exx
+	ld	hl,FR1
+	call	FPOP		; pop searched value
+	call	FCMP		; compare values
+	exx
+	dec	a
+	jr	z,look2		; branch if cell value > searched value
+	pop	de
+	ld	d,-1		; set found flag
+	ld	e,l		; save row
+	push	de
+look2:	inc	l		; next row
+	jr	look1		; loop
+
+look3:	pop	hl
+	ld	a,h
+	or	a		; match found?
+	jr	z,look4		; no
+	ld	h,b		; H = result column, row already in L
+	push	ix
+	call	atom		; fetch result from the second column
+	pop	ix
+	jr	look6		; and return
+
+look4:	exx
+	call	ZFR0		; not found, return 0.0
+	exx
+	ld	a,-1
+	ld	(calc_error),a	; and set calc_error flag
+	jr	look6		; and return
+
+look5:	ld	a,-1
+	ld	(error),a	; set error flag
+look6:	pop	de		; restore buffer index
+	ld	c,')'
+	jp	eat_char	; check for closing parenthesis and return
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+
+get_function:
+	inc	e		; skip '@'
+	call	ixform		; index into c.form buffer
+	ld	bc,tmpbuf
+	ld	d,8
+
+gfn0:	ld	a,(hl)		; get char
+	call	is_upper	; 'A'..'Z'?
+	jr	nc,gfn1
+	call	is_digit	; '0'..'9'?
+	jr	c,gfn2		; no, exit loop
+gfn1:	ld	(bc),a		; store char in buffer
+	inc	hl
+	inc	bc
+	inc	e
+	dec	d
+	jr	nz,gfn0
+gfn2:	xor	a
+	ld	(bc),a		; add trailing zero
+	push	de
+	call	tkfind		; find token in table
+	pop	de
+	jr	nc,gfn3		; branch if found
+gfnerr:	ld	a,-1
+	ld	(error),a	; else set error flag
+	push	de
+	call	ZFR0		; and return 0.0
+	pop	de
+	ret
+
+gfn3:	cp	1		; 1 (PI)
+	jr	nz,gfn4
+	push	de
+	ld	hl,FPpi		; 3.14159265
+	call	FLD0R
+	pop	de
+	ret
+
+gfn4:	push	af
+	ld	c,'('
+	call	eat_char	; require '('
+	pop	af
+	cp	5+1		; 2..5 (SUM, MAX, MIN, AVG)
+	jp	c,array_function
+
+	sub	6		; 6 (LOOKUP)
+	jp	z,do_lookup
+gfn7:	push	af
+	call	formula		; all the functions below have just 1 argument
+	ld	c,')'
+	call	eat_char	; ensure ')' is present
+	pop	af
+	dec	a		; 7 (ABS)
+	jr	nz,gfn8
+	push	de
+	call	FABS
+	pop	de
+	ret
+
+gfn8:	dec	a		; 8 (INT)
+	jr	nz,gfn9
+	push	de
+	call	FINT
+	pop	de
+	ret
+
+gfn9:	dec	a		; 9 (SIGN)
+	jr	nz,gfn10
+	push	de
+	call	FSGN
+	pop	de
+	ret
+
+gfn10:	dec	a		; 10 (ROUND)
+	jr	nz,gfn11
+	push	de
+	ld	hl,FPhalf	; +0.5
+	call	FLD1R
+	ld	a,(FR0)
+	rla
+	ld	hl,FR1
+	ld	a,(hl)
+	rla
+	rrca
+	ld	(hl),a		; -0.5 if FR0 is negative
+	call	FADD
+	call	FINT
+	pop	de
+	ret
+
+gfn11:	dec	a		; 11 (SQRT)
+	jr	nz,gfn12
+	push	de
+	call	SQR
+	pop	de
+gfnxit:	ret	nc
+	ld	a,-1
+	ld	(calc_error),a	; negative square root
+	ret
+
+gfn12:	dec	a		; 12 (EXP)
+	jr	nz,gfn13
+	push	de
+	call	EXP
+	pop	de
+	jr	gfnxit
+
+gfn13:	dec	a		; 13 (EXP10)
+	jr	nz,gfn14
+	push	de
+	call	EXP10
+	pop	de
+	jr	gfnxit
+
+gfn14:	dec	a		; 14 (LOG)
+	jr	nz,gfn15
+	push	de
+	call	LOG
+	pop	de
+	jr	gfnxit
+
+gfn15:	dec	a		; 15 (LOG10)
+	jr	nz,gfn16
+	push	de
+	call	LOG10
+	pop	de
+	jr	gfnxit
+
+gfn16:	dec	a		; 16 (SIN)
+	jr	nz,gfn17
+	push	de
+	call	SIN
+	pop	de
+	jr	gfnxit
+
+gfn17:	dec	a		; 17 (COS)
+	jr	nz,gfn18
+	push	de
+	call	COS
+	pop	de
+	jr	gfnxit
+
+gfn18:	dec	a		; 18 (TAN)
+	jr	nz,gfn19
+	push	de
+	ld	hl,FR0
+	call	FPUSH
+	call	COS
+	call	FMOVE
+	ld	hl,FR0
+	call	FPOP
+	ld	hl,FR1
+	call	FPUSH
+	call	SIN
+	ld	hl,FR1
+	call	FPOP
+	call	FDIV
+	pop	de
+	jr	gfnxit
+
+gfn19:	dec	a		; 19 (ATN)
+	jp	nz,gfn20
+	push	de
+	call	ATN
+	pop	de
+	jp	gfnxit
+
+gfn20:	dec	a		; 20 (FACT)
+	jp	nz,gfnerr
+	push	de
+	call	FACT
+	push	af
+	ld	hl,FR1
+	call	FLD0R
+	pop	af
+	pop	de
+	jp	gfnxit
+
+FACT:	ld	hl,FPone
+	call	FLD1R		; FR1 <- 1
+	ld	hl,FR0
+	ld	a,(hl)
+	or	a
+	ret	z		; return 1 in FR1 if n == 0
+	scf
+	ret	m		; error if n is negative
+	call	ISINT		; ensure n is integer
+	ret	c
+	ld	hl,FR0
+	call	FPUSH		; push initial n
+fact1:	ld	hl,FR1
+	call	FPOP		; prev n (initially 1)
+	ld	hl,FR0
+	call	FPUSH		; partial result
+	ld	hl,FPone
+	call	FLD0R		; FR0 <- -1
+	ld	hl,FR0
+	set	7,(hl)
+	call	FADD		; n-1
+	ld	hl,FR1
+	call	FPOP		; partial result
+	ld	a,(FR0)
+	or	a		; n reached zero?
+	ret	z		; yes, result is in FR1
+	ld	hl,FR0
+	call	FPUSH		; next n
+	call	FMUL		; result *= n-1
+	jr	nc,fact1	; loop
+	ld	hl,6		; on overflow, discard saved FR0
+	add	hl,sp
+	ld	sp,hl
+	scf			; and return error
+	ret
+
+; Find token in table, return token value
+
+tkfind:	ld	de,tokens
+	ld	c,1		; token value
+tkf1:	ld	hl,tmpbuf
+	ld	a,(de)
+	or	a		; end of table?
+	scf
+	ret	z		; yes, return error (not found)
+tkf2:	cp	(hl)
+	jr	nz,tkf3
+	or	a		; end of token and string?
+	ld	a,c
+	ret	z		; yes, found - return token value
+	inc	hl
+	inc	de
+	ld	a,(de)
+	jr	tkf2
+tkf3:	inc	c		; next token
+tkf4:	ld	a,(de)
+	inc	de
+	or	a
+	jr	nz,tkf4
+	jr	tkf1
+
+tokens:	db	'PI',0		; 1
+	db	'SUM',0		; 2
+	db	'MAX',0		; 3
+	db	'MIN',0		; 4
+	db	'AVG',0		; 5
+	db	'LOOKUP',0	; 6
+	db	'ABS',0		; 7
+	db	'INT',0		; 8
+	db	'SIGN',0	; 9
+	db	'ROUND',0	; 10
+	db	'SQRT',0	; 11
+	db	'EXP',0		; 12
+	db	'EXP10',0	; 13
+	db	'LOG',0		; 14
+	db	'LOG10',0	; 15
+	db	'SIN',0		; 16
+	db	'COS',0		; 17
+	db	'TAN',0		; 18
+	db	'ATN',0		; 19
+	db	'FACT',0	; 20
+	db	0
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+
+simple:	call	rem_blanks	; skip blanks and index into c.form
+	ld	c,0		; sign = false
+	ld	a,(hl)
+	cp	'+'
+	jr	z,simp1
+	cp	'-'
+	jr	nz,simp2
+	inc	c		; sign = true
+simp1:	inc	hl
+	inc	e
+	ld	a,(hl)
+simp2:	push	bc
+	cp	'@'
+	jr	nz,simp3
+	call	get_function
+	jr	simp4
+simp3:	call	elementary
+simp4:	pop	bc
+	ld	a,c
+	or	a		; sign flag set?
+	ret	z		; no, return
+	exx
+	call	FNEG		; else change sign of result
+	exx
+	ret
+
+; Check for possible constant
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and CY flag clear if constant
+; Preserves IX.
+
+is_constant:
+	call	rem_blanks	; skip blanks and index into c.form
+	ld	a,(hl)
+	cp	'+'
+	jr	z,ic1
+	cp	'-'
+	jr	nz,ic2
+ic1:	inc	hl
+	ld	a,(hl)
+ic2:	cp	'.'
+	ret	z		; note CY clear
+	jp	is_digit
+
+; Parse constant value
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and constant value in fp acc
+; Preserves IX.
+
+get_constant:
+	call	rem_blanks	; skip blanks and index into c.form
+	call	AFP		; convert ASCII string to fp value
+	push	hl
+	ld	e,0
+	call	ixform
+	ex	de,hl
+	pop	hl
+	or	a
+	sbc	hl,de		; compute new buffer index
+	ex	de,hl
+	ret
+
+; Get comparison operator code
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and operator code in A
+; Preserves IX.
+
+get_log:
+	call	rem_blanks	; skip blanks and index into c.form
+	ld	a,(hl)
+	cp	'='
+	jr	nz,getl1
+	inc	e
+	ld	a,1		; 1 = '='
+	ret
+
+getl1:	cp	'<'
+	jr	nz,getl2
+	inc	hl
+	inc	e
+	ld	a,(hl)
+	cp	'>'
+	jr	nz,getl11
+	inc	e
+	ld	a,2		; 2 = '<>
+	ret
+getl11:	cp	'='
+	ld	a,4		; 4 = '<'
+	ret	nz
+	inc	e
+	ld	a,6		; 6 = '<='
+	ret
+
+getl2:	cp	'>'
+	jr	nz,getl3
+	inc	hl
+	inc	e
+	ld	a,(hl)
+	cp	'='
+	ld	a,3		; 3 = '>'
+	ret	nz
+	inc	e
+	ld	a,3		; 5 = '>='
+	ret
+
+getl3:	ld	a,-1
+	ld	(error),a
+	xor	a		; 0 = error
+	ret
+
+; Compare two floating point values.
+; First operand in FR1, second in FR0
+; Operator code in A
+; returns logical result in A
+
+compare:
+	push	af
+	exx
+	call	FCMP
+	exx
+	ld	c,a
+	pop	af
+	dec	a		; 1 = '='  (FR0 == FR1, FCMP returns 0)
+	ld	b,0
+	jr	z,tset
+	dec	a		; 2 = '<>' (FR0 <> FR1, FCMP returns !0)
+	jr	z,tnot
+	dec	a		; 3 = '>'  (FR0 <  FR1, FCMP returns -1)
+	ld	b,-1
+	jr	z,tset
+	dec	a		; 4 = '<'  (FR0 >  FR1, FCMP returns 1)
+	ld	b,1
+	jr	z,tset
+	dec	a		; 5 = '>=' (FR0 <= FR1, FCMP returns !1)
+	jr	z,tnot
+	dec	a		; 6 = '<=' (FR0 >= FR1, FCMP returns !-1)
+	ld	b,-1
+	jr	z,tnot
+	xor	a
+	ret
+
+tset:	ld	a,c
+	sub	b
+	sub	1
+	sbc	a,a
+	ret
+
+tnot:	ld	a,c
+	sub	b
+	add	a,-1
+	sbc	a,a
+	ret
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+; Note: recursively called!
+
+variable:
+	call	chkstk		; check stack space
+	call	is_constant	; constant?
+	jp	nc,get_constant	; yes, return constant
+	call	ixform
+	ld	a,(hl)
+	cp	'('		; '(' ?
+	jp	nz,simple	; no, return via simple
+	inc	e
+	call	formula		; else compute formula
+	ld	c,')'
+	jp	eat_char	; check for matching ')'
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+; Note: recursively called!
+
+power:	call	variable	; get possible base
+pow0:	call	rem_blanks	; skip blanks and index into c.form field
+	ld	a,(hl)
+	cp	'^'		; '^' ?
+	ret	nz		; no, return - result already in FR0
+	inc	e
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push base
+	exx
+	call	variable	; get exponent
+	exx
+	call	FMOVE		; move result (exponent) to FR1
+	ld	hl,FR0
+	call	FPOP		; pop base
+	call	FPOW		; compute FR0 ^ FR1
+	exx
+	jr	nc,pow0		; no error, loop
+	ld	a,-1
+	ld	(calc_error),a	; overflow
+	jr	pow0
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+; Note: recursively called!
+
+mul_div_pow:
+	call	power		; get first operand
+mdp0:	call	ixform		; index into c.form field
+	ld	a,(hl)
+	cp	'*'		; multiply?
+	jr	nz,mdp1		; no
+	inc	e
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push first factor
+	exx
+	call	power		; get second factor
+	exx
+	ld	hl,FR1
+	call	FPOP		; pop first factor
+	call	FMUL		; compute product FR0 * FR1
+	exx
+	jr	mdp0		; loop
+
+mdp1:	cp	'/'		; divide?
+	ret	nz		; no, return
+	inc	e
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push dividend
+	exx
+	call	power		; get divisor
+	exx
+	call	FMOVE		; move result (divisor) to FR1
+	ld	hl,FR0
+	call	FPOP		; pop dividend
+	call	FDIV		; compute quotient FR0 / FR1
+	exx
+	jr	nc,mdp0		; no error, loop
+	ld	a,-1
+	ld	(calc_error),a	; div by zero or div overflow
+	jr	mdp0
+
+; Compute expression.
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in fp acc FR0
+; Preserves IX.
+; Note: recursively called!
+
+expression:
+	call	mul_div_pow	; get first operand
+expr0:	call	ixform		; index into c.form field
+	ld	a,(hl)
+	cp	'+'		; addition?
+	jr	nz,expr1	; no
+	inc	e
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push first addend
+	exx
+	call	mul_div_pow	; get second addend
+	exx
+	ld	hl,FR1
+	call	FPOP		; pop first addend
+	call	FADD		; compute sum FR0 + FR1
+	exx
+	jr	expr0		; loop
+
+expr1:	cp	'-'		; subtraction?
+	ret	nz		; no, return
+	inc	e
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push minuend
+	exx
+	call	mul_div_pow	; get subtrahend
+	exx
+	call	FMOVE		; move result (subtrahend) to FR1
+	ld	hl,FR0
+	call	FPOP		; pop minuend
+	call	FSUB		; compute difference FR0 - FR1
+	exx
+	jr	expr0
+
+; Compute logical operand, called by the 'logical' function below
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in A
+; Preserves IX.
+; Note: recursively called.
+
+what:	call	rem_blanks	; skip blanks and index into c.form field
+	ld	a,(hl)
+	cp	'['
+	jr	nz,wht1
+	inc	hl		; skip '['
+	inc	e
+	call	logical		; recursive call
+	push	af
+	ld	c,']'
+	call	eat_char	; require ']'
+	pop	af		; return result
+	ret
+wht1:	call	formula		; compute first operand
+	call	get_log		; get comparison operator code
+	push	af		; push it
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push first operand
+	exx
+	call	formula		; compute second operand into FR0
+	exx
+	ld	hl,FR1
+	call	FPOP		; pop first operand into FR1
+	exx
+	pop	af		; pop operator code
+	jp	compare		; compare operands, return result in A
+
+; Compute logical expression
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in A
+; Preserves IX.
+; Note: recursively called.
+
+logical:
+	call	chkstk
+	call	what		; get first logical operand
+	push	af		; save result
+log1:	call	rem_blanks	; skip blanks and index into c.form field
+	ld	a,(hl)		; check for logical operator
+	cp	'&'		; AND?
+	jr	nz,log2		; no
+	inc	hl		; skip operator
+	inc	e
+	call	what		; get next operand
+	ld	c,a
+	pop	af
+	and	c		; apply operator
+	push	af
+	jr	log1		; loop
+log2:	cp	'|'		; OR?
+	jr	nz,log3		; no, return
+	inc	hl		; skip operator
+	inc	e
+	call	what		; get next operand
+	ld	c,a
+	pop	af
+	or	c		; apply operator
+	push	af
+	jr	log1		; loop
+log3:	pop	af		; return result
+	ret
+
+; IX = pointer to cell
+; E  = current buffer index
+; Returns new buffer index in E and result in floating point acc
+; Preserves IX.
+; Note: recursively called.
+
+formula:
+	call	chkstk
+	call	rem_blanks	; skip blanks and index into c.form field
+	ld	bc,ifstr
+	call	strcmp		; matches '@IF' ?
+	jp	nz,expression	; no, return expression
+	inc	e		; skip keyword
+	inc	e
+	inc	e
+	call	logical		; compute IF argument
+	push	af		; save logic result
+	call	eat_then	; require @THEN
+	call	formula		; compute THEN section
+	exx
+	ld	hl,FR0
+	call	FPUSH		; push result
+	exx
+	call	eat_else	; require @ELSE
+	call	formula		; compute ELSE section into FR0
+	exx
+	ld	hl,FR1
+	call	FPOP		; pop THEN result into FR1
+	exx
+	pop	af		; pop logic result
+	or	a
+	ret	z		; if false, return ELSE value in FR0
+	exx
+	ld	hl,FR1
+	call	FLD0R		; else copy THEN result to FR0
+	exx
+	ret			; and return
+
+strcmp:	ld	a,(bc)
+	or	a
+	ret	z
+	cp	(hl)
+	ret	nz
+	inc	hl
+	inc	bc
+	jr	strcmp
+
+ifstr:	db	'@IF',0
+
+; Scroll window up/down
+
+vertical:
+	push	af
+	call	getpnt
+	call	posit		; position cursor
+	call	dis_val		; erase bar by displaying current cell
+	ld	hl,vs1
+	call	PUTSTR		; set scroll region, relative origin
+	pop	af
+	ld	c,a
+	or	a
+	ld	hl,vs2		; reverse index
+	ld	de,0*256+3
+	ld	a,a.up
+	jp	m,v1
+	ld	hl,vs3		; bottom line, next line
+	ld	de,0*256+22
+	ld	a,a.down
+v1:	ld	(direction),a
+	call	PUTSTR
+	ld	hl,vs4		; delete scroll region
+	call	PUTSTR
+	ld	a,(cur_r)
+	add	a,c
+	ld	(cur_r),a
+	ld	a,(home_r)
+	add	a,c
+	ld	(home_r),a
+	ex	de,hl
+	call	SETCUR
+	ld	a,(cur_r)
+	ld	l,a
+	ld	a,(home_c)
+	ld	h,a
+	call	dis_row		; display new row
+	ld	hl,(cur_r)
+	xor	a
+	jp	prompt
+
+ if 0 ; orig
+vs1:	db	ESC,'[4;23r',ESC,'[?6h',0
+vs2:	db	ESC,'M',0
+vs3:	db	ESC,'[20;1H',ESC,'E',0
+vs4:	db	ESC,'[?6l',ESC,'[r',0
+ else
+vs1:	db	ESC,'[4;23r',0
+vs2:	db	ESC,'[4;1H',ESC,'M',0
+vs3:	db	ESC,'[23;1H',LF,0
+vs4:	db	ESC,'[;r',0
+ endif
+
+; Scroll window left/right
+
+horizontal:
+	ld	c,a
+	or	a
+	ld	a,a.left
+	jp	m,h1
+	ld	a,a.rght
+h1:	ld	(direction),a
+	ld	a,(cur_c)
+	add	a,c
+	ld	(cur_c),a
+	ld	a,(home_c)
+	add	a,c
+	ld	(home_c),a
+	ld	hl,(cur_r)
+h2:	ld	a,(home_c)
+	cp	h		; CY if cur_c > home_c
+	jr	nc,h3
+	call	on_screen
+	jr	nc,h3
+	ld	a,(home_c)
+	inc	a
+	ld	(home_c),a
+	jr	h2
+h3:	jp	display		; refresh screen
+
+; Process cursor key - move selection bar around
+
+process_cursor:
+	ld	a,s.wait
+	ld	(state),a
+	call	GETCH
+	cp	'['
+	jp	nz,bell		; and return
+	call	GETCH
+	cp	'A'
+	jp	nz,pcur1
+
+	ld	hl,(cur_r)	; get cur_r, cur_c
+	ld	a,l		; check current row
+	or	a
+	jp	z,bell		; bell and return
+	dec	l		; one row up
+	call	on_screen
+	inc	l
+	ld	a,-1
+	jp	c,vertical	; scroll down and return if not on screen
+	ld	a,a.up
+	ld	(direction),a
+	call	getpnt
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	dec	l		; one row up
+	jp	pcur4		; continue below
+
+pcur1:	cp	'B'
+	jp	nz,pcur2
+
+	ld	hl,(cur_r)	; get cur_r, cur_c
+	ld	a,l		; check current row
+	cp	255
+	jp	z,bell		; bell and return
+	inc	l		; one row down
+	call	on_screen
+	dec	l
+	ld	a,1
+	jp	c,vertical	; scroll up and return if not on screen
+	ld	a,a.down
+	ld	(direction),a
+	call	getpnt
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	inc	l		; one row down
+	jp	pcur4		; continue below
+
+pcur2:	cp	'C'
+	jp	nz,pcur3
+
+	ld	hl,(cur_r)	; get cur_r, cur_c
+	ld	a,h		; check current column
+	cp	255
+	jp	z,bell		; bell and return
+	inc	h		; one column right
+	call	on_screen
+	dec	h
+	ld	a,1
+	jp	c,horizontal	; scroll left and return if not on screen
+	ld	a,a.rght
+	ld	(direction),a
+	call	getpnt
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	inc	h		; one column right
+	jp	pcur4		; continue below
+
+pcur3:	cp	'D'
+	jp	nz,bell		; and return
+
+	ld	hl,(cur_r)	; get cur_r, cur_c
+	ld	a,h		; check current column
+	or	a
+	jp	z,bell		; bell and return
+	dec	h		; one column left
+	call	on_screen
+	inc	h
+	ld	a,-1
+	jp	c,horizontal	; scroll right and return if not on screen
+	ld	a,a.left
+	ld	(direction),a
+	call	getpnt
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	dec	h		; one column left
+pcur4:	ld	(cur_r),hl	; store new coordinates
+	xor	a
+	jp	prompt
+
+; Recalculate all (visible?) cells
+; Preserves IX.
+
+recalc:	push	ix
+	ld	hl,(chead)	; get pointer to first cell in list
+rec1:	ld	a,h
+	or	l
+	jr	z,rec2
+	push	hl
+	pop	ix
+	ld	a,(ix+c.rdy)
+	or	a		; c.rdy == 0?
+	jr	nz,rec3		; no, skip
+	ld	a,(ix+c.flag)
+	cp	'F'		; Formula cell?
+	jr	nz,rec3		; no, skip
+	ld	l,(ix+c.row)
+	ld	h,(ix+c.col)
+	call	on_screen	; cell on screen?
+	jr	c,rec3		; no, skip
+	ld	hl,0
+	ld	(calc_error),hl	; clear both calc_error and error flags
+	ld	(ix+c.rdy),2	; set c.rdy = 2
+	ld	e,0		; reset c.form index
+	call	formula		; result in FR0
+	call	set_rdy		; set c.rdy according to calc_error and error
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	push	hl
+	call	FLD1R		; load c.val into FR1
+	call	FCMP		; compare
+	pop	hl
+	jr	nz,rec4		; not equal
+	ld	a,(ix+c.rdy)	; equal, but
+	dec	a		;  c.rdy == 1?
+	jr	z,rec3		; yes
+rec4:	call	FST0R		; else set c.val = formula result
+	ld	l,(ix+c.row)
+	ld	h,(ix+c.col)
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+rec3:	ld	l,(ix+c.link)
+	ld	h,(ix+c.link+1)
+	jr	rec1
+
+rec2:	pop	ix
+	ret
+
+; Move cell contents to another cell
+; HL = src, DE = dst
+
+move:	inc	hl		; skip c.link
+	inc	hl
+	inc	de
+	inc	de
+	ld	bc,c.form-c.row
+	ldir			; copy cell contents from c.row to c.len
+	dec	hl
+	ld	a,(hl)		; get c.len
+	or	a
+	ret	z		; return if nothing else to copy
+	inc	hl
+	ld	c,a		; B still = 0
+	ldir			; copy c.form
+	ret
+
+;-----------------------------------------------------------------------
+
+; Process char
+; A = char
+
+procch:	cp	ESC		; escape?
+	jr	nz,pc1		; branch if not
+	ld	a,(state)
+	cp	s.wait
+	call	z,process_cursor
+	ret
+
+pc1:	cp	CR		; enter?
+	jr	nz,pc2		; no
+	ld	a,(state)	; else check state
+	cp	s.cmnd		; command?
+	ld	c,s.exec	; then switch to execute command
+	jr	z,pc11
+	cp	s.form		; formulas?
+	ld	c,s.exef	; then switch to execute formulas
+	jr	z,pc11
+	cp	s.parm		; parameter?
+	ret	nz
+	ld	c,s.exep	; then switch to execute parameter
+pc11:	ld	a,c
+	ld	(state),a
+	ret
+
+pc2:	cp	BS		; backspace?
+	jr	z,pc21
+	cp	DEL		; or delete?
+	jr	nz,pc3		; branch if not
+pc21:	ld	a,(state)	; check state
+	cp	s.cmnd
+	jr	z,pc22		; if command, formulas or parameters
+	cp	s.form		;  then delete char
+	jr	z,pc22
+	cp	s.parm
+	ret	nz
+pc22:	ld	a,(ip)
+	or	a
+	ret	z
+	dec	a
+	ld	(ip),a
+	ld	c,8
+	call	PUTCH
+	ld	c,' '
+	call	PUTCH
+	ld	c,8
+	call	PUTCH
+	ld	a,(ip)
+	or	a		; reached start?
+	ret	nz		; return if not
+	ld	a,(state)
+	cp	s.parm		; state == parameter?
+	ret	z		; return if yes
+	ld	a,s.wait
+	ld	(state),a	; else back to wait state
+	ret
+
+pc3:	cp	3		; ^C?
+	jp	z,cfm10
+	cp	' '		; check for valid char (non-ctrl)
+	ret	c
+	cp	DEL
+	ret	nc
+
+	ld	c,a
+	ld	a,(state)
+	cp	s.wait
+	jr	z,pc4
+	cp	s.cmnd
+	jr	z,pc4
+	cp	s.form
+	jr	z,pc4
+	cp	s.parm
+	ret	nz
+pc4:	ld	a,(ip)		; get current buffer index
+	cp	70		; at end?
+	jp	nc,bell		; yes, ring terminal bell and return
+	or	a		; at the beginning?
+	jr	nz,pc41		; no
+	ld	a,(state)
+	cp	s.parm		; state <> parameter?
+	jr	z,pc41
+	ld	a,c		; get first char
+	cp	'/'		; '/'?
+	ld	a,s.cmnd	; yes, assume command
+	jr	z,pc42
+	ld	a,s.form	; else assume formula
+pc42:	ld	(state),a
+pc41:	ld	a,(state)
+	cp	s.cmnd		; are we in command state?
+	jr	nz,pc43		; no
+	ld	a,c
+	call	UCASE		; else uppercase command character
+	ld	c,a
+pc43:	ld	hl,buffer
+	ld	a,(ip)
+	ld	e,a
+	ld	d,0
+	add	hl,de		; index into buffer
+	ld	(hl),c		; store char in buffer
+	inc	a		; advance buffer index
+	ld	(ip),a
+	jp	PUTCH		; echo the character and return
+
+;-----------------------------------------------------------------------
+
+; Calculate formula
+
+calculate_formula:
+	ld	hl,0
+	ld	(calc_error),hl	; clear both calc_error and error flags
+	ld	a,(ip)		; check buffer index
+	ld	c,a
+	cp	70-1		; at then end?
+	jr	nc,cfm1		; yes
+	ld	hl,buffer
+	call	addhla
+	ld	(hl),0		; else add trailing null
+	inc	c		; count it
+cfm1:	ld	b,0
+	ld	a,(buffer)
+	cp	'"'
+	jr	nz,cfm2
+	inc	b		; skip quote
+	dec	c
+cfm2:	ld	a,(justify)
+	ld	(save_justify),a
+	ld	a,(precis)
+	ld	(save_prec),a
+	xor	a
+	ld	(save_flag),a
+	push	bc
+	ld	hl,(cur_r)
+	call	getpnt		; get current cell
+	pop	bc
+	jr	nc,cfm3		; found
+	push	bc
+	ld	a,c
+	call	get_new		; else create new cell
+	pop	bc
+;	jr	c,...		; TODO: handle error!
+	jr	cfm4
+cfm3:	ld	a,(ix+c.align)
+	ld	(save_justify),a
+	ld	a,(ix+c.prec)
+	ld	(save_prec),a
+	ld	a,(ix+c.flag)
+	ld	(save_flag),a
+	push	bc
+	call	dispose		; delete cell
+	pop	bc
+	push	bc
+	ld	a,c
+	call	get_new
+	pop	bc
+;	jr	c,...		; TODO: handle error!
+cfm4:	push	hl
+	pop	ix		; IX = pointer to new cell
+	ld	de,c.form
+	add	hl,de
+	ex	de,hl		; dst = cell.form
+	ld	hl,buffer
+	ld	a,b
+	call	addhla		; src = buffer
+	ld	b,0		; count in BC
+	ld	(ix+c.len),c
+	ld	a,b
+	or	c
+	jr	z,cfm5
+	ldir			; copy input buffer to cell.form
+cfm5:	ld	hl,(chead)
+	ld	a,h
+	or	l		; spreadsheet empty?
+	jr	nz,cfm6		; no
+	ld	(chead),ix	; else this is the first cell
+cfm6:	ld	hl,(ctail)
+	ld	a,h
+	or	l		; ctail set?
+	jr	z,cfm7		; no
+	push	ix
+	pop	de
+	ld	(hl),e		; else set ctail.link to this cell
+	inc	hl
+	ld	(hl),d
+cfm7:	ld	(ctail),ix	; set ctail to the new cell
+	xor	a
+	ld	(ix+c.link),a
+	ld	(ix+c.link+1),a
+	ld	hl,(cur_r)
+	ld	(ix+c.row),l
+	ld	(ix+c.col),h
+	ld	(ix+c.flag),'A'	; assume alpha
+	ld	(ix+c.rdy),2	; c.rdy = 2
+	call	ZFR0		; clear fp acc
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	call	FST0R		; set cell.val = 0
+	ld	a,(save_justify)
+	ld	(ix+c.align),a
+	ld	a,(save_prec)
+	ld	(ix+c.prec),a
+
+	ld	a,(buffer)
+	or	a
+	jr	z,cfm8
+	call	is_digit
+	jr	nc,cfm70
+	ld	hl,fcstr
+	ld	bc,fclen
+	cpir			; compare
+	jr	nz,cfm8
+
+cfm70:	ld	(ix+c.flag),'F'	; we have a Formula
+	ld	e,0
+	call	ixform
+	ld	a,(ip)
+	ld	b,a
+	call	ucstr		; uppercase cell.form
+
+	push	ix
+	ld	hl,(chead)
+cfm71:	ld	a,h
+	or	l
+	jr	z,cfm73
+	push	hl
+	pop	ix
+	ld	a,1
+	cp	(ix+c.rdy)	; c.rdy > 1?
+	jr	nc,cfm72	; no
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	ex	de,hl		; dst
+	ld	hl,fval		; src -0.0000980162302 (kludge to force recalc)
+	call	FCOPY
+cfm72:	ld	(ix+c.rdy),0	; clear c.rdy
+	ld	l,(ix+c.link)
+	ld	h,(ix+c.link+1)
+	jr	cfm71		; loop
+cfm73:	pop	ix
+
+	ld	(ix+c.rdy),2	; set c.rdy = 2
+	ld	e,0
+	call	formula
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	call	FST0R		; store result (FR0) into c.val
+	call	set_rdy		; set c.rdy according to calc_error and error
+	ld	hl,(cur_r)	; cur_r, cur_c
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	call	recalc
+	jr	cfm9
+
+cfm8:	ld	hl,(cur_r)	; cur_r, cur_c
+	call	posit		; position cursor
+	call	dis_val		; display cell value
+	ld	a,(save_flag)	; get saved c.flag
+	cp	'F'		; Formula?
+	jr	nz,cfm9		; no
+	call	clr_ready
+	ld	(ix+c.rdy),2	; set cell.rdy = 2
+	call	recalc
+
+cfm9:	ld	a,(ix+c.rdy)
+	cp	3		; cell.rdy == 3?
+	jr	z,cfm10		; yes, skip
+
+	call	cfm11		; move to next cell
+
+cfm10:	ld	hl,(cur_r)
+	ld	a,1
+	call	prompt
+	ld	a,s.wait
+	ld	(state),a
+	xor	a
+	ld	(ip),a
+	jp	clrbuf		; reset input buffer and return
+
+cfm11:	ld	a,(direction)	; get last direction
+	cp	a.up
+	jr	nz,cfm12
+	ld	a,(cur_r)
+	or	a		; already at the top of the spreadsheet?
+	ret	z		; yes
+	ld	hl,home_r
+	dec	a
+	cp	(hl)		; at the top of the window?
+	ld	c,a
+	ld	a,-1
+	jp	c,vertical	; yes, scroll down
+	ld	a,c
+	ld	(cur_r),a	; else just go up one row
+	ret
+
+cfm12:	cp	a.down
+	jr	nz,cfm13
+	ld	a,(cur_r)
+	inc	a		; already at the end of the spreadsheet?
+	ret	z		; yes
+	ld	c,a
+	ld	a,(home_r)
+	add	a,19
+	cp	c		; at the bottom of the window?
+	ld	a,1
+	jp	c,vertical	; yes, scroll up
+	ld	a,c
+	ld	(cur_r),a	; else just go down one row
+	ret
+
+cfm13:	cp	a.left
+	jr	nz,cfm14
+	ld	a,(cur_c)
+	or	a		; already at the first spreadsheet column?
+	ret	z		; yes
+	ld	hl,home_c
+	dec	a
+	cp	(hl)		; at the leftmost column of the window?
+	ld	c,a
+	ld	a,-1
+	jp	c,horizontal	; yes, scroll right
+	ld	a,c
+	ld	(cur_c),a	; else just go left one column
+	ret
+
+cfm14:	cp	a.rght
+	ret	nz
+	ld	hl,(cur_r)	; cur_r, cur_c
+	inc	h		; already at the last spreadsheet column?
+	ret	z		; yes
+	call	on_screen	; at the rightmost column of the window?
+	ld	a,1
+	jp	c,horizontal	; yes, scroll left
+	ld	a,h
+	ld	(cur_c),a	; else just go right one column
+	ret
+
+fcstr:	db	'+-.@'
+fclen	equ	$-fcstr
+
+fval:	db	0BDh,98h,01h,62h,30h,20h	; -0.0000980162302
+
+; Delete cells in a row or column, then shift the remaining cells accordingly.
+; IX = pointer to work cell
+
+delete:	; delete all cells in a row or column
+
+	ld	de,(chead)	; get pointer to first cell in list
+del1:	ld	a,d
+	or	e		; end of list?
+	jp	z,insert	; yes, finish via insert code (shift cells)
+	push	de
+	pop	iy		; IY = pointer to current cell
+	ld	e,(iy+c.link)
+	ld	d,(iy+c.link+1)	; get pointer to next cell
+	push	de
+	ld	hl,(cur_r)	; cur_r, cur_c
+	ld	de,(del_r)
+	ld	a,d
+	or	e		; del_r set (delete row)?
+	jr	z,del11		; no, ignore
+	ld	a,(iy+c.row)
+	cp	l		; c.row == cur_r?
+	jr	z,del12		; yes, delete cell
+del11:	ld	de,(del_c)
+	ld	a,d
+	or	e		; del_c set (delete column)?
+	jr	z,del13		; no, ignore
+	ld	a,(iy+c.col)
+	cp	h		; c.col == cur_c?
+	jr	nz,del13	; no
+del12:	push	iy
+	ex	(sp),ix
+	call	dispose		; delete cell
+	pop	ix
+del13:	pop	de	
+	jr	del1		; loop
+
+; Shift cells horizontally or vertically, called to insert/delete a row
+; or column of cells.
+; IX = pointer to work cell
+
+insert:	call	clr_ready	; clear all ready flags
+	ld	de,(chead)	; get pointer to first cell in list
+ins1:	ld	a,d
+	or	e		; end of list?
+	jp	z,ins2
+	push	de
+	pop	iy		; IY = pointer to current cell
+	ld	e,(iy+c.link)
+	ld	d,(iy+c.link+1)	; get pointer to next cell
+	ld	a,(iy+c.rdy)
+	or	a		; c.rdy == 0?
+	jr	nz,ins1		; no, skip cell
+	ld	a,(iy+c.flag)
+	cp	'F'		; Formula cell?
+	jr	nz,ins1		; no, skip cell
+	push	de		; push pointer to next cell
+
+	push	ix
+	pop	de		; dst
+	push	iy
+	pop	hl		; src
+	call	move		; IX <- IY
+
+	ld	e,0		; clear buffer index
+	call	formula
+	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	call	FST0R		; store result in c.val
+
+;;	ld	a,(iy+c.len)
+;;	cp	(ix+c.len)	; work cell c.len > current cell c.len?
+;;	jr	nc,ins11	; no
+
+	push	iy
+	ex	(sp),ix
+	call	dispose		; delete old cell
+	pop	ix
+
+	ld	a,(ix+c.len)
+	call	get_new		; allocate new cell
+;	jr	c,...		; TODO: handle error!
+	push	hl
+	pop	iy
+	ld	hl,(chead)
+	ld	a,h
+	or	l		; list just got empty?
+	jr	nz,ins12	; no
+	ld	(chead),iy	; yes, set new head of list
+ins12:	ld	hl,(ctail)
+	ld	a,h
+	or	l
+	jr	z,ins13
+	ld	de,c.link
+	add	hl,de
+	push	iy
+	pop	de
+	ld	(hl),e		; set ctail link field
+	inc	hl
+	ld	(hl),d
+ins13:	ld	(ctail),iy
+	xor	a
+	ld	(iy+c.link),a
+	ld	(iy+c.link+1),a
+
+ins11:	push	iy
+	pop	de		; dst
+	push	ix
+	pop	hl		; src
+	call	move		; IY <- IX
+	ld	(iy+c.rdy),1	; set c.rdy = 1
+
+	pop	de		; pop pointer to next cell
+	jp	ins1		; and loop
+
+ins2:	ld	de,(chead)
+ins3:	ld	a,d
+	or	e		; end of list?
+	ret	z		; yes, we're done
+	push	de
+	pop	ix
+	ld	hl,(test_r)	; test_r, test_c
+	ld	a,(ix+c.row)
+	ld	c,a
+	cp	l		; c.row >= test_r?
+	jr	c,ins31		; no
+	ld	a,(ix+c.col)
+	ld	b,a
+	cp	h		; c.col >= test_c?
+	jr	c,ins31		; no
+
+	ld	hl,(del_r)
+	ld	a,l
+	add	c		; note: no overflow check here
+	ld	(ix+c.row),a	; c.row += del_r
+	ld	hl,(del_c)
+	ld	a,l
+	add	b		; note: no overflow check here
+	ld	(ix+c.col),a	; c.col += del_c
+
+ins31:	ld	(ix+c.rdy),0	; clear c.rdy
+	ld	e,(ix+c.link)
+	ld	d,(ix+c.link+1)
+	jr	ins3		; loop
+
+;-----------------------------------------------------------------------
+
+do_command:
+	ld	hl,0
+	ld	(calc_error),hl	; clear both calc_error and error flags
+	xor	a
+	ld	(global),a
+	ld	a,s.wait
+	ld	(state),a
+	ld	hl,cmd_ret
+	push	hl		; push return address
+	ld	a,(buffer+1)
+	cp	'W'		; set column width
+	jp	z,cmd_w
+	cp	'L'		; load spreadsheet
+	jp	z,cmd_l
+	cp	'S'		; save spreadsheet
+	jp	z,cmd_s
+	cp	'F'		; set numeric format
+	jp	z,cmd_f
+	cp	'P'		; set precision
+	jp	z,cmd_p
+	cp	'J'		; justify
+	jp	z,cmd_j
+	cp	'T'		; terminal commands
+	jp	z,cmd_t
+	cp	'H'		; set heading
+	jp	z,cmd_h
+	cp	'I'		; insert row/col
+	jp	z,cmd_i
+	cp	'D'		; delete row/col
+	jp	z,cmd_d
+	cp	'='		; jump to cell
+	jp	z,cmd_equ
+	cp	'R'		; replicate cells
+	jp	z,cmd_r
+	cp	'O'		; print spreadsheet
+	jp	z,cmd_o
+	cp	'C'		; copy cells
+	jp	z,cmd_c
+	cp	'E'		; erase cells
+	jp	z,cmd_e
+	cp	'?'		; help
+	jp	z,help
+	cp	'!'		; redisplay
+	jp	z,cmd_exc
+	cp	'X'		; reset
+	jp	z,cmd_x
+	cp	'Q'		; quit
+	jp	z,cmd_q
+	ret
+
+cmd_ret:
+	ld	a,(state)
+	cp	s.wait
+	ld	hl,(cur_r)
+	ld	a,1
+	call	z,prompt
+	call	clrbuf		; reset input buffer
+	xor	a
+	ld	(ip),a
+	ret
+
+cmd_w:	ld	a,1
+	call	common
+	call	prntx
+	db	'Column width: ',0
+	ret
+
+cmd_l:	ld	a,2
+	call	common
+	call	prntx
+	db	'Load spreadsheet: ',0
+	ret
+
+cmd_s:	ld	a,3
+	call	common
+	call	prntx
+	db	'Save spreadsheet as: ',0
+	ret
+
+cmd_f:	ld	a,4
+	call	common
+	call	global?
+	call	prntx
+	db	'N)umber, S)cientific, G)eneral: ',0
+	ret
+
+cmd_p:	ld	a,5
+	call	common
+	call	global?
+	call	prntx
+	db	'Digits of precision: ',0
+	ret
+
+cmd_j:	ld	a,6
+	call	common
+	call	global?
+	call	prntx
+	db	'Justify text L)eft, R)ight or C)enter: ',0
+	ret
+
+global?:
+	ld	a,(buffer+2)
+	cp	'G'
+	ret	nz
+	ld	a,-1
+	ld	(global),a
+	ret
+
+cmd_t:
+  if 0
+	ld	a,7
+	ld	(cmdtyp),a
+	ld	a,s.exep
+	ld	(state),a	; state = execute_parameter
+  else
+	ld	a,(buffer+2)
+	cp	'C'
+	jr	nz,cmt1
+	ld	a,(color)
+	cpl
+	ld	(color),a
+	ld	c,0
+	call	resrev
+	jp	display
+
+cmt1:	cp	'W'
+	ret	nz
+	ld	a,(screen)
+	cp	80
+	jr	nz,cmt2
+	ld	a,132
+	ld	(screen),a
+	ld	hl,sw132
+	call	PUTSTR
+cmt3:	call	display
+	ret
+cmt2:	ld	a,80
+	ld	(screen),a
+	ld	hl,sw80
+	call	PUTSTR
+	ld	hl,(cur_r)
+	call	on_screen
+	jr	nc,cmt3
+	ld	a,h		; cur_c
+	ld	(home_c),a
+	jr	cmt3
+
+sw80:	db	033q,'[?3l',0
+sw132:	db	033q,'[?3h',0
+  endif
+
+cmd_h:	ld	a,8
+	call	common
+	call	prntx
+	db	'New heading: ',0
+	ret
+
+cmd_i:	ld	a,(buffer+2)
+	cp	'R'		; insert row?
+	jr	nz,cmi1		; no
+	ld	hl,1
+	ld	(del_r),hl	; del_r = 1
+	dec	hl
+	ld	(del_c),hl	; del_c = 0
+	ld	a,(cur_r)
+	ld	(test_r),a
+	xor	a
+	ld	(test_c),a
+	jr	cmi2		; continue via common code
+cmi1:	cp	'C'		; insert column?
+	ret	nz		; no
+	ld	hl,0
+	ld	(del_r),hl	; del_r = 0
+	inc	hl
+	ld	(del_c),hl	; del_c = 1
+	xor	a
+	ld	(test_r),a
+	ld	a,(cur_c)
+	ld	(test_c),a
+	ld	hl,width+254	; src
+	ld	e,l
+	ld	d,h
+	inc	de		; dst
+	ld	c,a
+	ld	a,255
+	sub	c
+	jr	z,cmi2
+	ld	c,a		; TODO: check this!
+	ld	b,0
+	lddr			; shift width array up
+cmi2:	ld	a,-1		; true
+	ld	(local_edit),a
+	ld	ix,wcell
+	call	insert		; insert cell
+	jr	cdd3		; finish via common code
+
+cmd_d:	ld	a,(buffer+2)
+	cp	'R'		; delete row?
+	jr	nz,cdd1		; no
+	ld	hl,-1
+	ld	(del_r),hl	; del_r = -1
+	inc	hl
+	ld	(del_c),hl	; del_c = 0
+	ld	a,(cur_r)
+	ld	(test_r),a
+	xor	a
+	ld	(test_c),a
+	jr	cdd2		; continue via common code
+cdd1:	cp	'C'		; delete column?
+	ret	nz		; no
+	ld	hl,0
+	ld	(del_r),hl	; del_r = 0
+	dec	hl
+	ld	(del_c),hl	; del_c = -1
+	xor	a
+	ld	(test_r),a
+	ld	a,(cur_c)
+	ld	(test_c),a
+	ld	e,a		; A still = cur_c
+	ld	d,0
+	ld	hl,width
+	add	hl,de
+	ld	e,l
+	ld	d,h		; dst
+	inc	hl		; src
+	ld	c,a
+	ld	a,255
+	sub	c
+	jr	z,cdd2
+	ld	c,a		; TODO: check this!
+	ld	b,0
+	ldir			; shift width array down
+cdd2:	ld	a,-1		; true
+	ld	(local_edit),a
+	ld	ix,wcell
+	call	delete		; delete cell
+cdd3:	xor	a		; false
+	ld	(local_edit),a
+	ld	hl,0
+	ld	(del_r),hl	; del_r = 0
+	ld	(del_c),hl	; del_c = 0
+	ld	(test_r),a	; A still = 0
+	ld	(test_c),a
+	call	recalc
+	jp	display
+
+cmd_equ:
+	ld	a,s.wait
+	ld	(state),a	; state = wait
+	ld	a,(ip)
+	sub	2		; ip >= 2?
+	ret	c		; no, return
+	ld	de,wcell+c.form	; dst
+	jr	z,ceq1
+	ld	hl,buffer+2	; src
+	ld	c,a
+	ld	b,0
+	ldir			; copy cell name to wcell.form
+ceq1:	xor	a
+	ld	(de),a		; add trailing null
+	ld	ix,wcell
+	ld	e,0
+	call	get_xy
+	ret	c
+	call	on_screen
+	jr	c,ceq2
+	push	hl
+	ld	hl,(cur_r)
+	call	getpnt
+	call	posit
+	call	dis_val
+	pop	hl
+	ld	(cur_r),hl
+	ret
+
+ceq2:	ld	(cur_r),hl
+	ld	a,236		; max row - screen rows
+	cp	l
+	jr	nc,ceq3
+	ld	l,236
+ceq3:	ld	(home_r),hl
+	jp	display
+
+cmd_r:	ld	a,9
+	call	common
+	call	prntx
+	db	'Replicate range: ',0
+	ret
+
+cmd_o:	ld	a,10
+	call	common
+	call	prntx
+	db	'Print spreadsheet to: ',0
+	ret
+
+cmd_c:	ld	a,11
+	call	common
+	call	prntx
+	db	'Copy from: ',0
+	ret
+
+cmd_e:	ld	a,12
+	call	common
+	call	prntx
+	db	'Erase range: ',0
+	ret
+
+cmd_x:	ld	a,13
+	call	common
+	call	prntx
+	db	'Delete all? (Y/N): ',0
+	ret
+
+cmd_q:	ld	a,14
+	call	common
+	call	prntx
+	db	'Quit? (Y/N): ',0
+	ret
+
+cmd_exc:
+	ld	a,s.wait
+	ld	(state),a
+	jp	display
+
+common:	ld	(cmdtyp),a	; remember command code
+	ld	a,s.parm
+	ld	(state),a	; new state = get command parameter
+	ld	hl,0*256+23	; 9*256+23
+	call	SETCUR
+	jp	CLREOL		; clear prompt line and return
+
+; Parse 8-bit unsigned value
+; A = max buffer index
+; Returns value in reg C, CY set on error or overflow
+
+getn8:	ld	e,a		; get max index into E
+	ld	hl,buffer
+	ld	d,0		; current buffer index
+	ld	c,0		; init return value
+gn8:	ld	a,(hl)
+	sub	'0'
+	ccf
+	ret	nc
+	cp	10
+	ret	nc
+	ld	b,a
+	ld	a,c
+	call	mul10		; *10
+	ret	c
+	add	a,b		; +digit
+	ret	c
+	ld	c,a
+	inc	hl
+	inc	d
+	ld	a,d
+	cp	e		; max index >= current?
+	jr	c,gn8		; no
+	ret			; yes, return
+
+;-----------------------------------------------------------------------
+
+do_parameter:
+	ld	a,s.wait
+	ld	(state),a	; state = wait for input
+
+	ld	hl,dpret
+	push	hl		; push return address
+	ld	a,(cmdtyp)
+	dec	a
+	jp	z,cmd1		; 1 = column width
+	dec	a
+	jp	z,cmd2		; 2 = load spreadsheet
+	dec	a
+	jp	z,cmd3		; 3 = save spreadsheet
+	dec	a
+	jp	z,cmd4		; 4 = numeric format
+	dec	a
+	jp	z,cmd5		; 5 = precision
+	dec	a
+	jp	z,cmd6		; 6 = justify
+	dec	a
+	jp	z,cmd7		; 7 = toggle screen width
+	dec	a
+	jp	z,cmd8		; 8 = set heading
+	dec	a
+	jp	z,cmd9		; 9 = replicate cell
+	dec	a
+	jp	z,cmd10		; 10 = print spreadsheet
+	dec	a
+	jp	z,cmd11		; 11 = copy cells
+	dec	a
+	jp	z,cmd12		; 12 = erase cells
+	dec	a
+	jp	z,cmd13		; 13 = clear spreadsheet
+	dec	a
+	jp	z,cmd14		; 14 = quit
+	ret
+
+dpret:	; all do_parameter functions return here
+
+	xor	a
+	ld	(ip),a		; reset buffer index
+	call	clrbuf		; and clear input buffer
+	ld	hl,(cur_r)
+	ld	a,1		; redraw prompt
+	jp	prompt
+
+cmd1:	; --- column width
+
+	ld	a,(ip)
+	call	getn8		; get value, return in reg C
+	ret	c		; TODO: handle error?
+	ld	a,(ip)
+	or	a
+	ret	z
+	ld	a,(cur_c)
+	ld	hl,width
+	call	addhla		; index into table
+	ld	(hl),c		; set new column width
+	ld	hl,(cur_r)	; cur_r, cur_c
+	call	on_screen	; on screen?
+	jr	nc,cmd1a	; yes
+	ld	a,(cur_c)
+	ld	(home_c),a	; else set home column to current column
+cmd1a:	jp	display		; redisplay spreadsheet and return
+
+cmd2:	; --- load spreadsheet
+
+	ld	a,(ip)
+	or	a		; filename specified?
+	ret	z		; no, ignore command
+	ld	hl,buffer
+	call	load		; else load,
+	jp	display		;  display spreadsheet and return
+
+cmd3:	; --- save spreadsheet
+
+	ld	a,(ip)
+	or	a		; filename specified?
+	ret	z		; no, ignore command
+	ld	hl,buffer
+	jp	save		; else save spreadsheet and return
+
+cmd4:	; --- numeric format
+
+	call	upper		; uppercase input buffer
+	ld	a,(buffer)
+	ld	c,0
+	cp	'G'		; General?
+	jr	z,c41		; yes
+	ld	c,1 SHL 5
+	cp	'N'		; Number?
+	jr	z,c41		; yes
+	ld	c,2 SHL 5
+	cp	'S'		; Scientific?
+	ret	nz		; ignore if not (TODO: handle error?)
+c41:	ld	a,(global)
+	or	a
+	jr	z,c42
+	ld	a,(precis)
+	and	1Fh
+	or	c
+	ld	(precis),a	; set global (default) precision
+c42:	ld	hl,(cur_r)	; cur_r, cur_c
+	push	bc
+	call	getpnt		; get pointer to current cell
+	pop	bc
+	ret	c		; if cell empty (no such cell), return
+	ld	a,(ix+c.prec)
+	and	1Fh
+	or	c
+	ld	(ix+c.prec),a	; else set new c.prec
+	ret
+
+cmd5:	; --- precision
+
+	ld	a,(buffer)
+	cp	'-'		; negative value?
+	ld	c,1Fh
+	jr	z,c51		; yes, use full precision
+	ld	a,(ip)
+	call	getn8
+	ret	c		; TODO: handle error?
+	ld	a,c
+	cp	15+1		; > 15?
+	ret	nc		; yes, ignore (TODO: handle error?)
+c51:	ld	a,(global)
+	or	a
+	jr	z,c52
+	ld	a,(precis)
+	and	NOT 1Fh
+	or	c
+	ld	(precis),a	; set global (default) precision
+c52:	ld	hl,(cur_r)	; cur_r, cur_c
+	push	bc
+	call	getpnt		; get pointer to current cell
+	pop	bc
+	ret	c		; if cell empty (no such cell), return
+	ld	a,(ix+c.prec)
+	and	NOT 1Fh
+	or	c
+	ld	(ix+c.prec),a	; else set new c.prec
+	ret
+
+cmd6:	; --- justify
+
+	call	upper		; uppercase input buffer
+	ld	a,(buffer)
+	ld	c,0
+	cp	'L'
+	jr	z,c61
+	inc	c
+	cp	'R'
+	jr	z,c61
+	inc	c
+	cp	'C'
+	ret	nz
+c61:	ld	a,(global)
+	or	a
+	jr	z,c62
+	ld	a,c
+	ld	(justify),a	; set global (default) format
+c62:	ld	hl,(cur_r)	; cur_r, cur_c
+	push	bc
+	call	getpnt		; get pointer to current cell
+	pop	bc
+	ret	c		; cell empty (no such cell), return
+	ld	(ix+c.align),c	; else set new c.align
+	ret
+
+cmd7:	; --- toggle screen width
+
+ IF 0	; now done in do_command
+	ld	a,(screen)
+	cp	80
+	jr	nz,c72
+	ld	a,132
+	ld	(screen),a
+	ld	hl,sw132
+	call	PUTSTR
+c73:	call	display
+	ret
+c72:	ld	a,80
+	ld	(screen),a
+	ld	hl,sw80
+	call	PUTSTR
+	ld	hl,(cur_r)
+	call	on_screen
+	jr	nc,c73
+	ld	a,h		; cur_c
+	ld	(home_c),a
+	jr	c73
+ ELSE
+	ret
+ ENDIF
+
+cmd8:	; --- set heading
+
+	ld	a,(ip)
+	or	a		; anything in buffer?
+	ret	z		; no, return
+	call	set_heading	; else set new heading
+	ld	a,(color)
+	or	a
+	ld	c,1
+	call	nz,resrev
+	call	HOME
+	call	CLREOL		; erase top line
+	ld	a,(screen)
+	sub	40
+	srl	a		; center heading on the screen
+	ld	h,a		; col
+	ld	l,0		; row
+	call	SETCUR
+	ld	hl,heading
+	ld	b,40
+	call	prntn		; display heading
+	ld	a,(color)
+	or	a
+	ld	c,0
+	call	nz,resrev
+;	call	TTFLSH
+	ret
+
+cmd9:	; --- replicate current cell to a range of cells
+
+	call	get_dest	; get destination range into HL:BC
+	ret	c
+
+	push	hl
+	push	bc
+	ld	hl,(cur_r)	; cur_r, cur_c
+	call	getpnt		; get a ptr to current cell
+	pop	bc
+	pop	hl
+	ret	c		; no such cell
+
+c93:	ld	a,c
+	cp	l		; past last column?
+	jp	c,c97
+	push	hl
+c94:	ld	a,b
+	cp	h		; past last row?
+	jp	c,c96
+
+	push	bc
+	push	hl
+	push	ix
+	call	getpnt		; get a pointer to next cell in range
+	pop	de
+	push	de
+	call	CPHLDE		; same as current cell?
+	jp	z,c95		; yes, skip
+
+	push	ix
+	pop	de
+	ld	a,d
+	or	e		; valid cell?
+	call	nz,dispose	; yes, delete the old cell
+
+	pop	hl
+	push	hl		; src = current cell
+	ld	de,wcell	; dst = wcell
+	call	move		; copy contents
+
+	pop	ix
+	pop	hl
+	push	hl
+	push	ix
+
+	ld	(wcell+c.row),hl; set row and col
+
+	ld	a,-1
+	ld	(local_edit),a
+
+	ld	de,(cur_r)
+	ld	a,l
+	sub	e		; del_r = row - cur_r;
+	ld	c,a
+	sbc	a,a
+	ld	b,a
+	ld	(del_r),bc
+
+	ld	a,h
+	sub	d		; del_c = column - cur_c;
+	ld	l,a
+	sbc	a,a
+	ld	h,a
+	ld	(del_c),hl
+
+	ld	hl,0
+	ld	(calc_error),hl	; clear error flags
+
+	ld	e,0
+	ld	ix,wcell
+	call	formula
+	ld	hl,wcell+c.val
+	call	FST0R
+	ld	hl,fval2	; kludge
+	ld	de,wcell+c.val	;  to force
+	call	FCOPY		;   recalc
+
+	ld	a,(wcell+c.len)
+	call	get_new
+;	jr	c,...		; TODO: handle error!
+
+	ex	de,hl
+	ld	hl,(ctail)
+	ld	(hl),e		; ctail.link = new cell
+	inc	hl
+	ld	(hl),d
+	ld	(ctail),de	; ctail = new cell
+	ld	hl,wcell	; src, dst already in DE
+	push	de
+	call	move		; copy contents
+	pop	ix
+	xor	a
+	ld	(ix+c.link),a
+	ld	(ix+c.link+1),a
+	ld	(ix+c.rdy),a
+	ld	(local_edit),a
+
+c95:	pop	ix
+	pop	hl
+	pop	bc
+	inc	h		; next row
+	jp	c94
+c96:	pop	hl
+	inc	l		; next column
+	jp	c93
+
+c97:	call	clr_ready
+	jp	recalc		; recalc and return
+
+fval2:	db	0BDh,95h,62h,37h,81h,00h	; -0.000095623781
+
+cmd10:	; --- print spreadsheet
+
+	ld	a,(ip)
+	or	a
+	ret	z
+	ld	hl,buffer
+	jp	print_out	; save listing file and return
+
+cmd11:	; --- copy range of cells
+
+	call	get_dest	; get destination range into HL:BC
+	ret	c
+
+	ld	e,l		; DE = start of range
+	ld	d,h
+
+c113:	ld	a,c
+	cp	l		; past last column?
+	jp	c,c117
+	push	hl
+c114:	ld	a,b
+	cp	h		; past last row?
+	jp	c,c116
+
+	push	hl
+	push	bc
+	push	de
+
+	call	getpnt		; head
+	pop	de
+	push	de
+	push	ix
+	ld	bc,(cur_r)	; cur_r, cur_c
+	ld	a,c
+	add	l
+	sub	e
+	ld	l,a
+	ld	a,b
+	add	h
+	sub	d
+	ld	h,a
+	call	getpnt		; curr
+	ld	c,l
+	ld	b,h
+	push	ix
+	pop	de		; curr
+	pop	hl		; head
+	call	CPHLDE		; same cell?
+	jp	z,c118		; yes, skip
+
+	ld	a,d
+	or	e
+	push	hl
+	push	bc
+	call	nz,dispose	; delete curr (IX still = curr)
+	pop	bc
+	pop	hl
+	ld	a,h
+	or	l
+	jr	z,c118
+
+	ld	de,wcell	; dst, src = head
+	push	bc
+	call	move
+	pop	bc
+	ld	ix,wcell
+	ld	(ix+c.row),c
+	ld	(ix+c.col),b
+
+	ld	a,-1
+	ld	(local_edit),a
+
+	pop	de
+	push	de
+
+	ld	hl,(cur_r)
+	ld	a,l
+	sub	e		; del_r = cur_r - starting row;
+	ld	c,a
+	sbc	a,a
+	ld	b,a
+	ld	(del_r),bc
+
+	ld	a,h
+	sub	d		; del_c = cur_c - starting col;
+	ld	l,a
+	sbc	a,a
+	ld	h,a
+	ld	(del_c),hl
+
+	ld	hl,0
+	ld	(calc_error),hl	; clear error flags
+
+	ld	e,0
+	ld	ix,wcell
+	call	formula
+	ld	hl,wcell+c.val
+	call	FST0R
+	ld	hl,fval2	; kludge
+	ld	de,wcell+c.val	;  to force
+	call	FCOPY		;   recalc
+
+	ld	a,(wcell+c.len)
+	call	get_new
+;	jr	c,...		; TODO: handle error!
+
+	ex	de,hl
+	ld	hl,(ctail)
+	ld	(hl),e		; ctail.link = new cell
+	inc	hl
+	ld	(hl),d
+	ld	(ctail),de	; ctail = new cell
+	ld	hl,wcell	; src, dst already in DE
+	push	de
+	call	move		; copy contents
+	pop	ix
+	xor	a
+	ld	(ix+c.link),a
+	ld	(ix+c.link+1),a
+	ld	(ix+c.rdy),a
+	ld	(local_edit),a
+
+c118:	pop	de
+	pop	bc
+	pop	hl
+c115:	inc	h		; next row
+	jp	c114
+c116:	pop	hl
+	inc	l		; next column
+	jp	c113
+
+c117:	call	clr_ready
+	call	recalc
+ if 1
+	ld	hl,(home_r)
+	call	display
+ endif
+	ret
+
+cmd12:	; --- erase cells
+
+	call	get_dest	; get destination range into HL:BC
+	ret	c
+
+c121:	ld	a,c
+	cp	l		; past last column?
+	jr	c,c117
+	push	hl
+c122:	ld	a,b
+	cp	h		; past last row?
+	jr	c,c126
+
+	push	hl
+	push	bc
+	call	getpnt		; get pointer to cell
+	call	nc,dispose	; if valid, delete cell
+	pop	bc
+	pop	hl
+
+	inc	h		; next row
+	jr	c122
+c126:	pop	hl
+	inc	l		; next column
+	jr	c121
+
+cmd13:	; --- clear spreadsheet
+
+	call	upper
+	ld	a,(buffer)
+	cp	'Y'
+	ret	nz
+	call	dispose_all	; delete spreadsheet
+	call	reset_calc	; reset variables
+	ld	hl,(home_r)
+	jp	display
+
+cmd14:	; --- quit FreeCalc
+
+	call	upper
+	ld	a,(buffer)
+	cp	'Y'
+	ret	nz
+	jp	quit
+
+; Get destination cell range for replicate and copy commands
+
+get_dest:
+	call	upper
+	ld	de,wcell+c.form
+	ld	a,(ip)
+	or	a
+	jr	z,gtd1
+	ld	c,a
+	ld	b,0
+	ld	hl,buffer
+	ldir			; copy buffer to wcell.form
+gtd1:	xor	a
+	ld	(de),a		; end with a null
+	ld	ix,wcell
+	ld	e,0
+	call	get_range	; get range of cells
+	jr	nc,gtd2		; valid range, branch
+	ld	e,0
+	call	get_xy		; else get a single cell name
+	ret	c		; not vaild either, return
+	ld	c,l
+	ld	b,h
+gtd2:	ld	de,0
+	ld	(test_r),de	; clear test_r, test_c
+	ret			; success
+
+; Set heading
+
+set_heading:
+	push	hl
+	ld	hl,heading
+	ld	b,40
+seth1:	ld	(hl),' '	; erase old heading to all spaces
+	inc	hl
+	djnz	seth1
+	cp	40+1		; new heading longer than 40 chars?
+	jr	c,seth2
+	ld	a,40		; yes, truncate to 40 chars
+seth2:	ld	c,a		; save length
+	ld	a,40		; center heading in buffer
+	sub	c		; compute length difference
+	srl	a		; divide by 2 to center, obtain left padding
+	ld	hl,heading
+	call	addhla		; setup pointers
+	ex	de,hl		; dst
+	pop	hl		; src
+	ld	b,0		; count in BC
+	ldir			; set new heading
+	ret
+
+;-----------------------------------------------------------------------
+
+; File Load/Save routines
+
+; Load spreadsheet from file
+; Called with HL = address of file name string
+; Adds .CAL extension if none was specified.
+
+load:	ld	de,calext	; .cal extension
+	ld	c,0		; user directory
+	call	OPENR		; parse filename and open file for read
+	ld	de,err1
+	jp	c,lerr2		; failed to open file
+
+	ld	hl,tmpbuf
+	ld	b,16
+	call	rdbuf		; read file signature
+	jp	c,lderr
+
+	ld	hl,tmpbuf
+	ld	de,magic
+	ld	b,mlen
+ld1:	ld	a,(de)		; verify file ID
+	cp	(hl)
+	jp	nz,lderr
+	inc	hl
+	inc	de
+	djnz	ld1
+
+	ld	hl,heading
+	ld	b,40
+	call	rdbuf		; read heading
+	jp	c,lderr
+
+	ld	hl,width
+	ld	b,0		; 256
+	call	rdbuf		; read column width table
+	jp	c,lderr
+
+	ld	hl,home_r
+	ld	b,4
+	call	rdbuf		; read home_r, home_c, cur_r, cur_c
+	jp	c,lderr
+
+	ld	hl,tmpbuf
+	ld	b,2
+	call	rdbuf		; read number of cells
+	jp	c,lderr
+
+	call	dispose_all	; delete old spreadsheet
+
+rdloop:	ld	hl,(tmpbuf)
+	ld	a,h
+	or	l		; no (more) cells to read?
+	jr	z,ldeof		; yes, exit loop
+	dec	hl
+	ld	(tmpbuf),hl
+
+	ld	hl,wcell+c.row
+	ld	b,c.form-c.row
+	call	rdbuf		; read cell descriptors
+	jr	c,lderr
+
+	ld	a,(wcell+c.len)
+	ld	c,a
+	ld	b,a
+	call	rdbuf		; read cell contents
+	jr	c,lderr
+
+	ld	hl,wcell+c.form
+	ld	a,c
+	call	addhla
+	dec	hl
+	ld	a,(hl)
+	or	a		; is c.form null-terminated?
+	jr	z,ld7
+	inc	hl
+	ld	(hl),0		; no, add null terminator
+	inc	c
+ld7:	ld	a,c
+	ld	(wcell+c.len),a
+	call	get_new
+	jr	c,ldmem		; error: not enough mem
+
+	push	hl
+	ex	de,hl		; save new cell address in DE, too
+	pop	ix
+	ld	hl,(chead)
+	ld	a,h
+	or	l
+	jr	nz,ld8
+	ld	(chead),de
+
+ld8:	ld	hl,(ctail)
+	ld	a,h
+	or	l
+	jr	z,ld9
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+ld9:	ld	(ctail),de
+
+	ld	hl,wcell	; src, dst already in DE
+	ld	a,(wcell+c.len)
+	add	c.form
+	ld	c,a
+	ld	b,0
+	ldir
+
+	xor	a
+	ld	(ix+c.rdy),a
+	ld	(ix+c.link),a
+	ld	(ix+c.link+1),a
+
+	jp	rdloop		; loop
+
+ldmem:	ld	de,err3
+	jr	lerr1
+
+lderr:	ld	de,err2
+lerr1:	ld	hl,0
+	ld	(cur_r),hl
+	ld	(home_r),hl
+lerr2:	push	af
+	call	errmsg
+	pop	af
+ldeof:	push	af
+	call	CLOSE
+	pop	af
+	ret
+
+rdbuf:	call	GETCF
+	ret	c
+	ld	(hl),a
+	inc	hl
+	djnz	rdbuf
+	ret
+
+err1:	db	'Failed to open file',0
+err2:	db	'Read error',0
+err3:	db	'Out of memory',0
+
+; Save spreadsheet to file
+; Called with HL = address of file name string
+; Adds .CAL extension if none specified
+
+save:	ld	de,calext
+	call	OPENW		; parse filename and create file
+	ld	de,err4
+	jp	c,werr1		; failed to create file
+
+	ld	hl,tmpbuf
+	push	hl
+	ld	b,16
+	call	clear		; clear tmpbuf
+	pop	de
+	push	de
+	ld	hl,magic
+	ld	bc,mlen
+	ldir			; copy signature and version
+	pop	hl
+	ld	b,16
+	call	wrbuf		; save file ID
+	jr	c,wrerr
+
+	ld	hl,heading
+	ld	b,40
+	call	wrbuf		; write heading
+	jr	c,wrerr
+
+	ld	hl,width
+	ld	b,0		; 256
+	call	wrbuf		; write column width table
+	jr	c,wrerr
+
+	ld	hl,home_r
+	ld	b,4
+	call	wrbuf		; write home_r, home_c, cur_r, cur_c
+	jr	c,wrerr
+
+	call	count_cells
+	jr	c,wrerr
+
+	ld	hl,(chead)
+sav3:	ld	a,h
+	or	l
+	jr	z,sav5		; done
+	push	hl
+	pop	ix
+	ld	b,c.form-c.row
+	ld	a,(ix+c.len)
+	add	b
+	ld	b,a
+	inc	hl		; skip c.link
+	inc	hl
+	call	wrbuf		; write cell contents
+	jr	c,wrerr
+	ld	l,(ix)
+	ld	h,(ix+1)
+	jr	sav3
+
+wrerr:	ld	de,err5
+werr1:	push	af
+	call	errmsg
+	pop	af
+sav5:	push	af
+	call	CLOSE
+	pop	af
+	ret
+
+wrbuf:	ld	c,(hl)
+	call	PUTCF
+	ret	c
+	inc	hl
+	djnz	wrbuf
+	ret
+
+count_cells:
+	ld	hl,(chead)	; get pointer to cell list
+	ld	bc,0		; counter
+cnt1:	ld	a,h
+	or	l		; end of list?
+	jr	z,cnt2		; yes, exit loop
+	inc	bc		; else count cell
+	ld	a,(hl)		; get pointer to next cell
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	cnt1		; and loop
+cnt2:	call	PUTCF		; write 16-bit number of cells
+	ret	c
+	ld	c,b
+	jp	PUTCF
+
+err4:	db	'Failed to create file',0
+err5:	db	'Write error',0
+
+calext:	db	'CAL'
+
+magic:	db	'FreeCalc',1,2	; file signature - name and version
+mlen	equ	$-magic
+
+errmsg:	ld	hl,0*256+23
+	call	SETCUR		; position cursor on prompt line
+	ex	de,hl
+	call	PUTSTR		; display error message
+	ld	c,' '
+	call	PUTCH
+	call	CLREOL		; clear the rest of the line
+	jp	GETCH		; wait for keypress and return
+
+;-----------------------------------------------------------------------
+
+; Printing routines
+
+print_out:
+	ld	de,calprn
+	call	OPENW
+	ld	de,err4
+	jp	c,werr1
+
+	ld	de,0		; max_r, max_c
+	ld	hl,(chead)
+prt1:	ld	a,h
+	or	l
+	jr	z,prt4
+	push	hl
+	pop	ix
+	ld	a,e		; find spreadsheet boundaries
+	cp	(ix+c.row)
+	jr	nc,prt2
+	ld	e,(ix+c.row)
+prt2:	ld	a,d
+	cp	(ix+c.col)
+	jr	nc,prt3
+	ld	d,(ix+c.col)
+prt3:	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	jr	prt1
+
+prt4:	ld	b,0		; start column number
+prt5:	ld	a,d
+	cp	b		; start column > max_c?
+	ccf
+	jp	nc,sav5		; yes, close file and return
+	push	bc
+	push	de
+	ld	e,b
+	ld	c,5		; row header width
+prt6:	ld	a,d
+	cp	b		; column > max_c?
+	jr	c,prt7		; yes, exit this loop
+	ld	hl,width
+	ld	a,b
+	call	addhla
+	ld	a,(hl)		; get column width
+	add	c
+	cp	132		; total width > page width?
+	jr	nc,prt7		; yes, exit this loop
+	ld	c,a
+	ld	e,b
+	inc	b		; next column
+	jr	prt6		; loop
+prt7:	ld	a,e		; get end column
+	pop	de
+	pop	bc		; pop start column
+	ld	c,a
+	push	de
+	push	bc
+	call	out_pages
+	jp	c,wrerr
+	pop	bc
+	pop	de
+	ld	b,c
+	inc	b		; next start column = old end column + 1
+	jr	prt5		; loop to print next columns
+
+calprn:	db	'LST'
+
+; Print columns B..C, E rows
+
+out_pages:
+	ld	d,0		; row number
+op1:	push	bc
+	call	out_heading
+	pop	bc
+	ret	c
+	push	bc
+	call	out_top		; output column header
+	pop	bc
+	ret	c
+	ld	l,50		; rows/page
+op2:	ld	a,e
+	cp	d		; all rows output?
+	ccf
+	ret	nc		; yes, return
+	push	hl
+	push	de
+	push	bc
+	call	out_line
+	jp	c,ot5
+	pop	bc
+	pop	de
+	pop	hl
+	inc	d
+	dec	l
+	jr	nz,op2
+	jr	op1
+
+print_spaces:
+	ld	a,b
+	or	a
+	ret	z
+prs1:	ld	c,' '
+	call	PUTCF
+	ret	c
+	djnz	prs1
+	ret
+
+; Print heading
+
+out_heading:
+	ld	c,FF
+	call	PUTCF		; new page
+	ret	c
+	ld	b,0+(132-40)/2
+	call	print_spaces
+	ret	c
+	ld	hl,heading
+	ld	b,40
+	call	wrbuf		; output heading
+	ret	c
+out_nl:	ld	c,CR
+	call	PUTCF
+	ret	c
+	ld	c,LF
+	jp	PUTCF
+
+; Print column header
+; TODO: check for all write errors
+
+out_top:
+	push	bc
+	ld	b,5
+	call	print_spaces
+	pop	bc
+	ret	c
+ot1:	ld	a,c
+	cp	b		; past last column?
+	jp	c,out_nl	; yes, print newline and return
+	push	bc
+	push	de
+	ld	hl,width
+	ld	a,b
+	call	addhla
+	ld	a,(hl)
+	or	a
+	jr	z,ot2
+	ld	c,a		; C = column width
+	ld	hl,tmpbuf
+	push	hl
+	ld	a,b
+	call	colnam		; convert column name, returns D = name length
+	pop	hl
+	ld	a,c
+	dec	a		; column width = 1?
+	jr	nz,ot3		; no
+	ld	a,d
+	dec	a		; name width = 1?
+	jr	z,ot4		; yes
+	inc	hl
+ot4:	ld	c,(hl)		; else print only the second char of name
+	call	PUTCF
+	jr	c,ot5
+	jr	ot2
+ot3:	ld	a,c
+	sub	d
+	srl	a		; compute left padding
+	ld	e,a
+	ld	b,a
+	push	bc
+	call	print_spaces
+	pop	bc
+	jr	c,ot5
+	ld	b,d
+	push	bc
+	call	wrbuf
+	pop	bc
+	jr	c,ot5
+	ld	a,c
+	sub	d		; compute right padding
+	sub	e
+	ld	b,a
+	call	print_spaces
+	jr	c,ot5
+ot2:	pop	de
+	pop	bc
+	inc	b
+	jr	ot1
+
+ot5:	pop	de
+	pop	bc
+	ret
+
+print_alfa:
+	push	de
+	push	hl
+	ld	c,b		; C = column width
+	ld	b,(ix+c.len)
+	dec	b		; exclude null terminator [else call strlen]
+	ld	a,b		; B = string width
+	or	a		; negative length?
+	jp	p,pa1		; branch if not
+	ld	b,0		; else use 0
+	jr	pa2
+pa1:	ld	a,c
+	cp	b		; string length > column width?
+	jr	nc,pa2		; no
+	ld	b,c		; else truncate string length
+pa2:	ld	a,c
+	sub	b		; difference is padding length
+	ld	d,a		; D = padding length
+	ld	a,(ix+c.align)
+	dec	a		; 1 = justify right
+	jr	nz,pa3
+	push	bc
+	ld	b,d		; pad left
+	call	print_spaces
+	ld	e,0
+	call	ixform
+	pop	bc
+	call	wrbuf		; length already in B
+	jr	pa5
+
+pa3:	dec	a		; 2 = center
+	jr	nz,pa4
+	push	bc
+	ld	b,d		; get padding length
+	srl	b		; take half of it
+	ld	a,d
+	sub	b		; compute length of right padding
+	ld	d,a
+	call	print_spaces	; output left padding
+	push	de
+	ld	e,0
+	call	ixform
+	pop	de
+	pop	bc
+	call	wrbuf		; length already in B
+	ld	b,d
+	call	print_spaces	; output right padding
+	jr	pa5
+
+pa4:	push	de
+	push	bc
+	ld	e,0		; else: left justify
+	call	ixform
+	pop	bc
+	call	wrbuf		; string length already in B
+	pop	de
+	ld	b,d		; pad right
+	call	print_spaces
+pa5:	pop	hl
+	pop	de
+	ret
+
+out_line:
+	push	bc
+	push	de
+	ld	hl,tmpbuf
+	ld	e,d
+	ld	d,0
+	inc	de
+	ld	a,' '
+	call	CVTWD
+	ld	(hl),' '
+	ld	hl,tmpbuf+2
+	ld	b,4
+	call	wrbuf		; output row header
+	pop	de
+	pop	bc
+	ret	c
+ol1:	ld	a,c
+	cp	b		; past last column?
+	jp	c,out_nl	; yes, print newline and return
+	ld	hl,width
+	ld	a,b
+	call	addhla
+	ld	a,(hl)
+	or	a
+	jp	z,ol10
+	push	bc
+	push	de
+	ld	e,a		; E = cell width
+	ld	l,d
+	ld	h,b
+	push	de
+	call	getpnt
+	pop	de
+	push	ix
+	pop	hl
+	ld	a,h
+	or	l
+	jr	nz,ol3
+	ld	b,e
+	call	print_spaces
+	jr	ol9
+
+ol3:	ld	hl,0*256+1
+	call	SETCUR
+	call	CLREOL
+	ld	h,(ix+c.col)
+	call	dis_val
+
+	ld	b,e		; B = cell width
+	ld	a,(ix+c.flag)
+	cp	'A'
+	jr	nz,ol31
+	call	print_alfa
+	jr	ol9
+
+ol31:	ld	a,(ix+c.rdy)
+	cp	3
+	jr	c,ol4
+	ld	hl,estr		; 'ERROR'
+	jr	ol7
+
+ol4:	cp	2
+	jr	nz,ol5
+	ld	hl,vestr	; '<VAL/ERR>'
+	jr	ol7
+
+ol5:	push	ix
+	pop	hl
+	ld	de,c.val
+	add	hl,de
+	push	bc
+	call	FLD0R		; load value into fp acc
+	ld	a,(ix+c.prec)
+	ld	b,a
+	rlca
+	rlca
+	rlca
+	and	07h
+	ld	c,a		; get format type
+	ld	a,b
+	and	1Fh
+	cp	15+1
+	jr	c,ol6
+	ld	a,-1
+ol6:	ld	b,a		; get precision
+	ld	a,1		; don't suppress leading zero before decimal pt
+	ld	hl,tmpbuf
+	push	hl
+	ld	e,20
+	call	FMTFPA		; convert to ASCII
+	pop	hl
+	pop	bc
+	jr	c,ol11
+	push	hl
+	call	strlen
+	pop	hl
+	ld	a,b
+	sub	c
+	jr	c,ol11
+ol7:	push	bc
+	ld	b,a
+	call	print_spaces
+	pop	bc
+ol8:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,ol9
+	ld	c,a
+	call	PUTCF
+	djnz	ol8
+
+ol9:	pop	de
+	pop	bc
+ol10:	inc	b
+	jp	ol1
+
+ol11:	ld	hl,nstr
+	push	hl
+	call	strlen
+	pop	hl
+	ld	a,b
+	sub	c
+	jr	c,ol8
+	jr	ol7
+
+;-----------------------------------------------------------------------
+
+; Display help
+
+help:	ld	hl,helpfn
+	ld	c,1		; system help directory
+	call	OPENR
+	ret	c		; TODO: handle error!
+
+hlp1:	call	CLS
+	call	HOME
+
+hlp2:	call	GETCF
+	jr	c,hlp4		; end of file
+hlp11:	cp	FF		; end of the screen?
+	jr	z,hlp3		; yes
+	ld	c,a
+	call	PUTCH		; else display char
+	jr	hlp2		; and loop
+
+hlp3:	ld	hl,0*256+23
+	call	SETCUR
+	ld	hl,hwait
+	call	PUTSTR
+	call	GETCH
+	cp	CR		; CR?
+	jr	nz,hlp4		; no, exit loop
+hlp31:	call	GETCF
+	jr	c,hlp4
+	cp	CR
+	jr	z,hlp31
+	cp	LF
+	jr	nz,hlp11
+	jr	hlp1		; else display next screen
+
+hlp4:	call	CLOSE
+	jp	display		; redisplay spreadsheet and return
+
+helpfn:	db	'CALC.HLP',0
+hwait:	db	'Hit return to continue, anything else to exit ',0
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+df_heading:
+	db	'Free Calc V1.2'
+df_hlen	equ	$-df_heading
+
+chead:	ds	2		; ptr to first spreadsheet cell
+ctail:	ds	2		; ptr to last cell
+
+wcell:	ds	csize+70	; work cell
+
+width:	ds	256		; column width table
+
+heading:ds	40		; worksheet heading
+
+home_r:	ds	1		; home cell (top left    \
+home_c:	ds	1		;  corner of the screen)  \
+				;                          > keep together
+cur_r:	ds	1		; current cell (where     /
+cur_c:	ds	1		;  the cursor is)        /
+
+test_r:	ds	1
+test_c:	ds	1
+
+screen:	ds	1		; screen width           \
+precis:	ds	1		; format and precision    \ global
+justify:ds	1		; justify                 / flags
+color:	ds	1		; color mode (0 = B&W)   /
+
+color1:	ds	2		; color of spreadsheet area
+color2:	ds	2		; color of selected cell
+color3:	ds	2		; color of heading
+color4:	ds	2		; color of row/column labels
+color5:	ds	2		; color of raw cell contents line
+
+save_justify:
+	ds	1
+save_prec:
+	ds	1
+save_flag:
+	ds	1
+
+local_edit:
+	ds	1
+
+del_r:	ds	2		; delta row, signed (hence 16 bits)
+del_c:	ds	2		; delta col, signed (  "   "   "  )
+
+calc_error:
+	ds	1		; !    do not    !
+error:	ds	1		; ! change order !
+
+buffer:	ds	72		; input buffer
+ip:	ds	1		; buffer index
+
+cmdtyp:	ds	1		; command type
+
+state:	ds	1		; state
+global:	ds	1
+
+direction:
+	ds	1		; arrow
+
+tmpbuf:	ds	20		; temp buffer for token, numeric conversion,
+				;  etc.
+
+	public	$MEMRY
+$MEMRY:	ds	2
+FREE:	ds	2
+
+	ds	stksiz
+stack	equ	$
+
+	end	START

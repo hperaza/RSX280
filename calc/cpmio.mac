@@ -1,0 +1,487 @@
+	.Z80
+
+WBOOT	equ	0
+BDOS	equ	5
+
+.DIRIO	equ	6
+.OPEN	equ	15
+.CLOSE	equ	16
+.ERASE	equ	19
+.READ	equ	20
+.WRITE	equ	21
+.MAKE	equ	22
+.REN	equ	23
+.DMA	equ	26
+
+CR	equ	0Dh
+LF	equ	0Ah
+EOF	equ	1Ah
+ESC	equ	1Bh
+
+	include	ERRORS.INC
+
+	public	INIT,EXIT,PUTCH,PUTSTR,TTFLSH,GETCH
+	public	CVTWD,UCASE,CRLF,CPHLDE
+
+	public	OPENR,OPENW,GETCF,PUTCF,CLOSE
+
+;-----------------------------------------------------------------------
+
+	cseg
+
+INIT:	xor	a
+	ld	(FMODE),a
+	ld	hl,(BDOS+1)
+	ld	l,a
+	ret
+
+EXIT:	; TODO: close open files
+	jp	WBOOT
+
+PUTCH:	push	hl
+	push	de
+	push	bc
+	ld	e,c
+	ld	c,.DIRIO
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+GETCH:	push	hl
+	push	de
+	push	bc
+gc1:	ld	e,0FFh
+	ld	c,.DIRIO
+	call	BDOS
+	or	a
+	jr	z,gc1
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+PUTSTR:	ld	a,(hl)
+	or	a
+	ret	z
+	push	bc
+	ld	c,a
+	call	PUTCH
+	pop	bc
+	inc	hl
+	jr	PUTSTR
+
+TTFLSH:
+	ret
+
+CVTWD:	ld	(filler),a
+	push	de
+	push	bc
+	push	hl
+	ex	(sp),ix		; get ptr to dest string buffer in IX
+	ex	de,hl		; value now in HL
+	ld	b,0
+	ld	de,-10000
+	call	sbcnt
+	ld	de,-1000
+	call	sbcnt
+	ld	de,-100
+	call	sbcnt
+	ld	de,-10
+	call	sbcnt
+	ld	a,l
+	add	a,'0'
+	ld	(ix),a
+	ex	(sp),ix		; restore IX, save ptr
+	pop	hl
+	inc	hl
+	inc	b
+	res	7,b
+	ld	a,b		; return length in A
+	pop	bc
+	pop	de
+	ret
+
+sbcnt:	ld	c,'0'-1
+sb1:	inc	c
+	add	hl,de
+	jr	c,sb1
+	sbc	hl,de
+	bit	7,b
+	jr	nz,sb3
+	ld	a,c
+	cp	'0'
+	jr	nz,sb2
+	ld	a,(filler)
+	or	a
+	ret	z
+	ld	c,a
+	jr	sb3
+sb2:	set	7,b
+sb3:	ld	(ix),c
+	inc	ix
+	inc	b
+	ret
+
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+CRLF:	push	bc
+	ld	c,CR
+	call	PUTCH
+	ld	c,LF
+	call	PUTCH
+	pop	bc
+	ret
+
+; Returns Z if HL == DE, CY if HL > DE
+
+CPHLDE:	ld	a,d
+	cp	h
+	ret	nz
+	ld	a,e
+	cp	l
+	ret
+
+;-----------------------------------------------------------------------
+
+; Parse filename and open file for read.
+; Called with HL = address of filename string, DE = ptr to default
+; extension string.
+; Returns CY on error and error code in A.
+
+OPENR:	ld	a,(FMODE)
+	or	a		; file already open?
+	ld	a,E.CHOPN
+	scf
+	ret	nz		; yes, error
+	push	de		; save ptr to default ext
+	ex	de,hl		; DE = ptr to filename string
+	ld	hl,FCB
+	push	hl
+	call	MKFCB		; parse name and make FCB
+	pop	hl
+	pop	de
+	call	ADDEXT		; add extension if necessary
+	ld	de,FCB
+	ld	c,.OPEN
+	push	ix
+	call	BDOS
+	pop	ix
+	inc	a
+	scf
+	ld	a,E.FNF
+	ret	z
+	ld	a,80h
+	ld	(FMODE),a	; mode = open for read
+	ld	(CNT),a
+	xor	a
+	ret
+
+; Create a FCB.
+; Called with HL = FCB address, DE = address of filename string
+
+MKFCB:	call	CLRFCB		; initialize FCB to all zeros
+	call	GETNS		; get next non-space character
+	ld	a,(de)
+	or	a
+	jr	z,mf2
+	call	UCASE
+	sub	'A'-1
+	ld	b,a
+	inc	de
+	ld	a,(de)
+	cp	':'
+	jr	z,mf3
+	dec	de
+mf2:	ld	(hl),0
+	jr	mf4
+mf3:	ld	(hl),b
+	inc	de
+mf4:	ld	b,8
+	inc	hl
+	call	FNAM		; get file name
+	cp	'.'		; was the extension explicitly supplied?
+	push	af
+	jr	nz,mf5
+	inc	de
+mf5:	ld	b,3
+	call	FNAM		; get extension
+	pop	af
+	ld	a,40h		; set extension present flag
+	ret	z
+	xor	a
+	ret
+
+; Clear FCB. HL = FCB address
+
+CLRFCB:	push	hl
+	ld	b,35
+clrf1:	ld	(hl),0
+	inc	hl
+	djnz	clrf1
+	pop	hl
+	ret
+
+; Get file name or extension from the input line in (DE), up to B chars
+; in length. Store the name at (HL), padding with spaces if necessary.
+
+FNAM:	call	GETFS1
+	jr	z,sfill
+	call	UCASE
+	ld	(hl),a
+	inc	hl
+	inc	de
+	djnz	FNAM
+fskip:	call	GETFS1
+	ret	z
+	call	UCASE
+	inc	de
+	jr	fskip
+sfill:	ld	(hl),' '
+	inc	hl
+	djnz	sfill
+	ret
+
+; Get next (non-blank) symbol
+; Returns Z flag on EOL.
+
+GETNS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	de
+	jr	GETNS
+
+; Get next symbol
+; Returns Z on delimiter or EOL.
+
+GETFS:	ld	a,(de)
+	or	a
+	ret	z
+	cp	' '
+	jr	c,gfs1
+	ret	z
+	cp	'='
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'<'
+	ret	z
+	cp	'>'
+	ret	z
+	cp	'/'
+	ret	z
+	cp	','
+	ret	z
+	cp	'+'
+	ret
+gfs1:	xor	a
+	ret
+
+GETFS1:	call	GETFS
+	ret	z
+;;	cp	'_'
+;;	ret	z
+	cp	'.'
+	ret	z
+	cp	'*'
+	ret	z
+	cp	'?'
+	ret
+
+ERRCMD:	db	'Command line error',0
+
+; Add file ext (DE) if necessary.
+; HL = FCB addr, A = flags (bit 6 set if dot was found in file name)
+
+ADDEXT:	ld	bc,8+1
+	add	hl,bc		; point to extension field of FCB
+	ld	c,a		; save flags
+	ld	a,(hl)
+	cp	' '		; extension set?
+	ret	nz		; yes, return
+	ld	a,c
+	and	40h		; dot flag set?
+	ret	nz		; yes, return
+	ex	de,hl
+	ld	bc,3
+	ldir			; else set the extension
+	ret
+
+; Parse filename and create output file.
+; Called with HL = address of filename string, DE = ptr to default
+; extension string.
+; Returns CY on error and error code in A.
+; TODO: rename old file to .BAK?
+
+OPENW:	ld	a,(FMODE)
+	or	a		; file already open?
+	ld	a,E.CHOPN
+	scf
+	ret	nz		; yes, error
+	push	de		; save ptr to default ext
+	ex	de,hl		; DE = ptr to filename string
+	ld	hl,FCB
+	push	hl
+	call	MKFCB		; parse name and make FCB
+	pop	hl
+	pop	de
+	call	ADDEXT		; add extension if necessary
+	push	ix
+	ld	de,FCB
+	ld	c,.ERASE
+	call	BDOS
+	ld	de,FCB
+	ld	c,.MAKE
+	call	BDOS
+	pop	ix
+	inc	a
+	scf
+	ld	a,E.DSKF
+	ret	z
+	ld	a,81h		; mode = open for write
+	ld	(FMODE),a
+	xor	a
+	ld	(CNT),a
+	ret
+
+; Read a byte from input file
+
+GETCF:	ld	a,(FMODE)
+	cp	80h		; file open for read?
+	ld	a,E.IO
+	scf
+	ret	nz		; no, error
+	ld	a,(CNT)
+	cp	80h
+	jr	nz,rd1
+	xor	a
+	ld	(CNT),a
+	push	hl
+	push	de
+	push	bc
+	push	ix
+	ld	de,BUF
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB
+	ld	c,.READ
+	call	BDOS
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	or	a
+	ld	a,E.EOF
+	scf
+	ret	nz
+rd1:	push	hl
+	push	bc
+	ld	a,(CNT)
+	ld	c,a
+	inc	a
+	ld	(CNT),a
+	ld	b,0
+	ld	hl,BUF
+	add	hl,bc
+	ld	a,(hl)
+	pop	bc
+	pop	hl
+	or	a
+	ret
+
+; Write byte (in reg C) to output file
+
+PUTCF:	ld	a,(FMODE)
+	cp	81h		; file open for write?
+	ld	a,E.IO
+	scf
+	ret	nz		; no, error
+	push	hl
+	push	de
+	push	bc
+	ld	a,(CNT)
+	ld	e,a
+	ld	d,0
+	ld	hl,BUF
+	add	hl,de
+	ld	(hl),c
+	inc	a
+	ld	(CNT),a
+	cp	80h
+	jr	nz,wl1
+	push	ix
+	ld	de,BUF
+	ld	c,.DMA
+	call	BDOS
+	ld	de,FCB
+	ld	c,.WRITE
+	call	BDOS
+	pop	ix
+	or	a
+	ld	a,E.DSKF
+	scf
+	jr	nz,wl2
+	xor	a
+	ld	(CNT),a
+wl1:	or	a
+wl2:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Close file
+
+CLOSE:	ld	a,(FMODE)
+	ld	c,a
+	or	a		; file open?
+	scf
+	ld	a,E.IO
+	ret	p
+	bit	0,c		; file open for write?
+	jr	z,cls2		; no
+cls1:	ld	c,EOF		; else pad output buffer with ^Z chars
+	call	PUTCF
+	ld	a,(CNT)
+	or	a
+	jr	nz,cls1
+cls2:	push	ix
+	push	hl
+	push	de
+	push	bc
+	ld	de,FCB
+	ld	c,.CLOSE
+	call	BDOS
+	pop	bc
+	pop	de
+	pop	hl
+	pop	iy
+	inc	a
+	ld	a,E.IO
+	scf
+	ret	z
+	xor	a
+	ld	(FMODE),a
+	ret
+
+;-----------------------------------------------------------------------
+
+	dseg
+
+filler:	ds	1
+
+FMODE:	ds	1		; file mode and open flag
+CNT:	ds	1		; r/w byte count
+FCB:	ds	36		; CP/M FCB
+BUF:	ds	128		; file I/O buffer
+
+	end
